@@ -234,3 +234,25 @@ test("a delayed coverage request does not block fixes or overwrite a newer serve
         await expect(page.locator("#security-review")).toContainText("Couverture des scans vérifiée");
     }finally{release?.();}
 });
+
+for(const coverageFails of [false,true])test(`late coverage ${coverageFails?"failure":"success"} preserves keyboard focus in expanded action evidence`,async({page})=>{
+    let release;
+    await setup(page);
+    await page.unroute("**/api/vulnerabilities?**");
+    await page.route("**/api/vulnerabilities?**",async route=>{
+        await new Promise(resolve=>{release=resolve;});
+        return coverageFails?route.fulfill({status:503,body:"unavailable"}):fulfillJson(route,coverage());
+    });
+    try{
+        await page.goto("/vulnerabilities");
+        const toggle=page.getByRole("button",{name:"Détails",exact:true});
+        await toggle.click();
+        await expect(toggle).toBeFocused();
+        await expect(page.locator(".security-evidence")).toBeVisible();
+        release();
+        await expect(page.locator("#security-review")).toContainText(coverageFails?"Couverture des scans indisponible":"1 serveur à vérifier");
+        await expect(toggle).toBeFocused();
+        await page.keyboard.press("Space");
+        await expect(page.locator(".security-evidence")).toBeHidden();
+    }finally{release?.();}
+});

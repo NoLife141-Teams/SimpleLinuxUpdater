@@ -76,10 +76,10 @@
             });
             const scans=json(path("/api/vulnerabilities",{server:q.server,page_size:1}),signal).then(data=>{
                 if(!isCurrent())return;
-                coverage=data;coverageError="";render();
+                coverage=data;coverageError="";health(store.view().list.data);
             },error=>{
                 if(!isCurrent())return;
-                coverageError=error.message;render();
+                coverageError=error.message;health(store.view().list.data);
             });
             await Promise.allSettled([actions,scans]);
         }

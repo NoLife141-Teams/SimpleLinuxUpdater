@@ -1888,6 +1888,10 @@ func registerProtectedPageRoutes(r *gin.Engine) {
 		setNoStoreHeaders(c)
 		c.HTML(http.StatusOK, "vulnerabilities.html", operatorShellForContext(c, "vulnerabilities", "CVE analysis"))
 	})
+	r.GET("/vulnerabilities/all", func(c *gin.Context) {
+		setNoStoreHeaders(c)
+		c.HTML(http.StatusOK, "vulnerability-ledger.html", operatorShellForContext(c, "vulnerabilities", "CVE details"))
+	})
 	r.GET("/remediation", func(c *gin.Context) {
 		setNoStoreHeaders(c)
 		c.HTML(http.StatusOK, "remediation.html", operatorShellForContext(c, "vulnerabilities", "Correction plan"))

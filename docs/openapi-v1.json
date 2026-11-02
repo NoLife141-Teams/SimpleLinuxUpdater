@@ -5026,6 +5026,19 @@
             }
           },
           {
+            "name": "view",
+            "in": "query",
+            "description": "Paginate this queue only; totals still describe all queues. Omit for legacy shared pagination.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "fixes",
+                "alerts",
+                "lifecycle"
+              ]
+            }
+          },
+          {
             "name": "page",
             "in": "query",
             "schema": {

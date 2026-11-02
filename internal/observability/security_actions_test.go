@@ -207,7 +207,7 @@ func TestLifecycleDistinguishesUpstreamAndExtendedSupport(t *testing.T) {
 	}
 }
 func TestSecurityActionsRejectsInvalidFilters(t *testing.T) {
-	for _, raw := range []string{"page=0", "page_size=101", "recent_days=0", "recent_days=999", "q=" + strings.Repeat("x", 201)} {
+	for _, raw := range []string{"view=invalid", "page=0", "page_size=101", "recent_days=0", "recent_days=999", "q=" + strings.Repeat("x", 201)} {
 		values, _ := url.ParseQuery(raw)
 		if _, err := ParseSecurityActionQuery(values); err == nil {
 			t.Fatalf("accepted %s", raw)
@@ -466,5 +466,36 @@ func TestLifecycleDoesNotReplaceAProvenEmptyInventoryWithRecordedFindings(t *tes
 	summary := DashboardSummaryResponse{Servers: []DashboardServerSummary{{Name: "host", Risk: risk}}}
 	if out := BuildSecurityActions(summary, securityintel.Snapshot{}, SecurityActionQuery{}, now); out.LifecycleTotal != 1 || out.Lifecycle[0].Kind != "os" {
 		t.Fatalf("historical finding overrode proven empty inventory: %+v", out.Lifecycle)
+	}
+}
+
+func TestSecurityActionsPaginationUsesSelectedQueue(t *testing.T) {
+	summary, now := securityActionFixture()
+	// One fix and three lifecycle components must not create empty fix pages.
+	summary.Servers[0].Risk.Vulnerability.Inventory = []vulnerabilities.Package{{Name: "python3", Version: "3.9.2"}, {Name: "nodejs", Version: "18.1"}}
+	for _, tc := range []struct {
+		view              string
+		pages, page, rows int
+	}{
+		{"", 3, 3, 0}, {"fixes", 1, 1, 1}, {"alerts", 1, 1, 0}, {"lifecycle", 3, 3, 1},
+	} {
+		t.Run(tc.view, func(t *testing.T) {
+			values := url.Values{"view": {tc.view}, "page": {"99"}, "page_size": {"1"}}
+			q, err := ParseSecurityActionQuery(values)
+			if err != nil {
+				t.Fatal(err)
+			}
+			out := BuildSecurityActions(summary, securityintel.Snapshot{}, q, now)
+			rows := len(out.Fixes)
+			if tc.view == "alerts" {
+				rows = len(out.Alerts)
+			}
+			if tc.view == "lifecycle" {
+				rows = len(out.Lifecycle)
+			}
+			if out.Pages != tc.pages || out.Page != tc.page || rows != tc.rows || out.FixTotal != 1 || out.LifecycleTotal != 3 {
+				t.Fatalf("queue pagination lost totals or yielded an empty page: %+v", out)
+			}
+		})
 	}
 }

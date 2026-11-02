@@ -285,7 +285,9 @@ func osLifecycleIdentity(distro, pretty string) (string, string) {
 	return "unknown", ""
 }
 
-var appNameRE = regexp.MustCompile(`^(python3(?:\.[0-9]+)?|php[0-9]+\.[0-9]+(?:-.+)?|postgresql-[0-9]+(?:\.[0-9]+)?)$`)
+// Only PHP runtime/core package versions describe the PHP release cycle.
+// PECL extensions (for example php8.2-apcu 5.1.x) have independent versions.
+var appNameRE = regexp.MustCompile(`^(python(?:[23](?:\.[0-9]+)?)?(?:-minimal)?|php[0-9]+(?:\.[0-9]+)?(?:-(?:cgi|cli|common|fpm|phpdbg))?|postgresql-[0-9]+(?:\.[0-9]+)?)$`)
 
 func appLifecycleProduct(name string) string {
 	name = strings.Split(name, ":")[0]

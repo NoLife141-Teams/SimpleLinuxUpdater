@@ -207,3 +207,64 @@ func TestLifecycleIncludesInstalledHistoricalPostgreSQLServerCycles(t *testing.T
 		t.Fatalf("modern PostgreSQL cycle regressed: %+v", modern)
 	}
 }
+
+func TestLifecycleRecognizesHistoricalAndMinimalPythonAndPHPRuntimes(t *testing.T) {
+	for _, tc := range []struct{ name, version, product, cycle, state string }{
+		{"python2.7:amd64", "2.7.18-8+deb11u1", "python", "2.7", "upstream_end_of_life"},
+		{"python2.7-minimal", "2.7.18-8+deb11u1", "python", "2.7", "upstream_end_of_life"},
+		{"python-minimal", "2.7.18-8", "python", "2.7", "upstream_end_of_life"},
+		{"python3.11-minimal", "3.11.2-6+deb12u1", "python", "3.11", "supported"},
+		{"php5-fpm", "5.6.40+dfsg-0+deb8u12", "php", "5.6", "upstream_end_of_life"},
+		{"php5", "5.6.40+dfsg-0+deb8u12", "php", "5.6", "upstream_end_of_life"},
+		{"php8.2-cli", "8.2.29-1~deb12u1", "php", "8.2", "ending_soon"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			summary, now := securityActionFixture()
+			summary.Servers[0].Risk.Vulnerability.Inventory = []vulnerabilities.Package{{Name: tc.name, Version: tc.version}}
+			intel := securityintel.Snapshot{
+				Products: map[string]securityintel.Product{
+					"python": {Releases: []securityintel.Release{{Name: "2.7", ReleaseDate: "2010-07-03", EOLFrom: "2020-01-01"}, {Name: "3.11", ReleaseDate: "2022-10-24", EOLFrom: "2027-10-31"}}},
+					"php":    {Releases: []securityintel.Release{{Name: "5.6", ReleaseDate: "2014-08-28", EOLFrom: "2018-12-31"}, {Name: "8.2", ReleaseDate: "2022-12-08", EOLFrom: "2026-12-31"}}},
+				},
+				Feeds: map[string]securityintel.Feed{"python": {State: "fresh"}, "php": {State: "fresh"}},
+			}
+			out := BuildSecurityActions(summary, intel, SecurityActionQuery{}, now)
+			var apps []LifecycleStatus
+			for _, row := range out.Lifecycle {
+				if row.Kind == "application" {
+					apps = append(apps, row)
+				}
+			}
+			if len(apps) != 1 || apps[0].Product != tc.product || apps[0].Cycle != tc.cycle || apps[0].State != tc.state {
+				t.Fatalf("installed runtime was omitted or misidentified: %+v", apps)
+			}
+		})
+	}
+}
+
+func TestLifecycleDoesNotInterpretPHPExtensionVersionAsRuntimeVersion(t *testing.T) {
+	summary, now := securityActionFixture()
+	summary.Servers[0].Risk.Vulnerability.Inventory = []vulnerabilities.Package{
+		{Name: "php8.2-common", SourcePackage: "php8.2", Version: "8.2.29-1~deb12u1"},
+		{Name: "php8.2-apcu", SourcePackage: "php-apcu", Version: "5.1.22+4.0.11-2"},
+		{Name: "php8.2-redis", SourcePackage: "php-redis", Version: "5.3.7+4.3.0-3"},
+	}
+	intel := securityintel.Snapshot{
+		Products: map[string]securityintel.Product{"php": {Releases: []securityintel.Release{
+			{Name: "5.1", ReleaseDate: "2005-11-24", EOLFrom: "2006-08-24"},
+			{Name: "5.3", ReleaseDate: "2009-06-30", EOLFrom: "2014-08-14"},
+			{Name: "8.2", ReleaseDate: "2022-12-08", EOLFrom: "2026-12-31"},
+		}}},
+		Feeds: map[string]securityintel.Feed{"php": {State: "fresh"}},
+	}
+	out := BuildSecurityActions(summary, intel, SecurityActionQuery{}, now)
+	var apps []LifecycleStatus
+	for _, row := range out.Lifecycle {
+		if row.Kind == "application" {
+			apps = append(apps, row)
+		}
+	}
+	if len(apps) != 1 || apps[0].Component != "php8.2-common" || apps[0].Cycle != "8.2" || apps[0].State == "upstream_end_of_life" {
+		t.Fatalf("extension version falsely diagnosed an unsupported PHP runtime: %+v", apps)
+	}
+}

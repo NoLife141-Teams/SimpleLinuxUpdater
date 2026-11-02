@@ -33,7 +33,7 @@
         }
         function detail(f,view){
             const field=(label,value)=>`<div><dt>${esc(label)}</dt><dd>${esc(value||"Non renseigné")}</dd></div>`;
-            if(view==="fixes")return `<dl>${field("Version installée",f.installed)}${field("Version proposée",f.candidate)}${field("CVE concernées",f.cves.join(", ")+(f.cve_count>f.cves.length?` (extrait de ${f.cve_count} CVE)`:""))}${field("Scopes simulés",f.scopes.join(", "))}${field("Preuve observée",f.observed_at)}</dl><p>La préparation revérifie la transaction. Une approbation explicite et un nouveau scan restent nécessaires pour confirmer la correction.</p>`;
+            if(view==="fixes")return `<dl>${field("Version installée",f.installed)}${field("Version proposée",f.candidate)}${field("CVE concernées",f.cves.join(", ")+(f.cve_count>f.cves.length?` (extrait de ${f.cve_count} CVE)`:""))}${field("Scopes simulés",f.scopes.join(", "))}${field("Exploitation connue",f.known_exploited?"CISA KEV — priorité":"Non établie")}${field("Preuve observée",f.observed_at)}</dl><p>La préparation revérifie la transaction. Une approbation explicite et un nouveau scan restent nécessaires pour confirmer la correction.</p>`;
             if(view==="alerts")return `<dl>${field("Paquet installé",`${f.package} ${f.installed}`)}${field("Publication de l’avis",f.published_at)}${field("Correspondance observée",f.observed_at)}${field("Exploitation connue",f.known_exploited?`CISA KEV — ${freshness[f.exploitation_freshness]||"non vérifié"}`:"Non établie")}</dl><p>${esc(f.required_action||"Consultez l’avis éditeur pour une mesure temporaire et documentez le suivi du serveur.")}</p><p>Aucun correctif annoncé par la source pour cette distribution. Une mesure temporaire n’est pas une preuve de correction et n’est pas exécutée automatiquement.</p><div class="security-detail-links">${urlLink(f.source,"Lire l’avis")}<a href="${esc(ledger(f.server,f.cves[0]))}">Voir les preuves CVE</a><a href="${esc(plan(f.server))}">Documenter le suivi</a></div>`;
             return `<dl>${field("Version observée",f.version)}${field("Cycle",f.cycle)}${field("Fin de support",f.eol_at)}${field("Extension possible jusqu’au",f.extended_until)}${field("Métadonnées vérifiées",f.observed_at)}${field("Fraîcheur des métadonnées",freshness[f.freshness]||"non vérifié")}${field("Fraîcheur de l’inventaire",freshness[f.inventory_freshness]||"non vérifié")}${field("Paquet observé",f.inventory_observed_at)}</dl>${f.inventory_source==="recorded_findings"?"<p>Constats CVE enregistrés : inventaire partiel et historique. Il ne confirme pas la version actuellement installée ni la présence de toutes les applications.</p>":""}${f.inventory_version_state==="conflicting"?"<p>Versions contradictoires à la même date : version et cycle non établis.</p>":""}<p>${f.kind==="application"?"Ce calendrier décrit le support amont. Les correctifs Debian/Ubuntu doivent être vérifiés séparément.":"Un support étendu doit être vérifié pour ce serveur ; sa disponibilité ne prouve pas son activation."}</p>${urlLink(f.source,"Consulter le calendrier endoflife.date")}`;
         }
@@ -42,7 +42,7 @@
                 const id=`security-detail-${i}`,open=expanded.has(i),isLife=view==="lifecycle";
                 const component=isLife?f.component:f.package;
                 let situation,annotation,action;
-                if(view==="fixes"){situation=`${f.cve_count||f.cves.length} CVE avec correctif vérifié`;annotation=severity[f.severity]||severity.unknown;action=`<a class="security-row-primary" href="${esc(plan(f.server))}">Préparer la correction</a>`;}
+                if(view==="fixes"){situation=`${f.cve_count||f.cves.length} CVE avec correctif vérifié`;annotation=(f.known_exploited?"Exploitation connue · ":"")+(severity[f.severity]||severity.unknown);action=`<a class="security-row-primary" href="${esc(plan(f.server))}">Préparer la correction</a>`;}
                 else if(view==="alerts"){situation=f.cves[0];annotation=f.known_exploited?"Exploitation connue · sans correctif annoncé":"Critique · sans correctif annoncé";action="";}
                 else{situation=labels[f.state]||labels.unknown;annotation=f.inventory_partial?"Inventaire partiel":f.inventory_freshness!=="fresh"?"Version à revérifier":f.eol_at?`Échéance : ${f.eol_at}`:"";action="";}
                 const danger=view==="alerts"||(isLife&&["end_of_life","upstream_end_of_life"].includes(f.state));
@@ -62,17 +62,26 @@
             el("security-rows").innerHTML=data?(data[query.view].length?rows(data,query.view):`<tr><td colspan="3" class="security-empty"><strong>${query.view==="fixes"?"Aucun correctif prêt à préparer":query.view==="alerts"?"Aucune alerte sans correctif confirmée":"Aucun composant dans ce filtre"}</strong><p>${esc(views[query.view].empty)}</p><button type="button" class="btn-ghost" data-checks>Vérifier les données</button></td></tr>`):`<tr><td colspan="3" class="security-empty">${list.loading?"Chargement…":"Les résultats sont indisponibles. Réessayez avec Actualiser."}</td></tr>`;
             el("security-feeds").innerHTML=data?Object.entries(data.feeds).map(([name,f])=>`<li>${esc(name)} : ${esc(freshness[f.state]||"non vérifié")} — ${esc(f.observed_at||"jamais vérifié")}${f.last_error?note("Échec de la dernière actualisation ; observation précédente conservée."):""}</li>`).join(""):"";
         }
-        async function json(url,signal){const response=await life.fetch(url,{signal});if(!response.ok)throw new Error(`Résultats indisponibles (HTTP ${response.status})`);return response.json();}
+        async function json(url,signal){const response=await life.fetch(url,{signal});if(!response.ok){life.discardResponse(response);throw new Error(`Résultats indisponibles (HTTP ${response.status})`);}return response.json();}
         async function load(){
             controller?.abort();controller=new AbortController();const signal=controller.signal,id=store.begin("list"),ticket=life.capture(),q=store.view().query;render();
-            const results=await Promise.allSettled([json(path("/api/security-actions",{...q,page_size:25}),signal),json(path("/api/vulnerabilities",{server:q.server,page_size:1}),signal)]);
-            if(!life.isCurrent(ticket)||signal.aborted)return;
-            if(results[0].status==="fulfilled"){
-                if(!store.receive("list",id,results[0].value))return;
-                expanded.clear();
-            }else{if(!store.receive("list",id,null,results[0].reason.message))return;}
-            if(results[1].status==="fulfilled"){coverage=results[1].value;coverageError="";}else coverageError=results[1].reason.message;
-            render();
+            // A slow coverage read must not hold back already accepted actions.
+            // Both responses still belong to the same scope/request generation.
+            const isCurrent=()=>life.isCurrent(ticket)&&!signal.aborted&&store.view().list.id===id;
+            const actions=json(path("/api/security-actions",{...q,page_size:25}),signal).then(data=>{
+                if(!isCurrent()||!store.receive("list",id,data))return;
+                expanded.clear();render();
+            },error=>{
+                if(isCurrent()&&store.receive("list",id,null,error.message))render();
+            });
+            const scans=json(path("/api/vulnerabilities",{server:q.server,page_size:1}),signal).then(data=>{
+                if(!isCurrent())return;
+                coverage=data;coverageError="";render();
+            },error=>{
+                if(!isCurrent())return;
+                coverageError=error.message;render();
+            });
+            await Promise.allSettled([actions,scans]);
         }
         function clearDraft(){if(timer!==null){life.clearTimeout(timer);timer=null;}}
         function change(patch){

@@ -199,3 +199,38 @@ test("legacy investigation links redirect to the ledger and retain their filters
     await expect(page.locator("#cve-server")).toHaveValue("example-host");
     await expect(page.locator("#all-cves")).toBeVisible();
 });
+
+test("fix rows retain the known-exploitation priority when a patch is available",async({page})=>{
+    const data=fixture();data.fixes[0]={...data.fixes[0],severity:"medium",known_exploited:true};
+    await setup(page,route=>fulfillJson(route,data));await page.goto("/vulnerabilities");
+    await expect(page.locator(".security-item")).toContainText("Exploitation connue");
+    await expect(page.locator(".security-item")).toContainText("Moyenne");
+    await page.getByRole("button",{name:"Détails",exact:true}).click();
+    await expect(page.locator(".security-evidence")).toContainText("CISA KEV");
+    await expect(page.locator("#security-tab-alerts")).toContainText("1");
+});
+
+test("a delayed coverage request does not block fixes or overwrite a newer server scope",async({page})=>{
+    let release;
+    await setup(page,route=>fulfillJson(route,fixture(new URL(route.request().url()).searchParams.get("server")||"example-host")));
+    await page.unroute("**/api/vulnerabilities?**");
+    await page.route("**/api/vulnerabilities?**",async route=>{
+        const server=new URL(route.request().url()).searchParams.get("server");
+        if(server==="example-host")await new Promise(resolve=>{release=resolve;});
+        const data=coverage(server);if(server==="other-host")data.coverage[0].freshness="fresh";
+        return fulfillJson(route,data);
+    });
+    try{
+        await page.goto("/vulnerabilities?server=example-host");
+        await expect.poll(()=>typeof release).toBe("function");
+        await expect(page.locator(".security-item")).toContainText("example-host");
+        await expect(page.locator("#security-panel")).toHaveAttribute("aria-busy","false");
+        await expect(page.locator("#security-review")).toContainText("Couverture des scans à vérifier");
+        await page.locator("#security-server").selectOption("other-host");
+        await expect(page.locator(".security-item")).toContainText("other-host");
+        await expect(page.locator("#security-review")).toContainText("Couverture des scans vérifiée");
+        release();
+        await expect(page.locator("#security-health-hosts")).not.toContainText("example-host");
+        await expect(page.locator("#security-review")).toContainText("Couverture des scans vérifiée");
+    }finally{release?.();}
+});

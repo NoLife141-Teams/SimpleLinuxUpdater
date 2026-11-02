@@ -120,18 +120,26 @@
         }
         function change(patch) {
             if (searchTimer !== null) { life.clearTimeout(searchTimer); searchTimer = null; }
+            const before = store.view().query;
             const patchWithSearch = { q: byId("cve-search").value, ...patch };
             store.change(patchWithSearch);
             controllers.detail?.abort();
             if (dialog.open) dialog.close();
-            const query = root.CVEPageInteraction.queryString(store.view().query);
-            history.replaceState(null,"",location.pathname + (query ? `?${query}` : ""));
+            const query = store.view().query;
+            const params = new URLSearchParams(location.search);
+            for (const key of Object.keys(query)) params.delete(key);
+            for (const [key,value] of new URLSearchParams(root.CVEPageInteraction.queryString(query))) params.set(key,value);
+            const scopeChanged = before.server !== query.server || before.q !== query.q;
+            if (scopeChanged) params.delete("action_page");
+            const encoded = params.toString();
+            history.replaceState(null,"",location.pathname + (encoded ? `?${encoded}` : "") + location.hash);
+            if (scopeChanged) root.dispatchEvent(new CustomEvent("cve-scope-change",{detail:{source:"ledger",server:query.server,q:query.q}}));
             syncFilters(); load("list");
         }
         life.listen(byId("cve-filters"),"submit", event => { event.preventDefault(); change({}); });
         life.listen(byId("cve-search"),"input", () => { if (searchTimer !== null) life.clearTimeout(searchTimer); searchTimer = life.setTimeout(() => change({}),200); });
         life.listen(byId("cve-filters"),"change", event => { if (event.target.name && event.target.name !== "q") change({ [event.target.name]: event.target.value }); });
-        life.listen(byId("cve-clear"),"click", () => { byId("cve-search").value = ""; store.reset(); syncFilters(); change(root.CVEPageInteraction.parseQuery("")); });
+        life.listen(byId("cve-clear"),"click", () => { byId("cve-search").value = ""; change(root.CVEPageInteraction.parseQuery("")); });
         life.listen(byId("cve-refresh"),"click", () => { if (searchTimer !== null) change({}); else { load("list"); if (store.view().selected) load("detail"); } });
         for (const [id,delta] of [["cve-prev",-1],["cve-next",1]]) life.listen(byId(id),"click", () => change({page:store.view().list.data.page+delta}));
         life.listen(byId("cve-rows"),"click", event => {
@@ -141,7 +149,17 @@
         life.listen(byId("cve-detail-close"),"click", () => dialog.close());
         life.listen(dialog,"close", () => { controllers.detail?.abort(); store.close(); const button = Array.from(document.querySelectorAll("button[data-cve]")).find(item => item.dataset.cve === previousFocus); button?.focus({preventScroll:true}); });
         for (const [id,delta] of [["cve-detail-prev",-1],["cve-detail-next",1]]) life.listen(byId(id),"click", () => { store.detailPage(store.view().detail.data.page+delta); load("detail"); });
-        life.listen(root,"popstate", () => { store.change(root.CVEPageInteraction.parseQuery(location.search)); syncFilters(); if (dialog.open) dialog.close(); load("list"); });
+        life.listen(root,"cve-scope-change", event => {
+            if (event.detail.source === "ledger") return;
+            const query = store.view().query;
+            if (query.server === event.detail.server && query.q === event.detail.q) return;
+            if (searchTimer !== null) { life.clearTimeout(searchTimer); searchTimer = null; }
+            store.change({server:event.detail.server,q:event.detail.q});
+            controllers.detail?.abort();
+            if (dialog.open) dialog.close();
+            syncFilters(); load("list");
+        });
+        life.listen(root,"popstate", () => { if (searchTimer !== null) { life.clearTimeout(searchTimer); searchTimer = null; } store.change(root.CVEPageInteraction.parseQuery(location.search)); syncFilters(); if (dialog.open) dialog.close(); load("list"); });
         current = { destroy() { Object.values(controllers).forEach(controller=>controller.abort()); if (dialog.open) dialog.close(); life.destroy(); } };
         syncFilters(); load("list");
         return current;

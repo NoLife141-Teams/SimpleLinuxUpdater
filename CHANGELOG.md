@@ -6,8 +6,14 @@ The format is inspired by Keep a Changelog, and this project uses Semantic Versi
 
 ## [Unreleased]
 
+### Added
+
+- Start CVE analysis with bounded queues of installable security fixes and priority unpatched alerts, retaining the full ledger on demand and explicit unknown/stale evidence. Track publisher disclosure dates and persistent critical alerts, correlate CISA KEV, and show dated endoflife.date OS/upstream application support calendars without conflating distro backports or extended entitlements.
+- Corroborate Ubuntu OSV matches with exact source/release status from the official Ubuntu Security Tracker within the existing bounded advisory enrichment worker.
+
 ### Fixed
 
+- Recover recognized application lifecycle evidence from legacy recorded installed CVE findings when raw inventory is missing or trimmed, with explicit partial historical provenance and unknown conflicting versions.
 - Separate source-package CVE matches from observed binary/kernel applicability,
   retain header and inactive-image signals, and identify external container-host
   kernel responsibility with explicit OS-package-only scan scope.

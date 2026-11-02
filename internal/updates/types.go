@@ -223,6 +223,7 @@ type ScheduledJobMeta struct {
 }
 
 type ServiceDeps struct {
+	RecordApprovalFindings       func(context.Context, string, []servers.VulnerabilityFinding) error
 	LoadPackageDeferrals         func(servers.Server, string) (deferrals.Snapshot, error)
 	PackageDeferralGate          *sync.RWMutex
 	ServerState                  *servers.State

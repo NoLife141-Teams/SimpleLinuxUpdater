@@ -4997,6 +4997,169 @@
           }
         }
       }
+    },
+    "/api/security-actions": {
+      "get": {
+        "operationId": "get_api_security_actions",
+        "summary": "Read paginated installable security fixes, priority unpatched alerts and lifecycle evidence",
+        "x-slu-scope": "operational:read",
+        "security": [
+          {
+            "personalBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "server",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "maxLength": 200
+            }
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "maxLength": 200
+            }
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 1000000,
+              "default": 1
+            }
+          },
+          {
+            "name": "page_size",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 25
+            }
+          },
+          {
+            "name": "recent_days",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 90,
+              "default": 30
+            }
+          }
+        ],
+        "responses": {
+          "400": {
+            "description": "Invalid request or additional data after the first JSON document. Returns a single JSON error before mutation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Request rejected. No secrets are included.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Request rejected. No secrets are included.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Request rejected. No secrets are included.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Request rejected. No secrets are included.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request body exceeds the route byte limit. JSON commands default to 1048576 bytes; specialized route limits apply. Returns a single JSON error before mutation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rejected. No secrets are included.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Request rejected. No secrets are included.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Request rejected. No secrets are included.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "Success. Evidence and operational outcomes remain independent.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SecurityActions"
+                }
+              }
+            }
+          }
+        },
+        "description": "Read-only projection of accepted installed-package evidence and cached public endoflife.date/CISA metadata. Does not refresh APT, contact SSH targets or fetch intelligence during the request. Unknown or stale evidence does not establish absence of fixes or vulnerabilities."
+      }
     }
   },
   "components": {
@@ -6262,6 +6425,18 @@
           },
           "modified_at": {
             "type": "string"
+          },
+          "supplemental_source": {
+            "type": "string",
+            "description": "Corroborating exact-release tracker URL, separate from the OSV range source."
+          },
+          "supplemental_status": {
+            "type": "string",
+            "description": "Exact source/release status reported by the corroborating tracker."
+          },
+          "supplemental_fixed_version": {
+            "type": "string",
+            "description": "Validated released source-version threshold reported by that tracker. A candidate below it remains unverified even when an OSV query omits the CVE."
           }
         },
         "description": "Exact release/source publisher evidence. fixed_versions are all established fixed events in Debian order, not the candidate version and not a claim that every later version is fixed. not_established means no published fix was established from matching metadata; it never asserts that the publisher has no fix. Unknown/malformed/other-release data stays unknown."
@@ -6391,6 +6566,267 @@
           }
         },
         "description": "Independent publication, repository observation, candidate comparison and installability evidence. published_not_observed records that no addressing candidate is observed here; it is not proof that all repository versions were enumerated. A candidate cannot resolve an installed finding. Unknown, downgrade, source migration, wrong signed release, older cached negative comparison and unstable inventory cannot establish candidate fixes. Restrictions are observed facts, not invented root causes."
+      },
+      "SecurityAction": {
+        "type": "object",
+        "properties": {
+          "server": {
+            "type": "string"
+          },
+          "package": {
+            "type": "string"
+          },
+          "installed": {
+            "type": "string"
+          },
+          "candidate": {
+            "type": "string"
+          },
+          "severity": {
+            "type": "string"
+          },
+          "published_at": {
+            "type": "string"
+          },
+          "exploitation_freshness": {
+            "type": "string"
+          },
+          "exploitation_source": {
+            "type": "string"
+          },
+          "required_action": {
+            "type": "string"
+          },
+          "fix_state": {
+            "type": "string"
+          },
+          "evidence": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          },
+          "observed_at": {
+            "type": "string"
+          },
+          "known_exploited": {
+            "type": "boolean"
+          },
+          "cve_count": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "cves": {
+            "type": "array",
+            "maxItems": 10,
+            "items": {
+              "type": "string"
+            }
+          },
+          "scopes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "server",
+          "package",
+          "installed",
+          "cves",
+          "severity",
+          "known_exploited",
+          "fix_state",
+          "evidence",
+          "scopes"
+        ]
+      },
+      "LifecycleStatus": {
+        "type": "object",
+        "properties": {
+          "server": {
+            "type": "string"
+          },
+          "component": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          },
+          "product": {
+            "type": "string"
+          },
+          "cycle": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          },
+          "eol_at": {
+            "type": "string"
+          },
+          "extended_until": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          },
+          "observed_at": {
+            "type": "string"
+          },
+          "freshness": {
+            "type": "string"
+          },
+          "inventory_freshness": {
+            "type": "string"
+          },
+          "inventory_source": {
+            "type": "string",
+            "enum": ["accepted_inventory", "recorded_findings"],
+            "description": "Application inventory provenance. Recorded unresolved findings are a partial historical inventory, used only when accepted raw package inventory is unavailable."
+          },
+          "inventory_partial": {
+            "type": "boolean",
+            "description": "True for fallback inventory inferred only from positively recorded installed finding versions; this does not change scan coverage."
+          },
+          "inventory_observed_at": {
+            "type": "string",
+            "description": "Dated installed package observation, independent of the public lifecycle metadata observation. Missing means no valid date was recorded."
+          },
+          "inventory_version_state": {
+            "type": "string",
+            "enum": ["conflicting"],
+            "description": "Equally dated installed observations disagree; version and lifecycle cycle stay unknown."
+          },
+          "support_context": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "server",
+          "component",
+          "kind",
+          "version",
+          "product",
+          "state",
+          "freshness",
+          "inventory_freshness",
+          "support_context"
+        ]
+      },
+      "PublicSecurityFeed": {
+        "type": "object",
+        "properties": {
+          "source": {
+            "type": "string"
+          },
+          "observed_at": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          },
+          "last_error": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "source",
+          "state"
+        ]
+      },
+      "SecurityActions": {
+        "type": "object",
+        "properties": {
+          "generated_at": {
+            "type": "string"
+          },
+          "servers": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "fixes": {
+            "type": "array",
+            "maxItems": 100,
+            "items": {
+              "$ref": "#/components/schemas/SecurityAction"
+            }
+          },
+          "alerts": {
+            "type": "array",
+            "maxItems": 100,
+            "items": {
+              "$ref": "#/components/schemas/SecurityAction"
+            }
+          },
+          "lifecycle": {
+            "type": "array",
+            "maxItems": 100,
+            "items": {
+              "$ref": "#/components/schemas/LifecycleStatus"
+            }
+          },
+          "feeds": {
+            "type": "object",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/PublicSecurityFeed"
+            }
+          },
+          "fix_total": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "alert_total": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "lifecycle_total": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "review_findings": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "review_priority": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "page": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "pages": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "recent_days": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "generated_at",
+          "servers",
+          "fixes",
+          "alerts",
+          "lifecycle",
+          "feeds",
+          "fix_total",
+          "alert_total",
+          "lifecycle_total",
+          "review_findings",
+          "review_priority",
+          "page",
+          "pages",
+          "recent_days"
+        ]
       }
     }
   }

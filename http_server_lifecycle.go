@@ -182,6 +182,9 @@ func main() {
 	if parseBoolEnvWithDefault(automaticHostFactsRefreshEnabledEnv, true) && deps.HostFactsRefreshWorker != nil {
 		deps.HostFactsRefreshWorker.Start(shutdownCtx)
 	}
+	if deps.SecurityIntel != nil && parseBoolEnvWithDefault("DEBIAN_UPDATER_SECURITY_INTEL_REFRESH_ENABLED", true) {
+		deps.SecurityIntel.Start(shutdownCtx)
+	}
 	if deps.VulnerabilityScans != nil {
 		deps.VulnerabilityScans.Start(shutdownCtx)
 		deps.Remediation.Start(shutdownCtx)

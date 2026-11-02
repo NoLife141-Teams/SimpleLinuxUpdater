@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
+	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -17,7 +19,9 @@ import (
 	notificationpkg "debian-updater/internal/notifications"
 	observabilitypkg "debian-updater/internal/observability"
 	policypkg "debian-updater/internal/policies"
+	"debian-updater/internal/securityintel"
 	serverpkg "debian-updater/internal/servers"
+	"debian-updater/internal/vulnerabilities"
 
 	"github.com/alexedwards/scs/v2"
 	"golang.org/x/crypto/ssh"
@@ -405,6 +409,7 @@ func (c *runtimeComposition) Compose() AppDeps {
 		)
 		deps.UpdateService = NewUpdateService(UpdateServiceDeps{
 			ServerState:               deps.ServerState,
+			RecordApprovalFindings:    (vulnerabilities.Repository{DB: deps.DB}).RecordPositiveFindings,
 			HostMaintenanceSessions:   hostMaintenanceSessions,
 			LoadApplicationPostchecks: applicationPostcheckLoader(deps.DB, deps.ServerState),
 			LoadPackageDeferrals:      packageDeferralLoader(deps),
@@ -424,6 +429,9 @@ func (c *runtimeComposition) Compose() AppDeps {
 	}
 	if deps.VulnerabilityScans == nil {
 		deps.VulnerabilityScans = newVulnerabilityScanLifecycle(deps)
+	}
+	if deps.SecurityIntel == nil {
+		deps.SecurityIntel = securityintel.New(securityintel.Config{CacheDir: filepath.Join(filepath.Dir(deps.DBPath()), "security-intel"), SeedDir: os.Getenv("DEBIAN_UPDATER_SECURITY_INTEL_SEED_DIR"), Now: deps.Now})
 	}
 	if deps.Remediation == nil {
 		deps.Remediation = newRemediationLifecycle(deps)

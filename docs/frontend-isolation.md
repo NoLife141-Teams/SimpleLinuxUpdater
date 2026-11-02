@@ -249,3 +249,13 @@ network and JSON consumption. The test composition alone exposes
 confirmation timestamp without changing cookie authentication. This route is
 absent from production builds and permits expiry scenarios without a five-minute
 wait. New secret-bearing scenarios disable traces, video and screenshots.
+
+`security-actions.js` renders the read-only security work queues and lifecycle catalog on the CVE page. It uses the shared CVE Page Interaction request generations plus Browser Effects for fetch, cancellation, listeners and timers; the adapter owns history updates. The API owns classification and pagination; the browser never promotes legacy candidate booleans, CVSS scores or absent metadata into fix/no-fix/support decisions. Late responses are rejected, errors retain only the previous successful results for the same filter, and page disposal aborts pending work. The full ledger is an expandable investigation section, opened automatically for severity/fix deep links or `#all-cves`.
+
+The security work queues and complete CVE ledger share `server` and `q` through the adapter-owned `cve-scope-change` event. Each view invalidates pending responses before accepting a changed shared scope. Queue pagination uses the browser query parameter `action_page`; the ledger retains `page`. Both adapters preserve the other view’s independent filters and pages when writing history, and a shared server/search change resets both page positions. The header correction-plan link follows the same shared server.
+
+Pending queue search drafts survive a completing request. Refresh and other filter/page commands apply the current draft before clearing its debounce; a changed shared scope resets both page positions.
+
+Browser Back/Forward discards pending queue search drafts before restoring the URL scope. Page commands use the page accepted by the API, so a stale bookmarked page or a shrinking result set cannot trap Previous on the last available page.
+
+Both CVE adapters cancel their own pending search debounce before restoring browser history. An abandoned ledger draft must not reset the independent ledger page restored by an action-view history entry.

@@ -81,3 +81,32 @@ func TestCatalogRejectsFutureForgedAndInvalidCachedMetadata(t *testing.T) {
 		})
 	}
 }
+
+func TestCatalogChoosesNewestValidObservationAcrossSeedAndCache(t *testing.T) {
+	now := time.Date(2026, 11, 2, 12, 0, 0, 0, time.UTC)
+	valid := `{"result":{"name":"ubuntu","releases":[{"name":"24.04","releaseDate":"2024-04-25","eolFrom":"2029-05-31"}]}}`
+	invalid := `{"result":{"name":"debian","releases":[{"name":"12"}]}}`
+	for _, tc := range []struct{ name, seedAt, seedData, cacheAt, cacheData, wantAt string }{
+		{"invalid_newer_seed", "2026-11-02T11:00:00Z", invalid, "2026-11-02T10:00:00Z", valid, "2026-11-02T10:00:00Z"},
+		{"invalid_newer_cache", "2026-11-02T10:00:00Z", valid, "2026-11-02T11:00:00Z", invalid, "2026-11-02T10:00:00Z"},
+		{"offset_seed_is_older", "2026-11-02T11:00:00+05:00", valid, "2026-11-02T10:00:00Z", valid, "2026-11-02T10:00:00Z"},
+		{"offset_cache_is_newer", "2026-11-02T10:00:00Z", valid, "2026-11-02T07:00:00-04:00", valid, "2026-11-02T07:00:00-04:00"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			seed, cache := t.TempDir(), t.TempDir()
+			for _, f := range []struct{ dir, at, data string }{{seed, tc.seedAt, tc.seedData}, {cache, tc.cacheAt, tc.cacheData}} {
+				body, err := json.Marshal(cachedFeed{Source: feedURLs()["ubuntu"], ObservedAt: f.at, Data: json.RawMessage(f.data)})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(f.dir, "ubuntu.json"), body, 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			snapshot := New(Config{SeedDir: seed, CacheDir: cache, Now: func() time.Time { return now }}).Snapshot()
+			if snapshot.Feeds["ubuntu"].ObservedAt != tc.wantAt || snapshot.Feeds["ubuntu"].State != "fresh" || len(snapshot.Products["ubuntu"].Releases) != 1 {
+				t.Fatalf("lost or misordered valid public observation: %+v", snapshot)
+			}
+		})
+	}
+}

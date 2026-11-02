@@ -78,7 +78,7 @@ func New(config Config) *Catalog {
 	c := &Catalog{config: config, state: Snapshot{Products: map[string]Product{}, Exploited: map[string]Exploitation{}, Feeds: map[string]Feed{}}}
 	for key, source := range feedURLs() {
 		c.state.Feeds[key] = Feed{Source: source, State: "unavailable"}
-		var best cachedFeed
+		var bestAt time.Time
 		for _, dir := range []string{config.SeedDir, config.CacheDir} {
 			if dir == "" {
 				continue
@@ -88,15 +88,18 @@ func New(config Config) *Catalog {
 				continue
 			}
 			var f cachedFeed
-			if json.Unmarshal(data, &f) != nil || f.Source != source || !validTime(f.ObservedAt, config.Now()) {
+			if json.Unmarshal(data, &f) != nil || f.Source != source {
 				continue
 			}
-			if f.ObservedAt > best.ObservedAt {
-				best = f
+			at, err := time.Parse(time.RFC3339, f.ObservedAt)
+			if err != nil || at.After(config.Now()) || !at.After(bestAt) {
+				continue
 			}
-		}
-		if best.ObservedAt != "" {
-			_ = c.accept(key, best)
+			// A newer envelope is useful only after its payload validates. Keep
+			// the last valid seed/cache observation if another file is corrupt.
+			if c.accept(key, f) == nil {
+				bestAt = at
+			}
 		}
 	}
 	return c
@@ -107,10 +110,6 @@ func feedURLs() map[string]string {
 		out[product] = "https://endoflife.date/api/v1/products/" + product + "/"
 	}
 	return out
-}
-func validTime(value string, now time.Time) bool {
-	at, err := time.Parse(time.RFC3339, value)
-	return err == nil && !at.After(now)
 }
 
 // Snapshot is nonblocking with respect to network activity. Published maps and

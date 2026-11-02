@@ -6,8 +6,15 @@ The format is inspired by Keep a Changelog, and this project uses Semantic Versi
 
 ## [Unreleased]
 
+## [v0.5.1] - Unreleased
+
 ### Added
 
+- Prepare immutable per-Server remediation transactions with fresh APT simulation,
+  explicit Approval Scope, package-removal confirmation and drift reapproval;
+  independently verify package outcomes, retain remaining findings and retry a
+  failed verification without replaying maintenance. Persist attributed risk
+  reviews without suppressing exposure or deferring packages.
 - Start CVE analysis with bounded queues of installable security fixes and priority unpatched alerts, retaining the full ledger on demand and explicit unknown/stale evidence. Track publisher disclosure dates and persistent critical alerts, correlate CISA KEV, and show dated endoflife.date OS/upstream application support calendars without conflating distro backports or extended entitlements.
 - Corroborate Ubuntu OSV matches with exact source/release status from the official Ubuntu Security Tracker within the existing bounded advisory enrichment worker.
 
@@ -19,6 +26,12 @@ The format is inspired by Keep a Changelog, and this project uses Semantic Versi
 
 ### Fixed
 
+- Reload whole-server CVE estimates and package rows after independent verification,
+  including partial or failed attempts, so completed fixes leave the current plan.
+- Preserve the displayed Approval Scope and removal confirmation across reads
+  and rejected commands for the same immutable plan; reset both on a new plan.
+- Refresh changed verification admission messages while an operation remains
+  queued, and clear recovered read errors without hiding rejected commands.
 - Keep CVE action and ledger labels in English, consistent with the rest of the application, including accessible names and calendar date formatting.
 
 - Recover recognized application lifecycle evidence from legacy recorded installed CVE findings when raw inventory is missing or trimmed, with explicit partial historical provenance and unknown conflicting versions.
@@ -33,6 +46,18 @@ The format is inspired by Keep a Changelog, and this project uses Semantic Versi
 - Preserve release/source-specific distribution triage separately from CVSS in
   installed and approval CVE scans; show current vendor-confirmed, review,
   qualified and withdrawn matches without inventing runtime exploitability.
+
+### v0.5.1 upgrade notes
+
+- From v0.5.0, startup adds remediation-history/risk-review tables and additive
+  CVE evidence. Existing records stay readable; missing evidence remains unknown
+  until a fresh scan. No new required environment variable or helper protocol.
+- Back up and verify before replacing the executable and web assets together.
+  Finish or cancel pending maintenance first; interrupted approval needs a fresh
+  plan. Rollback restores the pre-upgrade archive into a separate old-version
+  installation. Earlier upgrades retain the v0.5.0 requirements below.
+- See the [v0.5.1 qualification record](docs/release-v0.5.1-readiness.md).
+  Preparation does not tag, publish or deploy a release.
 
 ## [v0.5.0] - 2026-10-29
 

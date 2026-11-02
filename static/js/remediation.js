@@ -103,9 +103,9 @@
         life.listen(dialog,"close",()=>{controllers.detail?.abort();store.close();Array.from(document.querySelectorAll("button[data-plan-package]")).find(button=>button.dataset.planPackage===previousPackage)?.focus({preventScroll:true});});
         for(const[id,delta]of [["plan-detail-prev",-1],["plan-detail-next",1]])life.listen(el(id),"click",()=>{store.detailPage(store.view().detail.data.page+delta);load("detail");});
         life.listen(root,"popstate",()=>{store.change(root.CVEPageInteraction.parseQuery(location.search,defaults));sync();if(dialog.open)dialog.close();load("list");});
-        current={destroy(){Object.values(controllers).forEach(controller=>controller.abort());if(dialog.open)dialog.close();life.destroy();}};
+        current={refreshEvidence(server){if(store.view().query.server!==server)return;if(timer!==null)change({});else{load("list");if(store.view().selected)load("detail");}},destroy(){Object.values(controllers).forEach(controller=>controller.abort());if(dialog.open)dialog.close();life.destroy();}};
         sync();load("list");return current;
     }
-    root.RemediationPage={mount,destroy(){current?.destroy();current=null;}};
+    root.RemediationPage={mount,refreshEvidence(server){current?.refreshEvidence(server);},destroy(){current?.destroy();current=null;}};
     mount();root.addEventListener("pagehide",event=>{if(!event.persisted)root.RemediationPage.destroy();});
 })(window);

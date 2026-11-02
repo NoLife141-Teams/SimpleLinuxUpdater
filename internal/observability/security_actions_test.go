@@ -84,6 +84,35 @@ func TestSecurityActionsPriorityUsesPublicationAndRetainsWatchedAlerts(t *testin
 		})
 	}
 }
+
+func TestSecurityActionsRetainsStaleWatchedCriticalAsPriorityToReview(t *testing.T) {
+	for _, tt := range []struct {
+		name, severityFreshness, findingFreshness, qualification, severity, resolved string
+		wantPriority                                                                 int
+	}{
+		{"severity_expired", "stale", "fresh", vulnerabilities.QualificationConfirmed, "critical", "", 1},
+		{"scan_expired", "stale", "stale", vulnerabilities.QualificationReview, "critical", "", 1},
+		{"severity_unknown", "unknown", "fresh", vulnerabilities.QualificationConfirmed, "critical", "", 1},
+		{"current_downgrade", "fresh", "fresh", vulnerabilities.QualificationConfirmed, "medium", "", 0},
+		{"vendor_exemption", "stale", "fresh", vulnerabilities.QualificationQualified, "critical", "", 0},
+		{"resolved", "stale", "stale", vulnerabilities.QualificationConfirmed, "critical", "2026-11-01T00:00:00Z", 0},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			summary, now := securityActionFixture()
+			f := &summary.Servers[0].Risk.Vulnerability.Findings[0]
+			f.PublishedAt = "2026-01-01T00:00:00Z"
+			f.PrioritySince = "2026-01-02T00:00:00Z"
+			f.SeverityFreshness, f.Freshness, f.Qualification, f.Severity, f.ResolvedAt = tt.severityFreshness, tt.findingFreshness, tt.qualification, tt.severity, tt.resolved
+			f.Availability.Published.State = "not_established"
+			f.Availability.Published.Ranges = []vulnerabilities.FixRange{{Type: "ECOSYSTEM", Events: []vulnerabilities.VersionEvent{{Introduced: "0"}}}}
+			f.Availability.CandidateState = "same"
+			out := BuildSecurityActions(summary, securityintel.Snapshot{}, SecurityActionQuery{}, now)
+			if out.AlertTotal != 0 || out.FixTotal != 0 || out.ReviewPriority != tt.wantPriority {
+				t.Fatalf("stale or superseded priority incorrectly classified: %+v", out)
+			}
+		})
+	}
+}
 func TestSecurityActionsBoundedQueuesAndSeparateTotals(t *testing.T) {
 	summary, now := securityActionFixture()
 	base := summary.Servers[0].Risk.Vulnerability.Findings[0]

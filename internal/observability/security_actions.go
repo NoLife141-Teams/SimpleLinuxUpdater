@@ -151,7 +151,8 @@ func BuildSecurityActions(summary DashboardSummaryResponse, intel securityintel.
 			}
 			published, err := time.Parse(time.RFC3339, f.PublishedAt)
 			recent := err == nil && !published.After(now) && now.Sub(published) <= time.Duration(q.RecentDays)*24*time.Hour
-			priority := exploited || (f.Severity == "critical" && f.SeveritySource != "" && f.SeverityFreshness == "fresh" && (recent || validPriorityWatch(f.PrioritySince, now)))
+			watchedCritical := f.Severity == "critical" && f.SeveritySource != "" && validPriorityWatch(f.PrioritySince, now)
+			priority := exploited || (f.Severity == "critical" && f.SeveritySource != "" && f.SeverityFreshness == "fresh" && (recent || watchedCritical))
 			if fresh && priority && a != nil && f.PublishedFixFreshness == "fresh" && a.Published.State == "not_established" && len(a.Published.Ranges) > 0 {
 				row.FixState = "no_published_fix_in_source"
 				row.Evidence = "fresh"
@@ -162,7 +163,10 @@ func BuildSecurityActions(summary DashboardSummaryResponse, intel securityintel.
 				out.ReviewFindings++
 			} else {
 				out.ReviewFindings++
-				if priority {
+				// Expired severity/source evidence blocks a current unpatched
+				// claim, but must not silently erase a previously tracked
+				// critical incident from the priorities requiring review.
+				if priority || watchedCritical {
 					out.ReviewPriority++
 				}
 			}

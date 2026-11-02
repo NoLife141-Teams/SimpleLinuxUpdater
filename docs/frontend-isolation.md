@@ -255,3 +255,5 @@ wait. New secret-bearing scenarios disable traces, video and screenshots.
 The security work queues and complete CVE ledger share `server` and `q` through the adapter-owned `cve-scope-change` event. Each view invalidates pending responses before accepting a changed shared scope. Queue pagination uses the browser query parameter `action_page`; the ledger retains `page`. Both adapters preserve the other view’s independent filters and pages when writing history, and a shared server/search change resets both page positions. The header correction-plan link follows the same shared server.
 
 Pending queue search drafts survive a completing request. Refresh and other filter/page commands apply the current draft before clearing its debounce; a changed shared scope resets both page positions.
+
+Browser Back/Forward discards pending queue search drafts before restoring the URL scope. Page commands use the page accepted by the API, so a stale bookmarked page or a shrinking result set cannot trap Previous on the last available page.

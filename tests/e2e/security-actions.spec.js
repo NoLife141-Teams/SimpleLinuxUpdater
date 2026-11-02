@@ -148,3 +148,38 @@ test("a completing request does not replace a pending search draft",async({page}
     await expect.poll(()=>lastQuery).toBe("example");
     expect(new URL(page.url()).searchParams.get("q")).toBe("example");
 });
+
+test("queue navigation starts from the accepted page after results shrink",async({page})=>{
+    await ensureAuthenticatedSession(page);
+    await page.route("**/api/security-actions?**",route=>{
+        const requested=Number(new URL(route.request().url()).searchParams.get("page")||1);
+        return fulfillJson(route,{...fixture(),page:Math.min(requested,3),pages:3,lifecycle_total:60});
+    });
+    await page.goto("/vulnerabilities?action_page=5");
+    await expect(page.locator("#security-page")).toHaveText("Page 3 / 3");
+    await page.locator("#security-prev").click();
+    await expect(page.locator("#security-page")).toHaveText("Page 2 / 3");
+    expect(new URL(page.url()).searchParams.get("action_page")).toBe("2");
+});
+
+test("browser back cancels a search draft before restoring the previous scope",async({page})=>{
+    await ensureAuthenticatedSession(page);
+    const requests=[];
+    await page.route("**/api/security-actions?**",route=>{
+        const q=new URL(route.request().url()).searchParams;requests.push(Object.fromEntries(q));
+        return fulfillJson(route,fixture(q.get("server")||"example-host"));
+    });
+    await page.goto("/vulnerabilities?server=example-host");
+    await expect(page.locator("#security-server")).toHaveValue("example-host");
+    await page.locator("#security-server").selectOption("other-host");
+    await expect.poll(()=>requests.at(-1)?.server).toBe("other-host");
+    await page.clock.install();
+    await page.locator("#security-search").fill("abandoned draft");
+    await page.goBack();
+    await expect(page.locator("#security-server")).toHaveValue("example-host");
+    await page.clock.fastForward(300);
+    await expect(page.locator("#security-search")).toHaveValue("");
+    expect(new URL(page.url()).searchParams.get("q")).toBeNull();
+    await expect.poll(()=>requests.at(-1)?.server).toBe("example-host");
+    expect(requests.at(-1)?.q).toBe("");
+});

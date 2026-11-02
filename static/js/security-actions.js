@@ -78,15 +78,15 @@
         function refresh(){if(timer){life.clearTimeout(timer);timer=null;}if(el("security-search").value!==store.view().query.q)change({});else load();}
         life.listen(el("cve-refresh"),"click",refresh);
         life.listen(el("security-refresh"),"click",refresh);
-        life.listen(el("security-prev"),"click",()=>change({page:store.view().query.page-1}));
-        life.listen(el("security-next"),"click",()=>change({page:store.view().query.page+1}));
+        life.listen(el("security-prev"),"click",()=>change({page:store.view().list.data.page-1}));
+        life.listen(el("security-next"),"click",()=>change({page:store.view().list.data.page+1}));
         life.listen(root,"cve-scope-change",event=>{
             if(event.detail.source==="actions")return;
             const query=store.view().query;if(query.server===event.detail.server&&query.q===event.detail.q)return;
             if(timer){life.clearTimeout(timer);timer=null;}
             store.change({server:event.detail.server,q:event.detail.q});load();
         });
-        life.listen(root,"popstate",()=>{controller?.abort();store.change(locationQuery());load();});
+        life.listen(root,"popstate",()=>{if(timer){life.clearTimeout(timer);timer=null;}controller?.abort();store.change(locationQuery());load();});
         life.listen(root,"hashchange",()=>{if(location.hash==="#all-cves")el("all-cves").open=true;});
         if(location.hash==="#all-cves"||new URLSearchParams(location.search).has("fix")||new URLSearchParams(location.search).has("severity"))el("all-cves").open=true;
         current={destroy(){controller?.abort();life.destroy();}};load();

@@ -91,3 +91,60 @@ test("action and ledger scopes stay aligned while their pages and filters stay i
     await expect(page.locator("#security-search")).toHaveValue("");
     await expect(page.locator("#security-server")).toHaveValue("");
 });
+
+test("refresh applies a search still waiting for debounce",async({page})=>{
+    await ensureAuthenticatedSession(page);
+    let lastQuery;
+    await page.route("**/api/security-actions?**",route=>{
+        lastQuery=new URL(route.request().url()).searchParams.get("q");
+        return fulfillJson(route,fixture());
+    });
+    await page.goto("/vulnerabilities");
+    await expect(page.locator("#security-fixes")).toContainText("example-host");
+    // Input and refresh in the same event turn ensure the debounce is pending.
+    await page.evaluate(()=>{
+        const input=document.getElementById("security-search");input.value="example";
+        input.dispatchEvent(new Event("input",{bubbles:true}));
+        document.getElementById("security-refresh").click();
+    });
+    await expect(page.locator("#security-search")).toHaveValue("example");
+    await expect.poll(()=>lastQuery).toBe("example");
+    expect(new URL(page.url()).searchParams.get("q")).toBe("example");
+    await expect(page.locator("#cve-search")).toHaveValue("example");
+    await page.evaluate(()=>{
+        const input=document.getElementById("security-search");input.value="other";
+        input.dispatchEvent(new Event("input",{bubbles:true}));
+        const server=document.getElementById("security-server");server.value="other-host";
+        server.dispatchEvent(new Event("change",{bubbles:true}));
+    });
+    await expect(page.locator("#security-search")).toHaveValue("other");
+    await expect(page.locator("#cve-search")).toHaveValue("other");
+    await expect(page.locator("#cve-plan-link")).toHaveAttribute("href","/remediation?server=other-host");
+    await expect.poll(()=>lastQuery).toBe("other");
+});
+
+test("a completing request does not replace a pending search draft",async({page})=>{
+    await ensureAuthenticatedSession(page);
+    let hold=false,release,lastQuery;
+    await page.route("**/api/security-actions?**",async route=>{
+        lastQuery=new URL(route.request().url()).searchParams.get("q");
+        if(hold){hold=false;await new Promise(resolve=>{release=resolve;});}
+        return fulfillJson(route,fixture());
+    });
+    await page.goto("/vulnerabilities");
+    await expect(page.locator("#security-fixes")).toContainText("example-host");
+    await page.clock.install();
+    hold=true;
+    await page.locator("#security-refresh").click();
+    await expect.poll(()=>typeof release).toBe("function");
+    await page.evaluate(()=>{
+        const input=document.getElementById("security-search");input.value="example";
+        input.dispatchEvent(new Event("input",{bubbles:true}));
+    });
+    release();
+    await expect(page.locator("#security-filters")).toHaveAttribute("aria-busy","false");
+    await expect(page.locator("#security-search")).toHaveValue("example");
+    await page.clock.fastForward(300);
+    await expect.poll(()=>lastQuery).toBe("example");
+    expect(new URL(page.url()).searchParams.get("q")).toBe("example");
+});

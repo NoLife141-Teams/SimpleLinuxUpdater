@@ -23,7 +23,7 @@
         let controller,timer;
         function render(){
             const {list,query}=store.view(),data=list.data;
-            el("security-search").value=query.q;el("security-server").value=query.server;el("security-recent").value=query.recent_days;
+            if(!timer)el("security-search").value=query.q;el("security-server").value=query.server;el("security-recent").value=query.recent_days;
             el("security-error").hidden=!list.error;
             el("security-error").textContent=list.error?`${list.error}${data?" Les derniers résultats restent affichés.":""} Utilisez Actualiser les résultats pour réessayer.`:"";
             el("security-prev").disabled=list.loading||!data||data.page<=1;
@@ -39,7 +39,7 @@
             }
             const names=query.server&&!data.servers.includes(query.server)?[query.server,...data.servers]:data.servers;
             el("security-server").innerHTML='<option value="">Tous les serveurs</option>'+names.map(n=>`<option value="${esc(n)}">${esc(n)}</option>`).join("");
-            el("security-server").value=query.server;el("security-search").value=query.q;el("security-recent").value=query.recent_days;
+            el("security-server").value=query.server;if(!timer)el("security-search").value=query.q;el("security-recent").value=query.recent_days;
             el("security-status").textContent=`${list.loading?"Actualisation… ":""}Vue calculée le ${data.generated_at}`;
             el("security-review").textContent=`${data.review_findings} occurrences demandent une vérification avant de conclure à un correctif disponible ou absent, dont ${data.review_priority} prioritaires. Consultez le détail et la couverture des scans ci-dessous. Une liste vide ne prouve pas l’absence de risque.`;
             el("security-page").textContent=`Page ${data.page} / ${data.pages}`;
@@ -59,7 +59,9 @@
         }
         function change(patch){
             if(timer){life.clearTimeout(timer);timer=null;}
-            const before=store.view().query;store.change(patch);const query=store.view().query;
+            const before=store.view().query,next={q:el("security-search").value,...patch};
+            if(next.q!==before.q||(next.server!==undefined&&next.server!==before.server))next.page=1;
+            store.change(next);const query=store.view().query;
             const params=new URLSearchParams(location.search);
             for(const key of ["server","q","recent_days"]) {if(String(query[key])===String(defaults[key]))params.delete(key);else params.set(key,query[key]);}
             if(query.page===1)params.delete("action_page");else params.set("action_page",query.page);
@@ -73,8 +75,9 @@
         life.listen(el("security-server"),"change",()=>change({server:el("security-server").value}));
         life.listen(el("security-recent"),"change",()=>change({recent_days:el("security-recent").value}));
         life.listen(el("security-search"),"input",()=>{if(timer)life.clearTimeout(timer);timer=life.setTimeout(()=>change({q:el("security-search").value}),250);});
-        life.listen(el("cve-refresh"),"click",()=>load());
-        life.listen(el("security-refresh"),"click",()=>{if(timer){life.clearTimeout(timer);timer=null;}load();});
+        function refresh(){if(timer){life.clearTimeout(timer);timer=null;}if(el("security-search").value!==store.view().query.q)change({});else load();}
+        life.listen(el("cve-refresh"),"click",refresh);
+        life.listen(el("security-refresh"),"click",refresh);
         life.listen(el("security-prev"),"click",()=>change({page:store.view().query.page-1}));
         life.listen(el("security-next"),"click",()=>change({page:store.view().query.page+1}));
         life.listen(root,"cve-scope-change",event=>{

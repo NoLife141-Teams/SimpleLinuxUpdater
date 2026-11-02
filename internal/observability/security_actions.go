@@ -26,7 +26,7 @@ func ParseSecurityActionQuery(v url.Values) (SecurityActionQuery, error) {
 		name     string
 		target   *int
 		min, max int
-	}{{"page", &q.Page, 1, 1000000}, {"page_size", &q.PageSize, 1, 100}, {"recent_days", &q.RecentDays, 1, 90}} {
+	}{{"page", &q.Page, 1, 1000000}, {"page_size", &q.PageSize, 1, 100}, {"recent_days", &q.RecentDays, 1, vulnerabilities.MaxPriorityRecentDays}} {
 		if raw := v.Get(p.name); raw != "" {
 			n, err := strconv.Atoi(raw)
 			if err != nil || n < p.min || n > p.max {
@@ -97,7 +97,7 @@ func BuildSecurityActions(summary DashboardSummaryResponse, intel securityintel.
 	if q.Page < 1 {
 		q.Page = 1
 	}
-	if q.RecentDays < 1 || q.RecentDays > 90 {
+	if q.RecentDays < 1 || q.RecentDays > vulnerabilities.MaxPriorityRecentDays {
 		q.RecentDays = 30
 	}
 	out := SecurityActions{GeneratedAt: now.UTC().Format(time.RFC3339), Servers: []string{}, Fixes: []SecurityAction{}, Alerts: []SecurityAction{}, Lifecycle: []LifecycleStatus{}, Feeds: intel.Feeds, RecentDays: q.RecentDays}

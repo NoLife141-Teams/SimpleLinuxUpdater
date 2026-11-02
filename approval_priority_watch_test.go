@@ -11,6 +11,12 @@ import (
 )
 
 func TestRunUpdateRetainsApprovalOnlyCriticalWatchAfterCancellation(t *testing.T) {
+	for _, age := range []time.Duration{0, 31 * 24 * time.Hour, 60 * 24 * time.Hour, 90 * 24 * time.Hour} {
+		t.Run(age.String(), func(t *testing.T) { testRunUpdateRetainsApprovalOnlyCriticalWatchAfterCancellation(t, age) })
+	}
+}
+
+func testRunUpdateRetainsApprovalOnlyCriticalWatchAfterCancellation(t *testing.T, publicationAge time.Duration) {
 	app := newIsolatedTestApp(t)
 	server, err := app.Deps.ServerInventoryService.Create(Server{Name: "approval-priority", Host: "192.0.2.96", User: "root"})
 	if err != nil {
@@ -19,6 +25,7 @@ func TestRunUpdateRetainsApprovalOnlyCriticalWatchAfterCancellation(t *testing.T
 	now := app.Deps.Now().UTC()
 	at := now.Add(-time.Hour).Format(time.RFC3339)
 	f := VulnerabilityFinding{ID: "CVE-2026-9999", SourcePackage: "example", Severity: "critical", SeveritySource: "synthetic", SeverityObservedAt: at, PublishedAt: at, Assessment: vulnerabilities.Assessment{Ecosystem: "Debian:12", SourcePackage: "example", SourceVersion: "1", VendorStatus: "affected", Confidence: "vendor_confirmed", Applicability: "source_match", Source: "synthetic", ObservedAt: at}, Availability: &vulnerabilities.FixAvailability{Published: vulnerabilities.PublishedFix{State: "not_established", Source: "synthetic", ObservedAt: at, Ranges: []vulnerabilities.FixRange{{Type: "ECOSYSTEM", Events: []vulnerabilities.VersionEvent{{Introduced: "0"}}}}}, CandidateState: "affected"}}
+	f.PublishedAt = now.Add(-time.Hour).Add(-publicationAge).Format(time.RFC3339)
 	deps := testUpdateServiceDeps(t)
 	deps.ServerState = app.Deps.ServerState
 	deps.CurrentJobManager = app.Deps.CurrentJobManager

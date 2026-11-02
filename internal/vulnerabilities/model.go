@@ -7,6 +7,10 @@ import (
 	"time"
 )
 
+// MaxPriorityRecentDays bounds both selectable disclosure windows and durable
+// critical watch admission, so an alert shown in any window cannot age out.
+const MaxPriorityRecentDays = 90
+
 type Finding struct {
 	PublishedAt        string               `json:"published_at,omitempty"`
 	PrioritySince      string               `json:"priority_since,omitempty"`
@@ -231,7 +235,7 @@ func retainFindingHistory(f, old Finding, observed string) Finding {
 	if f.PrioritySince == "" && f.Assessment.Qualification() == QualificationConfirmed && f.Severity == "critical" && f.SeveritySource != "" && f.Availability != nil && f.Availability.Published.State == "not_established" {
 		published, pe := time.Parse(time.RFC3339, f.PublishedAt)
 		observedAt, oe := time.Parse(time.RFC3339, observed)
-		if pe == nil && oe == nil && !published.After(observedAt) && observedAt.Sub(published) <= 30*24*time.Hour {
+		if pe == nil && oe == nil && !published.After(observedAt) && observedAt.Sub(published) <= MaxPriorityRecentDays*24*time.Hour {
 			f.PrioritySince = observed
 		}
 	}

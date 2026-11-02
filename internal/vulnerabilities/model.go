@@ -181,36 +181,7 @@ func Accept(previous Observation, scan Scan) Observation {
 			seen[key] = true
 			continue
 		}
-		f.FirstSeen = old.FirstSeen
-		if f.FirstSeen == "" {
-			f.FirstSeen = scan.FinishedAt
-		}
-		if (f.Severity == "" || f.Severity == "unknown") && old.SeveritySource != "" && SeverityRank(old.Severity) >= 0 {
-			f.Severity = old.Severity
-			f.SeveritySource = old.SeveritySource
-			f.SeverityType = old.SeverityType
-			f.SeverityValue = old.SeverityValue
-			f.SeverityObservedAt = old.SeverityObservedAt
-		} else if f.SeveritySource != "" && f.SeverityObservedAt == "" {
-			f.SeverityObservedAt = scan.FinishedAt
-		}
-		if f.PublishedAt == "" {
-			f.PublishedAt = old.PublishedAt
-		}
-		f.PrioritySince = old.PrioritySince
-		if f.PrioritySince == "" && f.Assessment.Qualification() == QualificationConfirmed && f.Severity == "critical" && f.SeveritySource != "" && f.Availability != nil && f.Availability.Published.State == "not_established" {
-			published, pe := time.Parse(time.RFC3339, f.PublishedAt)
-			observed, oe := time.Parse(time.RFC3339, scan.FinishedAt)
-			if pe == nil && oe == nil && !published.After(observed) && observed.Sub(published) <= 30*24*time.Hour {
-				f.PrioritySince = scan.FinishedAt
-			}
-		}
-		f.LastSeen = scan.FinishedAt
-		f.ResolvedAt = ""
-		f.Resolution = nil
-		if f.Severity == "" {
-			f.Severity = "unknown"
-		}
+		f = retainFindingHistory(f, old, scan.FinishedAt)
 		byKey[key] = f
 		seen[key] = true
 	}
@@ -235,6 +206,42 @@ func Accept(previous Observation, scan Scan) Observation {
 		return out.Findings[i].ID < out.Findings[j].ID
 	})
 	return out
+}
+
+// retainFindingHistory admits positive evidence without treating a candidate or
+// disappearance as installed-package resolution.
+func retainFindingHistory(f, old Finding, observed string) Finding {
+	f.FirstSeen = old.FirstSeen
+	if f.FirstSeen == "" {
+		f.FirstSeen = observed
+	}
+	if (f.Severity == "" || f.Severity == "unknown") && old.SeveritySource != "" && SeverityRank(old.Severity) >= 0 {
+		f.Severity = old.Severity
+		f.SeveritySource = old.SeveritySource
+		f.SeverityType = old.SeverityType
+		f.SeverityValue = old.SeverityValue
+		f.SeverityObservedAt = old.SeverityObservedAt
+	} else if f.SeveritySource != "" && f.SeverityObservedAt == "" {
+		f.SeverityObservedAt = observed
+	}
+	if f.PublishedAt == "" {
+		f.PublishedAt = old.PublishedAt
+	}
+	f.PrioritySince = old.PrioritySince
+	if f.PrioritySince == "" && f.Assessment.Qualification() == QualificationConfirmed && f.Severity == "critical" && f.SeveritySource != "" && f.Availability != nil && f.Availability.Published.State == "not_established" {
+		published, pe := time.Parse(time.RFC3339, f.PublishedAt)
+		observedAt, oe := time.Parse(time.RFC3339, observed)
+		if pe == nil && oe == nil && !published.After(observedAt) && observedAt.Sub(published) <= 30*24*time.Hour {
+			f.PrioritySince = observed
+		}
+	}
+	f.LastSeen = observed
+	f.ResolvedAt = ""
+	f.Resolution = nil
+	if f.Severity == "" {
+		f.Severity = "unknown"
+	}
+	return f
 }
 
 // SeverityRank is an ordering of source severity categories, not a CVSS score.

@@ -2012,7 +2012,20 @@ func (s *Service) StartPendingCVEEnrichment(server servers.Server, updates []ser
 			if update.CVEState == "skipped" {
 				continue
 			}
-			if !s.updatePendingPackageVulnerabilityAssessment(server.Name, identity, update) {
+			accepted, persistErr := s.updatePendingPackageVulnerabilityAssessment(cveCtx, server.Name, identity, update)
+			if persistErr != nil {
+				if err := cveCtx.Err(); err != nil {
+					markInterrupted(err)
+					return
+				}
+				deps.Logf("retain approval vulnerability findings for %q: %v", server.Name, persistErr)
+				if jm := deps.CurrentJobManager(); jm != nil && jobID != "" {
+					status, phase, summary, class := jobs.StatusFailed, jobs.PhaseComplete, "Unable to retain installed vulnerability findings", "persistence"
+					_ = jm.Transition(jobID, jobs.Intent{Status: &status, Phase: &phase, Summary: &summary, ErrorClass: &class})
+				}
+				return
+			}
+			if !accepted {
 				if err := cveCtx.Err(); err != nil {
 					markInterrupted(err)
 					return
@@ -2086,25 +2099,43 @@ func (s *Service) updatePendingPackageCVEState(serverName string, identity pendi
 	return true
 }
 
-func (s *Service) updatePendingPackageVulnerabilityAssessment(serverName string, identity pendingApprovalIdentity, update servers.PendingUpdate) bool {
+func (s *Service) updatePendingPackageVulnerabilityAssessment(ctx context.Context, serverName string, identity pendingApprovalIdentity, update servers.PendingUpdate) (bool, error) {
 	deps := s.EnsureDeps()
 	if deps.ServerState == nil {
-		return false
+		return false, nil
 	}
 	updateSelector := pendingUpdatePackageSelector(update)
 	if updateSelector == "" {
-		return false
+		return false, nil
 	}
 	deps.ServerState.Lock()
 	defer deps.ServerState.Unlock()
 	status := deps.ServerState.StatusMap()[serverName]
 	if !identity.matches(status) {
-		return false
+		return false, nil
 	}
 	updated := false
 	for i := range status.PendingUpdates {
 		if pendingUpdatePackageSelector(status.PendingUpdates[i]) != updateSelector || status.PendingUpdates[i].CandidateVersion != update.CandidateVersion || status.PendingUpdates[i].CurrentVersion != update.CurrentVersion {
 			continue
+		}
+		// Admission identity and inventory edits use this same state lock. Retain
+		// positive history before publishing an approval-derived alert; neither
+		// cancellation nor a later approval generation can erase its watch.
+		if deps.RecordApprovalFindings != nil {
+			findings := servers.ClonePendingUpdates([]servers.PendingUpdate{update})[0].CVEFindings
+			for j := range findings {
+				findings[j].Package = updateSelector
+				findings[j].InstalledVersion = update.CurrentVersion
+				findings[j].CandidateVersion = update.CandidateVersion
+				findings[j].LastSeen = update.CVEScannedAt
+			}
+			if err := ctx.Err(); err != nil {
+				return false, err
+			}
+			if err := deps.RecordApprovalFindings(ctx, serverName, findings); err != nil {
+				return false, err
+			}
 		}
 		status.PendingUpdates[i] = servers.ClonePendingUpdates([]servers.PendingUpdate{update})[0]
 		updated = true
@@ -2112,5 +2143,5 @@ func (s *Service) updatePendingPackageVulnerabilityAssessment(serverName string,
 	if updated {
 		SortPendingUpdates(status.PendingUpdates)
 	}
-	return updated
+	return updated, nil
 }

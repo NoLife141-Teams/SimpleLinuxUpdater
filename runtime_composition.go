@@ -21,6 +21,7 @@ import (
 	policypkg "debian-updater/internal/policies"
 	"debian-updater/internal/securityintel"
 	serverpkg "debian-updater/internal/servers"
+	"debian-updater/internal/vulnerabilities"
 
 	"github.com/alexedwards/scs/v2"
 	"golang.org/x/crypto/ssh"
@@ -408,6 +409,7 @@ func (c *runtimeComposition) Compose() AppDeps {
 		)
 		deps.UpdateService = NewUpdateService(UpdateServiceDeps{
 			ServerState:               deps.ServerState,
+			RecordApprovalFindings:    (vulnerabilities.Repository{DB: deps.DB}).RecordPositiveFindings,
 			HostMaintenanceSessions:   hostMaintenanceSessions,
 			LoadApplicationPostchecks: applicationPostcheckLoader(deps.DB, deps.ServerState),
 			LoadPackageDeferrals:      packageDeferralLoader(deps),

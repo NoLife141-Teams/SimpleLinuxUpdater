@@ -18,22 +18,22 @@ test("one decision list at a time, full-width evidence and responsive layout",as
     await expect(page.locator(".security-item")).toHaveCount(1);
     await expect(page.locator("#security-rows")).not.toContainText("CVE-2026-2000");
     await expect(page.locator("#security-rows a")).toHaveAttribute("href","/remediation?server=example-host");
-    await page.getByRole("button",{name:"Détails",exact:true}).click();
+    await page.getByRole("button",{name:/^Détails du correctif pour/}).click();
     await expect(page.locator(".security-evidence")).toBeVisible();
     await expect(page.locator(".security-evidence")).toContainText("1.0-2");
     await page.getByRole("tab",{name:/Alertes critiques/}).click();
     await expect(page.locator("#security-rows")).toContainText("CVE-2026-2000");
-    await page.getByRole("button",{name:"Détails et mesures"}).click();
+    await page.getByRole("button",{name:/^Détails et mesures pour/}).click();
     await expect(page.locator(".security-evidence")).toContainText('<script>alert("unsafe")</script>');
     await expect(page.locator(".security-evidence script")).toHaveCount(0);
     await expect(page.locator(".security-evidence a").first()).toHaveAttribute("href",/\/vulnerabilities\/all\?server=example-host&q=CVE/);
     await page.getByRole("tab",{name:/Fin de support/}).click();
     await expect(page.locator(".security-item")).toHaveCount(2);
-    await expect(page.locator("#security-rows")).toContainText("Fin de support amont");
+    await expect(page.locator("#security-rows")).toContainText("Support éditeur terminé");
     for(const width of [1440,390]){
         await page.setViewportSize({width,height:900});
         expect(await page.evaluate(()=>document.body.scrollWidth<=document.documentElement.clientWidth)).toBe(true);
-        await page.screenshot({path:`/tmp/slu-cve-simplify-${width}.png`,fullPage:true});
+        await page.screenshot({path:`/tmp/slu-cve-minimal-${width}.png`,fullPage:true});
     }
     await page.locator(".security-detail-toggle").first().click();
     await expect(page.locator(".security-evidence").first()).toContainText("2026-01-17");
@@ -205,7 +205,7 @@ test("fix rows retain the known-exploitation priority when a patch is available"
     await setup(page,route=>fulfillJson(route,data));await page.goto("/vulnerabilities");
     await expect(page.locator(".security-item")).toContainText("Exploitation connue");
     await expect(page.locator(".security-item")).toContainText("Moyenne");
-    await page.getByRole("button",{name:"Détails",exact:true}).click();
+    await page.getByRole("button",{name:/^Détails du correctif pour/}).click();
     await expect(page.locator(".security-evidence")).toContainText("CISA KEV");
     await expect(page.locator("#security-tab-alerts")).toContainText("1");
 });
@@ -245,7 +245,7 @@ for(const coverageFails of [false,true])test(`late coverage ${coverageFails?"fai
     });
     try{
         await page.goto("/vulnerabilities");
-        const toggle=page.getByRole("button",{name:"Détails",exact:true});
+        const toggle=page.getByRole("button",{name:/^Détails du correctif pour/});
         await toggle.click();
         await expect(toggle).toBeFocused();
         await expect(page.locator(".security-evidence")).toBeVisible();
@@ -255,4 +255,51 @@ for(const coverageFails of [false,true])test(`late coverage ${coverageFails?"fai
         await page.keyboard.press("Space");
         await expect(page.locator(".security-evidence")).toBeHidden();
     }finally{release?.();}
+});
+
+test("minimal support rows retain each server identity, dated support and partial provenance",async({page})=>{
+    const data=fixture();
+    data.lifecycle[1]={...data.lifecycle[1],inventory_source:"recorded_findings",inventory_partial:true,inventory_freshness:"stale"};
+    data.lifecycle.push({...data.lifecycle[0],server:"other-host",component:"debian",version:"12",state:"extended_support_unverified",eol_at:"2026-06-10",extended_until:"2028-06-30",freshness:"stale"});
+    data.lifecycle_total=3;
+    await setup(page,route=>fulfillJson(route,data));
+    await page.goto("/vulnerabilities?view=lifecycle");
+    await expect(page.getByRole("columnheader",{name:"Support",exact:true})).toBeVisible();
+    const rows=page.locator(".security-item");
+    await expect(rows).toHaveCount(3);
+    await expect(rows.nth(1)).toHaveClass(/security-repeat-server/);
+    await expect(rows.nth(2)).not.toHaveClass(/security-repeat-server/);
+    await expect(page.getByRole("cell",{name:"example-host",exact:true})).toHaveCount(2);
+    const repeated=rows.nth(1).locator(".security-server-name");
+    expect((await repeated.boundingBox()).width).toBeLessThanOrEqual(1);
+    await expect(rows.first().locator(".security-component")).toContainText("Ubuntu");
+    await expect(rows.first().locator(".security-component")).toContainText("25.04");
+    await expect(rows.first().locator(".security-situation")).toContainText("17 janv. 2026");
+    await expect(rows.nth(1)).toContainText("Inventaire partiel, ancien");
+    await expect(rows.nth(2)).toContainText("Extension à confirmer");
+    await expect(rows.nth(2)).toContainText("Support standard : 10 juin 2026");
+    await expect(rows.nth(2)).toContainText("Dates à vérifier");
+    await expect(page.locator("#security-navigation")).toBeHidden();
+    await expect(page.locator("#security-status")).toHaveText("3 / 3 composants");
+    const details=page.getByRole("button",{name:"Détails du support de Ubuntu sur example-host",exact:true});
+    await details.focus();await page.keyboard.press("Enter");
+    await expect(page.locator(".security-evidence").first()).toBeVisible();
+    await expect(details).toBeFocused();
+    await expect(page.locator(".security-evidence td").first()).toHaveAttribute("colspan","4");
+    await page.keyboard.press("Space");
+    await expect(page.locator(".security-evidence").first()).toBeHidden();
+    for(const width of [390,320]){
+        await page.setViewportSize({width,height:900});
+        expect((await repeated.boundingBox()).width).toBeGreaterThan(1);
+        expect(await page.evaluate(()=>document.body.scrollWidth<=document.documentElement.clientWidth)).toBe(true);
+    }
+});
+
+test("support dates remain calendar dates west of UTC",async({browser,baseURL})=>{
+    const context=await browser.newContext({timezoneId:"America/Toronto",baseURL});
+    const page=await context.newPage();
+    try{
+        await setup(page);await page.goto("/vulnerabilities?view=lifecycle");
+        await expect(page.locator(".security-item").first().locator(".security-situation")).toContainText("17 janv. 2026");
+    }finally{await context.close();}
 });

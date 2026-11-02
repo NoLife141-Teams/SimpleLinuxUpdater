@@ -7,15 +7,15 @@
     <link rel="icon" type="image/png" href="/static/logo.png">
     <link rel="stylesheet" href="/static/css/base.css?v=metadata-contrast-517-20261029">
     <link rel="stylesheet" href="/static/css/vulnerabilities.css?v=correction-plan-20261029">
-    <link rel="stylesheet" href="/static/css/security-actions.css?v=simplified-cve-20261102">
+    <link rel="stylesheet" href="/static/css/security-actions.css?v=minimal-cve-20261102">
 </head>
 <body data-account-role="{{.Role}}">
 <div class="dashboard-shell">
     {{template "operator-application-shell" .}}
     <main class="dashboard-main cve-main security-workbench" aria-label="CVE analysis">
         <header class="security-heading">
-            <div><h1>CVE et support</h1><p>Les problèmes qui concernent vos serveurs, et la prochaine action.</p></div>
-            <div class="head-meta"><a id="security-ledger-link" class="btn-ghost" href="/vulnerabilities/all">Toutes les CVE</a><button id="security-refresh" type="button" class="primary-action">Actualiser</button></div>
+            <h1>CVE et support</h1>
+            <div class="head-meta"><a id="security-ledger-link" href="/vulnerabilities/all">Toutes les CVE</a><button id="security-refresh" type="button" class="btn-ghost">Actualiser</button></div>
         </header>
         <form id="security-filters" class="security-filters" role="search" aria-label="Filtrer les actions">
             <label>Serveur<select id="security-server" name="server"><option value="">Tous les serveurs</option></select></label>
@@ -23,7 +23,7 @@
         </form>
         <p id="security-error" class="error-banner" role="alert" hidden></p>
         <details id="security-health" class="security-health">
-            <summary><span id="security-review">Vérification des données…</span><span class="security-summary-action">Voir les raisons</span></summary>
+            <summary><span id="security-review">Vérification des données…</span><span class="security-summary-action">Détails</span></summary>
             <p id="security-health-status"></p><ul id="security-health-hosts"></ul>
             <p class="muted">Une donnée manquante ou ancienne ne prouve pas l’absence de vulnérabilité. Actualiser relit les résultats enregistrés, sans lancer de scan ni installer de paquet.</p>
         </details>
@@ -34,11 +34,11 @@
                 <button id="security-tab-lifecycle" type="button" role="tab" aria-selected="false" aria-controls="security-panel" tabindex="-1" data-view="lifecycle">Fin de support <span id="security-lifecycle-count">—</span></button>
             </div>
             <div id="security-panel" role="tabpanel" aria-labelledby="security-tab-fixes" tabindex="0">
-                <div class="security-panel-head"><div><h2 id="security-list-title">Correctifs disponibles</h2><p id="security-list-help">Mises à jour avec correctif confirmé et installation simulée.</p></div>
+                <div class="security-panel-head"><div><h2 id="security-list-title" class="sr-only">Correctifs disponibles</h2><p id="security-list-help">Correctif confirmé, installation simulée avant approbation.</p></div>
                     <details id="security-options" hidden><summary>Période de publication</summary><label>Critiques récentes<select id="security-recent"><option value="7">7 jours</option><option value="30" selected>30 jours</option><option value="90">90 jours</option></select></label><p>Les alertes déjà suivies restent visibles au-delà de cette période.</p></details>
                 </div>
-                <div class="table-wrap"><table class="security-table"><thead><tr><th scope="col">Serveur / composant</th><th scope="col">Situation</th><th scope="col">Prochaine action</th></tr></thead><tbody id="security-rows"><tr><td colspan="3">Chargement…</td></tr></tbody></table></div>
-                <nav class="security-pagination" aria-label="Pages des actions de sécurité"><p id="security-status" role="status" aria-live="polite">Chargement des actions…</p><div><button id="security-prev" type="button" class="btn-ghost" disabled>Précédent</button><span id="security-page">Page —</span><button id="security-next" type="button" class="btn-ghost" disabled>Suivant</button></div></nav>
+                <div class="table-wrap"><table class="security-table" aria-describedby="security-list-help"><thead><tr><th scope="col">Serveur</th><th scope="col">Composant</th><th id="security-situation-heading" scope="col">Situation</th><th scope="col"><span class="sr-only">Actions</span></th></tr></thead><tbody id="security-rows"><tr><td colspan="4">Chargement…</td></tr></tbody></table></div>
+                <nav class="security-pagination" aria-label="Pages des actions de sécurité"><p id="security-status" role="status" aria-live="polite">Chargement des actions…</p><div id="security-navigation" hidden><button id="security-prev" type="button" class="btn-ghost" disabled>Précédent</button><span id="security-page">Page —</span><button id="security-next" type="button" class="btn-ghost" disabled>Suivant</button></div></nav>
             </div>
         </section>
         <footer class="security-footer"><a id="cve-plan-link" href="/remediation">Plan de correction par serveur</a><details><summary>Comprendre les résultats</summary><p>Les correctifs nécessitent des preuves récentes et une nouvelle approbation avant installation. Les alertes sans correctif sont confirmées pour les paquets observés ; « exploitation connue » ne signifie pas automatiquement « zero-day ».</p><p>Les dates de support applicatives décrivent le support amont. Debian/Ubuntu peuvent continuer leurs correctifs ; un support étendu et un inventaire partiel demandent une vérification.</p><p>Le périmètre couvre les paquets OS et les familles applicatives reconnues. Le contenu des images Docker, les applications autonomes et les dépendances non inventoriées restent hors couverture.</p><h3>Sources et dernière vérification</h3><ul id="security-feeds"></ul></details></footer>
@@ -48,6 +48,6 @@
 <script src="/static/js/browser-effects.js?v=frontend-isolation-20261027"></script>
 <script src="/static/js/common.js?v=quality-pass-20260711a"></script>
 <script src="/static/js/cve-page-interaction.js?v=correction-plan-20261029"></script>
-<script src="/static/js/security-actions.js?v=simplified-cve-20261102"></script>
+<script src="/static/js/security-actions.js?v=minimal-cve-20261102"></script>
 </body>
 </html>

@@ -1,8 +1,8 @@
 (function(root){
     "use strict";
     let current;
-    const views={fixes:{title:"Correctifs disponibles",help:"Mises à jour avec correctif confirmé et installation simulée.",empty:"Aucun correctif installable confirmé. Des preuves APT anciennes ou manquantes ne signifient pas qu’aucun correctif n’a été publié."},alerts:{title:"Alertes prioritaires sans correctif",help:"Critiques récentes ou exploitation connue, sans correctif annoncé pour les paquets observés.",empty:"Aucune alerte sans correctif confirmée. Les données inconnues ou anciennes restent à vérifier."},lifecycle:{title:"Fin de support des OS et applications",help:"Calendriers de support pour les versions observées sur vos serveurs.",empty:"Aucun composant reconnu dans ce filtre. Les logiciels non inventoriés restent hors couverture."}};
-    const labels={end_of_life:"Fin de support",upstream_end_of_life:"Fin de support amont",extended_support_unverified:"Extension de support à vérifier",ending_soon:"Fin de support sous 90 jours",supported:"Support en cours",unknown:"Support à vérifier"};
+    const views={fixes:{title:"Correctifs disponibles",help:"Correctif confirmé, installation simulée avant approbation.",noun:"correctifs",total:"fix_total",empty:"Des preuves anciennes ou manquantes ne signifient pas qu’aucun correctif n’a été publié."},alerts:{title:"Alertes prioritaires sans correctif",help:"Critiques récentes ou exploitation connue, sans correctif annoncé.",noun:"alertes",total:"alert_total",empty:"Les données inconnues ou anciennes restent à vérifier."},lifecycle:{title:"Fin de support des OS et applications",help:"Support des versions observées. Les correctifs Debian/Ubuntu restent à vérifier séparément.",noun:"composants",total:"lifecycle_total",empty:"Les logiciels non inventoriés restent hors couverture."}};
+    const labels={end_of_life:"Terminé",upstream_end_of_life:"Support éditeur terminé",extended_support_unverified:"Extension à confirmer",ending_soon:"Expire sous 90 jours",supported:"Pris en charge",unknown:"À vérifier"};
     const freshness={fresh:"récent",stale:"à actualiser",unavailable:"indisponible",unknown:"non vérifié"};
     const severity={critical:"Critique",high:"Élevée",medium:"Moyenne",low:"Faible",none:"Aucune",unknown:"Non renseignée"};
     function mount(){
@@ -15,13 +15,19 @@
         const el=id=>document.getElementById(id),tabs=Array.from(document.querySelectorAll("[data-view]"));
         const esc=v=>String(v??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
         const note=v=>`<span class="security-note">${esc(v)}</span>`;
+        const calendar=new Intl.DateTimeFormat("fr-CA",{day:"numeric",month:"short",year:"numeric",timeZone:"UTC"});
+        function supportDate(value){
+            if(!/^\d{4}-\d{2}-\d{2}$/.test(value||""))return "";
+            const date=new Date(value+"T00:00:00Z");
+            return Number.isNaN(date.getTime())||date.toISOString().slice(0,10)!==value?"":calendar.format(date);
+        }
         const path=(base,values)=>base+"?"+new URLSearchParams(values).toString();
         const plan=server=>path("/remediation",{server});
         const ledger=(server,q="")=>path("/vulnerabilities/all",{server,q});
         const urlLink=(url,label)=>{try{const u=new URL(url);if(!["https:","http:"].includes(u.protocol))return "";return `<a href="${esc(u.href)}" target="_blank" rel="noopener noreferrer">${esc(label)}</a>`;}catch{return "";}};
         let controller,timer=null,coverage=null,coverageError="",expanded=new Set();
         function sync(){const q=store.view().query;if(timer===null)el("security-search").value=q.q;const select=el("security-server");if(q.server&&!Array.from(select.options).some(o=>o.value===q.server))select.add(new Option(q.server,q.server));select.value=q.server;el("security-recent").value=q.recent_days;el("security-ledger-link").href=ledger(q.server,q.q);el("cve-plan-link").href=plan(q.server);
-            for(const tab of tabs){const active=tab.dataset.view===q.view;tab.setAttribute("aria-selected",String(active));tab.tabIndex=active?0:-1;}el("security-panel").setAttribute("aria-labelledby",`security-tab-${q.view}`);el("security-options").hidden=q.view!=="alerts";el("security-list-title").textContent=views[q.view].title;el("security-list-help").textContent=views[q.view].help;}
+            for(const tab of tabs){const active=tab.dataset.view===q.view;tab.setAttribute("aria-selected",String(active));tab.tabIndex=active?0:-1;}el("security-panel").setAttribute("aria-labelledby",`security-tab-${q.view}`);el("security-options").hidden=q.view!=="alerts";el("security-list-title").textContent=views[q.view].title;el("security-list-help").textContent=views[q.view].help;el("security-situation-heading").textContent=q.view==="lifecycle"?"Support":"Situation";}
         function health(data){
             const issues=(coverage?.coverage||[]).filter(h=>h.reason||h.state!=="complete"||h.freshness!=="fresh"||h.unknown||h.unsupported||h.error_count);
             const priority=data?.review_priority||0;
@@ -40,13 +46,26 @@
         function rows(data,view){
             return data[view].map((f,i)=>{
                 const id=`security-detail-${i}`,open=expanded.has(i),isLife=view==="lifecycle";
-                const component=isLife?f.component:f.package;
-                let situation,annotation,action;
+                const component=isLife?({ubuntu:"Ubuntu",debian:"Debian"}[f.component]||f.component):f.package;
+                const repeat=i>0&&data[view][i-1].server===f.server;
+                let situation,annotation,action,componentNote;
                 if(view==="fixes"){situation=`${f.cve_count||f.cves.length} CVE avec correctif vérifié`;annotation=(f.known_exploited?"Exploitation connue · ":"")+(severity[f.severity]||severity.unknown);action=`<a class="security-row-primary" href="${esc(plan(f.server))}">Préparer la correction</a>`;}
                 else if(view==="alerts"){situation=f.cves[0];annotation=f.known_exploited?"Exploitation connue · sans correctif annoncé":"Critique · sans correctif annoncé";action="";}
-                else{situation=labels[f.state]||labels.unknown;annotation=f.inventory_partial?"Inventaire partiel":f.inventory_freshness!=="fresh"?"Version à revérifier":f.eol_at?`Échéance : ${f.eol_at}`:"";action="";}
+                else{
+                    situation=labels[f.state]||labels.unknown;
+                    annotation=supportDate(f.eol_at);
+                    if(annotation&&f.state==="extended_support_unverified")annotation="Support standard : "+annotation;
+                    if(f.freshness!=="fresh")annotation+=(annotation?" — ":"")+"Dates à vérifier";
+                    action="";
+                }
+                if(isLife){
+                    componentNote=note(f.version||"Version non établie");
+                    if(f.inventory_partial)componentNote+=note(f.inventory_freshness==="stale"?"Inventaire partiel, ancien":"Inventaire partiel");
+                    else if(f.inventory_freshness!=="fresh")componentNote+=note("Version à revérifier");
+                }else componentNote=note(view==="fixes"?`${f.installed} → ${f.candidate}`:f.installed);
                 const danger=view==="alerts"||(isLife&&["end_of_life","upstream_end_of_life"].includes(f.state));
-                return `<tr class="security-item"><td data-label="Serveur / composant"><strong>${esc(f.server)}</strong>${note((isLife?(f.kind==="os"?"OS · ":"Application · "):"")+component+(isLife?` · ${f.version||"version non établie"}`:""))}</td><td data-label="Situation"><strong class="${danger?"security-priority":""}">${esc(situation)}</strong>${note(annotation)}</td><td data-label="Prochaine action"><div class="security-row-actions">${action}<button type="button" class="btn-ghost security-detail-toggle" data-detail="${i}" aria-expanded="${open}" aria-controls="${id}">${isLife?"Vérifier le support":view==="alerts"?"Détails et mesures":"Détails"}</button></div></td></tr><tr id="${id}" class="security-evidence" ${open?"":"hidden"}><td colspan="3"><div class="security-evidence-content">${detail(f,view)}</div></td></tr>`;
+                const detailName=`${isLife?"Détails du support de":view==="alerts"?"Détails et mesures pour":"Détails du correctif pour"} ${component} sur ${f.server}`;
+                return `<tr class="security-item${repeat?" security-repeat-server":""}"><td class="security-server" data-label="Serveur"><strong class="security-server-name">${esc(f.server)}</strong></td><td class="security-component" data-label="Composant"><strong>${esc(component)}</strong>${componentNote}</td><td class="security-situation" data-label="${isLife?"Support":"Situation"}"><strong class="${danger?"security-priority":""}">${esc(situation)}</strong>${annotation?note(annotation):""}</td><td class="security-row-controls" data-label="Actions"><div class="security-row-actions">${action}<button type="button" class="security-detail-toggle" data-detail="${i}" aria-label="${esc(detailName)}" aria-expanded="${open}" aria-controls="${id}">Détails</button></div></td></tr><tr id="${id}" class="security-evidence" ${open?"":"hidden"}><td colspan="4"><div class="security-evidence-content">${detail(f,view)}</div></td></tr>`;
             }).join("");
         }
         function render(){
@@ -58,8 +77,10 @@
             for(const [id,key] of [["security-fix-count","fix_total"],["security-alert-count","alert_total"],["security-lifecycle-count","lifecycle_total"]])el(id).textContent=data?String(data[key]):"—";
             el("security-prev").disabled=list.loading||!data||data.page<=1;el("security-next").disabled=list.loading||!data||data.page>=data.pages;
             el("security-page").textContent=data?`Page ${data.page} / ${data.pages}`:"Page —";
-            el("security-status").textContent=list.loading?"Lecture des résultats…":data?`Dernière lecture : ${new Date(data.generated_at).toLocaleString("fr-CA")}`:"Résultats indisponibles";
-            el("security-rows").innerHTML=data?(data[query.view].length?rows(data,query.view):`<tr><td colspan="3" class="security-empty"><strong>${query.view==="fixes"?"Aucun correctif prêt à préparer":query.view==="alerts"?"Aucune alerte sans correctif confirmée":"Aucun composant dans ce filtre"}</strong><p>${esc(views[query.view].empty)}</p><button type="button" class="btn-ghost" data-checks>Vérifier les données</button></td></tr>`):`<tr><td colspan="3" class="security-empty">${list.loading?"Chargement…":"Les résultats sont indisponibles. Réessayez avec Actualiser."}</td></tr>`;
+            el("security-navigation").hidden=!data||data.pages<=1;
+            el("security-status").textContent=list.loading?"Lecture des résultats…":data?`${data[query.view].length} / ${data[views[query.view].total]} ${views[query.view].noun}`:"Résultats indisponibles";
+            el("security-status").title=data?`Résultats lus le ${new Date(data.generated_at).toLocaleString("fr-CA")}`:"";
+            el("security-rows").innerHTML=data?(data[query.view].length?rows(data,query.view):`<tr><td colspan="4" class="security-empty"><strong>${query.view==="fixes"?"Aucun correctif confirmé":query.view==="alerts"?"Aucune alerte confirmée":"Aucun composant dans ce filtre"}</strong><p>${esc(views[query.view].empty)}</p><button type="button" class="btn-ghost" data-checks>Vérifier les données</button></td></tr>`):`<tr><td colspan="4" class="security-empty">${list.loading?"Chargement…":"Les résultats sont indisponibles. Réessayez avec Actualiser."}</td></tr>`;
             el("security-feeds").innerHTML=data?Object.entries(data.feeds).map(([name,f])=>`<li>${esc(name)} : ${esc(freshness[f.state]||"non vérifié")} — ${esc(f.observed_at||"jamais vérifié")}${f.last_error?note("Échec de la dernière actualisation ; observation précédente conservée."):""}</li>`).join(""):"";
         }
         async function json(url,signal){const response=await life.fetch(url,{signal});if(!response.ok){life.discardResponse(response);throw new Error(`Résultats indisponibles (HTTP ${response.status})`);}return response.json();}

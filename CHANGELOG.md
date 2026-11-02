@@ -13,6 +13,8 @@ The format is inspired by Keep a Changelog, and this project uses Semantic Versi
 
 ### Changed
 
+- Make CVE actions easier to scan with compact server/component/status columns, readable support dates, contextual detail controls and a lighter header. Retain per-row accessible identities, dated evidence and explicit unknown/partial states.
+
 - Simplify CVE analysis into three decision tabs with shared server/search filters, active-queue pagination, inline full-width evidence, and scan-quality warnings grouped by host. Move the complete investigation ledger to `/vulnerabilities/all`, retaining old deep links and the existing correction/approval safeguards.
 
 ### Fixed

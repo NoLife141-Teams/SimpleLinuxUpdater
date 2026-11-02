@@ -736,6 +736,8 @@ OSV and distribution trackers can be incomplete or delayed, and version-based as
 
 Open **CVE analysis** to work through one of three tabs: **À corriger** (verified installable fixes), **Alertes critiques** (confirmed priority findings without an announced fix), and **Fin de support** (recognized OS/application support calendars). Filter by server and search, then open a row's details for versions, dated evidence and next steps. Preparing a correction still requires the normal explicit approval workflow; reading or refreshing this page performs no remote scan or installation.
 
+Support rows separate server, component/version and support state in a compact table. Dates use an explicit calendar date, and standard-support expiry stays distinct from an unverified extension. Adjacent server names are visually grouped on desktop while each accessible row retains its server identity; mobile repeats that identity. The table keeps component pagination, with no inferred per-server totals. Dated proofs expand below the selected row.
+
 The data-quality disclosure groups missing, incomplete or old scans by server. An empty action list is not proof of zero vulnerabilities or of no published fixes. Application calendars describe upstream support, not distribution backports; partial historical inventory and extended-support uncertainty remain explicit. **Toutes les CVE** opens the separate full ledger at `/vulnerabilities/all`, retaining server and search. Its advanced filters and package proofs remain available for investigations.
 
 ### Check hosted applications after an update

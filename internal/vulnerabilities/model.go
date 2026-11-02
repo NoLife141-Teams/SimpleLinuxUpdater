@@ -8,6 +8,8 @@ import (
 )
 
 type Finding struct {
+	PublishedAt        string               `json:"published_at,omitempty"`
+	PrioritySince      string               `json:"priority_since,omitempty"`
 	Availability       *FixAvailability     `json:"availability,omitempty"`
 	Runtime            RuntimeApplicability `json:"runtime,omitzero"`
 	Resolution         *Resolution          `json:"resolution,omitempty"`
@@ -191,6 +193,17 @@ func Accept(previous Observation, scan Scan) Observation {
 			f.SeverityObservedAt = old.SeverityObservedAt
 		} else if f.SeveritySource != "" && f.SeverityObservedAt == "" {
 			f.SeverityObservedAt = scan.FinishedAt
+		}
+		if f.PublishedAt == "" {
+			f.PublishedAt = old.PublishedAt
+		}
+		f.PrioritySince = old.PrioritySince
+		if f.PrioritySince == "" && f.Assessment.Qualification() == QualificationConfirmed && f.Severity == "critical" && f.SeveritySource != "" && f.Availability != nil && f.Availability.Published.State == "not_established" {
+			published, pe := time.Parse(time.RFC3339, f.PublishedAt)
+			observed, oe := time.Parse(time.RFC3339, scan.FinishedAt)
+			if pe == nil && oe == nil && !published.After(observed) && observed.Sub(published) <= 30*24*time.Hour {
+				f.PrioritySince = scan.FinishedAt
+			}
 		}
 		f.LastSeen = scan.FinishedAt
 		f.ResolvedAt = ""

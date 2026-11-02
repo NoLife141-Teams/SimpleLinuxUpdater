@@ -7,18 +7,49 @@
     <link rel="icon" type="image/png" href="/static/logo.png">
     <link rel="stylesheet" href="/static/css/base.css?v=metadata-contrast-517-20261029">
     <link rel="stylesheet" href="/static/css/vulnerabilities.css?v=correction-plan-20261029">
+    <link rel="stylesheet" href="/static/css/security-actions.css?v=20261102">
 </head>
 <body data-account-role="{{.Role}}">
 <div class="dashboard-shell">
     {{template "operator-application-shell" .}}
     <main class="dashboard-main cve-main">
         <section class="dashboard-head">
-            <div><div class="eyebrow">Installed package exposure</div><h1>CVE analysis</h1><p class="muted">One row per CVE. Compare affected hosts, packages and verified candidate fixes.</p></div>
-            <div class="head-meta"><span class="meta-pill" id="cve-refreshed">Awaiting evidence</span><a class="btn-ghost" id="cve-plan-link" href="/remediation">Correction plan</a><button type="button" id="cve-refresh" class="primary-action">Refresh results</button></div>
+            <div><div class="eyebrow">Installed package exposure</div><h1>CVE analysis</h1><p class="muted">Les corrections possibles et les alertes qui concernent vos logiciels installés. Les preuves complètes restent accessibles ci-dessous.</p></div>
+            <div class="head-meta"><a class="btn-ghost" id="cve-plan-link" href="/remediation">Correction plan</a><button type="button" id="security-refresh" class="primary-action">Actualiser les résultats</button></div>
         </section>
+        <section class="workspace security-actions" aria-label="Actions de sécurité">
+            <form id="security-filters" class="security-filters" role="search">
+                <label>Serveur<select id="security-server" name="server"><option value="">Tous les serveurs</option></select></label>
+                <label>Paquet, CVE ou serveur<input id="security-search" name="q" type="search" maxlength="200" placeholder="openssl, CVE-…"></label>
+                <label>Publication récente<select id="security-recent" name="recent_days"><option value="7">7 jours</option><option value="30" selected>30 jours</option><option value="90">90 jours</option></select></label>
+            </form>
+            <p id="security-status" role="status" aria-live="polite">Chargement des actions…</p>
+            <p id="security-error" class="error-banner" role="alert" hidden></p>
+            <p id="security-review" class="cve-coverage-notice"></p>
+            <p class="muted">L’actualisation relit les résultats enregistrés. Elle ne lance ni scan SSH ni installation. Les paquets système sont couverts ; les images Docker et les dépendances applicatives ne sont pas analysées.</p>
+        </section>
+        <section class="workspace security-queue" aria-labelledby="security-fixes-title">
+            <div class="security-section-head"><h2 id="security-fixes-title">Correctifs disponibles</h2><span id="security-fix-count"></span></div>
+            <p class="muted">Versions corrigées accessibles dans les dépôts, avec une simulation APT récente. La préparation demandera une nouvelle vérification et une approbation.</p>
+            <div class="table-wrap"><table><thead><tr><th scope="col">Serveur / paquet</th><th scope="col">Version installée → proposée</th><th scope="col">CVE concernées</th><th scope="col">Prochaine action</th></tr></thead><tbody id="security-fixes"><tr><td colspan="4">Chargement…</td></tr></tbody></table></div>
+        </section>
+        <section class="workspace security-queue" aria-labelledby="security-alerts-title">
+            <div class="security-section-head"><h2 id="security-alerts-title">Alertes prioritaires sans correctif</h2><span id="security-alert-count"></span></div>
+            <p class="muted">Critiques récentes ou exploitation connue, avec correspondance confirmée au paquet installé et aucun correctif annoncé par la source pour cette distribution. Les alertes critiques déjà suivies restent visibles jusqu’à résolution. « Exploitation connue » ne signifie pas automatiquement « zero-day ».</p>
+            <div class="table-wrap"><table><thead><tr><th scope="col">CVE / priorité</th><th scope="col">Serveur / paquet installé</th><th scope="col">Publication / preuves</th><th scope="col">Mesure temporaire / suivi</th></tr></thead><tbody id="security-alerts"><tr><td colspan="4">Chargement…</td></tr></tbody></table></div>
+        </section>
+        <section class="workspace security-queue" aria-labelledby="security-lifecycle-title">
+            <div class="security-section-head"><h2 id="security-lifecycle-title">Fin de support des OS et applications</h2><span id="security-lifecycle-count"></span></div>
+            <p class="muted">Calendriers <a href="https://endoflife.date/" target="_blank" rel="noopener noreferrer">endoflife.date</a>. Pour une application empaquetée par Debian/Ubuntu, la fin de support amont ne prouve pas la fin des correctifs de la distribution. Un support étendu nécessite de vérifier l’éligibilité et son activation.</p>
+            <div class="table-wrap"><table><thead><tr><th scope="col">Serveur / composant</th><th scope="col">Version / cycle</th><th scope="col">Support</th><th scope="col">Source / fraîcheur</th></tr></thead><tbody id="security-lifecycle"><tr><td colspan="4">Chargement…</td></tr></tbody></table></div>
+            <p class="muted">Applications reconnues dans l’inventaire de paquets : Python, Node.js, PHP, PostgreSQL, Redis, nginx, OpenSSL, OpenSSH, Docker Engine et containerd. Une application absente de cet inventaire reste hors couverture ; les noms des serveurs ne servent pas à deviner les logiciels.</p>
+        </section>
+        <nav class="security-pagination cve-pagination" aria-label="Pages des actions de sécurité"><button id="security-prev" type="button" class="btn-ghost" disabled>Précédent</button><span id="security-page">Page —</span><button id="security-next" type="button" class="btn-ghost" disabled>Suivant</button></nav>
+        <details class="workspace security-feeds"><summary>Sources et dernière vérification</summary><ul id="security-feeds"></ul><p class="muted">Les dates de publication proviennent des avis, jamais de la date du scan. Une veille différée ou indisponible ne prouve pas l’absence de nouvelles vulnérabilités. CISA KEV complète les avis éditeurs et ne recense pas tous les zero-days.</p></details>
         <div id="cve-error" class="error-banner" role="alert" hidden></div>
         <p id="cve-coverage-notice" class="cve-coverage-notice" role="status" hidden></p>
-        <section class="metric-strip cve-metrics" aria-label="Filtered CVE summary">
+        <details id="all-cves" class="workspace security-ledger"><summary>Toutes les CVE et la couverture des scans</summary><div class="head-meta"><span class="meta-pill" id="cve-refreshed">Awaiting evidence</span><button type="button" id="cve-refresh" class="btn-ghost">Refresh complete ledger</button></div>
+<section class="metric-strip cve-metrics" aria-label="Filtered CVE summary">
             <article class="metric-item"><span>Unique CVEs</span><strong id="cve-count">—</strong></article>
             <article class="metric-item"><span>Affected hosts</span><strong id="cve-host-count">—</strong></article>
             <article class="metric-item"><span>Critical / High</span><strong id="cve-priority-count">—</strong></article>
@@ -47,6 +78,7 @@
             <h2>Scan coverage</h2><p class="muted">Exposure counts and scan completeness are separate. Unavailable data, expired scans and unverified packages cannot establish absence of vulnerabilities.</p>
             <div class="table-wrap"><table><thead><tr><th scope="col">Server / distribution</th><th scope="col">Scan / freshness</th><th scope="col">Evaluated packages</th><th scope="col">Coverage notes</th></tr></thead><tbody id="cve-coverage-rows"><tr><td colspan="4">Loading coverage…</td></tr></tbody></table></div>
         </section>
+</details>
     </main>
 </div>
 <dialog id="cve-detail" aria-labelledby="cve-detail-title">
@@ -59,6 +91,7 @@
 <script src="/static/js/browser-effects.js?v=frontend-isolation-20261027"></script>
 <script src="/static/js/common.js?v=quality-pass-20260711a"></script>
 <script src="/static/js/cve-page-interaction.js?v=correction-plan-20261029"></script>
+<script src="/static/js/security-actions.js?v=20261102"></script>
 <script src="/static/js/vulnerabilities.js?v=correction-plan-20261029"></script>
 </body>
 </html>

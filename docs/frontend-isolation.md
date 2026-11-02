@@ -249,3 +249,5 @@ network and JSON consumption. The test composition alone exposes
 confirmation timestamp without changing cookie authentication. This route is
 absent from production builds and permits expiry scenarios without a five-minute
 wait. New secret-bearing scenarios disable traces, video and screenshots.
+
+`security-actions.js` renders the read-only security work queues and lifecycle catalog on the CVE page. It uses the shared CVE Page Interaction request generations plus Browser Effects for fetch, cancellation, listeners and timers; the adapter owns history updates. The API owns classification and pagination; the browser never promotes legacy candidate booleans, CVSS scores or absent metadata into fix/no-fix/support decisions. Late responses are rejected, errors retain only the previous successful results for the same filter, and page disposal aborts pending work. The full ledger is an expandable investigation section, opened automatically for severity/fix deep links or `#all-cves`.

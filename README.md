@@ -231,3 +231,5 @@ Both are public, read-only, require no account/token, return minimal JSON, and
 send `Cache-Control: no-store`. Remote Server failures do not change readiness.
 See [deployment health checks](docs/deployment.md#installation-health-and-readiness)
 for maintenance states, Docker probes, metrics and alert examples.
+
+Security actions: `/vulnerabilities` groups verified installable fixes and priority unpatched alerts, and shows endoflife.date OS/upstream application lifecycle evidence. The full CVE ledger remains available on demand. Public feed refresh can be disabled with `DEBIAN_UPDATER_SECURITY_INTEL_REFRESH_ENABLED=false`; `DEBIAN_UPDATER_SECURITY_INTEL_SEED_DIR` optionally supplies dated public metadata to an isolated preview. See [Security intelligence configuration](docs/configuration.md#security-actions-and-lifecycle-intelligence) for proof requirements, freshness and application coverage.

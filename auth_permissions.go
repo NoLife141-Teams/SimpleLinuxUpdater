@@ -27,7 +27,7 @@ func buildRoutePermissions() map[string]routePermission {
 	}
 	add("operational:read", false, "GET", "/", "/observability", "/vulnerabilities", "/remediation", "/account", "/api/dashboard/events")
 	add("inventory:write", false, "GET", "/manage")
-	add("operational:read", true, "GET", "/api/servers/:name/remediation", "/api/servers/:name/remediation/:plan_id", "/api/servers/:name/remediation/:plan_id/evidence", "/api/vulnerabilities", "/api/vulnerabilities/:id", "/api/vulnerabilities/plan", "/api/servers", "/api/servers/:name/vulnerabilities", "/api/dashboard/summary", "/api/observability/summary", "/api/observability/health-trends", "/api/app-settings/timezone", "/api/package-deferral-snapshots/:revision", "/api/servers/:name/package-deferrals")
+	add("operational:read", true, "GET", "/api/servers/:name/remediation", "/api/servers/:name/remediation/:plan_id", "/api/servers/:name/remediation/:plan_id/evidence", "/api/security-actions", "/api/vulnerabilities", "/api/vulnerabilities/:id", "/api/vulnerabilities/plan", "/api/servers", "/api/servers/:name/vulnerabilities", "/api/dashboard/summary", "/api/observability/summary", "/api/observability/health-trends", "/api/app-settings/timezone", "/api/package-deferral-snapshots/:revision", "/api/servers/:name/package-deferrals")
 	add("logs:read", true, "GET", "/api/jobs/:id", "/api/jobs/:id/logs", "/api/reports/jobs/:id")
 	add("audit:read", true, "POST", "/api/audit-events/export")
 	add("audit:read", true, "GET", "/api/audit-events", "/api/reports/audit/:id")

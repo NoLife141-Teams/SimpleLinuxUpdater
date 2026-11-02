@@ -26,6 +26,8 @@ The format is inspired by Keep a Changelog, and this project uses Semantic Versi
 
 ### Fixed
 
+- Preserve a pending correction-plan search when independent verification refreshes
+  the recorded package evidence in the background.
 - Reload whole-server CVE estimates and package rows after independent verification,
   including partial or failed attempts, so completed fixes leave the current plan.
 - Preserve the displayed Approval Scope and removal confirmation across reads

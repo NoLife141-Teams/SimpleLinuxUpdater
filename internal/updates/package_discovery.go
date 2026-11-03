@@ -9,11 +9,14 @@ import (
 )
 
 type PackageDiscoveryOutcome struct {
-	PendingPackageCount  int                     `json:"pending_package_count"`
-	SecurityPackageCount int                     `json:"security_package_count"`
-	Upgradable           []string                `json:"upgradable"`
-	PendingUpdates       []servers.PendingUpdate `json:"pending_updates"`
-	UpgradePlan          servers.UpgradePlan     `json:"upgrade_plan"`
+	// AvailableUpdatesComplete requires the full APT upgradable list, including
+	// updates omitted by standard-upgrade simulation (for example held packages).
+	AvailableUpdatesComplete bool                    `json:"available_updates_complete"`
+	PendingPackageCount      int                     `json:"pending_package_count"`
+	SecurityPackageCount     int                     `json:"security_package_count"`
+	Upgradable               []string                `json:"upgradable"`
+	PendingUpdates           []servers.PendingUpdate `json:"pending_updates"`
+	UpgradePlan              servers.UpgradePlan     `json:"upgrade_plan"`
 }
 
 type PackageDiscoveryCommandRunner func(SSHConnection, string, io.Reader, time.Duration) (string, string, error)
@@ -56,7 +59,9 @@ func DiscoverPackageUpdates(client SSHConnection, timeout time.Duration, run Pac
 	metadataPending, metadataUpgradable := ParseAptListMetadataEntries(metadataStdout, nil)
 	pending, upgradable, plan := MergeAvailableUpdatesWithStandard(standardPending, standardUpgradable, metadataPending, metadataUpgradable, fullUpgradeOutput, fullUpgradePlanAvailable)
 	plan = enrichKeptBackSecurityUpgradePlan(client, timeout, run, pending, plan)
-	return newPackageDiscoveryOutcome(pending, upgradable, plan), nil
+	outcome := newPackageDiscoveryOutcome(pending, upgradable, plan)
+	outcome.AvailableUpdatesComplete = true
+	return outcome, nil
 }
 
 func newPackageDiscoveryOutcome(pending []servers.PendingUpdate, upgradable []string, plan servers.UpgradePlan) PackageDiscoveryOutcome {

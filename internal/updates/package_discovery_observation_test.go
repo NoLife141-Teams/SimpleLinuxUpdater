@@ -12,8 +12,8 @@ import (
 )
 
 func TestRunUpdateJobPublishesEmptyPlanOnlyAfterSuccessfulDiscovery(t *testing.T) {
-	for _, discoveryFails := range []bool{false, true} {
-		t.Run(map[bool]string{false: "empty plan", true: "discovery failure"}[discoveryFails], func(t *testing.T) {
+	for _, outcome := range []string{"empty plan", "discovery failure", "metadata failure with held packages"} {
+		t.Run(outcome, func(t *testing.T) {
 			now := time.Date(2026, 11, 3, 1, 0, 0, 0, time.UTC)
 			server := servers.Server{Name: "empty-plan", Host: "synthetic.invalid", User: "root"}
 			inventory := []servers.Server{server}
@@ -32,10 +32,18 @@ func TestRunUpdateJobPublishesEmptyPlanOnlyAfterSuccessfulDiscovery(t *testing.T
 						return HostCommandResult{Attempts: 1}, nil
 					},
 					DiscoverPackagesFunc: func(context.Context, HostOperationRequest) (HostPackageDiscoveryResult, error) {
-						if discoveryFails {
+						if outcome == "discovery failure" {
 							return HostPackageDiscoveryResult{Attempts: 1}, errors.New("synthetic discovery failure")
 						}
-						return HostPackageDiscoveryResult{Attempts: 1}, nil
+						runner := &packageDiscoveryCommandRunner{}
+						if outcome == "metadata failure with held packages" {
+							runner.responses = map[string]packageDiscoveryCommandResponse{
+								AptListUpgradableCmd: {stdout: "The following packages have been kept back:\n  held-package\n0 upgraded, 0 newly installed, 0 to remove and 1 not upgraded.\n"},
+								AptListMetadataCmd:   {err: errors.New("synthetic metadata failure")},
+							}
+						}
+						discovery, err := DiscoverPackageUpdates(fakeConnection{}, time.Second, runner.run)
+						return HostPackageDiscoveryResult{Outcome: discovery, Attempts: 1}, err
 					},
 				}),
 				CurrentJobManager: func() *jobs.Manager { return nil },
@@ -49,8 +57,10 @@ func TestRunUpdateJobPublishesEmptyPlanOnlyAfterSuccessfulDiscovery(t *testing.T
 			service.RunUpdateJob(UpdateRunRequest{Server: server, Actor: "tester", Policy: RetryPolicy{MaxAttempts: 1}})
 			status := state.CurrentStatusSnapshot(server.Name)
 			wantStatus, wantObservation := "done", now.Format(time.RFC3339Nano)
-			if discoveryFails {
+			if outcome == "discovery failure" {
 				wantStatus, wantObservation = "error", ""
+			} else if outcome == "metadata failure with held packages" {
+				wantObservation = ""
 			}
 			if status.Status != wantStatus || status.APTMetadata.LastRefreshState != "succeeded" || status.EmptyPackageDiscoveryRefreshAt != wantObservation {
 				t.Fatalf("discovery outcome lost: %+v", status)

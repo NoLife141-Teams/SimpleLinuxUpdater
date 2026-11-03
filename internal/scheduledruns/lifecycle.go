@@ -543,7 +543,7 @@ func (l *Lifecycle) runScan(run policies.Run, policy policies.Policy, server ser
 			if err == nil && completed.Status == jobs.StatusSucceeded && json.Unmarshal([]byte(completed.MetaJSON), &meta) == nil && meta.Discovery != nil {
 				discovery := meta.Discovery.Clone()
 				restored.EmptyPackageDiscoveryRefreshAt = ""
-				if discovery.Empty() {
+				if discovery.Empty() && discovery.AvailableUpdatesComplete {
 					restored.EmptyPackageDiscoveryRefreshAt = aptMetadata.LastRefreshAt
 				}
 				restored.PendingUpdates = discovery.PendingUpdates

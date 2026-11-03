@@ -22,7 +22,7 @@ import (
 )
 
 func TestScheduledScanRetainsObservedAPTRefreshAcrossStatusRestoration(t *testing.T) {
-	for _, outcome := range []string{"succeeded", "partial", "failed", "discovery_failed"} {
+	for _, outcome := range []string{"succeeded", "partial", "failed", "discovery_failed", "discovery_incomplete"} {
 		t.Run(outcome, func(t *testing.T) {
 			db, repository, _, audits := newReconciliationHarness(t)
 			now := time.Date(2026, 10, 30, 0, 0, 0, 0, time.UTC)
@@ -50,7 +50,7 @@ func TestScheduledScanRetainsObservedAPTRefreshAcrossStatusRestoration(t *testin
 					if outcome == "discovery_failed" {
 						return updates.HostPackageDiscoveryResult{}, errors.New("synthetic package discovery failure")
 					}
-					return updates.HostPackageDiscoveryResult{}, nil
+					return updates.HostPackageDiscoveryResult{Outcome: updates.PackageDiscoveryOutcome{AvailableUpdatesComplete: outcome != "discovery_incomplete"}}, nil
 				},
 			}
 			service := updates.NewService(updates.ServiceDeps{
@@ -83,7 +83,7 @@ func TestScheduledScanRetainsObservedAPTRefreshAcrossStatusRestoration(t *testin
 			}
 			status := state.CurrentStatusSnapshot(server.Name)
 			wantRefresh := outcome
-			if outcome == "discovery_failed" {
+			if outcome == "discovery_failed" || outcome == "discovery_incomplete" {
 				wantRefresh = "succeeded"
 			}
 			if status.Status != "done" || status.APTMetadata.LastRefreshState != wantRefresh || status.APTMetadata.LastRefreshAt != now.Format(time.RFC3339Nano) {
@@ -97,7 +97,7 @@ func TestScheduledScanRetainsObservedAPTRefreshAcrossStatusRestoration(t *testin
 				t.Fatalf("last success = %s, want %s", status.APTMetadata.LastSuccessAt, wantSuccess)
 			}
 			wantChecked := now.Format(time.RFC3339Nano)
-			if outcome == "failed" || outcome == "discovery_failed" {
+			if outcome == "failed" || outcome == "discovery_failed" || outcome == "discovery_incomplete" {
 				wantChecked = ""
 			}
 			if status.EmptyPackageDiscoveryRefreshAt != wantChecked {

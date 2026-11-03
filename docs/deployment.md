@@ -209,6 +209,7 @@ preserved during normal operation. During exclusive maintenance `/metrics` and t
 temporarily absent. This preserves the existing Metrics Access Credential
 admission boundary and prevents credential reload/usage writes while persistence
 is being replaced. Use `/readyz` for monitoring these controlled windows.
+The compatibility `vulnerabilities` worker label is always disabled; standalone scanning has been retired.
 Worker labels are bounded to `scheduler`, `host_facts`, `vulnerabilities`, `backup`
 `notifications`, `audit_pruner` and `job_log_pruner`; no accounts, jobs, Servers, tokens, destinations or paths
 are added as labels. Timestamps and observed error counts come from service

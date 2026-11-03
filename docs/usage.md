@@ -851,83 +851,21 @@ change to audit retention, backup storage or database export behavior.
 
 ### Distribution qualification and confidence
 
-Each installed or pending-update finding includes an additive `assessment` object: exact ecosystem, source package/version, vendor status and reason, vendor priority, applicability/confidence, advisory source, source modification timestamp and observation timestamp. Existing JSON/SQLite/backups need no destructive migration; findings without assessment remain unknown and require review. New unavailable details never inherit an old vendor decision as current.
+Each available-update finding carries an `assessment` for its exact distribution release, source package and installed source version. Distribution status and confidence remain separate from generic CVSS ratings. Missing, conflicting, expired or unavailable assessments require review.
 
-Debian OSV `affected[].ecosystem_specific.urgency` is matched to the exact release and source package. `unimportant` is shown as **vendor-qualified**, which can mean no practical security impact or a package outside security support: inspect the vendor rationale, rather than treating it as proof of harmlessness. Known low/medium/high Debian triage plus the source-version match can establish a vendor-confirmed **source-package** match; runtime applicability is unverified. `no-dsa` alone never excludes or resolves a finding, and unknown/unassigned/conflicting triage requires review.
+Debian `unimportant` and explicit not-affected assessments are vendor-qualified, not verified candidate corrections. Debian low/medium/high triage can establish a source-package match. Ubuntu source/release status is corroborated with the official Ubuntu Security Tracker: needed/pending establish source matches; released versions are compared with the installed version; unknown states remain unverified. A source match is not proof of runtime exploitability.
 
-Ubuntu's official OSV conversion lists needs-triage, needed, ignored, pending and deferred entries under affected without preserving their distinction. The bounded advisory worker corroborates those matches with the official Ubuntu Security Tracker for the exact source package and release. `needed`/`pending` establish vendor-confirmed source matches; `not-affected` is vendor-qualified. For `released`, a valid fixed version is compared with the assessed source version. Missing, conflicting, unavailable or other tracker states stay unknown and require review. Ubuntu priority remains separate from CVSS; absence of an OSV fixed event alone never confirms a vulnerability.
+Advisory details are optional enrichment with a shared 30-second budget. A failed lookup does not hide a security update or prevent normal approval. Unverified installed provenance remains explicit even if a candidate comes from an official archive.
 
-Pending-update advisory details are optional enrichment with one shared 30-second budget, in addition to individual HTTP request bounds. A detail-service failure stops further detail requests for that run; evaluated source matches remain available with unknown qualification where details are missing. Fresh approval evidence newer than an accepted installed scan remains current, including a newer assessment of the same package/CVE; it does not overwrite the persisted installed-scan history. A subsequent failed scan still leaves earlier evidence requiring review.
-
-Unverified installed provenance keeps approval matches in the review category even when the distribution marks its own package unimportant. Newly retrieved CVSS evidence retains its observation timestamp independently of the installed scan timestamp; current approval evidence can therefore carry a fresh severity without pretending that the installed inventory has been rescanned.
-
-Dashboard `risk.vulnerability` separates distinct `reported_cves`, current vendor `confirmed_cves`, `needs_review_cves`, `vendor_qualified_cves`, `withdrawn_cves` and package/ID `occurrences`. A CVE on multiple packages counts once; mixed qualifications use confirmed > review > qualified > withdrawn. Current package and assessment evidence are both required for confirmation. Stale/future/missing assessments require review. CVSS remains visible for qualified findings, but does not elevate the Server risk or create a remediation deadline on its own; configured targets apply to current vendor-confirmed source matches. A withdrawn/requalified advisory remains in the ledger, not marked as a package correction.
-
-References: [Debian triage](https://security-team.debian.org/security_tracker.html#severity-levels) and [Ubuntu status mapping](https://documentation.ubuntu.com/security/security-updates/osv/#mapping-ubuntu-cve-tracker-statuses-in-osv).
+Dashboard `risk.update_cves` contains `state`, `correctable`, `incomplete_packages` and `checked_at`. `risk.cves` lists distinct CVEs associated with available updates; the compatibility fleet key `high_risk_cve` counts hosts with such updates. Neither represents a host vulnerability assessment. Installed-scan counters and `risk.vulnerability` are no longer exposed.
 
 ### Published fixes and observed APT availability
 
-Each finding now carries additive `availability` evidence. Publisher fix events
-are matched to the exact distribution ecosystem and source package. All fixed
-source versions and ordered ranges are retained, including reopened intervals;
-the first published version is independent of the currently evaluated source
-candidate and installable binary version. Full Debian ordering respects epochs,
-distribution revisions, binNMUs and backports. A more recent upstream number is
-not a substitute for a distribution fix.
+Candidate evaluation compares the actual installed and proposed distribution source/binary versions. It respects Debian epochs, revisions and backports rather than assuming a newer upstream version is necessary. Publisher fix events and the candidate observed in configured repositories are separate facts; missing evidence never proves that no fix exists.
 
-Candidate addresses, candidate still affected, same/absent candidate and
-unverified candidate remain distinct. A comparison requires complete evaluations,
-a strictly newer binary, a nondecreasing source version, the same source and
-verified official release. The signed InRelease Origin and Codename must match
-the host release, including its official security/updates/backports pockets.
-A downgrade, unproved source/channel migration or changed installed inventory
-cannot establish a candidate fix. Approval comparisons also require a complete
-installed-inventory digest, stable across metadata chunks and the final reread,
-and an unchanged distribution release; invalid or failed digest collection is
-not accepted as proof. An older cached candidate absence cannot
-outvote a newer installed positive query; observation timestamps are preserved.
-Publisher fixes without an addressing observed candidate are shown separately.
-This does not prove that every configured repository/version was enumerated.
+A verified candidate correction requires official provenance, matching installed/candidate identities, a current distribution-confirmed source assessment, an addressing candidate, fresh successful APT refresh evidence and an eligible simulated Approval Scope. Evidence must be within 24 hours. Deferred packages do not count as proposed corrections. Duplicate occurrences count once, and every relevant occurrence within the available plan must be addressed. If a newer APT refresh fails or is partial, the retained plan remains inspectable but its correction count is no longer verified.
 
-APT file ages are separate from fresh CVE queries and advisory downloads. Index
-files older than 24 hours are stale. Recent local files cannot prove refresh
-completeness and remain unknown. The last maintenance refresh outcome is retained
-when observed (including failures and partial retrieval); remote output remains
-in authorized job logs, never in public diagnostic reasons. Process-local refresh
-facts can become unknown after restart; availability recorded with findings is
-durable. File timestamps alone do not invent a latest error or success outcome.
-
-After a verified package checkpoint, optional read-only Package Discovery and
-Upgrade Plan collection has a five-second aggregate budget and is skipped when
-less time remains. Unavailable diagnostics do not discard complete package proofs.
-The four existing Approval Scope values and existing Package Deferral determine
-simulated/blocked/not-selected/unknown installability. Simulated transactions need
-fresh maintenance revalidation and operator permissions, including confirmation
-of removals. Observed holds and negative version pins are retained; a pin on an
-unrelated version does not invent a cause. Missing security repositories,
-dependency conflicts or ESM/subscription access are not inferred from absent
-candidates. An ESM origin/channel is reported only with signed observed evidence.
-
-Use the existing maintenance package scan to refresh indexes with maintenance
-permissions, then explicitly review the plan, repositories and administrator
-policy. The vulnerability scan never runs apt update or changes sources, pins,
-holds, subscriptions, releases or package versions. Candidate evidence never
-closes a finding; only the existing complete stable post-maintenance package
-assessment/removal proofs can do that. Dashboard counts separate published-fix
-occurrences, candidate-addressed occurrences and resolved package findings. The
-current Status list/details display these facts; full-page remediation belongs
-to the separate maintenance workflow.
-
-Existing JSON records need no schema rewrite. Loading legacy observations lazily
-adds unknown availability while preserving old disposition fields. API clients
-should read `availability` for the independent dimensions. `fixed_by_version`
-continues to mean the evaluated candidate source version; publisher versions are
-in `availability.published.fixed_versions`. An absent/missing publisher range
-never proves that no publisher fix exists.
-
-Sources: [Debian version comparison](https://www.debian.org/doc/debian-policy/ch-controlfields.html#version),
-[Ubuntu source-version OSV events](https://documentation.ubuntu.com/security/security-updates/osv/),
-[APT local-cache limitations](https://manpages.debian.org/trixie/apt/apt-cache.8.en.html).
+CVE details and evidence expand inside the existing package drawer. Normal approval still revalidates maintenance and preserves Package Deferral, removal confirmation and drift checks. The app does not maintain a standalone unresolved-finding ledger or declare a host vulnerability-free after an update.
 
 ## Legacy CVE data
 

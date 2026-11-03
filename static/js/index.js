@@ -939,7 +939,7 @@
                     },
                     {
                         key: "high_risk",
-                        label: "Updates with CVEs",
+                        label: "Update CVEs",
                         count: highRiskCount,
                     },
                 ];

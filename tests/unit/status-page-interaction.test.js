@@ -712,11 +712,11 @@ test("Status labels describe Updates with CVEs and facts that need refresh", () 
     const index = fs.readFileSync(path.join(root, "static/js/index.js"), "utf8");
 
     assert.match(template, /<span>Host facts to refresh<\/span>/);
-    assert.match(template, /<span>Updates with CVEs<\/span>/);
+    assert.match(template, /<span>Hosts with CVE updates<\/span>/);
     assert.match(rendering, /Show hosts whose facts need refresh/);
     assert.match(rendering, /Show hosts with CVEs linked to available updates/);
     assert.match(index, /label: "Facts refresh"/);
-    assert.match(index, /label: "Updates with CVEs"/);
+    assert.match(index, /label: "Update CVEs"/);
 });
 
 test("Status keeps one attention surface and defers supporting detail", () => {

@@ -392,7 +392,7 @@ test("attention metrics and filters use the same facts and CVE semantics", async
     const cveMetric = page.locator('[data-metric-filter="high_risk"]');
     await expect(factsMetric).toContainText("Host facts to refresh");
     await expect(factsMetric.locator("strong")).toHaveText("2");
-    await expect(cveMetric).toContainText("Updates with CVEs");
+    await expect(cveMetric).toContainText("Hosts with CVE updates");
     await expect(cveMetric.locator("strong")).toHaveText("1");
 
     const factsFilter = page.locator('[data-fleet-filter="stale_facts"]');
@@ -410,7 +410,7 @@ test("attention metrics and filters use the same facts and CVE semantics", async
         .toEqual(["stale-host", "unknown-host"]);
 
     const cveFilter = page.locator('[data-fleet-filter="high_risk"]');
-    await expect(cveFilter).toContainText("Updates with CVEs");
+    await expect(cveFilter).toContainText("Update CVEs");
     await expect(cveFilter.locator("strong")).toHaveText("1");
     await cveFilter.evaluate((button) => button.click());
     const cveRows = page.locator("#servers-table tbody tr[data-name]");

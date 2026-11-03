@@ -28,6 +28,7 @@ func projectUpdateRisk(status *servers.ServerStatus, now time.Time) DashboardRis
 		risk.PendingPackages = len(status.Upgradable)
 	}
 	ids, correctable := map[string]bool{}, map[string]bool{}
+	refreshFailed := status.APTMetadata.LastRefreshState == "failed" || status.APTMetadata.LastRefreshState == "partial"
 	for _, update := range status.PendingUpdates {
 		if update.Security {
 			risk.SecurityUpdates++
@@ -35,7 +36,7 @@ func projectUpdateRisk(status *servers.ServerStatus, now time.Time) DashboardRis
 		if update.CVEScannedAt != "" && (risk.UpdateCVEs.CheckedAt == "" || update.CVEScannedAt < risk.UpdateCVEs.CheckedAt) {
 			risk.UpdateCVEs.CheckedAt = update.CVEScannedAt
 		}
-		incomplete := update.CVEState != "ready" || update.CVECoverage != "official" || !evidenceFresh(update.CVEScannedAt, now, 24*time.Hour) || (len(update.CVEs) > 0 && len(update.CVEFindings) == 0)
+		incomplete := refreshFailed || update.CVEState != "ready" || update.CVECoverage != "official" || !evidenceFresh(update.CVEScannedAt, now, 24*time.Hour) || (len(update.CVEs) > 0 && len(update.CVEFindings) == 0)
 		for _, finding := range update.CVEFindings {
 			id := strings.TrimSpace(finding.ID)
 			if id == "" {
@@ -44,7 +45,7 @@ func projectUpdateRisk(status *servers.ServerStatus, now time.Time) DashboardRis
 			if finding.Assessment.Qualification() == vulnerabilities.QualificationReview || !evidenceFresh(finding.Assessment.ObservedAt, now, 24*time.Hour) {
 				incomplete = true
 			}
-			fixes := updateCandidateFix(update, finding, now)
+			fixes := !refreshFailed && updateCandidateFix(update, finding, now)
 			if !ids[id] {
 				correctable[id] = fixes
 			} else {

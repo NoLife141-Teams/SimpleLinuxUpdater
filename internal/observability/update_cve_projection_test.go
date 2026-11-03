@@ -43,6 +43,13 @@ func TestAvailableUpdateCVEsCountOnlyVerifiedCandidateCorrections(t *testing.T) 
 			}
 		})
 	}
+	for _, state := range []string{"failed", "partial"} {
+		u := fixture()
+		r := projectUpdateRisk(&servers.ServerStatus{PendingUpdates: []servers.PendingUpdate{u}, APTMetadata: vulnerabilities.APTContext{LastRefreshState: state}}, now)
+		if r.UpdateCVEs.Correctable != 0 || r.UpdateCVEs.State != "incomplete" || r.SecurityUpdates != 1 {
+			t.Fatal("latest APT failure left old candidate corrections verified", r)
+		}
+	}
 	u, v := fixture(), fixture()
 	r := projectUpdateRisk(&servers.ServerStatus{PendingUpdates: []servers.PendingUpdate{u, v}}, now)
 	if r.UpdateCVEs.Correctable != 1 || len(r.CVEs) != 1 {

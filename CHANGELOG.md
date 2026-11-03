@@ -6,10 +6,33 @@ The format is inspired by Keep a Changelog, and this project uses Semantic Versi
 
 ## [Unreleased]
 
+## [v0.5.2] - 2026-11-03
+
 ### Changed
 
 - Scope CVE information to available APT updates and their proposed candidate versions. Replace the installed-package scan inspector with a compact update summary and package-level CVE details, including scheduled discovery outside approval.
 - Retire standalone CVE analysis, global ledger, separate remediation/risk-review APIs and periodic scan/intelligence workers. Preserve legacy SQLite/backup data; old pages redirect to Status and APIs return `410 Gone`.
+
+### Fixed
+
+- Report an empty update plan only after successful, complete package discovery
+  tied to the current APT refresh. Failed discovery and an incomplete simulation
+  fallback no longer appear as "No packages to update".
+- Invalidate candidate CVE correction counts after a failed or partial APT refresh.
+
+### v0.5.2 upgrade notes
+
+- Finish or cancel maintenance, export and verify an encrypted backup, then
+  replace the executable and web assets together. Refresh the APT package plan
+  after upgrading. No new required environment variable, database migration or
+  SSH helper protocol is introduced relative to v0.5.1.
+- Legacy CVE records remain stored and backup-compatible but no longer feed
+  Status counts. Standalone CVE/remediation APIs return `410 Gone`; update
+  integrations to use the normal package discovery and approval workflow.
+  Former scan/security-intelligence environment settings no longer start workers.
+- Rollback restores the pre-upgrade archive into a separate old-version
+  installation. See the [upgrade guide](docs/upgrading.md); earlier upgrades
+  retain the applicable requirements below.
 
 ## [v0.5.1] - 2026-11-02
 

@@ -1,39 +1,52 @@
 [Documentation map](README.md) | [Deployment](deployment.md) | [Accounts and API](personal-api.md) | [CI](ci-and-release.md)
 
-# Upgrading to v0.5.1
+# Upgrading to v0.5.2
 
-The v0.5.1 preparation PR creates no tag, release or registry image. Use its
-versioned download commands only after publication, with the image digest from
-that release's `publication.json`.
+Use the image digest recorded in the published release's `publication.json`,
+or download the matching versioned binary archive and checksum list.
 
-## From v0.5.0
+## From v0.5.1
 
 Export and verify a backup, then use the Docker or binary replacement procedure
-below. Replace the executable and web assets together. Startup adds the
-`remediation_servers`, `remediation_plans` and `vulnerability_risk_reviews`
-tables; CVE observations gain additive JSON evidence. Existing accounts, sessions,
-policies, secrets and package deferrals retain their contracts. There is no new
-required environment variable or SSH helper protocol change.
+below. Replace the executable and web assets together. Existing accounts,
+sessions, policies, secrets and package deferrals retain their contracts.
+v0.5.2 introduces no new database migration, required environment variable or
+SSH helper protocol relative to v0.5.1.
 
-Legacy CVE records do not establish current qualification, candidate availability,
-runtime applicability or resolution. Run a fresh installed vulnerability scan,
-review **CVE analysis → Available fixes**, prepare the per-Server transaction
-and explicitly approve its Approval Scope. Independent post-maintenance scanning
-must verify package outcomes; update success alone does not resolve a CVE.
-A failed verification can be retried without repeating the update.
+CVE information now accompanies only available APT updates on Status and in the
+package drawer. Standalone CVE analysis, its ledger and independent remediation
+workspaces are retired. Old page links redirect to Status and authenticated
+retired APIs return `410 Gone`. Update integrations accordingly. Former
+`DEBIAN_UPDATER_VULNERABILITY_SCAN_*`, `DEBIAN_UPDATER_VULNERABILITY_TARGET_*`
+and `DEBIAN_UPDATER_SECURITY_INTEL_*` settings no longer start background work.
+Normal scheduled APT discovery remains available.
+
+Legacy CVE observations stay stored and backup-compatible but do not feed
+current Status counts. Refresh the APT package plan after upgrading. Candidate
+correction counts require current, qualified evidence; unavailable CVE data
+remains incomplete and does not prevent approval of a known security update.
+The update plan does not claim a complete inventory of installed vulnerabilities
+or runtime exploitability.
 
 Finish or cancel pending maintenance before stopping the old process. Interrupted
 approvals require fresh discovery and approval. Rollback restores the pre-upgrade
 backup into a separate old-version installation; do not run the old executable
-on the upgraded database. See the [v0.5.1 qualification record](release-v0.5.1-readiness.md)
-for measured checks and limits.
+on the upgraded database.
+
+## From v0.5.0
+
+Also account for the additive remediation-history/risk-review tables and package
+evidence introduced in v0.5.1. Those records remain retained in v0.5.2, while the
+standalone workflow is retired as described above. The historical
+[v0.5.1 qualification record](release-v0.5.1-readiness.md) describes that release's
+measured checks and limits; it does not qualify v0.5.2.
 
 ## From v0.4.16 or earlier
 
 Also follow the [v0.5.0 compatibility notes](../CHANGELOG.md#v050---2026-10-29)
 for account/session migration, policy changes and the protocol 3 managed helper.
 The pinned automated old-version qualification below remains based on published
-v0.4.16; it is not a separate v0.5.0-to-v0.5.1 migration proof.
+v0.4.16; it is not a separate v0.5.1-to-v0.5.2 migration proof.
 
 ## Before changing the application
 
@@ -84,7 +97,7 @@ Download the target platform archive and its checksum list from the same
 versioned GitHub Release. On Linux amd64, in a new staging directory:
 
 ```bash
-VERSION='0.5.1'
+VERSION='0.5.2'
 ARCHIVE="SimpleLinuxUpdater_${VERSION}_linux_amd64.tar.gz"
 BASE="https://github.com/NoLife141-Teams/SimpleLinuxUpdater/releases/download/v${VERSION}"
 curl --fail --location --output "$ARCHIVE" "$BASE/$ARCHIVE"
@@ -110,9 +123,10 @@ needed by an operator using the archive.
 ## Confirm the migrated installation
 
 - `/setup` stays closed. The initial account keeps its ID, username, Argon2id
-  password hash and password, and becomes administrator. Sign in again once:
-  pre-migration browser sessions are invalidated. Newly created sessions survive
-  subsequent application restarts. Named reader/operator/admin accounts,
+  password hash and password. When upgrading from v0.4.16 or earlier it becomes
+  administrator, and pre-migration browser sessions are invalidated once. Existing
+  v0.5.x sessions retain their normal lifecycle across application restarts.
+  Named reader/operator/admin accounts,
   optional TOTP MFA and scoped personal API tokens are documented in
   [Accounts and API](personal-api.md); metrics authentication is separate.
 - Check inventory, disabled state, tags, SSH password/key markers and host-key

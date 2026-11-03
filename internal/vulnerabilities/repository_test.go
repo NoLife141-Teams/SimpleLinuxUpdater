@@ -35,6 +35,8 @@ func TestObservationContinuityResolutionAndReappearance(t *testing.T) {
 		}
 		return o
 	}
+	scan.RuntimeContext = RuntimeContext{Virtualization: "container", KernelRelease: "synthetic-external", Source: "injected-session", ObservedAt: scan.FinishedAt}
+	scan.Findings[0].Runtime = ClassifyRuntime("libssl3", "1", "openssl", "1", scan.RuntimeContext)
 	first := save(scan)
 	scan.FinishedAt = "2026-10-02T00:00:00Z"
 	second := save(scan)
@@ -60,13 +62,14 @@ func TestObservationContinuityResolutionAndReappearance(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if restarted.Findings[0].FirstSeen != first.Findings[0].FirstSeen || restarted.Findings[0].ResolvedAt != "" {
+	if restarted.Accepted.RuntimeContext.Virtualization != "container" || restarted.Findings[0].Runtime.Source != "injected-session" || restarted.Findings[0].FirstSeen != first.Findings[0].FirstSeen || restarted.Findings[0].ResolvedAt != "" {
 		t.Fatal(restarted)
 	}
 	scan.State = "complete"
 	scan.Unknown = 0
 	scan.Evaluated = 1
 	scan.FinishedAt = "2026-10-04T00:00:00Z"
+	scan = evidenceScan("resolve", scan.FinishedAt, []Package{{Name: "libssl3", Version: "2"}}, nil)
 	if resolved := save(scan); resolved.Findings[0].ResolvedAt != scan.FinishedAt {
 		t.Fatal(resolved)
 	}
@@ -86,7 +89,7 @@ func TestObservationContinuityResolutionAndReappearance(t *testing.T) {
 		t.Fatal(err)
 	}
 	renamed, err := repository.Load(ctx, "renamed")
-	if err != nil || len(renamed.Findings) != 1 {
+	if err != nil || len(renamed.Findings) != 1 || renamed.Findings[0].Runtime.Source != "injected-session" {
 		t.Fatalf("%+v %v", renamed, err)
 	}
 	tx, err = db.Begin()
@@ -189,5 +192,44 @@ func TestSaveReconciledRequiresTheOriginalAttempt(t *testing.T) {
 				t.Fatalf("overwrote changed observation: %+v %v", next, err)
 			}
 		})
+	}
+}
+
+func TestAvailabilityPersistenceAndLegacyLazyMigration(t *testing.T) {
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "availability.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := EnsureSchema(db); err != nil {
+		t.Fatal(err)
+	}
+	legacy := `{"last_attempt":{"state":"partial","findings":[{"id":"CVE-2026-1000","disposition":"no_fix_available"}]},"findings":[{"id":"CVE-2026-1000","package":"example","disposition":"no_fix_available"}]}`
+	if _, err := db.Exec(`INSERT INTO server_vulnerability_observations VALUES (?,?)`, "synthetic", legacy); err != nil {
+		t.Fatal(err)
+	}
+	r := Repository{DB: func() *sql.DB { return db }}
+	o, err := r.Load(t.Context(), "synthetic")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if o.Findings[0].Disposition != "no_fix_available" || o.Findings[0].Availability.Published.State != "unknown" || o.LastAttempt.Findings[0].Availability.CandidateState != "unverified" {
+		t.Fatal(o)
+	}
+	all, err := r.All(t.Context())
+	if err != nil || all["synthetic"].Findings[0].Availability.Published.State != "unknown" {
+		t.Fatal(all, err)
+	}
+	a := FixAvailability{Published: PublishedFix{State: "published", Ecosystem: "Debian:12", SourcePackage: "example", FixedVersions: []string{"1.0-1+deb12u1", "1.0-1+deb12u3"}, Ranges: []FixRange{{Type: "ECOSYSTEM", Events: []VersionEvent{{Introduced: "0"}, {Fixed: "1.0-1+deb12u1"}, {Introduced: "1.0-1+deb12u2"}, {Fixed: "1.0-1+deb12u3"}}}}}, CandidateState: "same", APT: APTContext{State: "stale", LastRefreshState: "failed", LastRefreshError: "Recorded refresh failed"}}
+	scan := Scan{State: "partial", Scope: "installed_packages", FinishedAt: "2026-10-30T00:00:00Z", Findings: []Finding{{ID: "CVE-2026-1000", Package: "example", Availability: &a}}}
+	if _, err := r.Save(t.Context(), "synthetic", scan); err != nil {
+		t.Fatal(err)
+	}
+	o, err = r.Load(t.Context(), "synthetic")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(o.Findings[0].Availability.Published.Ranges[0].Events) != 4 || o.Findings[0].Availability.APT.LastRefreshState != "failed" || o.Findings[0].ResolvedAt != "" {
+		t.Fatal(o)
 	}
 }

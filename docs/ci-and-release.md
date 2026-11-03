@@ -6,6 +6,9 @@ tests. Go tests, Go quality, Playwright and Docker must succeed when selected,
 and must be skipped otherwise. The bounded upgrade qualification must also
 succeed on every PR/push. Pushes to `main` run all checks. CodeQL remains
 a separate GitHub protection.
+The quality job also cross-compiles Darwin amd64 recovery support, so an
+unavailable platform constant fails PR CI before archive publication. The release
+preparation and release workflow still build all five distribution targets.
 The helper regression tests use Bash and Python 3 on Linux/macOS and skip on
 Windows, matching the existing release-lineage script tests.
 

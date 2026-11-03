@@ -479,6 +479,9 @@ func TestScheduledRunLifecycleScanOnlyFinalizesWithoutWatcherAndRestoresRuntimeS
 		t.Fatalf("result_json = %s, want openssl discovery", current.ResultJSON)
 	}
 	status := deps.ServerState.CurrentStatusSnapshot(server.Name)
+	if status == nil || len(status.PendingUpdates) != 1 || status.PendingUpdates[0].Package != "openssl" || len(status.Upgradable) != 1 {
+		t.Fatal("scheduled APT discovery is not available for inspection", status)
+	}
 	if status == nil || status.Status != "idle" || status.Logs != "previous logs" {
 		t.Fatalf("runtime status = %+v, want restored previous idle snapshot", status)
 	}

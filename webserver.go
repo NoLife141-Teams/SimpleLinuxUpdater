@@ -1155,6 +1155,15 @@ func handleDashboardSummaryWithService(c *gin.Context, service *ObservabilitySer
 	if c.Request != nil {
 		ctx = c.Request.Context()
 	}
+	omitFindings := false
+	if raw := c.Query("include_vulnerability_findings"); raw != "" {
+		v, err := strconv.ParseBool(raw)
+		if err != nil {
+			c.JSON(400, gin.H{"error": "invalid include_vulnerability_findings value"})
+			return
+		}
+		omitFindings = !v
+	}
 	includeCommandHistory := contextAllows(c, "logs:read")
 	if raw := strings.TrimSpace(c.Query("include_command_history")); raw != "" {
 		parsed, err := strconv.ParseBool(raw)
@@ -1165,7 +1174,8 @@ func handleDashboardSummaryWithService(c *gin.Context, service *ObservabilitySer
 		includeCommandHistory = parsed && contextAllows(c, "logs:read")
 	}
 	summary, err := service.BuildDashboardSummaryContextWithOptions(ctx, c.Query("window"), now(), observabilitypkg.DashboardSummaryOptions{
-		OmitCommandHistory: !includeCommandHistory,
+		OmitCommandHistory:        !includeCommandHistory,
+		OmitVulnerabilityFindings: omitFindings,
 	})
 	if err != nil {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
@@ -1874,6 +1884,13 @@ func registerProtectedPageRoutes(r *gin.Engine) {
 		c.HTML(http.StatusOK, "manage.html", operatorShellForContext(c, "manage", "Manage Servers"))
 	})
 
+	// Bookmarks from the retired standalone scanner return to maintenance.
+	for _, path := range []string{"/vulnerabilities", "/vulnerabilities/all", "/remediation"} {
+		r.GET(path, func(c *gin.Context) {
+			setNoStoreHeaders(c)
+			c.Redirect(http.StatusSeeOther, "/")
+		})
+	}
 	r.GET("/observability", func(c *gin.Context) {
 		setNoStoreHeaders(c)
 		c.HTML(http.StatusOK, "observability.html", operatorShellForContext(c, "observability", "Observability"))
@@ -2266,9 +2283,17 @@ func registerServerAndActionRoutes(r *gin.Engine, deps AppDeps) {
 		c.JSON(http.StatusOK, gin.H{"has_key": status.Configured})
 	})
 
-	r.GET("/api/servers/:name/vulnerabilities", func(c *gin.Context) { handleVulnerabilityObservation(c, deps) })
-	r.POST("/api/servers/:name/vulnerabilities/scan", func(c *gin.Context) { handleVulnerabilityScan(c, deps) })
-	r.POST("/api/servers/:name/vulnerabilities/scans/:scan_id/cancel", func(c *gin.Context) { handleCancelVulnerabilityScan(c, deps) })
+	// Explicit retirement prevents old clients from launching host-wide scans.
+	retiredCVE := func(c *gin.Context) {
+		setNoStoreHeaders(c)
+		c.JSON(http.StatusGone, gin.H{"error": "Standalone vulnerability scanning has been retired. CVE information is included with available package updates."})
+	}
+	for _, path := range []string{"/api/security-actions", "/api/vulnerabilities", "/api/vulnerabilities/:id", "/api/vulnerabilities/plan", "/api/servers/:name/remediation", "/api/servers/:name/remediation/:plan_id", "/api/servers/:name/remediation/:plan_id/evidence", "/api/servers/:name/vulnerabilities"} {
+		r.GET(path, retiredCVE)
+	}
+	for _, path := range []string{"/api/servers/:name/remediation/prepare", "/api/servers/:name/remediation/:plan_id/retry", "/api/servers/:name/vulnerabilities/reviews", "/api/servers/:name/vulnerabilities/scan", "/api/servers/:name/vulnerabilities/scans/:scan_id/cancel"} {
+		r.POST(path, retiredCVE)
+	}
 
 	r.POST("/api/servers/:name/facts/refresh", func(c *gin.Context) {
 		handleServerFactsRefreshWithDeps(c, deps)

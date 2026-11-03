@@ -6,47 +6,178 @@ The format is inspired by Keep a Changelog, and this project uses Semantic Versi
 
 ## [Unreleased]
 
-### Added
-
-- Isolated, provenance-pinned v0.4.16 upgrade qualification with real legacy
-  backup export, candidate restore, restart continuity, diagnostic failure
-  control and redacted CI/release reports.
-
-- Reproducible synthetic Dashboard Projection measurements for 10, 100 and 1,000
-  Servers, authenticated API and browser benchmarks, SSE reconnection evidence,
-  and CI budgets for payloads, SQL statements and allocations.
-
-- Stable named local accounts with reader/operator/administrator permissions,
-  optional confirmed TOTP MFA and single-use recovery codes, scoped expiring
-  personal API tokens, and a versioned cookie-free operational API contract.
-- Account UI for identities, role/disable commands, MFA, personal tokens and
-  isolated sessions; targeted password/MFA recovery through the existing locked CLI.
-- Persistent Server and policy package deferrals with mandatory reasons and
-  expiration, authenticated audit attribution, cumulative policy inheritance,
-  Manage/Admin controls, and security exposure that remains visible.
-- Executable plans for all four Approval Scope choices with exact transaction
-  identities, renewed consent on deferral drift/expiry, and a protocol 3 helper
-  guard that checks dependencies and removals before dpkg starts.
-- Immutable deferral snapshots that preserve complete rule evidence when the
-  bounded audit preview is truncated, including across backup restoration.
-- One-time local-date and monthly numeric/last-day policy schedules, short-month
-  diagnostics, explicit canary selection, and revision/stage details in Admin.
-- Durable one-time consumption and accepted rollout manifests that preserve
-  members and policy revision across edits, restarts, timezone changes and backups.
+## [v0.5.3] - 2026-11-03
 
 ### Changed
 
-- Isolate remaining Admin, Status and Manage browser effects behind explicit
-  adapter lifecycles, preserving existing interaction owners and appearance.
-- Split browser scenarios by domain and run each against an independent
-  disposable installation, including password/session and parallel-worker tests.
-- Preserve accepted inventory-import result focus through viewport changes
-  while protecting newer navigation and editor focus.
+- Present available updates in a searchable, paginated list with a full-width package inspector. Keep CVE coverage limitations in a quiet shared summary, paginate CVE references, and open one source proof at a time while preserving approval scopes and source qualifications.
+- Reduce spacing in the available-package list and show 15 packages per page, while preserving comfortable mobile touch targets.
+- Provide Previous and Next controls above and below package and CVE lists.
 
-- Status renders reuse a snapshot within one synchronous render, bulk previews
-  avoid unrelated fleet log/package projections, and SSE reconnections recover
-  active/inspected jobs plus jobs followed before a connection loss. Terminal
-  job output remains available on demand.
+### Fixed
+
+- Keep package and CVE lists still during background refreshes instead of replaying their entrance animation after pagination.
+
+### v0.5.3 upgrade notes
+
+- No new database migration, required environment variable, SSH helper protocol or dependency change relative to v0.5.2. Replace the executable and web assets together and retain existing data paths.
+- Finish or cancel maintenance before restarting. Interrupted approvals require a fresh APT check and renewed approval. Package search and pagination do not change Approval Scope.
+- CVE information remains limited to available APT updates. Missing source evidence does not establish that a package is vulnerable or safe. See [upgrade and rollback guidance](docs/upgrading.md).
+
+## [v0.5.2] - 2026-11-03
+
+### Changed
+
+- Scope CVE information to available APT updates and their proposed candidate versions. Replace the installed-package scan inspector with a compact update summary and package-level CVE details, including scheduled discovery outside approval.
+- Retire standalone CVE analysis, global ledger, separate remediation/risk-review APIs and periodic scan/intelligence workers. Preserve legacy SQLite/backup data; old pages redirect to Status and APIs return `410 Gone`.
+
+### Fixed
+
+- Report an empty update plan only after successful, complete package discovery
+  tied to the current APT refresh. Failed discovery and an incomplete simulation
+  fallback no longer appear as "No packages to update".
+- Invalidate candidate CVE correction counts after a failed or partial APT refresh.
+
+### v0.5.2 upgrade notes
+
+- Finish or cancel maintenance, export and verify an encrypted backup, then
+  replace the executable and web assets together. Refresh the APT package plan
+  after upgrading. No new required environment variable, database migration or
+  SSH helper protocol is introduced relative to v0.5.1.
+- Legacy CVE records remain stored and backup-compatible but no longer feed
+  Status counts. Standalone CVE/remediation APIs return `410 Gone`; update
+  integrations to use the normal package discovery and approval workflow.
+  Former scan/security-intelligence environment settings no longer start workers.
+- Rollback restores the pre-upgrade archive into a separate old-version
+  installation. See the [upgrade guide](docs/upgrading.md); earlier upgrades
+  retain the applicable requirements below.
+
+## [v0.5.1] - 2026-11-02
+
+### Added
+
+- Prepare immutable per-Server remediation transactions with fresh APT simulation,
+  explicit Approval Scope, package-removal confirmation and drift reapproval;
+  independently verify package outcomes, retain remaining findings and retry a
+  failed verification without replaying maintenance. Persist attributed risk
+  reviews without suppressing exposure or deferring packages.
+- Start CVE analysis with bounded queues of installable security fixes and priority unpatched alerts, retaining the full ledger on demand and explicit unknown/stale evidence. Track publisher disclosure dates and persistent critical alerts, correlate CISA KEV, and show dated endoflife.date OS/upstream application support calendars without conflating distro backports or extended entitlements.
+- Corroborate Ubuntu OSV matches with exact source/release status from the official Ubuntu Security Tracker within the existing bounded advisory enrichment worker.
+
+### Changed
+
+- Make CVE actions easier to scan with compact server/component/status columns, readable support dates, contextual detail controls and a lighter header. Retain per-row accessible identities, dated evidence and explicit unknown/partial states.
+
+- Simplify CVE analysis into three decision tabs with shared server/search filters, active-queue pagination, inline full-width evidence, and scan-quality warnings grouped by host. Move the complete investigation ledger to `/vulnerabilities/all`, retaining old deep links and the existing correction/approval safeguards.
+
+### Fixed
+
+- Preserve a pending correction-plan search when independent verification refreshes
+  the recorded package evidence in the background.
+- Reload whole-server CVE estimates and package rows after independent verification,
+  including partial or failed attempts, so completed fixes leave the current plan.
+- Preserve the displayed Approval Scope and removal confirmation across reads
+  and rejected commands for the same immutable plan; reset both on a new plan.
+- Refresh changed verification admission messages while an operation remains
+  queued, and clear recovered read errors without hiding rejected commands.
+- Keep CVE action and ledger labels in English, consistent with the rest of the application, including accessible names and calendar date formatting.
+
+- Recover recognized application lifecycle evidence from legacy recorded installed CVE findings when raw inventory is missing or trimmed, with explicit partial historical provenance and unknown conflicting versions.
+- Separate source-package CVE matches from observed binary/kernel applicability,
+  retain header and inactive-image signals, and identify external container-host
+  kernel responsibility with explicit OS-package-only scan scope.
+
+- Resolve installed CVE findings only from complete stable per-package evidence,
+  independently of unrelated unknown packages or advisory enrichment failures;
+  retain closure proofs and distinguish current, unverified and resolved history.
+
+- Preserve release/source-specific distribution triage separately from CVSS in
+  installed and approval CVE scans; show current vendor-confirmed, review,
+  qualified and withdrawn matches without inventing runtime exploitability.
+
+### v0.5.1 upgrade notes
+
+- From v0.5.0, startup adds remediation-history/risk-review tables and additive
+  CVE evidence. Existing records stay readable; missing evidence remains unknown
+  until a fresh scan. No new required environment variable or helper protocol.
+- Back up and verify before replacing the executable and web assets together.
+  Finish or cancel pending maintenance first; interrupted approval needs a fresh
+  plan. Rollback restores the pre-upgrade archive into a separate old-version
+  installation. Earlier upgrades retain the v0.5.0 requirements below.
+- See the [v0.5.1 qualification record](docs/release-v0.5.1-readiness.md).
+  Preparation does not tag, publish or deploy a release.
+
+## [v0.5.0] - 2026-10-29
+
+### Added
+
+- Named local accounts with reader/operator/administrator permissions, optional
+  confirmed TOTP MFA, single-use recovery codes, scoped expiring personal API
+  tokens, and a versioned operational API with an OpenAPI contract.
+- Account administration, isolated sessions and exclusive local CLI recovery
+  with atomic credential/session revocation and audit attribution.
+- Persistent installed-package vulnerability scans with coverage and freshness,
+  severity, remediation objectives, cancellation and restart reconciliation;
+  packages without an available upgrade remain visible.
+- Opt-in verified encrypted automatic backups with daily/weekly scheduling,
+  bounded retention, restore suspension and an administrator archive catalog
+  for downloading and reverifying registered encrypted archives.
+- Persistent operational notification conditions, delivery diagnostics and
+  optional grouped reminders for approval, reboot and backup events.
+- Versioned per-Server/tag application post-check profiles for bounded remote
+  systemd and HTTP health probes, with blocking and warning-only outcomes.
+- CSV/JSON inventory import with normalized previews, row selection, atomic
+  creation and disabled-by-default entries; atomic bulk tag/availability
+  administration for up to 1,000 explicitly selected Servers.
+- Inventory JSON v1 and complete filtered audit JSON/CSV exports without secrets.
+- Managed SSH helper export from binaries/Docker and read-only onboarding
+  diagnostics that validate prerequisites before saving inventory and trust.
+- Expiring Server and policy Package Deferrals with mandatory reasons,
+  authenticated authors, cumulative inheritance and immutable audit snapshots.
+- Executable deferral-safe plans for all four Approval Scope choices, renewed
+  consent on drift/expiry, and a protocol 3 root-helper guard that checks direct,
+  dependency and removal changes before dpkg starts.
+- One-time and monthly numeric/last-day schedules, explicit canary selection,
+  short-month diagnostics and durable rollout membership across edits/restarts.
+- Public minimal `/healthz` and `/readyz` probes and authenticated installation
+  diagnostics, plus Docker health probes and deployment guidance.
+- Reproducible Dashboard Projection measurements for 10, 100 and 1,000 Servers,
+  authenticated API/browser/SSE benchmarks and payload/SQL/allocation CI budgets.
+- Provenance-pinned v0.4.16 migration, restart and real encrypted-backup
+  export/restore qualification, with an independent diagnostic negative control.
+- Real isolated SSH/APT qualification on Debian 13 and Ubuntu 24.04 in PR CI;
+  the extended matrix covers Debian 12 and Ubuntu 22.04/26.04 too. Package
+  Deferral positive/negative controls exercise source-generated helper bytes.
+
+### Changed
+
+- Isolate Admin, Status and Manage browser effects behind explicit adapter
+  lifecycles and run browser scenarios against independent disposable installs.
+- Reuse Status snapshots within a render, bound bulk preview work, and recover
+  followed jobs after SSE reconnects; unopened terminal output stays on demand.
+- Align responsive navigation, form actions, confirmations, file inputs, dates
+  and informative metadata contrast across Status, Manage, Admin and Account.
+- Return role-aware access-refusal pages with permitted navigation for human
+  pages while preserving the operational API authorization contract.
+- Update Playwright and pinned Docker setup/login actions; share a bounded
+  startup-readiness wait across the disposable container and VM CI harnesses.
+
+### Fixed
+
+- Restore macOS release compilation for administrator recovery by using the BSD
+  input-flush mask without relying on an unavailable Go binding constant; CI now
+  cross-compiles that recovery path before release.
+- Preserve accepted inventory-import focus through viewport changes without
+  overriding newer navigation/editor focus, and correct mobile layout overflow.
+- Make Account commands and sensitive-action reauthentication reliable, including
+  form feedback and targeted session isolation.
+- Bound admitted JSON requests and backup transfers without admitting partial
+  mutations or weakening restore validation.
+- Keep first-connection SSH diagnostics out of the disposable VM ownership
+  marker check while retaining strict fixture identity verification.
+- Prevent transient startup HTTP 503 responses from failing SSH/APT CI before
+  the disposable application leaves maintenance mode; permanent errors, exited
+  containers and exhausted startup deadlines still fail qualification.
 
 ### Upgrade notes
 
@@ -75,6 +206,10 @@ The format is inspired by Keep a Changelog, and this project uses Semantic Versi
   create a new policy for another operation. See the [schedule and recovery
   rules](docs/usage.md#policy-schedule-cadences-and-recovery), including the
   conservative first observation of rollouts active before upgrade.
+
+Pre-tag qualification and limitations are recorded in the
+[v0.5.0 release readiness record](docs/release-v0.5.0-readiness.md).
+Preparation does not create a tag, publish a GitHub Release or push an image.
 
 ## [v0.4.16] - 2026-10-23
 

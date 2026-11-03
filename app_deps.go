@@ -13,12 +13,15 @@ import (
 	internaljobs "debian-updater/internal/jobs"
 	maintenancepkg "debian-updater/internal/maintenance"
 	policypkg "debian-updater/internal/policies"
+	"debian-updater/internal/securityintel"
 	serverpkg "debian-updater/internal/servers"
 
 	"github.com/alexedwards/scs/v2"
 )
 
 type AppDeps struct {
+	SecurityIntel       *securityintel.Catalog
+	Remediation         *remediationLifecycle
 	InstallationHealth  *installationHealth
 	PackageDeferralGate *sync.RWMutex
 	BackupAutomation    *backupAutomation

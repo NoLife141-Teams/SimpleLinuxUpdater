@@ -121,3 +121,16 @@ _Avoid_: Global key, fallback key, shared key
 **Host Maintenance Session**:
 A bounded, authenticated, host-key-verified execution context for performing maintenance capabilities against one server, including SSH connection establishment, command timeout, reconnect, retry accounting, connection-bound pre-update and post-update health inspection, versioned per-Server/tag application expectations with bounded read-only probes, package discovery, host-fact collection, and transport closure, while the invoking application service owns action lifecycle, approval and blocking policy, jobs, audit, and persistence.
 _Avoid_: SSH helper bundle, update connection
+
+**Distribution Vulnerability Assessment**:
+In the active product this enriches only available APT package updates; standalone installed-package scanning and its workspaces are retired. Historical scan records remain backup-compatible and do not contribute to Dashboard Projection.
+The source-attributed evaluation of a vulnerability for an exact distribution ecosystem, source package and version, including vendor triage/priority, applicability/confidence and observation freshness. It is distinct from CVSS, candidate availability, runtime exploitability and resolution of an installed-package finding. Missing or stale assessments require review; vendor-qualified and withdrawn advisories remain visible without being represented as package fixes.
+_Avoid_: CVSS verdict, confirmed vulnerability from an OSV ID alone
+
+**Package Vulnerability Evaluation Proof**:
+The admitted Server/scan-bound evidence that an exact installed binary/source identity was stably collected and completely assessed against a specific distribution source. A valid package proof can resolve that package's absent findings independently of unrelated coverage; removal requires complete stable inventory evidence. Source triage, severity, runtime applicability and maintenance success remain distinct.
+_Avoid_: Whole-host success as package proof, update success as CVE resolution
+
+**Component Runtime Applicability**:
+The conservative interpretation of binary/source identity and bounded read-only Host Maintenance Session kernel, installed-image ownership and virtualization facts into observed active, inactive, external or unknown execution, component responsibility and review action. Source/vendor qualification, package finding resolution, execution, exposure and exploitability remain separate; development headers never prove running-kernel exposure, and unavailable or stale context remains unknown.
+_Avoid_: Runtime CVSS verdict, confirmed exploitability from source match

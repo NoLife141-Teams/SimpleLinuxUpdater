@@ -131,7 +131,7 @@ test("pending updates drawer keeps scroll position after server refresh", async 
     await expect(
         page
             .locator("#selected-host-panel")
-            .getByRole("button", { name: "Update" }),
+            .getByRole("button", { name: "Update", exact: true }),
     ).toHaveCount(0);
     await expect(page.locator("#approval-triage-table tbody")).toContainText(
         "demo-host",
@@ -195,103 +195,22 @@ test("pending updates drawer keeps scroll position after server refresh", async 
         .click();
     const pendingPanel = page.locator("#drawer-panel-pending");
     await expect(pendingPanel).toHaveClass(/active/);
-    await expect(pendingPanel.locator("tbody tr")).toHaveCount(80);
-    await expect
-        .poll(() =>
-            pendingPanel.evaluate((el) => el.scrollHeight - el.clientHeight),
-        )
-        .toBeGreaterThan(0);
-    const pendingTableLayout = await pendingPanel.evaluate((panel) => {
-        const approvalActions = document.querySelector(
-            "#status-drawer-approval-actions",
-        );
-        const heading = panel.querySelector(".pending-updates > h4");
-        const summary = panel.querySelector(".pending-summary");
-        const wrap = panel.querySelector(".pending-updates > .table-wrap");
-        const riskHeader = wrap
-            .querySelector("th:last-child")
-            .getBoundingClientRect();
-        const approvalRect = approvalActions.getBoundingClientRect();
-        const headingRect = heading.getBoundingClientRect();
-        const summaryRect = summary.getBoundingClientRect();
-        const wrapRect = wrap.getBoundingClientRect();
-        return {
-            approvalToHeadingGap: headingRect.top - approvalRect.bottom,
-            headingToSummaryGap: summaryRect.top - headingRect.bottom,
-            gapAbove: wrapRect.top - summaryRect.bottom,
-            clientWidth: wrap.clientWidth,
-            scrollWidth: wrap.scrollWidth,
-            riskRight: riskHeader.right,
-            visibleRight: wrapRect.right,
-        };
-    });
-    expect(
-        Math.abs(
-            pendingTableLayout.approvalToHeadingGap -
-                pendingTableLayout.headingToSummaryGap,
-        ),
-        "approval controls, pending heading, and summary must use the same vertical spacing",
-    ).toBeLessThanOrEqual(1);
-    expect(
-        pendingTableLayout.gapAbove,
-        "pending table must be separated from its summary",
-    ).toBeGreaterThanOrEqual(9);
-    expect(
-        pendingTableLayout.scrollWidth,
-        "pending updates must fit without horizontal scrolling",
-    ).toBeLessThanOrEqual(pendingTableLayout.clientWidth + 1);
-    expect(
-        pendingTableLayout.riskRight,
-        "the Risk column must remain visible inside the drawer",
-    ).toBeLessThanOrEqual(pendingTableLayout.visibleRight + 1);
-
-    await pendingPanel.evaluate((el) => {
-        el.scrollTop = 520;
-    });
-    const beforeRefresh = await pendingPanel.evaluate((el) => el.scrollTop);
-    expect(beforeRefresh).toBeGreaterThan(0);
-
-    servers = [
-        makeServer(
-            "demo-host",
-            "pending_approval",
-            makePendingUpdates(80).map((update) => ({
-                ...update,
-                cve_state: "ready",
-            })),
-            { tags: ["prod"] },
-        ),
-        servers[1],
-    ];
-    await page.evaluate(() => window.fetchServers());
-
-    await expect
-        .poll(() => pendingPanel.evaluate((el) => el.scrollTop))
-        .toBeGreaterThanOrEqual(beforeRefresh - 1);
-
+    await expect(pendingPanel.locator("tbody tr")).toHaveCount(15);
+    await pendingPanel.getByRole("navigation", { name: "Packages pages" }).getByRole("button", { name: "Next →", exact: true }).click();
+    await expect(pendingPanel.getByRole("navigation", { name: "Packages pages" })).toContainText("16–30 of 80 packages");
+    await page.setViewportSize({ width: 1697, height: 480 });
+    await expect.poll(() => pendingPanel.evaluate(el => el.scrollHeight - el.clientHeight)).toBeGreaterThan(70);
+    await pendingPanel.evaluate(el => { el.scrollTop = 70; });
+    const beforeRefresh = await pendingPanel.evaluate(el => el.scrollTop);
+    servers = [makeServer("demo-host", "pending_approval", makePendingUpdates(80).map(update => ({ ...update, cve_state: "ready" })), { tags: ["prod"] }), servers[1]];
+    await page.evaluate(() => window.fetchServers(true, "pending-list-refresh"));
+    await expect(pendingPanel.getByRole("navigation", { name: "Packages pages" })).toContainText("16–30 of 80 packages");
+    await expect.poll(() => pendingPanel.evaluate(el => el.scrollTop)).toBeGreaterThanOrEqual(beforeRefresh - 1);
     await page.setViewportSize({ width: 390, height: 844 });
-    await expect
-        .poll(() =>
-            pendingPanel.locator(".table-wrap").evaluate((element) => {
-                const cells = Array.from(
-                    element.querySelectorAll("tbody tr:first-child td"),
-                );
-                return {
-                    fitsWithoutHorizontalScrolling:
-                        element.scrollWidth <= element.clientWidth + 1,
-                    labels: cells.map((cell) =>
-                        getComputedStyle(cell, "::before").content.replaceAll(
-                            '"',
-                            "",
-                        ),
-                    ),
-                };
-            }),
-        )
-        .toEqual({
-            fitsWithoutHorizontalScrolling: true,
-            labels: ["Package", "Version", "Risk"],
-        });
+    expect(await pendingPanel.locator(".pending-package-table-wrap").evaluate(el => el.scrollWidth <= el.clientWidth + 1)).toBe(true);
+    await expect(pendingPanel.getByRole("columnheader", { name: "Available version", exact: true })).toBeVisible();
+    await expect(page.locator("#drawer-approve-all")).toBeVisible();
+
 });
 
 test("stale facts recommendation renders its refresh action in the table and inspector", async ({
@@ -322,7 +241,7 @@ test("stale facts recommendation renders its refresh action in the table and ins
         "Recommended: Refresh host facts",
     );
     await expect(tableRefresh).toBeEnabled();
-    await expect(row.getByRole("button", { name: "Update" })).toHaveCount(0);
+    await expect(row.getByRole("button", { name: "Update", exact: true })).toHaveCount(0);
     await expect(inspector.locator(".recommended-action")).toContainText(
         "Refresh host facts",
     );
@@ -375,144 +294,6 @@ test("status availability defaults to enabled and remembers disabled or all serv
     await expect(rows).toHaveCount(1);
 });
 
-test("installed vulnerability scans show trust states and residual exposure without pending updates", async ({
-    baseURL,
-    page,
-}) => {
-    const server = makeServer("installed-host", "done");
-    let scanState = "not_scanned";
-    let started = 0;
-    await stubDashboardApi(page, () => [server]);
-    await page.route(
-        "**/api/servers/installed-host/vulnerabilities/scan",
-        (route) => {
-            started += 1;
-            return fulfillJson(route, { status: "running" }, 202);
-        },
-    );
-    await page.route("**/api/dashboard/summary*", (route) => {
-        const summary = makeDashboardSummary([server]);
-        const host = summary.servers[0];
-        const exposed = scanState === "partial" || scanState === "unavailable";
-        host.risk = {
-            level: "unknown",
-            summary: exposed
-                ? "1 confirmed CVE · unknown severity"
-                : "Installed packages not scanned",
-            vulnerability: {
-                state: scanState,
-                coverage: scanState === "not_scanned" ? "unknown" : scanState,
-                freshness: scanState === "unavailable" ? "stale" : "fresh",
-                result: exposed
-                    ? "confirmed_exposure"
-                    : scanState === "complete"
-                      ? "no_findings"
-                      : "unknown",
-                inventoried: 2,
-                evaluated: scanState === "partial" ? 1 : 2,
-                unknown: scanState === "partial" ? 1 : 0,
-                unsupported: 0,
-                findings: exposed
-                    ? [
-                          {
-                              id: "CVE-2026-1000",
-                              package: "installed-package",
-                              severity: "unknown",
-                              disposition: "no_fix_available",
-                              first_seen: "2026-10-01T00:00:00Z",
-                              last_seen: "2026-10-25T00:00:00Z",
-                              age_days: 24,
-                              source: "Debian Security Tracker via OSV",
-                          },
-                      ]
-                    : [],
-            },
-        };
-        host.approval_triage = {
-            ...host.approval_triage,
-            cve_count: exposed ? 1 : 0,
-            risk_level: "unknown",
-            risk_label: host.risk.summary,
-        };
-        host.actions = {
-            scan_vulnerabilities: {
-                enabled: scanState !== "running",
-                readiness: scanState === "running" ? "in_progress" : "ready",
-                reason:
-                    scanState === "running"
-                        ? "Vulnerability scan in progress"
-                        : "Ready",
-            },
-        };
-        return fulfillJson(route, summary);
-    });
-    await ensureAuthenticatedSession(page);
-    const section = page.getByRole("region", {
-        name: "Installed package vulnerabilities",
-    });
-    await expect(section).toContainText("Never scanned");
-    await section.getByRole("button", { name: "Scan vulnerabilities" }).click();
-    await expect.poll(() => started).toBe(1);
-    for (const [state, label] of [
-        ["running", "Scan running"],
-        ["partial", "Partial scan"],
-        ["unavailable", "Scan unavailable"],
-        ["complete", "Complete scan"],
-    ]) {
-        scanState = state;
-        server.status = state === "running" ? "vulnerability_scan" : "done";
-        await page.reload();
-        await expect(section).toContainText(label);
-        if (state === "running") {
-            await expect(
-                section.getByRole("button", { name: "Scan vulnerabilities" }),
-            ).toBeDisabled();
-            await expect(
-                page.locator("#selected-host-panel .status-pill"),
-            ).toHaveClass(/status-vulnerability_scan/);
-            await expect(
-                page.locator(
-                    '#servers-table tr[data-name="installed-host"] .status-pill',
-                ),
-            ).toHaveClass(/status-vulnerability_scan/);
-        } else if (state !== "complete") {
-            await section.locator("summary").click();
-            await expect(section.locator("details")).toHaveAttribute(
-                "open",
-                "",
-            );
-            await page.evaluate(() => window.fetchDashboardSummary(true));
-            await expect(section.locator("details")).toHaveAttribute(
-                "open",
-                "",
-            );
-            await expect(section).toContainText("CVE-2026-1000");
-            await expect(section).toContainText("No newer candidate available");
-            await expect(section).toContainText("Severity: unknown");
-            await expect(section).toContainText("Age: 24 days");
-            if (state === "unavailable")
-                await expect(section).toContainText("Freshness: stale");
-            await section.locator("summary").click();
-            await page.evaluate(() => window.fetchDashboardSummary(true));
-            await expect(section.locator("details")).not.toHaveAttribute(
-                "open",
-                "",
-            );
-        } else {
-            await expect(section).toContainText(
-                "No findings in evaluated packages",
-            );
-            await expect(section).not.toContainText("CVE-2026-1000");
-        }
-    }
-    await page.setViewportSize({ width: 390, height: 844 });
-    await expect(section).toBeVisible();
-    const overflow = await page.evaluate(
-        () => document.documentElement.scrollWidth > window.innerWidth,
-    );
-    expect(overflow).toBe(false);
-});
-
 test("attention metrics and filters use the same facts and CVE semantics", async ({
     baseURL,
     page,
@@ -530,7 +311,7 @@ test("attention metrics and filters use the same facts and CVE semantics", async
     const cveMetric = page.locator('[data-metric-filter="high_risk"]');
     await expect(factsMetric).toContainText("Host facts to refresh");
     await expect(factsMetric.locator("strong")).toHaveText("2");
-    await expect(cveMetric).toContainText("CVE exposure");
+    await expect(cveMetric).toContainText("Hosts with CVE updates");
     await expect(cveMetric.locator("strong")).toHaveText("1");
 
     const factsFilter = page.locator('[data-fleet-filter="stale_facts"]');
@@ -548,7 +329,7 @@ test("attention metrics and filters use the same facts and CVE semantics", async
         .toEqual(["stale-host", "unknown-host"]);
 
     const cveFilter = page.locator('[data-fleet-filter="high_risk"]');
-    await expect(cveFilter).toContainText("CVE exposure");
+    await expect(cveFilter).toContainText("Update CVEs");
     await expect(cveFilter.locator("strong")).toHaveText("1");
     await cveFilter.evaluate((button) => button.click());
     const cveRows = page.locator("#servers-table tbody tr[data-name]");
@@ -2465,16 +2246,16 @@ test("package deferrals 473 approval shows executable transactions CVE exposure 
     await expect(panel).toContainText("Dependency conflict");
     await expect(panel).toContainText("CVE");
     await expect(panel).toContainText("Install curl:amd64 version 2");
-    await panel.locator("details.cve-findings summary").click();
+    await panel.getByRole("button", { name: "Details for openssl:amd64", exact: true }).click();
     await expect(panel).toContainText("CVE-2026-1000");
     await captureDeferral473(
         page,
-        panel.locator(".pending-updates"),
+        panel.locator(".pending-workspace"),
         "desktop-approval-affected.png",
     );
     await captureDeferral473(
         page,
-        panel.locator(".pending-updates"),
+        panel.locator(".pending-workspace"),
         "mobile-approval-affected.png",
         true,
     );

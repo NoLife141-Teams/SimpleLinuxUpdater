@@ -188,7 +188,7 @@
             if (cveCount > 0) riskLabel = `${cveCount} CVE`;
             else if (securityUpdates > 0) riskLabel = `${securityUpdates} security`;
             else if (pendingPackages > 0) riskLabel = "Package updates";
-            else riskLabel = "Installed packages not scanned";
+            else riskLabel = "Check for available updates";
         }
         const riskLevel = (text(rawTriage.risk_level) || text(rawRisk.level) || "unknown").toLowerCase();
         const riskOrder = canonicalCount(rawTriage, "risk_order", fallbackRiskOrder[riskLevel] || 0);
@@ -234,7 +234,7 @@
                 .map(value => text(value))
                 .find(value => value && value.toLowerCase() !== "no maintenance activity") || "Completed with errors"
             : "";
-        const actions = Object.fromEntries(["update", "autoremove", "repair_apt", "reboot", "enable_apt", "disable_apt", "refresh_facts", "scan_vulnerabilities", "approve_all", "approve_security", "approve_security_kept_back", "approve_full", "cancel"]
+        const actions = Object.fromEntries(["update", "autoremove", "repair_apt", "reboot", "enable_apt", "disable_apt", "refresh_facts", "approve_all", "approve_security", "approve_security_kept_back", "approve_full", "cancel"]
             .map(key => [key, actionFor(actionViews, key)]));
         const rawRecommendedAction = record(intelligence.recommended_action);
         const reconciliationFallback = statusValue === "needs_reconciliation";
@@ -272,8 +272,8 @@
             pendingApproval,
             runtimePending,
             timelinePending,
-            hasPendingUpdates: pendingApproval && pendingUpdates.length > 0,
-            vulnerability: vulnerabilityPresentation(rawRisk.vulnerability),
+            hasPendingUpdates: pendingUpdates.length > 0,
+            updateCVEs: clone(record(rawRisk.update_cves)),
             risk: { label: riskLabel, level: riskLevel, order: riskOrder, cveCount, securityUpdates, pendingPackages },
             auth,
             driftReason,
@@ -293,26 +293,6 @@
             canReboot: actionEnabled(actionViews, "reboot", false),
             canRunSudoers: actionEnabled(actionViews, "enable_apt", transientFallback),
             canRefreshFacts: actionEnabled(actionViews, "refresh_facts", transientFallback)
-        };
-    }
-
-    function vulnerabilityPresentation(raw) {
-        const info = record(raw);
-        const labels = { not_scanned: "Never scanned", unavailable: "Scan unavailable", partial: "Partial scan", complete: "Complete scan", running: "Scan running", cancelled: "Scan cancelled", interrupted: "Scan interrupted" };
-        const dispositions = { fixed_by_candidate: "Fix available in candidate", still_affected: "Candidate still affected", no_fix_available: "No newer candidate available", candidate_unverified: "Candidate could not be verified" };
-        return {
-            ...clone(info),
-            stateLabel: labels[text(info.state)] || labels.not_scanned,
-            progressLabel: (() => {
-                const progress = record(info.progress);
-                const phase = {inventory: "Inventory", metadata: "Metadata and provenance", evaluation: "Evaluation", persistence: "Persistence"}[text(progress.phase)] || "Preparing";
-                return `${phase} · ${count(progress.inventoried)} inventoried · ${count(progress.metadata)} metadata collected · ${count(progress.evaluated)} evaluated · ${count(progress.unknown)} unknown · ${count(progress.unsupported)} unsupported`;
-            })(),
-            coverageLabel: `${count(info.evaluated)} of ${count(info.inventoried)} installed packages evaluated; ${count(info.unknown)} unknown; ${count(info.unsupported)} unsupported`,
-            freshnessLabel: text(info.freshness, "unknown"),
-            resultLabel: { confirmed_exposure: "Confirmed exposure", no_findings: "No findings in evaluated packages", inconclusive: "Inconclusive" }[text(info.result)] || "Exposure unknown",
-            findings: list(info.findings).map(finding => ({ ...clone(record(finding)), dispositionLabel: dispositions[text(record(finding).disposition)] || "Fix status unknown" })),
-            errors: list(info.errors).map(value => text(value))
         };
     }
 

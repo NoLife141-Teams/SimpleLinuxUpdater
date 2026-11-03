@@ -179,7 +179,7 @@ test("unknown data stays explicit and optional extras degrade independently", ()
     const view = project({ statusView: statusView({ servers: [server], dashboardServers: [{ name: "unknown", health: {} }] }), extras: { recentActivity: null, policySummary: null } });
     assert.equal(view.selectedHost.timeline.state, "idle");
     assert.equal(view.selectedHost.triage.facts_state, "unknown");
-    assert.equal(view.selectedHost.risk.label, "Installed packages not scanned");
+    assert.equal(view.selectedHost.risk.label, "Check for available updates");
     assert.deepEqual(view.panels.recentActivity, []);
     assert.equal(view.summaries.policyCount, null);
 });
@@ -319,33 +319,12 @@ test("availability scope excludes hidden hosts from fleet totals, attention pane
     }
 });
 
-test("installed vulnerability confidence and residual exposure survive projection", () => {
-    for (const [state, label] of [["not_scanned", "Never scanned"], ["unavailable", "Scan unavailable"], ["partial", "Partial scan"], ["complete", "Complete scan"], ["cancelled", "Scan cancelled"], ["interrupted", "Scan interrupted"]]) {
-        const view = project({ statusView: statusView({
-            servers: [{ name: "alpha", status: "done", pending_updates: [] }],
-            dashboardServers: [{ name: "alpha", risk: {
-                level: "unknown", summary: "1 confirmed CVE · unknown severity",
-                vulnerability: { state, freshness: "stale", result: "confirmed_exposure", inventoried: 10, evaluated: 8, unknown: 1, unsupported: 1,
-                    findings: [{ id: "CVE-2026-1000", package: "pkg", severity: "unknown", disposition: "no_fix_available", first_seen: "2026-10-01T00:00:00Z" }] }
-            }, approval_triage: { cve_count: 1 } }]
-        }) });
-        assert.equal(view.selectedHost.vulnerability.stateLabel, label);
-        assert.equal(view.selectedHost.vulnerability.freshnessLabel, "stale");
-        assert.equal(view.selectedHost.vulnerability.resultLabel, "Confirmed exposure");
-        assert.match(view.selectedHost.vulnerability.coverageLabel, /8 of 10/);
-        assert.equal(view.selectedHost.vulnerability.findings[0].dispositionLabel, "No newer candidate available");
-        assert.equal(view.selectedHost.risk.level, "unknown");
-        assert.equal(view.panels.risk.length, 1);
-    }
-});
-
-
-test("installed scan progress carries identity and observed facts without estimated percentage", () => {
-    const view = project({statusView: statusView({servers: [{name: "alpha", status: "vulnerability_scan"}], dashboardServers: [{name: "alpha", risk: {vulnerability: {
-        scan_id: "scan-493", state: "running", progress: {phase: "metadata", inventoried: 9, metadata: 4, evaluated: 2, unknown: 1, unsupported: 1}, findings: []
-    }}}]})});
-    const info = view.selectedHost.vulnerability;
-    assert.equal(info.scan_id, "scan-493");
-    assert.match(info.progressLabel, /Metadata and provenance · 9 inventoried · 4 metadata collected · 2 evaluated/);
-    assert.doesNotMatch(info.progressLabel, /%|ETA/);
+test("available update details remain inspectable outside approval", () => {
+    const view = project({statusView: statusView({servers: [{name: "alpha", status: "idle", pending_updates: [{package: "example", cves: ["CVE-1"]}]}],
+        dashboardServers: [{name: "alpha", risk: {update_cves: {state: "incomplete", correctable: 0}}}]
+    })});
+    assert.equal(view.selectedHost.hasPendingUpdates, true);
+    assert.deepEqual(view.selectedHost.updateCVEs, {state: "incomplete", correctable: 0});
+    assert.equal(view.selectedHost.vulnerability, undefined);
+    assert.equal(view.selectedHost.pendingApproval, false);
 });

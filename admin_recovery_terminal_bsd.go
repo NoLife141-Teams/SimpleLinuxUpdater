@@ -3,10 +3,14 @@
 package main
 
 import (
-	"golang.org/x/sys/unix"
 	"os"
+
+	"golang.org/x/sys/unix"
 )
 
+// TIOCFLUSH uses the BSD FREAD mask, which x/sys/unix does not export on Darwin.
+const recoveryFlushReadMask = 0x01
+
 func flushRecoveryInput(input *os.File) {
-	_ = unix.IoctlSetPointerInt(int(input.Fd()), unix.TIOCFLUSH, unix.FREAD)
+	_ = unix.IoctlSetPointerInt(int(input.Fd()), unix.TIOCFLUSH, recoveryFlushReadMask)
 }

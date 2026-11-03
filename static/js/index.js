@@ -40,9 +40,7 @@
         });
         let hoveredName = null;
         let expandedHostFactsServers = new Set();
-        let expandedInstalledVulnerabilityServers = new Set();
         let expandedMiniLists = new Set();
-        let expandedCVEFindings = new Set();
         let activePhaseTooltipTarget = null;
         let drawerLogScrollTop = 0;
         let drawerPendingScrollTop = 0;
@@ -160,6 +158,8 @@
                     effect.scope === "serverState"
                 ) {
                     renderServerState();
+                } else if (effect.type === "render" && effect.scope === "pendingUpdates") {
+                    statusViewScope.run(renderDrawer);
                 } else if (effect.type === "renderDrawerLogs") {
                     renderDrawerLogs(effect.serverName);
                 } else if (effect.type === "renderSyncState") {
@@ -344,83 +344,6 @@
                     return `<div class="log-line${classAttr}">${escapeHtml(printable)}</div>`;
                 })
                 .join("");
-        }
-
-        function pendingStateBadge(state) {
-            const normalized = String(state || "").toLowerCase();
-            if (normalized === "pending")
-                return `<span class="pending-badge">Scanning CVEs...</span>`;
-            if (normalized === "unavailable")
-                return `<span class="pending-badge">CVE lookup unavailable</span>`;
-            if (normalized === "unsupported")
-                return `<span class="pending-badge">Coverage unknown</span>`;
-            if (normalized === "skipped")
-                return `<span class="pending-badge">CVE lookup skipped</span>`;
-            if (normalized === "ready") return "";
-            return `<span class="pending-badge">Unknown state</span>`;
-        }
-
-        function vulnerabilityFindingListHtml(findings, title, tone) {
-            if (!findings.length) return "";
-            const items = findings
-                .map((finding) => {
-                    const id = escapeHtml(finding.id || "Unknown CVE");
-                    const url = String(finding.advisory_url || "").trim();
-                    const idHtml = url
-                        ? `<a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">${id}</a>`
-                        : id;
-                    const fixedVersion = String(
-                        finding.fixed_by_version || "",
-                    ).trim();
-                    return `<li>${idHtml}${fixedVersion ? `<small>Fixed by ${escapeHtml(fixedVersion)}</small>` : ""}</li>`;
-                })
-                .join("");
-            return `
-                <section class="cve-finding-group cve-finding-${tone}">
-                    <h5>${escapeHtml(title)}</h5>
-                    <ul>${items}</ul>
-                </section>
-            `;
-        }
-
-        function cveFindingsDisclosureKey(server, update) {
-            return JSON.stringify([
-                String(server?.name || ""),
-                String(update?.install_package || update?.package || ""),
-                String(update?.candidate_version || ""),
-            ]);
-        }
-
-        function vulnerabilityFindingsHtml(update, disclosureKey) {
-            const findings = Array.isArray(update.cve_findings)
-                ? update.cve_findings
-                : [];
-            if (!findings.length) return "";
-            const fixed = findings.filter(
-                (finding) => finding.disposition === "fixed_by_candidate",
-            );
-            const remaining = findings.filter(
-                (finding) => finding.disposition === "still_affected",
-            );
-            const source = escapeHtml(
-                update.cve_source ||
-                    findings[0]?.source ||
-                    "Official distribution data",
-            );
-            const scannedAt = update.cve_scanned_at
-                ? ` · scanned ${escapeHtml(update.cve_scanned_at)}`
-                : "";
-            const open = expandedCVEFindings.has(disclosureKey);
-            return `
-                <details class="cve-findings" data-cve-disclosure-key="${escapeHtml(disclosureKey)}" ${open ? "open" : ""}>
-                    <summary>View ${findings.length} confirmed CVE${findings.length > 1 ? "s" : ""}</summary>
-                    <div class="cve-findings-content">
-                        ${vulnerabilityFindingListHtml(fixed, "Fixed by the available update", "fixed")}
-                        ${vulnerabilityFindingListHtml(remaining, "Still affected after the available update", "remaining")}
-                        <p class="cve-findings-source">${source}${scannedAt}</p>
-                    </div>
-                </details>
-            `;
         }
 
         function hasPendingUpdates(server) {
@@ -631,157 +554,11 @@
             return `${enabled ? "" : "disabled"} title="${escapeHtml(title)}"`;
         }
 
-        function renderPendingUpdatesHtml(server, includeHeading = true) {
-            const updates = Array.isArray(server?.pending_updates)
-                ? server.pending_updates
-                : [];
-            if (!hasPendingUpdates(server)) {
-                return `<p class="drawer-empty">No pending update details for this server.</p>`;
-            }
-            const driftReason = pendingApprovalDriftReason(server);
-
-            const hasPending = updates.some(
-                (update) =>
-                    String(update.cve_state || "").toLowerCase() === "pending",
-            );
-            const securityCount = updates.filter(
-                (update) => !!update.security,
-            ).length;
-            const keptBackCount = updates.filter(
-                (update) =>
-                    !!update.kept_back || !!update.requires_full_upgrade,
-            ).length;
-            const stateCounts = updates.reduce((acc, update) => {
-                const state = String(update.cve_state || "").toLowerCase();
-                acc[state] = (acc[state] || 0) + 1;
-                return acc;
-            }, {});
-
-            const rows = updates
-                .map((update) => {
-                    const pkg = escapeHtml(update.package || "unknown");
-                    const cveDisclosureKey = cveFindingsDisclosureKey(
-                        server,
-                        update,
-                    );
-                    const currentVersion = escapeHtml(
-                        update.current_version || "?",
-                    );
-                    const candidateVersion = escapeHtml(
-                        update.candidate_version || "?",
-                    );
-                    const source = escapeHtml(update.source || "");
-                    const state = String(update.cve_state || "").toLowerCase();
-                    const coverage = String(
-                        update.cve_coverage || "",
-                    ).toLowerCase();
-                    const cves = Array.isArray(update.cves) ? update.cves : [];
-                    const findings = Array.isArray(update.cve_findings)
-                        ? update.cve_findings
-                        : [];
-                    const fixedFindings = findings.filter(
-                        (finding) =>
-                            finding.disposition === "fixed_by_candidate",
-                    );
-                    const remainingFindings = findings.filter(
-                        (finding) => finding.disposition === "still_affected",
-                    );
-
-                    const badges = [];
-                    if (update.deferred)
-                        badges.push(
-                            `<span class="pending-badge pending-badge-security">Deferred — security exposure remains</span>`,
-                        );
-                    if (update.security)
-                        badges.push(
-                            `<span class="pending-badge pending-badge-security">Security</span>`,
-                        );
-                    if (update.kept_back || update.requires_full_upgrade) {
-                        badges.push(
-                            `<span class="pending-badge">Kept back</span>`,
-                        );
-                        badges.push(
-                            `<span class="pending-badge">Requires full-upgrade</span>`,
-                        );
-                    }
-                    if (state === "ready") {
-                        if (findings.length > 0) {
-                            if (fixedFindings.length) {
-                                badges.push(
-                                    `<span class="pending-badge pending-badge-cve">${fixedFindings.length} fixed by update</span>`,
-                                );
-                            }
-                            if (remainingFindings.length) {
-                                badges.push(
-                                    `<span class="pending-badge pending-badge-cve-remaining">${remainingFindings.length} still vulnerable</span>`,
-                                );
-                            }
-                        } else if (cves.length > 0) {
-                            badges.push(
-                                `<span class="pending-badge">Legacy CVE data — rescan required</span>`,
-                            );
-                        } else {
-                            badges.push(
-                                `<span class="pending-badge">No confirmed CVE</span>`,
-                            );
-                        }
-                        if (coverage === "official_installed_unverified") {
-                            badges.push(
-                                `<span class="pending-badge">Installed provenance unverified</span>`,
-                            );
-                        }
-                    } else {
-                        badges.push(pendingStateBadge(state));
-                    }
-
-                    return `
-                    <tr>
-                        <td>
-                            <div>${pkg}</div>
-                            ${source ? `<div class="subtle">${source}</div>` : ""}
-                        </td>
-                        <td>${currentVersion} &rarr; ${candidateVersion}</td>
-                        <td>
-                            <div class="pending-badges">${badges.join("")}</div>
-                            ${state === "unsupported" ? `<p class="pending-note">Installed package provenance or candidate repository is not officially verified; no vulnerability claim is made.</p>` : ""}
-                            ${state === "ready" && coverage === "official_installed_unverified" ? `<p class="pending-note">OSV results use official distribution data, but APT no longer exposes the origin of the installed version.</p>` : ""}
-                            ${vulnerabilityFindingsHtml(update, cveDisclosureKey)}
-                        </td>
-                    </tr>
-                `;
-                })
-                .join("");
-
-            return `
-                <div class="pending-updates">
-                    ${includeHeading ? "<h4>Pending updates (security first)</h4>" : ""}
- ${window.PackageDeferrals.approvalHTML(server.upgrade_plan)}
-                    ${driftReason ? `<p class="pending-note pending-drift-note" title="${escapeHtml(driftReason)}">${escapeHtml(driftReason)}. Approval actions stay disabled until the host is pending approval again.</p>` : ""}
-                    <div class="pending-summary">
-                        <span class="pending-badge">${updates.length} package${updates.length > 1 ? "s" : ""}</span>
-                        <span class="pending-badge pending-badge-security">${securityCount} security</span>
-                        <span class="pending-badge">${keptBackCount} kept back</span>
-                        <span class="pending-badge">${stateCounts.ready || 0} ready</span>
-                        <span class="pending-badge">${stateCounts.pending || 0} scanning</span>
-                        <span class="pending-badge">${stateCounts.unavailable || 0} unavailable</span>
-                        <span class="pending-badge">${stateCounts.unsupported || 0} unknown coverage</span>
-                        <span class="pending-badge">${stateCounts.skipped || 0} skipped</span>
-                    </div>
-                    ${hasPending ? `<p class="pending-note">CVE scan in progress; list will update automatically.</p>` : ""}
-                    <div class="table-wrap">
-                        <table class="pending-table">
-                            <thead>
-                                <tr>
-                                    <th>Package</th>
-                                    <th>Version</th>
-                                    <th>Risk</th>
-                                </tr>
-                            </thead>
-                            <tbody>${rows}</tbody>
-                        </table>
-                    </div>
-                </div>
-            `;
+        function renderPendingUpdatesHtml(server) {
+            return window.PendingUpdatesView.render(getStatusView().pendingUpdates, {
+                deferrals: window.PackageDeferrals.approvalHTML(server.upgrade_plan),
+                driftReason: pendingApprovalDriftReason(server),
+            });
         }
 
         function renderSyncState() {
@@ -951,7 +728,7 @@
                     },
                     {
                         key: "high_risk",
-                        label: "CVE exposure",
+                        label: "Update CVEs",
                         count: highRiskCount,
                     },
                 ];
@@ -1290,37 +1067,20 @@
             }
         }
 
-        function vulnerabilitySummaryHtml(selected, safeDataName) {
-            const info = selected.vulnerability;
-            const action = selected.actions.scan_vulnerabilities || {};
-            if (!info) return "";
-            const findingsOpen = expandedInstalledVulnerabilityServers.has(
-                selected.server.name,
-            );
-            const findings = info.findings
-                .map(
-                    (finding) => `<li>
-                <strong>${escapeHtml(finding.id)} · ${escapeHtml(finding.package)}</strong>
-                <p>Severity: ${escapeHtml(finding.severity || "unknown")} · ${escapeHtml(finding.dispositionLabel)}</p>
-                <p>Installed: ${escapeHtml(finding.installed_version || "unknown")} · Candidate: ${escapeHtml(finding.candidate_version || "none")}</p>
-                <p>First seen: ${escapeHtml(finding.first_seen || "unknown")} · Last seen: ${escapeHtml(finding.last_seen || "unknown")} · Age: ${Number(finding.age_days || 0)} days · Evidence: ${escapeHtml(finding.freshness || "unknown")}</p>
-                <p>${finding.target_at ? `Remediation target: ${escapeHtml(finding.target_at)}${finding.overdue ? " · overdue" : ""}` : "No remediation target configured for this severity"}</p>
-                <p>Source: ${escapeHtml(finding.source || "unknown")}${finding.severity_value ? ` · ${escapeHtml(finding.severity_type)}: ${escapeHtml(finding.severity_value)} · ${escapeHtml(finding.severity_source)} · severity observed ${escapeHtml(finding.severity_observed_at || "unknown")} (${escapeHtml(finding.severity_freshness || "unknown")})` : " · Severity unavailable"}</p>
-            </li>`,
-                )
-                .join("");
-            return `<section class="vulnerability-summary" aria-label="Installed package vulnerabilities">
-                <h3>Installed package vulnerabilities</h3>
-                <p><strong>${escapeHtml(info.stateLabel)}</strong> · ${escapeHtml(info.resultLabel)} · Freshness: ${escapeHtml(info.freshnessLabel)}</p>
-                <p>${escapeHtml(info.coverageLabel)}</p>
-                ${info.scan_id ? `<p>Scan: ${escapeHtml(info.scan_id)} · ${escapeHtml(info.progressLabel)}</p>` : ""}
-                <p>Latest attempt: ${escapeHtml(info.started_at || "never")} → ${escapeHtml(info.finished_at || "—")}</p>
-                <p>Accepted inventory: ${escapeHtml(info.accepted_at || "none")} · Last complete success: ${escapeHtml(info.last_success || "never")}</p>
-                ${info.errors.length ? `<p>${info.errors.map(escapeHtml).join("; ")}</p>` : ""}
-                <button type="button" class="inline-btn" data-action="scan-vulnerabilities" data-name="${safeDataName}" ${action.enabled ? "" : "disabled"} title="${escapeHtml(action.reason || "Vulnerability scan unavailable")}">Scan vulnerabilities</button>
-                ${info.state === "running" && info.scan_id && canManageMaintenance ? `<button type="button" class="inline-btn" data-action="cancel-vulnerability-scan" data-name="${safeDataName}" data-scan-id="${escapeHtml(info.scan_id)}">Cancel vulnerability scan</button>` : ""}
-                ${findings ? `<details class="installed-vulnerability-findings" data-name="${safeDataName}" ${findingsOpen ? "open" : ""}><summary>${info.findings.length} active package findings</summary><ul>${findings}</ul></details>` : ""}
-                <p class="inspector-note">Coverage is limited to verified official Debian/Ubuntu packages and available OSV data. Unknown provenance is not a clean result. Scans do not change packages.</p>
+        function updateSecuritySummaryHtml(selected, safeDataName) {
+            const info = selected.updateCVEs || {};
+            const updates = selected.server.pending_updates || [];
+            const count = Number(selected.triage.pending_packages || updates.length || 0);
+            const security = Number(selected.triage.security_updates || 0);
+            const fixes = Number(info.correctable || 0);
+            const incomplete = info.state !== "ready";
+            const summary = count > 0 ? `${count} update${count === 1 ? "" : "s"} · ${security} security`
+                : selected.risk.label === "No packages to update" ? "No packages to update" : "Check for available updates";
+            return `<section class="update-security-summary" aria-label="Available updates">
+                <h3>Available updates</h3><p><strong>${escapeHtml(summary)}</strong></p>
+                ${count > 0 ? `<p>${incomplete ? "CVE lookup incomplete" : `${fixes} verified CVE fix${fixes === 1 ? "" : "es"}`}</p>` : ""}
+                ${info.checked_at ? `<p class="subtle">Checked ${escapeHtml(formatRelativeTimestamp(info.checked_at))}</p>` : ""}
+                ${updates.length ? `<button type="button" class="inline-btn" data-action="open-drawer" data-name="${safeDataName}" data-tab="pending">Review updates</button>` : ""}
             </section>`;
         }
 
@@ -1418,10 +1178,9 @@
             panel.innerHTML = `
                 <div class="selected-status-row">
                     <span class="status-pill status-${safeStatus}">${escapeHtml(server.disabled ? "Disabled" : statusLabel(server.status))}</span>
-                    <span class="risk-chip risk-${escapeHtml(getRiskLevel(server))}">${escapeHtml(getRiskLabel(server))}</span>
                     <span class="stage-chip phase-${escapeHtml(timeline.state || "idle")}">${escapeHtml(timelineDisplayLabel(timeline, { lastRunPrefix: true }))}</span>
                 </div>
-                ${vulnerabilitySummaryHtml(selected, safeDataName)}
+                ${updateSecuritySummaryHtml(selected, safeDataName)}
  ${applicationPostchecksHtml(server)}
                 ${
                     recommendedAction.key !== "healthy"
@@ -1447,7 +1206,6 @@
                     ${triage.can_approve_full ? `<button type="button" class="inline-btn btn-full-upgrade" data-action="approve-full" data-name="${safeDataName}" title="Run apt full-upgrade">Full (${approvalCounts.full})</button>` : ""}
 	                    ${canRunUpdate ? `<button type="button" class="inline-btn primary-action" data-action="update-server" data-name="${safeDataName}">Update</button>` : ""}
                     <button type="button" class="inline-btn btn-ghost" data-action="open-drawer" data-name="${safeDataName}" data-tab="logs">Logs</button>
-                    ${hasPendingUpdates(server) ? `<button type="button" class="inline-btn btn-ghost" data-action="open-drawer" data-name="${safeDataName}" data-tab="pending">Packages</button>` : ""}
                 </div>
                 <div class="inspector-tools">
                     <span class="mini-label">Tools</span>
@@ -2281,18 +2039,21 @@
             }
 
             if (drawerState.tab === "pending") {
-                const pendingScrollTop = drawerPendingScrollTop;
-                pendingPanel.innerHTML = renderPendingUpdatesHtml(server, true);
-                lifecycle.requestAnimationFrame(() => {
-                    const maxScrollTop = Math.max(
-                        0,
-                        pendingPanel.scrollHeight - pendingPanel.clientHeight,
-                    );
-                    pendingPanel.scrollTop = Math.min(
-                        pendingScrollTop,
-                        maxScrollTop,
-                    );
-                });
+                const samePendingServer = pendingPanel.dataset.serverName === server.name;
+                const pendingScrollTop = samePendingServer
+                    ? (pendingPanel.childElementCount ? pendingPanel.scrollTop : drawerPendingScrollTop) : 0;
+                const focusedInput = pendingPanel.contains(document.activeElement) && document.activeElement.matches("input[data-pending-input]")
+                    ? { id: document.activeElement.id, start: document.activeElement.selectionStart, end: document.activeElement.selectionEnd } : null;
+                pendingPanel.innerHTML = renderPendingUpdatesHtml(server);
+                if (focusedInput) {
+                    const input = document.getElementById(focusedInput.id);
+                    input?.focus({ preventScroll: true });
+                    if (input && focusedInput.start !== null) input.setSelectionRange(focusedInput.start, focusedInput.end);
+                }
+                // Restore before another refresh can observe the replacement at scrollTop 0.
+                pendingPanel.dataset.serverName = server.name;
+                pendingPanel.scrollTop = Math.min(pendingScrollTop, Math.max(0, pendingPanel.scrollHeight - pendingPanel.clientHeight));
+                drawerPendingScrollTop = pendingPanel.scrollTop;
             } else {
                 pendingPanel.innerHTML = "";
             }
@@ -2677,7 +2438,7 @@
             }
         }
 
-        function handleServerAction(action, name, tab = "logs", scanID = "") {
+        function handleServerAction(action, name, tab = "logs") {
             if (!name) return;
             if (action === "open-drawer") {
                 openDrawer(name, tab || "logs");
@@ -2727,14 +2488,6 @@
                 disablePasswordlessApt(name);
                 return;
             }
-            if (action === "cancel-vulnerability-scan") {
-                cancelVulnerabilityScan(name, scanID);
-                return;
-            }
-            if (action === "scan-vulnerabilities") {
-                scanVulnerabilities(name);
-                return;
-            }
             if (action === "refresh-facts") {
                 refreshHostFacts(name);
             }
@@ -2758,7 +2511,6 @@
                     button.dataset.action || "",
                     button.dataset.name || "",
                     button.dataset.tab || "logs",
-                        button.dataset.scanId || "",
                 );
                 return;
             }
@@ -2825,7 +2577,6 @@
                         button.dataset.action || "",
                         button.dataset.name || "",
                         button.dataset.tab || "logs",
-                        button.dataset.scanId || "",
                     );
                     return;
                 }
@@ -3528,22 +3279,31 @@
                 drawerPendingScrollTop = drawerPendingElement.scrollTop;
             }
         });
-        lifecycle.listen(
-            drawerPendingElement,
-            "toggle",
-            (event) => {
-                const details = event.target;
-                if (!details?.matches?.("details.cve-findings")) return;
-                const disclosureKey = details.dataset.cveDisclosureKey;
-                if (!disclosureKey) return;
-                if (details.open) {
-                    expandedCVEFindings.add(disclosureKey);
-                } else {
-                    expandedCVEFindings.delete(disclosureKey);
-                }
-            },
-            true,
-        );
+        function handlePendingIntent(action, value) {
+            if (!["evidence", "cve-search", "search"].includes(action)) {
+                drawerPendingScrollTop = 0;
+                drawerPendingElement.scrollTop = 0;
+            }
+            dispatchStatusInteraction({ type: "pendingUpdatesChanged", intent: { action, value } });
+        }
+        lifecycle.listen(drawerPendingElement, "input", (event) => {
+            const input = event.target.closest("[data-pending-input]");
+            if (input) handlePendingIntent(input.dataset.pendingInput, input.value);
+        });
+        lifecycle.listen(drawerPendingElement, "click", (event) => {
+            const button = event.target.closest("button[data-pending-action]");
+            if (!button || button.disabled) return;
+            const action = button.dataset.pendingAction, value = button.dataset.pendingValue;
+            const paginationPosition = button.closest('[data-pending-pagination]')?.dataset.pendingPagination;
+            handlePendingIntent(action, value);
+            const controls = [...drawerPendingElement.querySelectorAll("button[data-pending-action]")];
+            const focus = action === "back" && value
+                ? controls.find(control => control.dataset.pendingAction === "package" && control.dataset.pendingValue === value)
+                : action === "package" || action === "coverage" ? null
+                : controls.find(control => !control.disabled && control.dataset.pendingAction === action && control.dataset.pendingValue === value
+                    && (!paginationPosition || control.closest('[data-pending-pagination]')?.dataset.pendingPagination === paginationPosition));
+            (focus || drawerPendingElement.querySelector("[data-pending-heading]"))?.focus({ preventScroll: true });
+        });
 
         lifecycle.listen(
             document,
@@ -3847,68 +3607,6 @@
             }
         }
 
-        async function cancelVulnerabilityScan(name, scanID) {
-            const lifetime = lifecycle.capture();
-            if (!scanID) return;
-            try {
-                const response = await fetch(`/api/servers/${encodeURIComponent(name)}/vulnerabilities/scans/${encodeURIComponent(scanID)}/cancel`, {method: "POST"});
-                if (!lifecycle.isCurrent(lifetime)) return;
-                const payload = await response.json().catch(() => ({}));
-                if (!lifecycle.isCurrent(lifetime)) return;
-                if (!response.ok) { statusActionAdapter.notify(payload.error || "Failed to cancel vulnerability scan"); return; }
-                await fetchServers(true, "vulnerability-scan-cancelling");
-            } catch (error) {
-                if (lifecycle.isCurrent(lifetime) && error?.name !== "AbortError") statusActionAdapter.notify("Failed to cancel vulnerability scan");
-            }
-        }
-
-        async function scanVulnerabilities(name) {
-            const lifetime = lifecycle.capture();
-
-            await runSingleHostAction(
-                name,
-                "scan_vulnerabilities",
-                "scan vulnerabilities",
-                async () => {
-                    const lifetime = lifecycle.capture();
-
-                    try {
-                        const response = await fetch(
-                            `/api/servers/${encodeURIComponent(name)}/vulnerabilities/scan`,
-                            { method: "POST" },
-                        );
-                        if (!lifecycle.isCurrent(lifetime)) return;
-                        if (!response.ok) {
-                            const payload = await response
-                                .json()
-                                .catch(() => ({}));
-                            if (!lifecycle.isCurrent(lifetime)) return;
-                            statusActionAdapter.notify(
-                                payload.error ||
-                                    "Failed to start vulnerability scan",
-                            );
-                            return false;
-                        }
-                        lifecycle.discardResponse(response);
-                        return true;
-                    } catch (err) {
-                        if (
-                            !lifecycle.isCurrent(lifetime) ||
-                            err?.name === "AbortError"
-                        )
-                            return;
-                        statusActionAdapter.notify(
-                            err?.message ||
-                                "Failed to start vulnerability scan",
-                        );
-                        return false;
-                    }
-                },
-                ["servers", "dashboard"],
-            );
-            if (!lifecycle.isCurrent(lifetime)) return;
-        }
-
         async function refreshHostFacts(name) {
             const lifetime = lifecycle.capture();
 
@@ -3964,7 +3662,6 @@
                         button.dataset.action || "",
                         button.dataset.name || "",
                         button.dataset.tab || "logs",
-                        button.dataset.scanId || "",
                     );
                 }
             },
@@ -3976,16 +3673,14 @@
                 const details = e.target;
                 if (
                     !details?.matches?.(
-                        "details.facts-more, details.installed-vulnerability-findings",
+                        "details.facts-more",
                     )
                 )
                     return;
                 const hostName =
                     details.dataset.name || getStatusView().primaryServerName;
                 if (!hostName) return;
-                const expandedServers = details.matches("details.facts-more")
-                    ? expandedHostFactsServers
-                    : expandedInstalledVulnerabilityServers;
+                const expandedServers = expandedHostFactsServers;
                 if (details.open) {
                     expandedServers.add(hostName);
                 } else {

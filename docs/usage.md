@@ -707,30 +707,28 @@ Cons:
 - Shell/script automation: if you are comfortable with shell and want quick, custom control
 - Ansible-style automation: if you need large-scale automation, configuration, and repeatability across environments
 
-## Installed-package vulnerability scans
+## CVEs for available updates
 
-Select a host on Status, then use **Scan vulnerabilities**. The asynchronous, read-only action inventories installed DPKG packages, including those without a newer APT candidate. It does not run `apt-get update`, modify packages, create update jobs, or ask for approval. Consequently candidate/provenance evidence reflects the host's existing APT indexes. Disabled servers and servers with another active action, including pending approval, cannot start a scan. Backup restore/export and shutdown use the existing Maintenance Coordination and Host Maintenance Session boundaries.
+After `apt update`, normal and scheduled package discovery enrich the **available updates** with CVE information. Status shows a compact update/security summary and the number of verified CVE corrections in the proposed versions. **Review updates** opens the package list even when a scheduled check has not created an approval.
 
-The panel separates:
+The drawer shows 15 packages per page. Search by package name or choose **Security**
+to filter the list; these controls do not change the package set approved by the
+approval buttons. **Previous** and **Next** are available above and below the list.
+**Details** opens a full-width package inspector with installed/candidate versions
+and searchable CVE references, five per page, with pagination at both ends.
+**View source** opens one evidence panel at a time. **View coverage** groups source
+limitations, while lookup failures remain visible. Approval controls stay at the
+bottom of the drawer.
 
-- **State:** never scanned, running, unavailable, partial, or complete.
-- **Coverage:** inventoried, evaluated, unknown, and unsupported package counts.
-- **Freshness:** accepted inventory timestamp and last complete success, distinct from the latest attempt. Failed scans preserve the previous accepted result and mark it stale.
-- **Result and severity:** confirmed exposure, no findings in evaluated packages, or inconclusive. A confirmed CVE with no usable severity is `unknown`, never automatically critical.
+Only the available update plan contributes to CVE counts. Candidate corrections require a current official installed/candidate identity, distribution-confirmed assessment, addressing candidate and simulated eligible Approval Scope. Deferred packages are not counted as proposed corrections. Multiple package occurrences of the same CVE count once; a remaining or uncertain occurrence within the update plan prevents a complete-correction count.
 
-Active findings show installed and candidate versions, first/last observation, age, source, severity evidence, and an optional configured remediation target. `fixed_by_candidate` means an official candidate was evaluated and does not contain the finding; `still_affected` means it remains affected. `no_fix_available` means no different candidate was found; `candidate_unverified` means a candidate could not be assessed with official provenance. A successful package update alone does not close a finding. Only a complete successful scan with verified installed provenance and a stable before/after inventory can resolve absent findings. A reappearing finding keeps its original `first_seen`.
+A security-marked update remains visible when CVE lookup fails. Missing, unsupported or expired evidence is shown as incomplete. Zero available updates means no packages to update, not zero vulnerabilities. Updating packages clears the pending plan; a successful job does not assert that every installed-package vulnerability has been eliminated.
 
-Scan observations are persisted in SQLite and included in backups. Renaming a Server preserves its ledger; deletion removes it. Changing its SSH endpoint clears the old endpoint's observation. Restore reuses restored observations, without a separate runtime cache.
-
-Authenticated API additions: `POST /api/servers/:name/vulnerabilities/scan` returns `202` after admission (`409` if disabled/busy/unavailable; `404` for a missing server). `GET /api/servers/:name/vulnerabilities` returns the full observation, package inventory, last attempt, accepted result and finding ledger, including resolved entries. Dashboard Projection adds `risk.vulnerability` and fleet scan-state counters; existing API fields remain available. The legacy `high_risk_cve` fleet counter continues to mean hosts with confirmed exposure, regardless of severity.
+The standalone CVE analysis, full ledger, independent remediation and risk-review pages are retired. Old page URLs redirect to Status; old authenticated scanner/remediation APIs return `410 Gone`. There is no host-wide or periodic vulnerability scan and no security-intelligence feed refresh. Legacy observations remain in SQLite/backups and are excluded from Status.
 
 ### Source limits
 
-Queries use source-package identities and the existing Debian/Ubuntu archive signature/provenance checks. Supported ecosystems remain Debian 12/13 and Ubuntu 22.04/24.04/26.04. Installed versions missing from local APT metadata, unsigned or third-party origins, and unsupported distributions are not classified as clean. An installed scan requires verified installed provenance; the more permissive approval enrichment label `official_installed_unverified` is not sufficient to resolve findings.
-
-[OSV querybatch](https://google.github.io/osv.dev/post-v1-querybatch/) returns advisory references. The installed scanner retrieves [advisory details](https://google.github.io/osv.dev/get-v1-vulns/) for severity. It interprets complete CVSS v3.0/v3.1 base vectors using the [FIRST equations](https://www.first.org/cvss/v3.1/specification-document#7-1-Base-Metrics-Equations), preserving source, type, and original vector. Missing, malformed, unsupported, or unavailable severity remains unknown. CVSS v2/v4 and temporal/environmental vectors are not scored. Advisory lookup failures retain findings and report a partial scan. Previously sourced severity is retained with its original observation timestamp and shown as stale evidence when it cannot be refreshed. Database priority/urgency is not treated as CVSS. Severity detail lookups beyond the per-scan bound remain unknown.
-
-OSV and distribution trackers can be incomplete or delayed, and version-based assessment does not prove exploitability or inspect locally rebuilt files. A complete scan with no findings means no findings in the supported, verified packages evaluated at that time. It is not proof that the host has no vulnerabilities. Container/application dependencies, network testing, and package removals are outside this feature. Package ecosystem, source name, installed version, and candidate version are sent to OSV; host credentials are not.
+Only supported official Debian/Ubuntu package identities are evaluated. The package ecosystem, source name and installed/candidate versions are queried against distribution-specific OSV data; host credentials are not sent. Unknown or third-party provenance remains unverified. Docker images, application dependencies and vulnerabilities in packages without an available update are outside this feature.
 
 ### Check hosted applications after an update
 
@@ -859,3 +857,25 @@ a partial download. Downloads have a separate **30 second** write deadline and
 leave Manage to abort the client request. Every success, failure and cancellation
 closes the spool; downloads use `no-store` and fixed safe filenames. There is no
 change to audit retention, backup storage or database export behavior.
+
+### Distribution qualification and confidence
+
+Each available-update finding carries an `assessment` for its exact distribution release, source package and installed source version. Distribution status and confidence remain separate from generic CVSS ratings. Missing, conflicting, expired or unavailable assessments require review.
+
+Debian `unimportant` and explicit not-affected assessments are vendor-qualified, not verified candidate corrections. Debian low/medium/high triage can establish a source-package match. Ubuntu source/release status is corroborated with the official Ubuntu Security Tracker: needed/pending establish source matches; released versions are compared with the installed version; unknown states remain unverified. A source match is not proof of runtime exploitability.
+
+Advisory details are optional enrichment with a shared 30-second budget. A failed lookup does not hide a security update or prevent normal approval. Unverified installed provenance remains explicit even if a candidate comes from an official archive.
+
+Dashboard `risk.update_cves` contains `state`, `correctable`, `incomplete_packages` and `checked_at`. `risk.cves` lists distinct CVEs associated with available updates; the compatibility fleet key `high_risk_cve` counts hosts with such updates. Neither represents a host vulnerability assessment. Installed-scan counters and `risk.vulnerability` are no longer exposed.
+
+### Published fixes and observed APT availability
+
+Candidate evaluation compares the actual installed and proposed distribution source/binary versions. It respects Debian epochs, revisions and backports rather than assuming a newer upstream version is necessary. Publisher fix events and the candidate observed in configured repositories are separate facts; missing evidence never proves that no fix exists.
+
+A verified candidate correction requires official provenance, matching installed/candidate identities, a current distribution-confirmed source assessment, an addressing candidate, fresh successful APT refresh evidence and an eligible simulated Approval Scope. Evidence must be within 24 hours. Deferred packages do not count as proposed corrections. Duplicate occurrences count once, and every relevant occurrence within the available plan must be addressed. If a newer APT refresh fails or is partial, the retained plan remains inspectable but its correction count is no longer verified.
+
+CVE details and evidence expand inside the existing package drawer. Normal approval still revalidates maintenance and preserves Package Deferral, removal confirmation and drift checks. The app does not maintain a standalone unresolved-finding ledger or declare a host vulnerability-free after an update.
+
+## Legacy CVE data
+
+Legacy installed-package observations and remediation history remain compatible with backup/restore. They are historical records only; the app no longer launches their scans or exposes their workspaces. Use the normal package approval workflow for available updates.

@@ -387,16 +387,14 @@ Default behavior:
 For Docker, `.env` is not automatically loaded unless you pass it:
 
 ```bash
-docker run --env-file .env -p 8080:8080 -v debian-updater-data:/data ghcr.io/nolife141-teams/simplelinuxupdater:v0.4.16
+docker run --env-file .env -p 8080:8080 -v debian-updater-data:/data ghcr.io/nolife141-teams/simplelinuxupdater:v0.5.3
 ```
 
-## Installed-package vulnerability scans
+## CVEs for available updates
 
-`DEBIAN_UPDATER_VULNERABILITY_SCAN_ENABLED` defaults to `true` and disables both manual and periodic installed-package scans when `false`. Approval-time CVE enrichment remains independent. `DEBIAN_UPDATER_VULNERABILITY_SCAN_INTERVAL_HOURS` defaults to `24` (range `0–8760`); `0` disables the periodic worker. It checks persisted attempt timestamps once per minute, beginning one minute after startup, and defers disabled or busy hosts and exclusive Maintenance Coordination. Failed attempts are retried at the configured interval, or manually.
+CVE enrichment accompanies normal and scheduled APT package discovery. It evaluates only packages with available updates, using their installed and candidate distribution/source versions. It does not run an independent scan of installed packages.
 
-`DEBIAN_UPDATER_VULNERABILITY_SCAN_TIMEOUT_SECONDS` defaults to `300` (range `10–900`). At most two scans run concurrently across manual and periodic admission; the periodic worker visits servers sequentially. There is no unbounded task queue. A scan accepts at most 20,000 installed packages, a 4 MiB inventory, 20,000 findings, and 1,000 advisory detail lookups. OSV requests have a 30-second deadline, an 8 MiB response limit, and at most 100 pages per batch. Exceeding inventory or finding limits preserves the previous accepted result and reports failure.
-
-Optional `DEBIAN_UPDATER_VULNERABILITY_TARGET_LOW_DAYS`, `..._MEDIUM_DAYS`, `..._HIGH_DAYS`, and `..._CRITICAL_DAYS` accept `0–3650` days. Unset or zero disables that objective. The target is measured from `first_seen`; unknown severity has no target. Targets are displayed as operator objectives, never as approval gates or CVSS scores. Invalid scan configuration rejects startup. Freshness uses the configured interval, or 24 hours when periodic scanning is disabled.
+The former `DEBIAN_UPDATER_VULNERABILITY_SCAN_*`, `DEBIAN_UPDATER_VULNERABILITY_TARGET_*` and `DEBIAN_UPDATER_SECURITY_INTEL_*` settings are retired and do not start background work. Stored legacy observations are retained but do not affect the update summary. The APT scheduled scan remains a package-update check.
 
 ## Application post-check profiles
 
@@ -413,3 +411,7 @@ A blocking failure marks the job and Scheduled Run failed, stopping subsequent r
 Read-only tests reserve the Server until completion, preventing concurrent maintenance and inventory changes. A check's recovery timeout does not invalidate later checks: a transport closed by that deadline is reconnected before the next probe. Interrupted updates retain completed and partial application results in both job and audit metadata.
 
 The read-only test response supports the full recovery budget, including profiles that take longer than the ordinary one-minute HTTP response deadline. The test itself is bounded to eleven minutes.
+
+### CVE source qualification
+
+Package-update CVE lookup uses official Debian/Ubuntu provenance and exact source versions. Distribution qualification and candidate correction evidence remain independent of generic CVSS ratings. A known security update does not require a successful CVE lookup to remain available for approval. Unavailable or unsupported data is shown as incomplete, never as a clean scan. Standalone CVE/remediation endpoints are retired (`410 Gone`).

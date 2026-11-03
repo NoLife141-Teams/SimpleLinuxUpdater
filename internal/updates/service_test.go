@@ -447,7 +447,7 @@ func TestUpdatePendingPackageVulnerabilityAssessmentPreservesMultiarchSelectors(
 			CVEFindings:    []servers.VulnerabilityFinding{{ID: "CVE-2026-1002"}},
 		},
 	} {
-		if !service.updatePendingPackageVulnerabilityAssessment("srv", pendingApprovalIdentity{}, update) {
+		if accepted, err := service.updatePendingPackageVulnerabilityAssessment(context.Background(), "srv", pendingApprovalIdentity{}, update); !accepted || err != nil {
 			t.Fatalf("updatePendingPackageVulnerabilityAssessment(%q) = false", update.InstallPackage)
 		}
 	}
@@ -1621,5 +1621,64 @@ func TestRunScheduledScanJobKeepsScanSuccessWhenFactsPersistenceFails(t *testing
 	}
 	if job.Status != jobs.StatusSucceeded || auditStatus != "failure" || !strings.Contains(job.LogsText, "facts refresh failed") {
 		t.Fatalf("job=%+v auditStatus=%q, want successful scan with visible facts-refresh failure", job, auditStatus)
+	}
+}
+
+func TestApprovalFindingHistoryAdmissionRejectsSupersededCancelledAndFailedWrites(t *testing.T) {
+	for _, scenario := range []string{"superseded", "replaced_job", "removed", "cancelled", "selector_changed", "persistence_failure", "accepted"} {
+		t.Run(scenario, func(t *testing.T) {
+			state, statuses := testState()
+			update := servers.PendingUpdate{Package: "example", CurrentVersion: "1", CandidateVersion: "2", CVEScannedAt: "2026-11-02T12:00:00Z", CVEState: "ready", CVEFindings: []servers.VulnerabilityFinding{{ID: "CVE-NEW"}}}
+			statuses["srv"].PendingUpdates = []servers.PendingUpdate{{Package: "example", CurrentVersion: "1", CandidateVersion: "2", CVEState: "pending"}}
+			statuses["srv"].ApprovalGeneration = 1
+			statuses["srv"].JobID = "parent"
+			identity := pendingApprovalIdentity{jobID: "parent", generation: 1}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			switch scenario {
+			case "superseded":
+				statuses["srv"].ApprovalGeneration++
+			case "replaced_job":
+				statuses["srv"].JobID = "replacement"
+			case "removed":
+				delete(statuses, "srv")
+			case "cancelled":
+				cancel()
+			case "selector_changed":
+				statuses["srv"].PendingUpdates[0].CandidateVersion = "3"
+			}
+			writes := 0
+			writeErr := errors.New("synthetic persistence failure")
+			service := NewService(ServiceDeps{ServerState: state, RecordApprovalFindings: func(_ context.Context, name string, findings []servers.VulnerabilityFinding) error {
+				writes++
+				if name != "srv" || len(findings) != 1 || findings[0].Package != "example" || findings[0].InstalledVersion != "1" || findings[0].LastSeen != update.CVEScannedAt {
+					t.Fatalf("unbound positive history: %+v", findings)
+				}
+				if scenario == "persistence_failure" {
+					return writeErr
+				}
+				return nil
+			}})
+			accepted, err := service.updatePendingPackageVulnerabilityAssessment(ctx, "srv", identity, update)
+			if scenario == "accepted" {
+				if !accepted || err != nil || writes != 1 || statuses["srv"].PendingUpdates[0].CVEState != "ready" {
+					t.Fatalf("accepted=%v err=%v writes=%d", accepted, err, writes)
+				}
+				return
+			}
+			if accepted || (statuses["srv"] != nil && statuses["srv"].PendingUpdates[0].CVEState != "pending") {
+				t.Fatal("rejected history was published")
+			}
+			expectedWrites := 0
+			if scenario == "persistence_failure" {
+				expectedWrites = 1
+				if !errors.Is(err, writeErr) {
+					t.Fatal(err)
+				}
+			}
+			if writes != expectedWrites {
+				t.Fatalf("writes=%d want=%d", writes, expectedWrites)
+			}
+		})
 	}
 }

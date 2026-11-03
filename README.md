@@ -1,6 +1,6 @@
 # SimpleLinuxUpdater
 
-Version: v0.4.16
+Version: v0.5.3
 
 SimpleLinuxUpdater is a self-hosted web UI that helps you manage apt updates on Debian-based servers over SSH. It provides an approval workflow, health checks, audit history, and basic observability so you can update hosts confidently without logging into each machine.
 
@@ -14,6 +14,7 @@ SimpleLinuxUpdater is a self-hosted web UI that helps you manage apt updates on 
 
 - [Overview](#overview)
 - [Features](#features)
+- [Upgrading to v0.5.3](#upgrading-to-v053)
 - [Quick start](#quick-start)
 - [Documentation](#documentation)
 - [Security](#security)
@@ -37,7 +38,7 @@ SimpleLinuxUpdater is designed for trusted environments (LAN/VPN). It connects t
 - Four explicit approval scopes: standard updates, standard security updates, kept-back security updates, or a full upgrade with package-removal confirmation
 - Expiring package deferrals per Server and policy, with reasons, audit authors, cumulative inheritance, dependency-safe plans and enforcement before dpkg ([workflow](docs/usage.md#package-deferrals))
 - Approval bound to the displayed job and plan generation, revalidation before execution, and APT enforcement when removals are not approved
-- Distribution-verified CVE assessment for Debian 12/13 and Ubuntu 22.04/24.04/26.04, with fixes and remaining exposure shown separately
+- CVE information for available Debian/Ubuntu package updates, with installed/candidate version comparison before approval
 - Baseline and plan-aware disk/APT pre-checks before approval, including exact simulated size facts with a conservative fallback, plus post-update health checks
 - Durable APT reconciliation and guided repair after uncertain package-manager outcomes
 - Controlled reboot with SSH recovery, uptime reset, and reboot-required verification
@@ -51,14 +52,31 @@ SimpleLinuxUpdater is designed for trusted environments (LAN/VPN). It connects t
 - Local administrator password recovery with hidden terminal entry, exclusive installation locking and atomic session revocation/audit; see [lost access recovery](docs/troubleshooting.md#forgotten-admin-password)
 - In-app encrypted backup/restore (DB + config, optional `known_hosts`) for host/container migration
 
+## Upgrading to v0.5.3
+
+Export and verify an encrypted backup before replacing the executable and web
+assets together. From v0.5.2, the available-update drawer gains a searchable list
+of 15 packages per page, full-width CVE details, shared coverage explanations,
+and pagination above and below both lists. Background refreshes keep the lists
+still. Package filters do not change the approval scope.
+
+No new required environment variable, database migration or SSH helper protocol
+is introduced relative to v0.5.2. Finish or cancel pending maintenance before
+restarting; interrupted approvals require a fresh APT check and renewed approval.
+CVE information remains limited to available updates. Follow the
+[upgrade and rollback guide](docs/upgrading.md), including the retired scanner
+behavior when upgrading from v0.5.1.
+Upgrades from v0.4.16 or earlier must also follow the
+[v0.5.0 account, scheduling and helper requirements](CHANGELOG.md#v050---2026-10-29).
+
 ## Quick start
 
 ### Docker (official image)
 
 ```bash
 cp .env-template .env
-docker pull ghcr.io/nolife141-teams/simplelinuxupdater:v0.4.16
-docker run --env-file .env -p 8080:8080 -v debian-updater-data:/data ghcr.io/nolife141-teams/simplelinuxupdater:v0.4.16
+docker pull ghcr.io/nolife141-teams/simplelinuxupdater:v0.5.3
+docker run --env-file .env -p 8080:8080 -v debian-updater-data:/data ghcr.io/nolife141-teams/simplelinuxupdater:v0.5.3
 ```
 
 Open `http://localhost:8080`.
@@ -126,7 +144,7 @@ Download the archive for your platform from GitHub Releases and run the included
 Example (Linux amd64):
 
 ```bash
-VERSION="0.4.16"
+VERSION="0.5.3"
 APP="SimpleLinuxUpdater_${VERSION}"
 ARCHIVE="${APP}_linux_amd64.tar.gz"
 
@@ -189,14 +207,13 @@ Ways you can help:
 
 MIT. See [LICENSE](LICENSE).
 
-### Installed-package vulnerability scans
+### CVEs in available updates
 
-The selected-host panel exposes a read-only **Scan vulnerabilities** action and persisted coverage, freshness, severity, and findings, including packages with no newer candidate. Never-scanned, unavailable, partial, and complete scans are distinct. Failed or partial scans do not resolve prior findings; updates alone do not resolve them either. See [scan behavior and source limits](docs/usage.md#installed-package-vulnerability-scans).
+CVE analysis runs as part of APT package discovery, after `apt update`, for packages with an available update. Status shows update/security counts and verified candidate CVE corrections. **Review updates** opens the package list, where CVE details and distribution evidence expand on demand. A successful scheduled package check also makes this list available without requiring a pending approval.
 
-- `DEBIAN_UPDATER_VULNERABILITY_SCAN_ENABLED`: `true` by default; `false` disables manual and periodic installed-package scans. Existing asynchronous approval enrichment is independent.
-- `DEBIAN_UPDATER_VULNERABILITY_SCAN_INTERVAL_HOURS`: default `24`, range `0–8760`; `0` disables periodic scans while keeping manual scans available.
-- `DEBIAN_UPDATER_VULNERABILITY_SCAN_TIMEOUT_SECONDS`: default `300`, range `10–900`; total inventory/OSV scan deadline.
-- `DEBIAN_UPDATER_VULNERABILITY_TARGET_LOW_DAYS`, `DEBIAN_UPDATER_VULNERABILITY_TARGET_MEDIUM_DAYS`, `DEBIAN_UPDATER_VULNERABILITY_TARGET_HIGH_DAYS`, `DEBIAN_UPDATER_VULNERABILITY_TARGET_CRITICAL_DAYS`: optional remediation objectives, `0–3650` days from first observation; unset or `0` means no target. Unknown severity never receives a deadline. These objectives do not gate approvals.
+Security updates remain visible if CVE data is unavailable. Unknown provenance, unsupported releases and incomplete lookups remain explicit. No available updates means **No packages to update**, never a claim that the server has no vulnerabilities. See [CVE-aware pending approval](docs/usage.md#cve-aware-pending-approval).
+
+Standalone installed-package scans, periodic vulnerability scanning, the CVE analysis navigation item, the global ledger and separate correction workspace are retired. Their old pages redirect to Status and authenticated APIs return `410 Gone`. Old scan observations remain in SQLite/backups for continuity but do not contribute to Status. Legacy scan/target/security-intelligence environment variables no longer enable a worker.
 
 Application post-check profiles in Admin can verify remote systemd units and HTTP health endpoints per Server or tag, with bounded recovery and blocking/warning results. See [profile configuration](docs/configuration.md#application-post-check-profiles).
 
@@ -214,3 +231,5 @@ Both are public, read-only, require no account/token, return minimal JSON, and
 send `Cache-Control: no-store`. Remote Server failures do not change readiness.
 See [deployment health checks](docs/deployment.md#installation-health-and-readiness)
 for maintenance states, Docker probes, metrics and alert examples.
+
+Interface labels are currently provided in English; configurable interface languages are not yet implemented.

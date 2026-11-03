@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"reflect"
 	"strings"
 	"sync"
 	"time"
@@ -185,6 +186,11 @@ func (d ServiceDeps) withDefaults() ServiceDeps {
 }
 
 type withActorRunner struct {
+	remediationPreparation RemediationPreparation
+	publishRemediationPlan func(*servers.ServerStatus, RemediationPreparation) error
+	remediationInventory   []servers.PendingUpdate
+	remediationDistro      string
+
 	service    *Service
 	server     servers.Server
 	actor      string
@@ -878,6 +884,9 @@ func (s *Service) RunUpdateJob(req UpdateRunRequest) {
 	deps := s.EnsureDeps()
 	postcheckCfg := deps.LoadPostUpdateCheckConfig()
 	behavior := deps.LoadScheduledJobBehavior(req.JobID)
+	if req.ForceManual {
+		behavior.AutoApproveScope = ""
+	}
 	s.runWithActorShared(
 		req.Server,
 		req.Actor,
@@ -888,6 +897,8 @@ func (s *Service) RunUpdateJob(req UpdateRunRequest) {
 		UpdateCompleteAction,
 		func(status *servers.ServerStatus, policy RetryPolicy) {
 			status.Status = "updating"
+			status.RemediationPlanID = ""
+			status.RemediationDigest = ""
 			status.ApprovalScope = ""
 			status.ApprovalConfirmRemovals = false
 			status.Upgradable = nil
@@ -902,10 +913,17 @@ func (s *Service) RunUpdateJob(req UpdateRunRequest) {
 				policy.JitterPct,
 			)
 		},
-		updateRunnerAuditMeta,
+		func(r *withActorRunner, final string) map[string]any {
+			meta := updateRunnerAuditMeta(r, final)
+			if req.Finished != nil {
+				req.Finished(meta)
+			}
+			return meta
+		},
 		UpdateCompletionOutcome,
 		"update.ssh_dial",
 		func(r *withActorRunner) {
+			r.publishRemediationPlan = req.PublishPlan
 			maintenanceCtx := r.maintenanceContext()
 			r.setJobPhase(jobs.PhasePrechecks)
 			if err := r.captureApplicationProfile(); err != nil {
@@ -1000,6 +1018,9 @@ func (s *Service) RunUpdateJob(req UpdateRunRequest) {
 			})
 			metadataOutput.Flush()
 			r.aptUpdateAttempts += commandResult.Attempts
+			_ = r.withStatus(func(status *servers.ServerStatus) {
+				status.APTMetadata = refreshObservation(status.APTMetadata, deps.Now(), commandResult.Stdout+"\n"+commandResult.Stderr, err)
+			})
 			stdout, stderr := commandResult.Stdout, commandResult.Stderr
 			logs := r.currentLogs()
 			if !metadataOutput.Received() {
@@ -1035,6 +1056,12 @@ func (s *Service) RunUpdateJob(req UpdateRunRequest) {
 			}
 
 			r.upgradePlan = discovery.UpgradePlan
+			_ = r.withStatus(func(status *servers.ServerStatus) {
+				status.EmptyPackageDiscoveryRefreshAt = ""
+				if discovery.Empty() && discovery.AvailableUpdatesComplete {
+					status.EmptyPackageDiscoveryRefreshAt = status.APTMetadata.LastRefreshAt
+				}
+			})
 			if discovery.Empty() {
 				if !r.refreshFactsAfterSuccessfulUpdate() {
 					return
@@ -1082,6 +1109,27 @@ func (s *Service) RunUpdateJob(req UpdateRunRequest) {
 			}
 			approvalChanged := false
 			for {
+				if req.ForceManual {
+					inventory, distro, err := r.readRemediationInventory()
+					if err != nil {
+						r.setErrorLogs(r.currentLogs() + "\nCannot bind remediation inventory: " + err.Error())
+						return
+					}
+					r.remediationInventory = inventory
+					r.remediationDistro = distro
+					scopes, err := r.readRemediationScopes(discovery)
+					if err != nil {
+						r.setErrorLogs(r.currentLogs() + "\nCannot simulate remediation scopes: " + err.Error())
+						return
+					}
+					sources, err := r.readRemediationSources(discovery, scopes, inventory, distro)
+					if err != nil {
+						r.setErrorLogs(r.currentLogs() + "\nCannot bind remediation source/candidate identity: " + err.Error())
+						return
+					}
+					facts := r.session.CollectServerFacts(maintenanceCtx)
+					r.remediationPreparation = RemediationPreparation{Sources: sources, Scopes: scopes, Inventory: inventory, Prechecks: append([]PrecheckResult{}, r.precheckResults...), FailedUnits: append([]string{}, r.preUpdateFailedUnits...), RebootRequired: facts.RebootRequired, RunningKernel: facts.RunningKernelVersion, LatestInstalledKernel: facts.LatestInstalledKernelVersion, ObservedAt: deps.Now().UTC().Format(time.RFC3339Nano)}
+				}
 				logs = r.currentLogs()
 				deps.UpdateScheduledDiscoveryMeta(r.jobID, discovery)
 				autoScope := behavior.AutoApproveScope
@@ -1111,7 +1159,7 @@ func (s *Service) RunUpdateJob(req UpdateRunRequest) {
 				if autoApproval.Allowed {
 					autoApproveScope = autoApproval.Scope
 				}
-				if autoApproveScope == "" {
+				if autoApproveScope == "" && !req.ForceManual {
 					s.StartPendingCVEEnrichment(r.server, discovery.PendingUpdates, r.jobID, r.actor, r.clientIP)
 				}
 
@@ -1216,7 +1264,37 @@ func (s *Service) RunUpdateJob(req UpdateRunRequest) {
 					}
 				}
 
+				previousRemediationDiscovery := discovery
 				fresh, changed, err := r.revalidateApproval(discovery)
+				if req.ForceManual {
+					inventory, distro, inventoryErr := r.readRemediationInventory()
+					if inventoryErr != nil {
+						r.setErrorLogs(r.currentLogs() + "\nCannot revalidate remediation inventory: " + inventoryErr.Error())
+						return
+					}
+					if !reflect.DeepEqual(inventory, r.remediationInventory) || distro != r.remediationDistro {
+						changed = true
+					}
+					scopes, scopeErr := r.readRemediationScopes(fresh)
+					if scopeErr != nil {
+						r.setErrorLogs(r.currentLogs() + "\nCannot revalidate remediation scopes: " + scopeErr.Error())
+						return
+					}
+					sources, sourceErr := r.readRemediationSources(fresh, scopes, inventory, distro)
+					if sourceErr != nil {
+						r.setErrorLogs(r.currentLogs() + "\nCannot revalidate remediation source/candidate identity: " + sourceErr.Error())
+						return
+					}
+					if sources.Digest != r.remediationPreparation.Sources.Digest {
+						changed = true
+					}
+					if !reflect.DeepEqual(scopes, r.remediationPreparation.Scopes) {
+						changed = true
+					}
+				}
+				if req.ForceManual && !remediationDiscoveryEqual(previousRemediationDiscovery, fresh) {
+					changed = true
+				}
 				if err != nil {
 					if r.handleShutdownCancellation(err, "Update interrupted while revalidating approval.") {
 						return
@@ -1290,6 +1368,13 @@ func (s *Service) RunUpdateJob(req UpdateRunRequest) {
 				return
 			}
 
+			if req.ValidatePlan != nil {
+				if err := req.ValidatePlan(); err != nil {
+					r.lastErrClass = "remediation_plan_drift"
+					r.setErrorLogs(r.currentLogs() + "\nRemediation plan changed: " + err.Error() + ". Prepare and approve again.")
+					return
+				}
+			}
 			if !r.requireMutationPhase(jobs.PhaseAptUpgrade) {
 				return
 			}
@@ -1893,7 +1978,7 @@ func (s *Service) StartPendingCVEEnrichment(server servers.Server, updates []ser
 			}
 			return
 		}
-		scannedUpdates, scanErr := deps.VulnerabilityScanner.Scan(cveCtx, cveSession, updates)
+		scannedUpdates, scanErr := deps.VulnerabilityScanner.Scan(withAvailabilityPlan(context.WithValue(cveCtx, availabilityAPTKey{}, snapshot.APTMetadata), PackageDiscoveryOutcome{PendingUpdates: updates, UpgradePlan: snapshot.UpgradePlan}), cveSession, updates)
 		if scanErr != nil {
 			if errors.Is(scanErr, context.Canceled) || errors.Is(cveCtx.Err(), context.Canceled) {
 				markInterrupted(scanErr)
@@ -1933,7 +2018,20 @@ func (s *Service) StartPendingCVEEnrichment(server servers.Server, updates []ser
 			if update.CVEState == "skipped" {
 				continue
 			}
-			if !s.updatePendingPackageVulnerabilityAssessment(server.Name, identity, update) {
+			accepted, persistErr := s.updatePendingPackageVulnerabilityAssessment(cveCtx, server.Name, identity, update)
+			if persistErr != nil {
+				if err := cveCtx.Err(); err != nil {
+					markInterrupted(err)
+					return
+				}
+				deps.Logf("retain approval vulnerability findings for %q: %v", server.Name, persistErr)
+				if jm := deps.CurrentJobManager(); jm != nil && jobID != "" {
+					status, phase, summary, class := jobs.StatusFailed, jobs.PhaseComplete, "Unable to retain installed vulnerability findings", "persistence"
+					_ = jm.Transition(jobID, jobs.Intent{Status: &status, Phase: &phase, Summary: &summary, ErrorClass: &class})
+				}
+				return
+			}
+			if !accepted {
 				if err := cveCtx.Err(); err != nil {
 					markInterrupted(err)
 					return
@@ -2007,25 +2105,43 @@ func (s *Service) updatePendingPackageCVEState(serverName string, identity pendi
 	return true
 }
 
-func (s *Service) updatePendingPackageVulnerabilityAssessment(serverName string, identity pendingApprovalIdentity, update servers.PendingUpdate) bool {
+func (s *Service) updatePendingPackageVulnerabilityAssessment(ctx context.Context, serverName string, identity pendingApprovalIdentity, update servers.PendingUpdate) (bool, error) {
 	deps := s.EnsureDeps()
 	if deps.ServerState == nil {
-		return false
+		return false, nil
 	}
 	updateSelector := pendingUpdatePackageSelector(update)
 	if updateSelector == "" {
-		return false
+		return false, nil
 	}
 	deps.ServerState.Lock()
 	defer deps.ServerState.Unlock()
 	status := deps.ServerState.StatusMap()[serverName]
 	if !identity.matches(status) {
-		return false
+		return false, nil
 	}
 	updated := false
 	for i := range status.PendingUpdates {
 		if pendingUpdatePackageSelector(status.PendingUpdates[i]) != updateSelector || status.PendingUpdates[i].CandidateVersion != update.CandidateVersion || status.PendingUpdates[i].CurrentVersion != update.CurrentVersion {
 			continue
+		}
+		// Admission identity and inventory edits use this same state lock. Retain
+		// positive history before publishing an approval-derived alert; neither
+		// cancellation nor a later approval generation can erase its watch.
+		if deps.RecordApprovalFindings != nil {
+			findings := servers.ClonePendingUpdates([]servers.PendingUpdate{update})[0].CVEFindings
+			for j := range findings {
+				findings[j].Package = updateSelector
+				findings[j].InstalledVersion = update.CurrentVersion
+				findings[j].CandidateVersion = update.CandidateVersion
+				findings[j].LastSeen = update.CVEScannedAt
+			}
+			if err := ctx.Err(); err != nil {
+				return false, err
+			}
+			if err := deps.RecordApprovalFindings(ctx, serverName, findings); err != nil {
+				return false, err
+			}
 		}
 		status.PendingUpdates[i] = servers.ClonePendingUpdates([]servers.PendingUpdate{update})[0]
 		updated = true
@@ -2033,5 +2149,5 @@ func (s *Service) updatePendingPackageVulnerabilityAssessment(serverName string,
 	if updated {
 		SortPendingUpdates(status.PendingUpdates)
 	}
-	return updated
+	return updated, nil
 }

@@ -133,7 +133,7 @@
     "/api/servers/{name}/vulnerabilities": {
       "get": {
         "operationId": "get_api_servers_name_vulnerabilities",
-        "summary": "GET /api/servers/:name/vulnerabilities",
+        "summary": "Retired standalone CVE endpoint",
         "x-slu-scope": "operational:read",
         "security": [
           {
@@ -151,26 +151,6 @@
           }
         ],
         "responses": {
-          "200": {
-            "description": "Success",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/VulnerabilityObservation"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "Invalid request or additional data after the first JSON document. Returns a single JSON error before mutation.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
           "401": {
             "description": "Request rejected. No secrets are included.",
             "content": {
@@ -191,36 +171,6 @@
               }
             }
           },
-          "404": {
-            "description": "Request rejected. No secrets are included.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "Request rejected. No secrets are included.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "413": {
-            "description": "Request body exceeds the route byte limit. JSON commands default to 1048576 bytes; specialized route limits apply. Returns a single JSON error before mutation.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
           "429": {
             "description": "Request rejected. No secrets are included.",
             "content": {
@@ -231,18 +181,8 @@
               }
             }
           },
-          "500": {
-            "description": "Request rejected. No secrets are included.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "503": {
-            "description": "Request rejected. No secrets are included.",
+          "410": {
+            "description": "Standalone scanning retired",
             "content": {
               "application/json": {
                 "schema": {
@@ -251,7 +191,9 @@
               }
             }
           }
-        }
+        },
+        "deprecated": true,
+        "description": "CVE information is now scoped to available APT package updates. This endpoint cannot start a scan or remediation."
       }
     },
     "/api/dashboard/summary": {
@@ -264,7 +206,17 @@
             "personalBearer": []
           }
         ],
-        "parameters": [],
+        "parameters": [
+          {
+            "name": "include_vulnerability_findings",
+            "in": "query",
+            "schema": {
+              "type": "boolean",
+              "default": true
+            },
+            "description": "false omits active/resolved occurrence arrays while retaining whole-Server counts. Default response remains compatible."
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success",
@@ -366,7 +318,8 @@
               }
             }
           }
-        }
+        },
+        "description": " CVE information is limited to available package updates. risk.update_cves summarizes verified candidate fixes and incomplete lookups. risk.cves and high_risk_cve count only CVEs/hosts associated with those updates. Legacy installed scans do not contribute."
       }
     },
     "/api/observability/summary": {
@@ -2289,7 +2242,7 @@
     "/api/servers/{name}/vulnerabilities/scan": {
       "post": {
         "operationId": "post_api_servers_name_vulnerabilities_scan",
-        "summary": "POST /api/servers/:name/vulnerabilities/scan",
+        "summary": "Retired standalone CVE endpoint",
         "x-slu-scope": "maintenance:write",
         "security": [
           {
@@ -2307,26 +2260,6 @@
           }
         ],
         "responses": {
-          "202": {
-            "description": "Scan accepted asynchronously. Poll GET /api/servers/{name}/vulnerabilities for the persisted result.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/VulnerabilityScanAccepted"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "Invalid request or additional data after the first JSON document. Returns a single JSON error before mutation.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
           "401": {
             "description": "Request rejected. No secrets are included.",
             "content": {
@@ -2347,36 +2280,6 @@
               }
             }
           },
-          "404": {
-            "description": "Request rejected. No secrets are included.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "Request rejected. No secrets are included.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "413": {
-            "description": "Request body exceeds the route byte limit. JSON commands default to 1048576 bytes; specialized route limits apply. Returns a single JSON error before mutation.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
           "429": {
             "description": "Request rejected. No secrets are included.",
             "content": {
@@ -2387,18 +2290,8 @@
               }
             }
           },
-          "500": {
-            "description": "Request rejected. No secrets are included.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "503": {
-            "description": "Request rejected. No secrets are included.",
+          "410": {
+            "description": "Standalone scanning retired",
             "content": {
               "application/json": {
                 "schema": {
@@ -2419,7 +2312,9 @@
             }
           }
         },
-        "x-slu-request-body-limit-bytes": 1048576
+        "x-slu-request-body-limit-bytes": 1048576,
+        "deprecated": true,
+        "description": "CVE information is now scoped to available APT package updates. This endpoint cannot start a scan or remediation."
       }
     },
     "/api/servers/{name}/postchecks/test": {
@@ -3246,7 +3141,7 @@
     "/api/servers/{name}/vulnerabilities/scans/{scan_id}/cancel": {
       "post": {
         "operationId": "cancelInstalledVulnerabilityScan",
-        "summary": "Cancel the exact active scan on this Server",
+        "summary": "Retired standalone CVE endpoint",
         "x-slu-scope": "maintenance:write",
         "security": [
           {
@@ -3272,26 +3167,6 @@
           }
         ],
         "responses": {
-          "202": {
-            "description": "Cancellation requested; wait for terminal observation/dashboard progress. Repeating while draining is idempotent.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/VulnerabilityScanCancellation"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "Invalid request or additional data after the first JSON document. Returns a single JSON error before mutation.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
           "401": {
             "description": "Request rejected. No secrets are included.",
             "content": {
@@ -3312,36 +3187,6 @@
               }
             }
           },
-          "404": {
-            "description": "Request rejected. No secrets are included.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "Scan is no longer active for this Server (including stale or different-Server identity); no effect.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "413": {
-            "description": "Request body exceeds the route byte limit. JSON commands default to 1048576 bytes; specialized route limits apply. Returns a single JSON error before mutation.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
           "429": {
             "description": "Request rejected. No secrets are included.",
             "content": {
@@ -3352,18 +3197,8 @@
               }
             }
           },
-          "500": {
-            "description": "Request rejected. No secrets are included.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "503": {
-            "description": "Request rejected. No secrets are included.",
+          "410": {
+            "description": "Standalone scanning retired",
             "content": {
               "application/json": {
                 "schema": {
@@ -3374,7 +3209,8 @@
           }
         },
         "x-slu-request-body-limit-bytes": 1048576,
-        "description": "Cookie sessions or operational personal Bearer token with maintenance:write. Returns 202 while cancellation drains SSH, source HTTP and persistence; resources remain reserved until drainage. A stale identity or identity belonging to another Server returns 409 without affecting the active scan."
+        "description": "CVE information is now scoped to available APT package updates. This endpoint cannot start a scan or remediation.",
+        "deprecated": true
       }
     },
     "/api/audit-events/export": {
@@ -3673,6 +3509,913 @@
           }
         }
       }
+    },
+    "/api/vulnerabilities": {
+      "get": {
+        "operationId": "get_api_vulnerabilities",
+        "summary": "Retired standalone CVE endpoint",
+        "x-slu-scope": "operational:read",
+        "security": [
+          {
+            "personalBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "page",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "page_size",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "server",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "distro",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "severity",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "fix",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "sort",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "min_age",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "401": {
+            "description": "Request rejected. No secrets are included.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Request rejected. No secrets are included.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rejected. No secrets are included.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "410": {
+            "description": "Standalone scanning retired",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "deprecated": true,
+        "description": "CVE information is now scoped to available APT package updates. This endpoint cannot start a scan or remediation."
+      }
+    },
+    "/api/vulnerabilities/{id}": {
+      "get": {
+        "operationId": "get_api_vulnerabilities_id",
+        "summary": "Retired standalone CVE endpoint",
+        "x-slu-scope": "operational:read",
+        "security": [
+          {
+            "personalBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "page_size",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "server",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "401": {
+            "description": "Request rejected. No secrets are included.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Request rejected. No secrets are included.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rejected. No secrets are included.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "410": {
+            "description": "Standalone scanning retired",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "deprecated": true,
+        "description": "CVE information is now scoped to available APT package updates. This endpoint cannot start a scan or remediation."
+      }
+    },
+    "/api/vulnerabilities/plan": {
+      "get": {
+        "operationId": "get_api_vulnerabilities_plan",
+        "summary": "Retired standalone CVE endpoint",
+        "x-slu-scope": "operational:read",
+        "security": [
+          {
+            "personalBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "page",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "page_size",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "server",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "state",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "package",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "401": {
+            "description": "Request rejected. No secrets are included.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Request rejected. No secrets are included.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rejected. No secrets are included.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "410": {
+            "description": "Standalone scanning retired",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "deprecated": true,
+        "description": "CVE information is now scoped to available APT package updates. This endpoint cannot start a scan or remediation."
+      }
+    },
+    "/api/servers/{name}/remediation": {
+      "get": {
+        "operationId": "get_api_servers_name_remediation",
+        "summary": "Retired standalone CVE endpoint",
+        "x-slu-scope": "operational:read",
+        "security": [
+          {
+            "personalBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "401": {
+            "description": "Request rejected. No secrets are included.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Request rejected. No secrets are included.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rejected. No secrets are included.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "410": {
+            "description": "Standalone scanning retired",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "deprecated": true,
+        "description": "CVE information is now scoped to available APT package updates. This endpoint cannot start a scan or remediation."
+      }
+    },
+    "/api/servers/{name}/remediation/{plan_id}": {
+      "get": {
+        "operationId": "get_api_servers_name_remediation_plan_id",
+        "summary": "Retired standalone CVE endpoint",
+        "x-slu-scope": "operational:read",
+        "security": [
+          {
+            "personalBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "plan_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "401": {
+            "description": "Request rejected. No secrets are included.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Request rejected. No secrets are included.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rejected. No secrets are included.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "410": {
+            "description": "Standalone scanning retired",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "description": "CVE information is now scoped to available APT package updates. This endpoint cannot start a scan or remediation.",
+        "deprecated": true
+      }
+    },
+    "/api/servers/{name}/remediation/{plan_id}/evidence": {
+      "get": {
+        "operationId": "get_api_servers_name_remediation_plan_id_evidence",
+        "summary": "Retired standalone CVE endpoint",
+        "x-slu-scope": "operational:read",
+        "security": [
+          {
+            "personalBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "plan_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "package",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "401": {
+            "description": "Request rejected. No secrets are included.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Request rejected. No secrets are included.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rejected. No secrets are included.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "410": {
+            "description": "Standalone scanning retired",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "deprecated": true,
+        "description": "CVE information is now scoped to available APT package updates. This endpoint cannot start a scan or remediation."
+      }
+    },
+    "/api/servers/{name}/remediation/prepare": {
+      "post": {
+        "operationId": "post_api_servers_name_remediation_prepare",
+        "summary": "Retired standalone CVE endpoint",
+        "x-slu-scope": "maintenance:write",
+        "security": [
+          {
+            "personalBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "401": {
+            "description": "Request rejected. No secrets are included.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Request rejected. No secrets are included.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rejected. No secrets are included.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "410": {
+            "description": "Standalone scanning retired",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "deprecated": true,
+        "description": "CVE information is now scoped to available APT package updates. This endpoint cannot start a scan or remediation."
+      }
+    },
+    "/api/servers/{name}/remediation/{plan_id}/retry": {
+      "post": {
+        "operationId": "post_api_servers_name_remediation_plan_id_retry",
+        "summary": "Retired standalone CVE endpoint",
+        "x-slu-scope": "maintenance:write",
+        "security": [
+          {
+            "personalBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "plan_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "401": {
+            "description": "Request rejected. No secrets are included.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Request rejected. No secrets are included.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rejected. No secrets are included.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "410": {
+            "description": "Standalone scanning retired",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "deprecated": true,
+        "description": "CVE information is now scoped to available APT package updates. This endpoint cannot start a scan or remediation."
+      }
+    },
+    "/api/servers/{name}/vulnerabilities/reviews": {
+      "post": {
+        "operationId": "post_api_servers_name_vulnerabilities_reviews",
+        "summary": "Retired standalone CVE endpoint",
+        "x-slu-scope": "maintenance:write",
+        "security": [
+          {
+            "personalBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "401": {
+            "description": "Request rejected. No secrets are included.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Request rejected. No secrets are included.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rejected. No secrets are included.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "410": {
+            "description": "Standalone scanning retired",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "package",
+                  "owner",
+                  "reason",
+                  "decision",
+                  "reevaluate_at"
+                ],
+                "properties": {
+                  "package": {
+                    "type": "string"
+                  },
+                  "cve": {
+                    "type": "string"
+                  },
+                  "owner": {
+                    "type": "string"
+                  },
+                  "reason": {
+                    "type": "string"
+                  },
+                  "decision": {
+                    "type": "string"
+                  },
+                  "mitigation": {
+                    "type": "string"
+                  },
+                  "reevaluate_at": {
+                    "type": "string",
+                    "format": "date-time"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "deprecated": true,
+        "description": "CVE information is now scoped to available APT package updates. This endpoint cannot start a scan or remediation."
+      }
+    },
+    "/api/security-actions": {
+      "get": {
+        "operationId": "get_api_security_actions",
+        "summary": "Retired standalone CVE endpoint",
+        "x-slu-scope": "operational:read",
+        "security": [
+          {
+            "personalBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "server",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "maxLength": 200
+            }
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "maxLength": 200
+            }
+          },
+          {
+            "name": "view",
+            "in": "query",
+            "description": "Paginate this queue only; totals still describe all queues. Omit for legacy shared pagination.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "fixes",
+                "alerts",
+                "lifecycle"
+              ]
+            }
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 1000000,
+              "default": 1
+            }
+          },
+          {
+            "name": "page_size",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 25
+            }
+          },
+          {
+            "name": "recent_days",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 90,
+              "default": 30
+            }
+          }
+        ],
+        "responses": {
+          "401": {
+            "description": "Request rejected. No secrets are included.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Request rejected. No secrets are included.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request rejected. No secrets are included.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "410": {
+            "description": "Standalone scanning retired",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "description": "CVE information is now scoped to available APT package updates. This endpoint cannot start a scan or remediation.",
+        "deprecated": true
+      }
     }
   },
   "components": {
@@ -3724,6 +4467,10 @@
           "confirm_removals": {
             "type": "boolean",
             "default": false
+          },
+          "remediation_digest": {
+            "type": "string",
+            "description": "Required exact digest when the pending job is attached to a remediation plan, including through existing approval endpoints. Server/configuration, generation and freshness are validated; fresh discovery revalidates package/source/inventory/dependency/removal drift before execution."
           }
         }
       },
@@ -3750,6 +4497,64 @@
           },
           "full_upgrade_plan_available": {
             "type": "boolean"
+          },
+          "full_upgrade_simulation_digest": {
+            "type": "string",
+            "description": "Digest of normalized APT install/upgrade/removal facts, including versions, architecture and origins. Remediation revalidation requires renewed approval on drift; raw command output is never exposed."
+          },
+          "full_upgrade_simulation_packages": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "package",
+                "candidate_version"
+              ],
+              "properties": {
+                "package": {
+                  "type": "string"
+                },
+                "current_version": {
+                  "type": "string"
+                },
+                "candidate_version": {
+                  "type": "string"
+                },
+                "architecture": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Parsed simulated package versions, including dependencies absent from installed upgradable packages. Repository credentials and raw simulation output are omitted."
+          },
+          "kept_back_security_simulation_digest": {
+            "type": "string",
+            "description": "Digest of normalized APT install/upgrade/removal facts, including versions, architecture and origins. Remediation revalidation requires renewed approval on drift; raw command output is never exposed."
+          },
+          "kept_back_security_simulation_packages": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "package",
+                "candidate_version"
+              ],
+              "properties": {
+                "package": {
+                  "type": "string"
+                },
+                "current_version": {
+                  "type": "string"
+                },
+                "candidate_version": {
+                  "type": "string"
+                },
+                "architecture": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Parsed simulated package versions, including dependencies absent from installed upgradable packages. Repository credentials and raw simulation output are omitted."
           }
         },
         "additionalProperties": true
@@ -3809,6 +4614,15 @@
           },
           "upgrade_plan": {
             "$ref": "#/components/schemas/UpgradePlan"
+          },
+          "apt_metadata": {
+            "$ref": "#/components/schemas/VulnerabilityAPTContext"
+          },
+          "remediation_plan_id": {
+            "type": "string"
+          },
+          "remediation_digest": {
+            "type": "string"
           }
         },
         "additionalProperties": true
@@ -3985,7 +4799,7 @@
       },
       "VulnerabilityScanProgress": {
         "type": "object",
-        "description": "Sanitary observed facts shared by direct observation and dashboard/SSE. No raw logs, percentages or ETA. Each first phase publishes immediately, then counters are bounded to one publication per second.",
+        "description": "Sanitary observed facts shared by direct observation and dashboard/SSE. No raw logs, percentages or ETA. Each first phase and every verification, persistence or enrichment boundary publishes immediately; ordinary repeated counters are bounded to one publication per second.",
         "required": [
           "phase",
           "inventoried",
@@ -4003,7 +4817,9 @@
               "inventory",
               "metadata",
               "evaluation",
-              "persistence"
+              "inventory_verification",
+              "persistence",
+              "enrichment"
             ]
           },
           "inventoried": {
@@ -4029,6 +4845,9 @@
           "findings": {
             "type": "integer",
             "minimum": 0
+          },
+          "metrics": {
+            "$ref": "#/components/schemas/VulnerabilityScanMetrics"
           }
         }
       },
@@ -4081,6 +4900,58 @@
             "items": {
               "type": "string"
             }
+          },
+          "findings": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/VulnerabilityFinding"
+            }
+          },
+          "server_name": {
+            "type": "string"
+          },
+          "inventory_proof": {
+            "$ref": "#/components/schemas/VulnerabilityInventoryProof"
+          },
+          "packages": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/VulnerabilityPackage"
+            }
+          },
+          "enrichment_errors": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "runtime_context": {
+            "$ref": "#/components/schemas/VulnerabilityRuntimeContext"
+          },
+          "metrics": {
+            "$ref": "#/components/schemas/VulnerabilityScanMetrics"
+          },
+          "diagnostics": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VulnerabilityScanDiagnostic"
+            }
+          },
+          "enrichment": {
+            "$ref": "#/components/schemas/VulnerabilityEnrichment"
+          },
+          "truncated": {
+            "type": "boolean"
+          },
+          "checkpoint": {
+            "type": "boolean",
+            "description": "Validated accepted partial boundary; LastAttempt remains running until its owner terminalizes."
           }
         },
         "additionalProperties": true
@@ -4103,12 +4974,1120 @@
               "null"
             ],
             "items": {
-              "type": "object",
-              "additionalProperties": true
+              "$ref": "#/components/schemas/VulnerabilityFinding"
+            }
+          },
+          "package_proofs": {
+            "type": "object",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/VulnerabilityPackageProof"
+            }
+          },
+          "package_absence_proofs": {
+            "type": "object",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/VulnerabilityInventoryAbsenceProof"
+            }
+          },
+          "inventory_proof": {
+            "$ref": "#/components/schemas/VulnerabilityInventoryProof"
+          }
+        },
+        "description": "Durable finding ledger and latest accepted scan. Complete stable evidence may resolve its own package even when other packages remain unknown. Whole stable inventory is required to prove removal. Cancelled/interrupted/unavailable scans, package updates alone and legacy counters without proofs cannot close findings. Last complete package proofs survive later unknown scans and supersede older approval observations."
+      },
+      "VulnerabilityAssessment": {
+        "type": "object",
+        "properties": {
+          "ecosystem": {
+            "type": "string"
+          },
+          "source_package": {
+            "type": "string"
+          },
+          "source_version": {
+            "type": "string"
+          },
+          "vendor_status": {
+            "type": "string"
+          },
+          "vendor_reason": {
+            "type": "string"
+          },
+          "vendor_priority": {
+            "type": "string"
+          },
+          "applicability": {
+            "type": "string"
+          },
+          "confidence": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          },
+          "modified_at": {
+            "type": "string"
+          },
+          "observed_at": {
+            "type": "string"
+          }
+        },
+        "description": "Distribution triage scoped to exact ecosystem/source/version, independently of CVSS and candidate availability. Missing legacy data is unknown. Applicability source_match does not prove runtime exploitability; vendor status unimportant is qualified separately, not a package fix. Ubuntu OSV currently cannot distinguish tracker triage statuses; remains unknown."
+      },
+      "VulnerabilityFinding": {
+        "type": "object",
+        "properties": {
+          "assessment": {
+            "$ref": "#/components/schemas/VulnerabilityAssessment"
+          },
+          "resolution": {
+            "$ref": "#/components/schemas/VulnerabilityResolution"
+          },
+          "runtime": {
+            "$ref": "#/components/schemas/VulnerabilityRuntimeApplicability"
+          },
+          "availability": {
+            "$ref": "#/components/schemas/VulnerabilityFixAvailability"
+          },
+          "disposition": {
+            "type": "string",
+            "description": "Legacy enum retained. no_fix_available means no verified candidate fix in observed data; it never means no publisher fix. fixed_by_candidate refers to comparative source evaluation, not installation or resolution."
+          },
+          "fixed_by_version": {
+            "type": "string",
+            "description": "Legacy evaluated candidate source version; never the first publisher fixed version. Use availability.published.fixed_versions for publisher events."
+          },
+          "fix_available": {
+            "type": "boolean",
+            "description": "Legacy candidate-addresses observation; never an installability or resolution guarantee. Historical values remain readable but have unknown additive availability until reverified."
+          }
+        },
+        "additionalProperties": true,
+        "description": "Durable package/CVE occurrence. Distribution assessment, severity evidence, candidate disposition and resolution are independent. Existing fields remain available. Component/runtime reclassification never resolves an occurrence or alters its source/vendor assessment."
+      },
+      "VulnerabilityQualificationCounts": {
+        "type": "object",
+        "properties": {
+          "reported_cves": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "confirmed_cves": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "needs_review_cves": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "vendor_qualified_cves": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "withdrawn_cves": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "occurrences": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "current_occurrences": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "unverified_occurrences": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "resolved_occurrences": {
+            "type": "integer",
+            "description": "Complete count of currently resolved package/CVE occurrences; occurrences reopened by newer approval evidence are excluded.",
+            "minimum": 0
+          },
+          "resolved_findings": {
+            "description": "At most 50 most recent currently resolved occurrences. The complete count is resolved_occurrences; full durable history remains in the Server vulnerability observation.",
+            "maxItems": 50,
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/VulnerabilityFinding"
+            }
+          },
+          "runtime_context": {
+            "$ref": "#/components/schemas/VulnerabilityRuntimeContext"
+          },
+          "kernel_coverage": {
+            "type": "string",
+            "enum": [
+              "evaluated",
+              "external",
+              "unknown"
+            ],
+            "description": "Component context only. evaluated does not imply all kernel vulnerabilities assessed or any exposure confirmed."
+          },
+          "not_scanned": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Includes Docker images, application dependencies and third-party repositories; scope installed_packages means host OS packages only. Missing optional component counts mean zero; missing legacy runtime context means unknown."
+          },
+          "active_kernel_occurrences": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Package/CVE occurrences by component/observed execution, independent of source/vendor distinct-CVE counts. Headers are also execution-unknown; these groups are not disjoint."
+          },
+          "inactive_kernel_occurrences": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Package/CVE occurrences by component/observed execution, independent of source/vendor distinct-CVE counts. Headers are also execution-unknown; these groups are not disjoint."
+          },
+          "external_kernel_occurrences": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Package/CVE occurrences by component/observed execution, independent of source/vendor distinct-CVE counts. Headers are also execution-unknown; these groups are not disjoint."
+          },
+          "header_occurrences": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Package/CVE occurrences by component/observed execution, independent of source/vendor distinct-CVE counts. Headers are also execution-unknown; these groups are not disjoint."
+          },
+          "runtime_unknown_occurrences": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Package/CVE occurrences by component/observed execution, independent of source/vendor distinct-CVE counts. Headers are also execution-unknown; these groups are not disjoint."
+          },
+          "findings": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DashboardVulnerabilityFinding"
+            }
+          },
+          "published_fix_occurrences": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Active package/CVE occurrence count from current independent publisher evidence."
+          },
+          "candidate_addressed_occurrences": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Active package/CVE occurrence count with current comparable candidate evaluation. Distinct from installed-package evidence in resolved_occurrences."
+          }
+        },
+        "description": "Dashboard risk.vulnerability: reported_cves counts distinct active IDs; occurrences counts package/ID pairs. Each ID belongs to one category with precedence current vendor-confirmed > needs-review > vendor-qualified > withdrawn across its packages. Only current package observations and current assessments may confirm vendor source matches. Stale/legacy evidence needs review. Counts never assert runtime exploitability. Active occurrences are separated into current and not-reverified evidence; resolved_findings retains closure proof/history and is excluded from active CVE counts. Enrichment failures are independent of package coverage. Runtime component counters and kernel_coverage are separate; confirmed_cves continues to count vendor-confirmed source matches, never confirmed running-kernel vulnerabilities."
+      },
+      "VulnerabilityPackageProof": {
+        "type": "object",
+        "properties": {
+          "scan_id": {
+            "type": "string"
+          },
+          "server_name": {
+            "type": "string"
+          },
+          "package": {
+            "type": "string"
+          },
+          "installed_version": {
+            "type": "string"
+          },
+          "source_package": {
+            "type": "string"
+          },
+          "source_version": {
+            "type": "string"
+          },
+          "ecosystem": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          },
+          "observed_at": {
+            "type": "string"
+          },
+          "verified_at": {
+            "type": "string"
+          },
+          "provenance_verified": {
+            "type": "boolean"
+          },
+          "complete": {
+            "type": "boolean"
+          },
+          "stable": {
+            "type": "boolean"
+          },
+          "finding_ids": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
             }
           }
         },
-        "description": "Accepted scan and durable finding ledger survive cancelled, interrupted, unavailable and partial attempts. Partial coverage never resolves absent findings."
+        "description": "Complete paginated source assessment for an exact binary/source identity, bound to an admitted Server and scan. Stable means identity was verified at both inventory boundaries; this does not prove runtime reachability. Legacy absence cannot resolve findings."
+      },
+      "VulnerabilityInventoryProof": {
+        "type": "object",
+        "properties": {
+          "scan_id": {
+            "type": "string"
+          },
+          "server_name": {
+            "type": "string"
+          },
+          "observed_at": {
+            "type": "string"
+          },
+          "verified_at": {
+            "type": "string"
+          },
+          "complete": {
+            "type": "boolean"
+          },
+          "stable": {
+            "type": "boolean"
+          },
+          "packages": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "description": "Complete stable whole-inventory proof; package absence can demonstrate removal independently of CVE coverage of remaining packages."
+      },
+      "VulnerabilityInventoryAbsenceProof": {
+        "type": "object",
+        "properties": {
+          "scan_id": {
+            "type": "string"
+          },
+          "server_name": {
+            "type": "string"
+          },
+          "package": {
+            "type": "string"
+          },
+          "observed_at": {
+            "type": "string"
+          },
+          "verified_at": {
+            "type": "string"
+          }
+        },
+        "description": "Per-package absence established by a complete stable inventory. Retained to suppress approval snapshots older than that absence after a later unknown reinstall. A base-name cutoff covers qualified aliases only when no architecture of that package was present; an explicit-architecture cutoff does not cover unqualified or foreign-architecture selectors. This is not an evaluation of the current installed version and cannot close new findings."
+      },
+      "VulnerabilityResolution": {
+        "type": "object",
+        "properties": {
+          "scan_id": {
+            "type": "string"
+          },
+          "server_name": {
+            "type": "string"
+          },
+          "verified_at": {
+            "type": "string"
+          },
+          "installed_version": {
+            "type": "string"
+          },
+          "source_package": {
+            "type": "string"
+          },
+          "source_version": {
+            "type": "string"
+          },
+          "ecosystem": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string",
+            "enum": [
+              "installed_version_changed",
+              "package_removed",
+              "no_longer_reported"
+            ]
+          }
+        },
+        "description": "Evidence-backed closure of a package/CVE occurrence. Version change does not assert runtime mitigation; no_longer_reported does not invent a vendor fix or withdrawal."
+      },
+      "VulnerabilityPackage": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          },
+          "source_package": {
+            "type": "string"
+          },
+          "source_version": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "proof": {
+            "$ref": "#/components/schemas/VulnerabilityPackageProof"
+          }
+        },
+        "description": "Inventoried package with independent assessment state and optional complete evidence."
+      },
+      "VulnerabilityRuntimeApplicability": {
+        "type": "object",
+        "additionalProperties": true,
+        "description": "Observed binary component context, independently of vendor source triage, CVSS, candidate disposition and resolution. No observation proves reachability or exploitability. Legacy missing fields are unknown. runtime_view is the projection after freshness checks; runtime retains the original observation.",
+        "properties": {
+          "component": {
+            "type": "string",
+            "enum": [
+              "source_match",
+              "development_headers",
+              "kernel_image"
+            ]
+          },
+          "execution": {
+            "type": "string",
+            "enum": [
+              "unknown",
+              "active",
+              "inactive",
+              "external"
+            ]
+          },
+          "exposure": {
+            "type": "string",
+            "enum": [
+              "unknown"
+            ]
+          },
+          "exploitability": {
+            "type": "string",
+            "enum": [
+              "unknown"
+            ]
+          },
+          "owner": {
+            "type": "string"
+          },
+          "action": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          },
+          "observed_at": {
+            "type": "string"
+          },
+          "kernel_release": {
+            "type": "string"
+          },
+          "virtualization": {
+            "type": "string"
+          },
+          "kernel_owner": {
+            "type": "string"
+          }
+        }
+      },
+      "VulnerabilityKernelImage": {
+        "type": "object",
+        "properties": {
+          "package": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          },
+          "source_package": {
+            "type": "string"
+          },
+          "source_version": {
+            "type": "string"
+          }
+        }
+      },
+      "VulnerabilityRuntimeContext": {
+        "type": "object",
+        "description": "Fresh bounded unprivileged Host Maintenance Session evidence: uname, systemd virtualization/container detection and exact dpkg image ownership plus installed image/source identities. Ten-second context deadline with transport drain; max 256 images and 128 KiB parsed output. Missing, denied, oversized and malformed probes are unknown. No hypervisor access or privilege escalation.",
+        "properties": {
+          "kernel_release": {
+            "type": "string"
+          },
+          "virtualization": {
+            "type": "string"
+          },
+          "kernel_owner": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          },
+          "observed_at": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "images": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "maxItems": 256,
+            "items": {
+              "$ref": "#/components/schemas/VulnerabilityKernelImage"
+            }
+          }
+        }
+      },
+      "DashboardVulnerabilityFinding": {
+        "type": "object",
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/VulnerabilityFinding"
+          }
+        ],
+        "properties": {
+          "runtime_view": {
+            "$ref": "#/components/schemas/VulnerabilityRuntimeApplicability"
+          },
+          "runtime_freshness": {
+            "type": "string",
+            "enum": [
+              "fresh",
+              "stale",
+              "unknown"
+            ]
+          },
+          "availability_freshness": {
+            "type": "string",
+            "description": "Freshness of comparative source-query evidence combined with package observation, independently of publisher downloads and APT metadata."
+          },
+          "published_fix_freshness": {
+            "type": "string",
+            "description": "Freshness of source-attributed publisher advisory download, independently of host inventory and package queries."
+          }
+        },
+        "description": "runtime_view uses newer accepted scan or approval host context for retained findings and demotes stale/future/missing or unverified image identities to unknown execution/ownership. runtime retains original evidence. Other distribution/severity/evidence fields remain compatible."
+      },
+      "VulnerabilityScanMetrics": {
+        "type": "object",
+        "description": "Observed counters and elapsed milliseconds only; persistence_ms measures checkpoint persistence. Zero metrics may be omitted.",
+        "properties": {
+          "inventory_ms": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "metadata_ms": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "evaluation_ms": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "enrichment_ms": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "persistence_ms": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "unique_queries": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "query_requests": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "query_pages": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "query_reuse": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "detail_requests": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "detail_cache_hits": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "checkpoints": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      },
+      "VulnerabilityScanDiagnostic": {
+        "type": "object",
+        "required": [
+          "phase",
+          "code"
+        ],
+        "properties": {
+          "phase": {
+            "type": "string"
+          },
+          "code": {
+            "type": "string"
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      },
+      "VulnerabilityEnrichment": {
+        "type": "object",
+        "description": "Bounded synchronous optional detail enrichment; completeness is independent from package evaluation. Cached observations retain their original time.",
+        "properties": {
+          "requested": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "obtained": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "missing": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "request_limit": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "concurrency": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "budget_ms": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "",
+              "complete",
+              "partial"
+            ]
+          },
+          "diagnostics": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VulnerabilityScanDiagnostic"
+            }
+          }
+        }
+      },
+      "VulnerabilityVersionEvent": {
+        "type": "object",
+        "properties": {
+          "introduced": {
+            "type": "string"
+          },
+          "fixed": {
+            "type": "string"
+          },
+          "last_affected": {
+            "type": "string"
+          },
+          "limit": {
+            "type": "string"
+          }
+        },
+        "description": "Publisher version event, retained without SemVer conversion. Full Debian/Ubuntu source versions include epoch and revision. Multiple affected intervals and reopen events remain ordered."
+      },
+      "VulnerabilityFixRange": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string"
+          },
+          "events": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VulnerabilityVersionEvent"
+            }
+          }
+        },
+        "description": "Exact publisher ecosystem range. A fixed event publishes a source fix; later introduced events can reopen the affected interval."
+      },
+      "VulnerabilityPublishedFix": {
+        "type": "object",
+        "properties": {
+          "state": {
+            "type": "string",
+            "enum": [
+              "published",
+              "not_established",
+              "unknown",
+              "withdrawn"
+            ]
+          },
+          "ecosystem": {
+            "type": "string"
+          },
+          "source_package": {
+            "type": "string"
+          },
+          "fixed_versions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "ranges": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VulnerabilityFixRange"
+            }
+          },
+          "source": {
+            "type": "string"
+          },
+          "observed_at": {
+            "type": "string"
+          },
+          "modified_at": {
+            "type": "string"
+          },
+          "supplemental_source": {
+            "type": "string",
+            "description": "Corroborating exact-release tracker URL, separate from the OSV range source."
+          },
+          "supplemental_status": {
+            "type": "string",
+            "description": "Exact source/release status reported by the corroborating tracker."
+          },
+          "supplemental_fixed_version": {
+            "type": "string",
+            "description": "Validated released source-version threshold reported by that tracker. A candidate below it remains unverified even when an OSV query omits the CVE."
+          }
+        },
+        "description": "Exact release/source publisher evidence. fixed_versions are all established fixed events in Debian order, not the candidate version and not a claim that every later version is fixed. not_established means no published fix was established from matching metadata; it never asserts that the publisher has no fix. Unknown/malformed/other-release data stays unknown."
+      },
+      "VulnerabilityAPTContext": {
+        "type": "object",
+        "properties": {
+          "state": {
+            "type": "string",
+            "enum": [
+              "unknown",
+              "stale"
+            ]
+          },
+          "observed_at": {
+            "type": "string"
+          },
+          "oldest_index_at": {
+            "type": "string"
+          },
+          "last_success_at": {
+            "type": "string"
+          },
+          "last_refresh_state": {
+            "type": "string"
+          },
+          "last_refresh_error": {
+            "type": "string"
+          },
+          "last_refresh_at": {
+            "type": "string",
+            "description": "Time of the latest maintenance refresh actually observed by this process; independent of local file-age observation."
+          }
+        },
+        "description": "Independent host metadata context. Local index timestamps older than 24 hours are stale; recent files cannot prove complete refresh and remain unknown. Last known refresh outcome is recorded only when observed by maintenance, with sanitary error reason; missing outcomes remain unknown. CVE query/detail freshness never refreshes APT."
+      },
+      "VulnerabilityScopeInstallability": {
+        "type": "object",
+        "properties": {
+          "scope": {
+            "type": "string",
+            "enum": [
+              "all",
+              "security",
+              "security_kept_back",
+              "full_upgrade"
+            ]
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "simulated",
+              "blocked",
+              "not_selected",
+              "unknown"
+            ]
+          },
+          "reason": {
+            "type": "string"
+          },
+          "removed_packages": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "description": "Canonical Approval Scope and Package Deferral interpretation for an exact observed package candidate. Simulated is advisory and still requires maintenance revalidation and permissions; removals require explicit confirmation. Missing facts never prove dependency/pin/hold/subscription causes."
+      },
+      "VulnerabilityFixAvailability": {
+        "type": "object",
+        "properties": {
+          "published": {
+            "$ref": "#/components/schemas/VulnerabilityPublishedFix"
+          },
+          "candidate_state": {
+            "type": "string",
+            "enum": [
+              "addresses",
+              "affected",
+              "same",
+              "absent",
+              "unverified"
+            ]
+          },
+          "candidate_source_package": {
+            "type": "string"
+          },
+          "candidate_source_version": {
+            "type": "string"
+          },
+          "candidate_binary_version": {
+            "type": "string"
+          },
+          "candidate_origin": {
+            "type": "string"
+          },
+          "candidate_ecosystem": {
+            "type": "string"
+          },
+          "query_observed_at": {
+            "type": "string"
+          },
+          "repository_state": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "action": {
+            "type": "string"
+          },
+          "apt": {
+            "$ref": "#/components/schemas/VulnerabilityAPTContext"
+          },
+          "scopes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VulnerabilityScopeInstallability"
+            }
+          },
+          "restrictions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "description": "Independent publication, repository observation, candidate comparison and installability evidence. published_not_observed records that no addressing candidate is observed here; it is not proof that all repository versions were enumerated. A candidate cannot resolve an installed finding. Unknown, downgrade, source migration, wrong signed release, older cached negative comparison and unstable inventory cannot establish candidate fixes. Restrictions are observed facts, not invented root causes."
+      },
+      "SecurityAction": {
+        "type": "object",
+        "properties": {
+          "server": {
+            "type": "string"
+          },
+          "package": {
+            "type": "string"
+          },
+          "installed": {
+            "type": "string"
+          },
+          "candidate": {
+            "type": "string"
+          },
+          "severity": {
+            "type": "string"
+          },
+          "published_at": {
+            "type": "string"
+          },
+          "exploitation_freshness": {
+            "type": "string"
+          },
+          "exploitation_source": {
+            "type": "string"
+          },
+          "required_action": {
+            "type": "string"
+          },
+          "fix_state": {
+            "type": "string"
+          },
+          "evidence": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          },
+          "observed_at": {
+            "type": "string"
+          },
+          "known_exploited": {
+            "type": "boolean"
+          },
+          "cve_count": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "cves": {
+            "type": "array",
+            "maxItems": 10,
+            "items": {
+              "type": "string"
+            }
+          },
+          "scopes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "server",
+          "package",
+          "installed",
+          "cves",
+          "severity",
+          "known_exploited",
+          "fix_state",
+          "evidence",
+          "scopes"
+        ]
+      },
+      "LifecycleStatus": {
+        "type": "object",
+        "properties": {
+          "server": {
+            "type": "string"
+          },
+          "component": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          },
+          "product": {
+            "type": "string"
+          },
+          "cycle": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          },
+          "eol_at": {
+            "type": "string"
+          },
+          "extended_until": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          },
+          "observed_at": {
+            "type": "string"
+          },
+          "freshness": {
+            "type": "string"
+          },
+          "inventory_freshness": {
+            "type": "string"
+          },
+          "inventory_source": {
+            "type": "string",
+            "enum": [
+              "accepted_inventory",
+              "recorded_findings"
+            ],
+            "description": "Application inventory provenance. Recorded unresolved findings are a partial historical inventory, used only when accepted raw package inventory is unavailable."
+          },
+          "inventory_partial": {
+            "type": "boolean",
+            "description": "True for fallback inventory inferred only from positively recorded installed finding versions; this does not change scan coverage."
+          },
+          "inventory_observed_at": {
+            "type": "string",
+            "description": "Dated installed package observation, independent of the public lifecycle metadata observation. Missing means no valid date was recorded."
+          },
+          "inventory_version_state": {
+            "type": "string",
+            "enum": [
+              "conflicting"
+            ],
+            "description": "Equally dated installed observations disagree; version and lifecycle cycle stay unknown."
+          },
+          "support_context": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "server",
+          "component",
+          "kind",
+          "version",
+          "product",
+          "state",
+          "freshness",
+          "inventory_freshness",
+          "support_context"
+        ]
+      },
+      "PublicSecurityFeed": {
+        "type": "object",
+        "properties": {
+          "source": {
+            "type": "string"
+          },
+          "observed_at": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          },
+          "last_error": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "source",
+          "state"
+        ]
+      },
+      "SecurityActions": {
+        "type": "object",
+        "properties": {
+          "generated_at": {
+            "type": "string"
+          },
+          "servers": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "fixes": {
+            "type": "array",
+            "maxItems": 100,
+            "items": {
+              "$ref": "#/components/schemas/SecurityAction"
+            }
+          },
+          "alerts": {
+            "type": "array",
+            "maxItems": 100,
+            "items": {
+              "$ref": "#/components/schemas/SecurityAction"
+            }
+          },
+          "lifecycle": {
+            "type": "array",
+            "maxItems": 100,
+            "items": {
+              "$ref": "#/components/schemas/LifecycleStatus"
+            }
+          },
+          "feeds": {
+            "type": "object",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/PublicSecurityFeed"
+            }
+          },
+          "fix_total": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "alert_total": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "lifecycle_total": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "review_findings": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "review_priority": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "page": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "pages": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "recent_days": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "generated_at",
+          "servers",
+          "fixes",
+          "alerts",
+          "lifecycle",
+          "feeds",
+          "fix_total",
+          "alert_total",
+          "lifecycle_total",
+          "review_findings",
+          "review_priority",
+          "page",
+          "pages",
+          "recent_days"
+        ]
       }
     }
   }

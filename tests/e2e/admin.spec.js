@@ -3059,7 +3059,12 @@ test("cancelling session IP reauthentication discards a late response", async ({
     baseURL,
     page,
 }) => {
-    const state = { sessionIPRevealDelayMs: 300 };
+    let releaseResponse;
+    const state = {
+        sessionIPRevealResponseGate: new Promise((resolve) => {
+            releaseResponse = resolve;
+        }),
+    };
     await ensureAuthenticatedSession(page);
     await stubAdminApi(page, state);
     await page.goto("/admin");
@@ -3069,14 +3074,18 @@ test("cancelling session IP reauthentication discards a late response", async ({
     );
     await reveal.click();
     await page.locator("#session-ip-reveal-password").fill(password);
-    await page.locator("#session-ip-reveal-submit").click();
-    await expect
-        .poll(() => state.sessionIPRevealPayload)
-        .toEqual({ current_password: password });
-    await page.locator("#session-ip-reveal-cancel").click();
-    await expect(page.locator("#session-ip-reveal-modal")).toBeHidden();
-    await expect(reveal).toBeFocused();
-    await page.waitForTimeout(450);
+    try {
+        await page.locator("#session-ip-reveal-submit").click();
+        await expect
+            .poll(() => state.sessionIPRevealPayload)
+            .toEqual({ current_password: password });
+        await page.locator("#session-ip-reveal-cancel").click();
+        await expect(page.locator("#session-ip-reveal-modal")).toBeHidden();
+        await expect(reveal).toBeFocused();
+    } finally {
+        releaseResponse();
+    }
+    await expect.poll(() => state.sessionIPRevealResponseFinished).toBe(true);
     await expect(
         page.locator('[data-session-ip-id="current-session"]'),
     ).toHaveText("192.168.1.x");

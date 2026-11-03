@@ -26,6 +26,7 @@ import (
 	apptimepkg "debian-updater/internal/apptime"
 	internalbackup "debian-updater/internal/backup"
 	observabilitypkg "debian-updater/internal/observability"
+	"debian-updater/internal/vulnerabilities"
 
 	"github.com/alexedwards/scs/v2"
 	"github.com/gin-gonic/gin"
@@ -1011,6 +1012,21 @@ func TestBackupAPIExportRestoreLifecycle(t *testing.T) {
 		t.Fatalf("load before-export inventory: %v", err)
 	}
 
+	assessment := vulnerabilities.Assessment{Ecosystem: "Debian:13", SourcePackage: "example", SourceVersion: "1.0-1", VendorStatus: "unimportant", VendorReason: "Synthetic backup fixture", Applicability: "source_match", Confidence: "vendor_qualified", Source: "https://example.invalid/advisory", ObservedAt: "2026-10-01T00:00:00Z"}
+	repo := vulnerabilities.Repository{DB: getDB}
+	if _, err := repo.Save(context.Background(), "before-export", vulnerabilities.Scan{State: "complete", Scope: "installed_packages", Inventoried: 1, Evaluated: 1, FinishedAt: assessment.ObservedAt, Findings: []vulnerabilities.Finding{{ID: "CVE-2026-1000", Package: "example", Assessment: assessment}}}); err != nil {
+		t.Fatal(err)
+	}
+	proof := &vulnerabilities.EvaluationProof{ScanID: "historical-proof", ServerName: "before-export", Package: "example", InstalledVersion: "2", SourcePackage: "example", SourceVersion: "2", Ecosystem: "Debian:13", Source: "https://example.invalid/querybatch", ObservedAt: "2026-10-02T00:00:00Z", VerifiedAt: "2026-10-02T00:00:00Z", Complete: true, Stable: true, ProvenanceVerified: true, FindingIDs: []string{}}
+	if _, err := repo.Save(context.Background(), "before-export", vulnerabilities.Scan{ID: proof.ScanID, ServerName: proof.ServerName, State: "partial", Scope: "installed_packages", StartedAt: "2026-10-01T23:59:00Z", FinishedAt: proof.VerifiedAt, Inventoried: 2, Evaluated: 1, Unknown: 1, Packages: []vulnerabilities.Package{{Name: "example", Version: "2", SourcePackage: "example", SourceVersion: "2", State: "evaluated", Proof: proof}, {Name: "unknown", Version: "1", State: "unknown"}}}); err != nil {
+		t.Fatal(err)
+	}
+	// Preserve a later legacy failed attempt as well as its earlier accepted
+	// proof. There is deliberately no running operation to recover on restore.
+	if _, err := repo.Save(context.Background(), "before-export", vulnerabilities.Scan{State: "unavailable", FinishedAt: "2026-10-03T00:00:00Z"}); err != nil {
+		t.Fatal(err)
+	}
+
 	rec = httptest.NewRecorder()
 	req = httptest.NewRequest(http.MethodPost, "/api/backup/export", bytes.NewBufferString(`{"passphrase":"very-strong-passphrase","include_known_hosts":false}`))
 	req.AddCookie(sessionCookie)
@@ -1223,6 +1239,14 @@ func TestBackupAPIExportRestoreLifecycle(t *testing.T) {
 	}
 	if afterCount != 0 {
 		t.Fatalf("after-export count = %d, want 0", afterCount)
+	}
+
+	restoredObservation, err := repo.Load(context.Background(), "before-export")
+	if err != nil || len(restoredObservation.Findings) != 1 || restoredObservation.Findings[0].Assessment != assessment {
+		t.Fatalf("distribution assessment lost during backup/restore: %+v err=%v", restoredObservation, err)
+	}
+	if restoredObservation.Findings[0].Resolution == nil || restoredObservation.Findings[0].Resolution.ScanID != proof.ScanID || restoredObservation.PackageProofs["example"].SourceVersion != "2" || !restoredObservation.SupersedesPackageEvidence("example", assessment.ObservedAt) {
+		t.Fatalf("package proof/resolution lost during backup restore: %+v", restoredObservation)
 	}
 
 	var sessionCount int

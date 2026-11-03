@@ -6,14 +6,15 @@
     const defaultPresentationFacts = projectionConsumption
         ? projectionConsumption.presentationFacts
         : null;
-    const api = factory(defaultPresentationFacts);
+    const pendingUpdates = isCommonJS ? require("./pending-updates-interaction.js") : root.PendingUpdatesInteraction;
+    const api = factory(defaultPresentationFacts, pendingUpdates);
     if (isCommonJS) {
         module.exports = api;
     }
     if (root && !isCommonJS) {
         root.StatusPageInteraction = api;
     }
-}(typeof globalThis !== "undefined" ? globalThis : this, function statusPageInteractionFactory(defaultPresentationFacts) {
+}(typeof globalThis !== "undefined" ? globalThis : this, function statusPageInteractionFactory(defaultPresentationFacts, pendingUpdates) {
     "use strict";
 
     const transientBlockingStatuses = new Set([
@@ -43,7 +44,7 @@
     const allowedGroupings = new Set(["", "status", "tag"]);
     const allowedQuickFilters = new Set(["", "pending_approval", "active", "stale_facts", "high_risk"]);
     const allowedSortKeys = new Set(["name", "status"]);
-    const dashboardActionKeys = ["update", "autoremove", "repair_apt", "reboot", "enable_apt", "disable_apt", "refresh_facts", "scan_vulnerabilities", "approve_all", "approve_security", "approve_security_kept_back", "approve_full", "cancel"];
+    const dashboardActionKeys = ["update", "autoremove", "repair_apt", "reboot", "enable_apt", "disable_apt", "refresh_facts", "approve_all", "approve_security", "approve_security_kept_back", "approve_full", "cancel"];
     const allowedPageSizes = new Set([25, 50, 100]);
     const activeStatuses = new Set(["updating", "upgrading", "autoremove", "repairing", "rebooting", "sudoers", "facts_refresh", "vulnerability_scan", "postchecks_test"]);
     const refreshPriority = Object.freeze({ deferable: 1, immediate: 2 });
@@ -217,6 +218,7 @@
         let primaryServerName = "";
         let selectedServerNames = new Set();
         let drawer = { open: false, serverName: "", tab: "logs", logFollow: true };
+        const pendingUpdatesInteraction = pendingUpdates.createStore();
         function createStreamState() {
             return {
                 nextRequestId: 1,
@@ -471,7 +473,7 @@
         }
 
         function hasPendingUpdates(server) {
-            return isPendingApproval(server) && Array.isArray(server && server.pending_updates) && server.pending_updates.length > 0;
+            return Array.isArray(server && server.pending_updates) && server.pending_updates.length > 0;
         }
 
         function matchesAvailability(server) {
@@ -1060,6 +1062,9 @@
                     ...stateEffects(),
                     ...(tab === "logs" ? logRecoveryEffect(drawer.serverName, jobLogsByServer.get(drawer.serverName)) : [])
                 ];
+            } else if (event.type === "pendingUpdatesChanged") {
+                pendingUpdatesInteraction.dispatch(event.intent, serversByName.get(drawer.serverName));
+                return stateEffects({ scope: "pendingUpdates", priority: "immediate" });
             } else if (event.type === "drawerLogFollowChanged") {
                 drawer = { ...drawer, logFollow: !!event.value };
                 return stateEffects({ render: false });
@@ -1130,6 +1135,7 @@
                 approvalIdentity: {
                     job_id: String(server?.job_id || ""),
                     approval_generation: Number(server?.approval_generation) || 0,
+                    ...(server?.remediation_digest ? {remediation_digest:String(server.remediation_digest)} : {}),
  ...(server?.upgrade_plan?.package_deferrals?.revision ? {deferral_revision:server.upgrade_plan.package_deferrals.revision} : {})
                 },
                 pendingUpdates: cloneValue(server?.pending_updates || [])
@@ -1267,6 +1273,7 @@
                 hiddenSelectedNames,
                 visibleSelectedServers: cloneValue(pageServers.filter(server => selectedServerNames.has(server.name))),
                 drawer: cloneValue(drawer),
+                pendingUpdates: cloneValue(pendingUpdatesInteraction.view(serversByName.get(drawer.serverName))),
                 jobLogs: Object.fromEntries(Array.from(jobLogsByServer.entries()).map(([name, state]) => [name, {
                     jobId: state.jobId,
                     lastSequence: state.lastSequence,

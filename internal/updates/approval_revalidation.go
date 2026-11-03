@@ -42,6 +42,7 @@ func approvalNewPackages(scope string, plan servers.UpgradePlan) []string {
 // it does not change the package that APT will install.
 type approvalPackageIdentity struct {
 	Package, InstallPackage, CurrentVersion, CandidateVersion, Source, Raw string
+	SourcePackage, InstalledSourceVersion, CandidateSourceVersion          string
 	Security, KeptBack, RequiresFull                                       bool
 }
 
@@ -67,6 +68,7 @@ func approvalSelectedPackagesEqual(scope string, previous, fresh []servers.Pendi
 			}
 			result = append(result, approvalPackageIdentity{
 				Package: update.Package, InstallPackage: update.InstallPackage,
+				SourcePackage: update.SourcePackage, InstalledSourceVersion: update.InstalledSourceVersion, CandidateSourceVersion: update.CandidateSourceVersion,
 				CurrentVersion: update.CurrentVersion, CandidateVersion: update.CandidateVersion,
 				Source: update.Source, Raw: update.Raw,
 				Security: update.Security, KeptBack: update.KeptBack, RequiresFull: update.RequiresFull,
@@ -114,4 +116,40 @@ func (r *withActorRunner) revalidateApproval(previous PackageDiscoveryOutcome) (
 		!approvalPackageSetsEqual(approvalNewPackages(r.approvalScope, previous.UpgradePlan), approvalNewPackages(r.approvalScope, fresh.UpgradePlan)) ||
 		!approvalSelectedPackagesEqual(r.approvalScope, previous.PendingUpdates, fresh.PendingUpdates)
 	return fresh, changed, nil
+}
+
+// A remediation approval binds the complete observed package transaction, including
+// scopes not currently selected. A changed candidate or dependency requires new consent.
+func remediationDiscoveryEqual(a, b PackageDiscoveryOutcome) bool {
+	if !approvalSelectedPackagesEqual(ApprovalScopeFullUpgrade, a.PendingUpdates, b.PendingUpdates) {
+		return false
+	}
+	ap, bp := a.UpgradePlan, b.UpgradePlan
+	return ap.FullUpgradeSimulationDigest == bp.FullUpgradeSimulationDigest && ap.KeptBackSecuritySimulationDigest == bp.KeptBackSecuritySimulationDigest &&
+		ap.PackageDeferrals.Revision == bp.PackageDeferrals.Revision && reflect.DeepEqual(ap.DeferralScopes, bp.DeferralScopes) &&
+		ap.FullUpgradePlanAvailable == bp.FullUpgradePlanAvailable && ap.KeptBackSecurityPlanAvailable == bp.KeptBackSecurityPlanAvailable &&
+		approvalPackageSetsEqual(ap.FullUpgradeNewPackages, bp.FullUpgradeNewPackages) && approvalPackageSetsEqual(ap.FullUpgradeRemovedPackages, bp.FullUpgradeRemovedPackages) &&
+		approvalPackageSetsEqual(ap.KeptBackSecurityNewPackages, bp.KeptBackSecurityNewPackages) && approvalPackageSetsEqual(ap.KeptBackSecurityRemovedPackages, bp.KeptBackSecurityRemovedPackages)
+}
+
+func (r *withActorRunner) readRemediationInventory() ([]servers.PendingUpdate, string, error) {
+	if r.session == nil {
+		if !r.setupSSH("update.ssh_dial") {
+			return nil, "", fmt.Errorf("inventory reconnect failed")
+		}
+	}
+	result, err := r.session.RunCommand(r.maintenanceContext(), HostCommandRequest{Operation: "remediation.installed_inventory", Command: BuildInstalledPackageInventoryCmd(), Effect: HostCommandEffectReadOnly, ReplayPolicy: ReplayNever})
+	if err != nil {
+		return nil, "", err
+	}
+	packages, err := parseInstalledPackages(result.Stdout)
+	if err != nil {
+		return nil, "", err
+	}
+	distro := installedInventoryDistro(result.Stdout)
+	if distro == "" {
+		return nil, "", fmt.Errorf("distribution identity unavailable")
+	}
+	slices.SortFunc(packages, func(a, b servers.PendingUpdate) int { return strings.Compare(a.Package, b.Package) })
+	return packages, distro, nil
 }

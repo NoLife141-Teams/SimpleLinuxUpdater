@@ -19,7 +19,7 @@
 Use a named volume for persistence:
 
 ```bash
-docker run --env-file .env -p 8080:8080 -v debian-updater-data:/data ghcr.io/nolife141-teams/simplelinuxupdater:v0.4.16
+docker run --env-file .env -p 8080:8080 -v debian-updater-data:/data ghcr.io/nolife141-teams/simplelinuxupdater:v0.5.3
 ```
 
 The image explicitly sets `DEBIAN_UPDATER_LISTEN_ADDR=:8080`. To limit access on
@@ -36,7 +36,7 @@ Release tags publish images to GitHub Container Registry:
 Example:
 
 ```bash
-docker pull ghcr.io/nolife141-teams/simplelinuxupdater:v0.4.16
+docker pull ghcr.io/nolife141-teams/simplelinuxupdater:v0.5.3
 ```
 
 ## Binary deployment
@@ -119,12 +119,13 @@ If an attacker obtains both the SQLite DB and the encryption key file, stored se
 
 ## Upgrade procedure
 
-Follow the [verified v0.4.16 upgrade, restore and rollback guide](upgrading.md)
+Follow the [v0.5.3 upgrade, restore and rollback guide](upgrading.md)
 for concrete Docker and binary archive commands. Export and verify a backup
 before stopping the old process, retain its matching image/binary and assets,
-then deploy the candidate with the same data paths. The initial account becomes
-administrator, setup stays closed and old sessions are signed out once. New
-sessions survive subsequent restarts. Review recovered jobs, renew interrupted
+then deploy the candidate with the same data paths. Setup stays closed. When
+upgrading from v0.4.16 or earlier, the initial account becomes administrator and
+old sessions are signed out once. Existing v0.5.x sessions retain their normal
+lifecycle across application restarts. Review recovered jobs, renew interrupted
 approvals and update the [managed helper](usage.md#managed-helper-installation)
 before resuming maintenance.
 
@@ -209,6 +210,7 @@ preserved during normal operation. During exclusive maintenance `/metrics` and t
 temporarily absent. This preserves the existing Metrics Access Credential
 admission boundary and prevents credential reload/usage writes while persistence
 is being replaced. Use `/readyz` for monitoring these controlled windows.
+The compatibility `vulnerabilities` worker label is always disabled; standalone scanning has been retired.
 Worker labels are bounded to `scheduler`, `host_facts`, `vulnerabilities`, `backup`
 `notifications`, `audit_pruner` and `job_log_pruner`; no accounts, jobs, Servers, tokens, destinations or paths
 are added as labels. Timestamps and observed error counts come from service

@@ -1,6 +1,6 @@
 # SimpleLinuxUpdater
 
-Version: v0.5.2
+Version: v0.5.3
 
 SimpleLinuxUpdater is a self-hosted web UI that helps you manage apt updates on Debian-based servers over SSH. It provides an approval workflow, health checks, audit history, and basic observability so you can update hosts confidently without logging into each machine.
 
@@ -14,7 +14,7 @@ SimpleLinuxUpdater is a self-hosted web UI that helps you manage apt updates on 
 
 - [Overview](#overview)
 - [Features](#features)
-- [Upgrading to v0.5.2](#upgrading-to-v052)
+- [Upgrading to v0.5.3](#upgrading-to-v053)
 - [Quick start](#quick-start)
 - [Documentation](#documentation)
 - [Security](#security)
@@ -52,17 +52,20 @@ SimpleLinuxUpdater is designed for trusted environments (LAN/VPN). It connects t
 - Local administrator password recovery with hidden terminal entry, exclusive installation locking and atomic session revocation/audit; see [lost access recovery](docs/troubleshooting.md#forgotten-admin-password)
 - In-app encrypted backup/restore (DB + config, optional `known_hosts`) for host/container migration
 
-## Upgrading to v0.5.2
+## Upgrading to v0.5.3
 
 Export and verify an encrypted backup before replacing the executable and web
-assets together. From v0.5.1, CVE information moves into the available APT update
-plan on Status. Standalone CVE analysis and periodic installed-package scanning
-are retired; legacy records remain stored and backup-compatible. Old page links
-redirect to Status and retired APIs return `410 Gone`.
+assets together. From v0.5.2, the available-update drawer gains a searchable list
+of 15 packages per page, full-width CVE details, shared coverage explanations,
+and pagination above and below both lists. Background refreshes keep the lists
+still. Package filters do not change the approval scope.
 
 No new required environment variable, database migration or SSH helper protocol
-is introduced relative to v0.5.1. Refresh the APT package plan to obtain current update
-CVE evidence. Follow the [upgrade and rollback guide](docs/upgrading.md).
+is introduced relative to v0.5.2. Finish or cancel pending maintenance before
+restarting; interrupted approvals require a fresh APT check and renewed approval.
+CVE information remains limited to available updates. Follow the
+[upgrade and rollback guide](docs/upgrading.md), including the retired scanner
+behavior when upgrading from v0.5.1.
 Upgrades from v0.4.16 or earlier must also follow the
 [v0.5.0 account, scheduling and helper requirements](CHANGELOG.md#v050---2026-10-29).
 
@@ -72,8 +75,8 @@ Upgrades from v0.4.16 or earlier must also follow the
 
 ```bash
 cp .env-template .env
-docker pull ghcr.io/nolife141-teams/simplelinuxupdater:v0.5.2
-docker run --env-file .env -p 8080:8080 -v debian-updater-data:/data ghcr.io/nolife141-teams/simplelinuxupdater:v0.5.2
+docker pull ghcr.io/nolife141-teams/simplelinuxupdater:v0.5.3
+docker run --env-file .env -p 8080:8080 -v debian-updater-data:/data ghcr.io/nolife141-teams/simplelinuxupdater:v0.5.3
 ```
 
 Open `http://localhost:8080`.
@@ -141,7 +144,7 @@ Download the archive for your platform from GitHub Releases and run the included
 Example (Linux amd64):
 
 ```bash
-VERSION="0.5.2"
+VERSION="0.5.3"
 APP="SimpleLinuxUpdater_${VERSION}"
 ARCHIVE="${APP}_linux_amd64.tar.gz"
 

@@ -1,9 +1,25 @@
 [Documentation map](README.md) | [Deployment](deployment.md) | [Accounts and API](personal-api.md) | [CI](ci-and-release.md)
 
-# Upgrading to v0.5.2
+# Upgrading to v0.5.3
 
 Use the image digest recorded in the published release's `publication.json`,
 or download the matching versioned binary archive and checksum list.
+
+## From v0.5.2
+
+Export and verify a backup, finish or cancel pending maintenance, then replace
+the executable and web assets together using the procedures below. v0.5.3
+changes the available-update interface; it introduces no new database migration,
+required environment variable, SSH helper protocol or dependency change relative
+to v0.5.2. Accounts, sessions, policies, secrets and package deferrals retain
+their contracts. Interrupted approvals require fresh discovery and approval.
+
+The package drawer now shows 15 packages per page, search and security filters,
+with Previous/Next controls above and below package and CVE lists. Details opens
+a full-width package inspector with five CVE references per page and one source
+proof open at a time. View coverage groups source limitations. Filtering and
+pagination do not change Approval Scope. CVE information still covers only
+available updates, not the whole installed inventory.
 
 ## From v0.5.1
 
@@ -36,17 +52,17 @@ on the upgraded database.
 ## From v0.5.0
 
 Also account for the additive remediation-history/risk-review tables and package
-evidence introduced in v0.5.1. Those records remain retained in v0.5.2, while the
+evidence introduced in v0.5.1. Those records remain retained in v0.5.3, while the
 standalone workflow is retired as described above. The historical
 [v0.5.1 qualification record](release-v0.5.1-readiness.md) describes that release's
-measured checks and limits; it does not qualify v0.5.2.
+measured checks and limits; it does not qualify v0.5.3.
 
 ## From v0.4.16 or earlier
 
 Also follow the [v0.5.0 compatibility notes](../CHANGELOG.md#v050---2026-10-29)
 for account/session migration, policy changes and the protocol 3 managed helper.
 The pinned automated old-version qualification below remains based on published
-v0.4.16; it is not a separate v0.5.1-to-v0.5.2 migration proof.
+v0.4.16; it is not a separate v0.5.2-to-v0.5.3 migration proof.
 
 ## Before changing the application
 
@@ -97,7 +113,7 @@ Download the target platform archive and its checksum list from the same
 versioned GitHub Release. On Linux amd64, in a new staging directory:
 
 ```bash
-VERSION='0.5.2'
+VERSION='0.5.3'
 ARCHIVE="SimpleLinuxUpdater_${VERSION}_linux_amd64.tar.gz"
 BASE="https://github.com/NoLife141-Teams/SimpleLinuxUpdater/releases/download/v${VERSION}"
 curl --fail --location --output "$ARCHIVE" "$BASE/$ARCHIVE"
@@ -139,7 +155,8 @@ needed by an operator using the archive.
   cannot resume: inspect the host, rescan and approve the newly displayed job,
   generation and transaction. Package/deferral/profile drift can require renewed
   approval too. Never reuse an archived approval body.
-- Update the managed root helper before protected maintenance. Export the
+- The protocol 3 managed helper from v0.5.2 remains compatible. If an older
+  helper is installed, update it before protected maintenance. Export the
   current installer using `./webserver helper export --user deployer > install-helper.sh`,
   or `docker run --rm --entrypoint /app/webserver "$NEW_IMAGE" helper export --user deployer > install-helper.sh`.
   Review and transfer the script to the intended target and run it there with

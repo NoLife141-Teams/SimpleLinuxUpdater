@@ -6,6 +6,8 @@ The format is inspired by Keep a Changelog, and this project uses Semantic Versi
 
 ## [Unreleased]
 
+## [v0.5.3] - 2026-11-03
+
 ### Changed
 
 - Present available updates in a searchable, paginated list with a full-width package inspector. Keep CVE coverage limitations in a quiet shared summary, paginate CVE references, and open one source proof at a time while preserving approval scopes and source qualifications.
@@ -15,6 +17,12 @@ The format is inspired by Keep a Changelog, and this project uses Semantic Versi
 ### Fixed
 
 - Keep package and CVE lists still during background refreshes instead of replaying their entrance animation after pagination.
+
+### v0.5.3 upgrade notes
+
+- No new database migration, required environment variable, SSH helper protocol or dependency change relative to v0.5.2. Replace the executable and web assets together and retain existing data paths.
+- Finish or cancel maintenance before restarting. Interrupted approvals require a fresh APT check and renewed approval. Package search and pagination do not change Approval Scope.
+- CVE information remains limited to available APT updates. Missing source evidence does not establish that a package is vulnerable or safe. See [upgrade and rollback guidance](docs/upgrading.md).
 
 ## [v0.5.2] - 2026-11-03
 

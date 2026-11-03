@@ -709,7 +709,16 @@ Cons:
 
 ## CVEs for available updates
 
-After `apt update`, normal and scheduled package discovery enrich the **available updates** with CVE information. Status shows a compact update/security summary and the number of verified CVE corrections in the proposed versions. **Review updates** opens the package list even when a scheduled check has not created an approval. CVE details expand per package; distribution qualification and evidence are disclosed on demand.
+After `apt update`, normal and scheduled package discovery enrich the **available updates** with CVE information. Status shows a compact update/security summary and the number of verified CVE corrections in the proposed versions. **Review updates** opens the package list even when a scheduled check has not created an approval.
+
+The drawer shows 15 packages per page. Search by package name or choose **Security**
+to filter the list; these controls do not change the package set approved by the
+approval buttons. **Previous** and **Next** are available above and below the list.
+**Details** opens a full-width package inspector with installed/candidate versions
+and searchable CVE references, five per page, with pagination at both ends.
+**View source** opens one evidence panel at a time. **View coverage** groups source
+limitations, while lookup failures remain visible. Approval controls stay at the
+bottom of the drawer.
 
 Only the available update plan contributes to CVE counts. Candidate corrections require a current official installed/candidate identity, distribution-confirmed assessment, addressing candidate and simulated eligible Approval Scope. Deferred packages are not counted as proposed corrections. Multiple package occurrences of the same CVE count once; a remaining or uncertain occurrence within the update plan prevents a complete-correction count.
 

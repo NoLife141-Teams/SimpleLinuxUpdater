@@ -67,8 +67,21 @@ func TestAvailableUpdateCVEFailureDoesNotHideSecurityUpdates(t *testing.T) {
 	if r.SecurityUpdates != 1 || r.PendingPackages != 1 || r.UpdateCVEs.State != "incomplete" {
 		t.Fatal(r)
 	}
-	r = projectUpdateRisk(&servers.ServerStatus{APTMetadata: vulnerabilities.APTContext{LastRefreshState: "succeeded"}}, time.Now())
+	now := time.Now().UTC()
+	at := now.Format(time.RFC3339Nano)
+	r = projectUpdateRisk(&servers.ServerStatus{EmptyPackageDiscoveryRefreshAt: at, APTMetadata: vulnerabilities.APTContext{LastRefreshState: "succeeded", LastRefreshAt: at, LastSuccessAt: at}}, now)
 	if r.Summary != "No packages to update" || len(r.CVEs) != 0 {
 		t.Fatal(r)
+	}
+}
+
+func TestAvailableUpdateEmptyResultRequiresSuccessfulDiscoveryAfterLatestRefresh(t *testing.T) {
+	now := time.Date(2026, 11, 3, 1, 0, 0, 0, time.UTC)
+	refreshed := now.Add(-time.Minute).Format(time.RFC3339Nano)
+	for _, checkedAt := range []string{"", now.Add(-time.Hour).Format(time.RFC3339Nano)} {
+		r := projectUpdateRisk(&servers.ServerStatus{Status: "idle", EmptyPackageDiscoveryRefreshAt: checkedAt, APTMetadata: vulnerabilities.APTContext{LastRefreshState: "succeeded", LastRefreshAt: refreshed, LastSuccessAt: refreshed}}, now)
+		if r.Summary != "Check for available updates" || r.UpdateCVEs.State != "not_checked" {
+			t.Fatalf("APT refresh without successful discovery reported an empty package plan: %+v", r)
+		}
 	}
 }

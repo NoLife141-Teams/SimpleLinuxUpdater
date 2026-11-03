@@ -70,7 +70,7 @@ func projectUpdateRisk(status *servers.ServerStatus, now time.Time) DashboardRis
 	switch {
 	case risk.PendingPackages == 0:
 		// A zero here is not a statement about installed-package vulnerabilities.
-		if status.APTMetadata.LastRefreshState == "succeeded" && status.Status != "error" {
+		if status.APTMetadata.LastRefreshState == "succeeded" && status.Status != "error" && status.EmptyPackageDiscoveryRefreshAt == status.APTMetadata.LastRefreshAt && evidenceFresh(status.EmptyPackageDiscoveryRefreshAt, now, 24*time.Hour) {
 			risk.Summary = "No packages to update"
 			risk.Level = "normal"
 			risk.UpdateCVEs.State = "ready"

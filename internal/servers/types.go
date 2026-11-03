@@ -134,6 +134,8 @@ type ServerStatus struct {
 	HasKey                      bool                       `json:"has_key"`
 	HostKeyStatus               HostKeyStatus              `json:"host_key_status"`
 	Tags                        []string                   `json:"tags"`
+	// EmptyPackageDiscoveryRefreshAt binds a confirmed empty plan to its APT refresh.
+	EmptyPackageDiscoveryRefreshAt string `json:"-"`
 }
 
 type PendingUpdate struct {

@@ -1056,6 +1056,12 @@ func (s *Service) RunUpdateJob(req UpdateRunRequest) {
 			}
 
 			r.upgradePlan = discovery.UpgradePlan
+			_ = r.withStatus(func(status *servers.ServerStatus) {
+				status.EmptyPackageDiscoveryRefreshAt = ""
+				if discovery.Empty() {
+					status.EmptyPackageDiscoveryRefreshAt = status.APTMetadata.LastRefreshAt
+				}
+			})
 			if discovery.Empty() {
 				if !r.refreshFactsAfterSuccessfulUpdate() {
 					return

@@ -2039,7 +2039,9 @@
             }
 
             if (drawerState.tab === "pending") {
-                const pendingScrollTop = drawerPendingScrollTop;
+                const samePendingServer = pendingPanel.dataset.serverName === server.name;
+                const pendingScrollTop = samePendingServer
+                    ? (pendingPanel.childElementCount ? pendingPanel.scrollTop : drawerPendingScrollTop) : 0;
                 const focusedInput = pendingPanel.contains(document.activeElement) && document.activeElement.matches("input[data-pending-input]")
                     ? { id: document.activeElement.id, start: document.activeElement.selectionStart, end: document.activeElement.selectionEnd } : null;
                 pendingPanel.innerHTML = renderPendingUpdatesHtml(server);
@@ -2048,16 +2050,10 @@
                     input?.focus({ preventScroll: true });
                     if (input && focusedInput.start !== null) input.setSelectionRange(focusedInput.start, focusedInput.end);
                 }
-                lifecycle.requestAnimationFrame(() => {
-                    const maxScrollTop = Math.max(
-                        0,
-                        pendingPanel.scrollHeight - pendingPanel.clientHeight,
-                    );
-                    pendingPanel.scrollTop = Math.min(
-                        pendingScrollTop,
-                        maxScrollTop,
-                    );
-                });
+                // Restore before another refresh can observe the replacement at scrollTop 0.
+                pendingPanel.dataset.serverName = server.name;
+                pendingPanel.scrollTop = Math.min(pendingScrollTop, Math.max(0, pendingPanel.scrollHeight - pendingPanel.clientHeight));
+                drawerPendingScrollTop = pendingPanel.scrollTop;
             } else {
                 pendingPanel.innerHTML = "";
             }
@@ -3284,7 +3280,10 @@
             }
         });
         function handlePendingIntent(action, value) {
-            if (!["evidence", "cve-search", "search"].includes(action)) drawerPendingScrollTop = 0;
+            if (!["evidence", "cve-search", "search"].includes(action)) {
+                drawerPendingScrollTop = 0;
+                drawerPendingElement.scrollTop = 0;
+            }
             dispatchStatusInteraction({ type: "pendingUpdatesChanged", intent: { action, value } });
         }
         lifecycle.listen(drawerPendingElement, "input", (event) => {

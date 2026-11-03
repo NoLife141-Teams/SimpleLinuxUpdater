@@ -52,6 +52,7 @@
         const url = String(finding.advisory_url || '').trim();
         return `<section class="pending-cve-evidence" id="pending-cve-evidence" aria-label="CVE source evidence">
             <div class="pending-workspace-head"><h5>${escape(finding.id || 'Unknown CVE')}</h5>${button('evidence', finding.id, 'Close source')}</div>
+            <p>${escape(qualification(finding))}</p>
             <p>${escape(assessment.vendor_reason || 'Distribution assessment unavailable')}</p>
             <dl><div><dt>Assessed versions</dt><dd>${escape(finding.installed_version || "Unknown")} → ${escape(finding.candidate_version || "Unknown")}</dd></div><div><dt>Source</dt><dd>${escape(assessment.ecosystem || 'Unknown distribution')} / ${escape(assessment.source_package || finding.source_package || 'Unknown package')} · ${escape(finding.source || 'Distribution data')}</dd></div>
             <div><dt>Observed</dt><dd>${escape(assessment.observed_at || 'Unknown')}</dd></div></dl>
@@ -62,6 +63,9 @@
         const findings = view.allFindings;
         const groups = [...new Set(findings.map(disposition))];
         const qualifications = [...new Set(findings.map(qualification))];
+        const reviewQualification = 'Distribution assessment needs review';
+        const sharedQualification = qualifications.length === 1 ? qualifications[0]
+            : qualifications.includes(reviewQualification) ? 'Some distribution assessments need review.' : '';
         const unknown = groups.length === 1 && groups[0] === 'Correction could not be verified';
         const state = String(update.cve_state || 'unknown');
         const context = state === 'pending' ? 'CVE lookup in progress.' : state === 'unavailable' ? 'CVE lookup unavailable. Run a fresh update check to retry.'
@@ -74,14 +78,14 @@
         return `${button('back', view.selectedKey, '← All updates')}
             <div class="pending-package-heading"><h4 tabindex="-1" data-pending-heading>${escape(update.package || 'Unknown package')}</h4><div class="pending-kinds">${badges(update)}</div></div>
             <dl class="pending-version-pair"><div><dt>Installed version</dt><dd>${escape(update.current_version || 'Unknown')}</dd></div><div><dt>Available version</dt><dd>${escape(update.candidate_version || 'Unknown')}</dd></div></dl>
-            <div class="pending-workspace-head"><h4>CVE references <span>${findings.length}</span></h4>${findings.length ? `<span>${unknown ? 'Update effect unconfirmed' : 'Source comparison'}</span>` : ''}</div>
+            <div class="pending-workspace-head"><h4>${findings.length ? `CVE references <span>${findings.length}</span>` : 'CVE information'}</h4>${findings.length ? `<span>${unknown ? 'Update effect unconfirmed' : 'Source comparison'}</span>` : ''}</div>
             <p class="${state === 'unavailable' ? 'pending-lookup-error' : 'pending-note'}">${context}</p>
-            ${qualifications.length === 1 ? `<p class="pending-qualification">${escape(qualifications[0])}</p>` : ''}
+            ${sharedQualification ? `<p class="pending-qualification">${escape(sharedQualification)}</p>` : ''}
             ${findings.length ? `${search('pending-cve-search', 'Find a CVE', view.cveQuery, 'cve-search')}<div class="pending-cve-list">
                 ${view.findings.items.map(finding => `<div class="pending-cve-item ${finding.disposition === 'still_affected' ? 'pending-cve-reported' : ''}">
                     ${button('evidence', finding.id, `<span>${escape(finding.id || 'Unknown CVE')}</span><span>View source ↗</span>`, `aria-expanded="${view.evidenceID === String(finding.id || '')}" ${view.evidenceID === String(finding.id || '') ? 'aria-controls="pending-cve-evidence"' : ''}`)}
                     ${!unknown ? `<small>${escape(disposition(finding))}</small>` : ''}
-                    ${qualifications.length !== 1 ? `<small>${escape(qualification(finding))}</small>` : ''}</div>`).join('')}</div>
+                    ${qualifications.length !== 1 && qualification(finding) !== reviewQualification ? `<small>${escape(qualification(finding))}</small>` : ''}</div>`).join('')}</div>
                 ${!view.findings.total ? '<p class="drawer-empty">No matching CVE references.</p>' : ''}${pagination(view.findings, 'cve-page', 'References')}` : ''}
             ${view.evidence ? evidence(view.evidence) : ''}
             <div class="pending-source-context">${escape(update.source || 'Package source unavailable')}${update.cve_coverage === 'official_installed_unverified' ? ' · Installed origin unverified' : ''}

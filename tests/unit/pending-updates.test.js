@@ -93,3 +93,18 @@ test('Status owns inspection intent, requests an immediate drawer render, and ex
     assert.equal(store.getView().pendingUpdates.selected.candidate_version,'2');
     assert.equal(store.getView().pendingUpdates.mode,'package');
 });
+
+
+test('mixed vendor qualifications do not repeat the generic review message per reference',()=>{
+    const store=createStore(), pkg=update('mixed',{cve_findings:findings(44)}), server=host([pkg]);
+    pkg.cve_findings[43].assessment={vendor_status:'unimportant'};
+    store.dispatch({action:'package',value:packageKey(pkg)},server);
+    let html=render(store.view(server));
+    assert.ok(html.includes('Some distribution assessments need review.'));
+    assert.equal((html.match(/Distribution assessment needs review/g)||[]).length,0);
+    store.dispatch({action:'evidence',value:pkg.cve_findings[0].id},server);
+    html=render(store.view(server));
+    assert.equal((html.match(/Distribution assessment needs review/g)||[]).length,1);
+    store.dispatch({action:'cve-search',value:'0043'},server);
+    assert.ok(render(store.view(server)).includes('Distribution: unimportant'));
+});

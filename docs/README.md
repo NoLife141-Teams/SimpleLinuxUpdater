@@ -8,7 +8,7 @@ This index separates current guidance from historical implementation records. Pr
 - [Configuration](configuration.md): environment variables, storage, sessions, notifications, retries, and health checks.
 - [Usage](usage.md): server maintenance, approvals, repair, reboot, policies, notifications, observability, and backup workflows.
 - [Accounts and API](personal-api.md): named roles, MFA, personal credentials, sessions and recovery.
-- [Upgrade, restore and rollback](upgrading.md): v0.5.2 compatibility, earlier migration requirements and Docker/binary procedures.
+- [Upgrade, restore and rollback](upgrading.md): v0.5.3 compatibility, earlier migration requirements and Docker/binary procedures.
 - [Deployment](deployment.md): Docker/binary deployment, HTTPS, metrics, upgrades, and persistence.
 - [Security](security.md): threat model, credentials, notification destinations, sudo, and hardening.
 - [Troubleshooting](troubleshooting.md): recovery guidance for authentication, SSH, APT, reboot, CVE, notifications, and storage.

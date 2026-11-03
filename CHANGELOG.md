@@ -6,6 +6,10 @@ The format is inspired by Keep a Changelog, and this project uses Semantic Versi
 
 ## [Unreleased]
 
+### Changed
+
+- Group repeated package provenance warnings in one expandable CVE coverage summary in the update drawer, retaining per-package indicators and the affected package lists.
+
 ## [v0.5.2] - 2026-11-03
 
 ### Changed

@@ -1346,6 +1346,39 @@ body.status-page .pending-table td {
     color: var(--danger);
 }
 
+.pending-provenance {
+    border: 1px solid rgba(var(--warning-rgb), 0.32);
+    border-radius: var(--radius-sm);
+    background: var(--card-alt);
+    overflow-wrap: anywhere;
+}
+
+.pending-provenance > summary {
+    padding: 10px 12px;
+    color: var(--warning-text);
+    font-size: 12px;
+    font-weight: 700;
+    cursor: pointer;
+}
+
+.pending-provenance-content {
+    display: grid;
+    gap: 12px;
+    padding: 8px 12px 12px;
+}
+
+.pending-provenance h5 {
+    margin: 0;
+    font-size: 12px;
+}
+
+.pending-provenance p {
+    margin: 6px 0 0;
+    color: var(--text);
+    font-size: 12px;
+    line-height: 1.45;
+}
+
 .cve-findings {
     margin-top: 9px;
     border: 1px solid rgba(var(--border-rgb), 0.16);

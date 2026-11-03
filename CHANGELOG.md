@@ -6,6 +6,11 @@ The format is inspired by Keep a Changelog, and this project uses Semantic Versi
 
 ## [Unreleased]
 
+### Changed
+
+- Scope CVE information to available APT updates and their proposed candidate versions. Replace the installed-package scan inspector with a compact update summary and package-level CVE details, including scheduled discovery outside approval.
+- Retire standalone CVE analysis, global ledger, separate remediation/risk-review APIs and periodic scan/intelligence workers. Preserve legacy SQLite/backup data; old pages redirect to Status and APIs return `410 Gone`.
+
 ## [v0.5.1] - 2026-11-02
 
 ### Added

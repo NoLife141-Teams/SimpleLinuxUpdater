@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"debian-updater/internal/postchecks"
-	"debian-updater/internal/vulnerabilities"
 	"github.com/gin-gonic/gin"
 )
 
@@ -54,26 +53,19 @@ func personalAPIResponseSchema(t *testing.T, path string, rec *httptest.Response
 	return content.Schema.Ref
 }
 
-func TestPersonalAPIVulnerabilityScanAcceptedResponseContract(t *testing.T) {
-	app := vulnerabilityTestApp(t, installedScannerFixture{scan: func(context.Context) (vulnerabilities.Scan, error) {
-		return vulnerabilities.Scan{State: "complete", Inventoried: 1, Evaluated: 1}, nil
-	}})
+func TestPersonalAPIRetiredVulnerabilityScanResponseContract(t *testing.T) {
+	app := newIsolatedTestApp(t)
 	_ = app.authenticate(t)
-	_, secret, err := app.Deps.AuthService.CreatePersonalToken(1, "scan contract", []string{"maintenance:write"}, time.Now().Add(time.Hour))
+	_, secret, err := app.Deps.AuthService.CreatePersonalToken(1, "retired scan", []string{"maintenance:write"}, time.Now().Add(time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}
 	rec := identityRequest(app, "POST", "/api/servers/one/vulnerabilities/scan", nil, secret, nil)
-	waitForUpdateRunners()
-	if rec.Code != http.StatusAccepted {
+	if rec.Code != http.StatusGone {
 		t.Fatal(rec.Code, rec.Body.String())
 	}
-	if schema := personalAPIResponseSchema(t, "/api/servers/{name}/vulnerabilities/scan", rec); schema != "#/components/schemas/VulnerabilityScanAccepted" {
-		t.Fatalf("accepted scan has no typed response schema: %q", schema)
-	}
-	response := decodeContractJSON(t, rec)
-	if response["status"] != "running" || response["scope"] != "installed_packages" {
-		t.Fatal("accepted scan lost its asynchronous response facts", response)
+	if schema := personalAPIResponseSchema(t, "/api/servers/{name}/vulnerabilities/scan", rec); schema != "#/components/schemas/Error" {
+		t.Fatal(schema)
 	}
 }
 

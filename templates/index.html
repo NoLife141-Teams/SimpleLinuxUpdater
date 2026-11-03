@@ -6,7 +6,7 @@
     <title>SimpleLinuxUpdater</title>
     <link rel="icon" type="image/png" href="/static/logo.png">
     <link rel="stylesheet" href="/static/css/base.css?v=metadata-contrast-517-20261029">
-    <link rel="stylesheet" href="/static/css/index.css?v=metadata-contrast-517-20261029">
+    <link rel="stylesheet" href="/static/css/index.css?v=apt-update-cve-scope-20261103">
     <link rel="stylesheet" href="/static/css/status-polish.css?v=20260919">
 <link rel="stylesheet" href="/static/css/package-deferrals.css?v=ui-components-515-20261029">
 </head>
@@ -20,7 +20,6 @@
                     <div class="eyebrow">Status dashboard</div>
                     <h1>Fleet status</h1>
                     <p class="muted">Package approvals, running phases, and host facts are tracked from one operator surface.</p>
-                    <p class="muted">CVE scope: host OS packages only. Docker images and application dependencies are not scanned; third-party repositories are not covered.</p>
                 </div>
                 <div class="head-meta" aria-label="Runtime metadata">
                     <span class="version-pill">v0.5.1</span>
@@ -146,7 +145,7 @@
                             <small>Stale or unknown intelligence</small>
                         </button>
                         <button type="button" class="metric-item metric-button" data-metric-filter="high_risk">
-                            <span>CVE matches</span>
+                            <span>Updates with CVEs</span>
                             <strong id="metric-high-risk-cve">0</strong>
                             <small>Hosts with source matches</small>
                         </button>
@@ -284,7 +283,7 @@
                                         <th>Group</th>
                                         <th>Pending packages</th>
                                         <th>Security updates</th>
-                                        <th>CVE matches</th>
+                                        <th>Updates with CVEs</th>
                                         <th>Facts</th>
                                         <th>Last check</th>
                                         <th>Risk</th>
@@ -410,17 +409,17 @@
     <script src="/static/js/browser-effects.js?v=frontend-isolation-20261027"></script>
     <script src="/static/js/common.js?v=quality-pass-20260711a"></script>
     <div class="phase-tooltip hidden" id="phase-tooltip" role="tooltip"></div>
-    <script src="/static/js/dashboard-projection-consumption.js?v=availability-filter-20260910-493"></script>
-    <script src="/static/js/status-page-interaction.js?v=dashboard-scaling-20261026"></script>
+    <script src="/static/js/dashboard-projection-consumption.js?v=apt-update-cve-scope-20261103"></script>
+    <script src="/static/js/status-page-interaction.js?v=apt-update-cve-scope-20261103"></script>
     <script src="/static/js/status-formatting.js?v=job-log-stream-20260724"></script>
     <script src="/static/js/status-transport.js?v=frontend-isolation-20261027"></script>
-    <script src="/static/js/status-rendering.js?v=dashboard-scaling-20261026"></script>
+    <script src="/static/js/status-rendering.js?v=apt-update-cve-scope-20261103"></script>
     <script src="/static/js/status-drawer-adapter.js?v=quality-pass-20260711b"></script>
     <script src="/static/js/status-table-adapter.js?v=quality-pass-20260711b"></script>
     <script src="/static/js/status-action-adapter.js?v=quality-pass-20260711b"></script>
     <script src="/static/js/index-bulk-actions.js?v=frontend-isolation-20261027"></script>
     <script src="/static/js/package-deferrals.js?v=frontend-isolation-20261027"></script>
 <script src="/static/js/status-snapshot-adapter.js?v=frontend-isolation-20261027"></script>
-<script src="/static/js/index.js?v=frontend-isolation-20261027-493"></script>
+<script src="/static/js/index.js?v=apt-update-cve-scope-20261103"></script>
 </body>
 </html>

@@ -707,38 +707,19 @@ Cons:
 - Shell/script automation: if you are comfortable with shell and want quick, custom control
 - Ansible-style automation: if you need large-scale automation, configuration, and repeatability across environments
 
-## Installed-package vulnerability scans
+## CVEs for available updates
 
-Select a host on Status, then use **Scan vulnerabilities**. The asynchronous, read-only action inventories installed DPKG packages, including those without a newer APT candidate. It does not run `apt-get update`, modify packages, create update jobs, or ask for approval. Consequently candidate/provenance evidence reflects the host's existing APT indexes. Disabled servers and servers with another active action, including pending approval, cannot start a scan. Backup restore/export and shutdown use the existing Maintenance Coordination and Host Maintenance Session boundaries.
+After `apt update`, normal and scheduled package discovery enrich the **available updates** with CVE information. Status shows a compact update/security summary and the number of verified CVE corrections in the proposed versions. **Review updates** opens the package list even when a scheduled check has not created an approval. CVE details expand per package; distribution qualification and evidence are disclosed on demand.
 
-The panel separates:
+Only the available update plan contributes to CVE counts. Candidate corrections require a current official installed/candidate identity, distribution-confirmed assessment, addressing candidate and simulated eligible Approval Scope. Deferred packages are not counted as proposed corrections. Multiple package occurrences of the same CVE count once; a remaining or uncertain occurrence within the update plan prevents a complete-correction count.
 
-- **State:** never scanned, running, unavailable, partial, or complete.
-- **Coverage:** inventoried, evaluated, unknown, and unsupported package counts.
-- **Freshness:** accepted inventory timestamp and last complete success, distinct from the latest attempt. Failed scans preserve the previous accepted result and mark it stale.
-- **Result and severity:** vendor-confirmed source matches, matches requiring review, vendor-qualified findings, no findings in evaluated packages, or inconclusive. Source matching is not proof of runtime exploitability. CVSS and distribution priority/triage are independent; unknown severity is never automatically critical.
+A security-marked update remains visible when CVE lookup fails. Missing, unsupported or expired evidence is shown as incomplete. Zero available updates means no packages to update, not zero vulnerabilities. Updating packages clears the pending plan; a successful job does not assert that every installed-package vulnerability has been eliminated.
 
-Active findings show installed and candidate versions, first/last observation, age, source, severity evidence, and an optional configured remediation target. `fixed_by_candidate` means an official candidate was evaluated and does not contain the finding; `still_affected` means it remains affected. `no_fix_available` is a legacy value meaning no verified candidate fix in the observed data, never that the publisher has no fix; `candidate_unverified` means a candidate could not be assessed with official provenance. A successful package update alone does not close a finding. A complete, stable, provenance-verified evaluation of the exact binary/source package can resolve its absent findings even when unrelated packages remain unknown. A full stable inventory is required to prove a removed package. This intentionally evolves the earlier whole-host-completeness rule (#465/#493). Legacy scans without explicit proofs, incomplete pagination, changed identities and cancelled/interrupted attempts cannot resolve findings. A reappearing finding keeps its original `first_seen`.
-
-Scan observations are persisted in SQLite and included in backups. Renaming a Server preserves its ledger; deletion removes it. Changing its SSH endpoint clears the old endpoint's observation. Restore reuses restored observations, without a separate runtime cache.
-
-Authenticated API additions: `POST /api/servers/:name/vulnerabilities/scan` returns `202` after admission (`409` if disabled/busy/unavailable; `404` for a missing server). `GET /api/servers/:name/vulnerabilities` returns the full observation, package inventory, last attempt, accepted result and finding ledger, including resolved entries. Dashboard Projection adds `risk.vulnerability` and fleet scan-state counters; existing API fields remain available. The legacy `risk.cves`, triage `cve_count` and `high_risk_cve` fleet counter retain reported-source-match counts for compatibility; they do not imply confirmed exposure. Fleet adds `vendor_confirmed_cve_hosts`, `review_cve_hosts`, `vendor_qualified_cve_hosts` and `withdrawn_cve_hosts` (host counts).
+The standalone CVE analysis, full ledger, independent remediation and risk-review pages are retired. Old page URLs redirect to Status; old authenticated scanner/remediation APIs return `410 Gone`. There is no host-wide or periodic vulnerability scan and no security-intelligence feed refresh. Legacy observations remain in SQLite/backups and are excluded from Status.
 
 ### Source limits
 
-Queries use source-package identities and the existing Debian/Ubuntu archive signature/provenance checks. Supported ecosystems remain Debian 12/13 and Ubuntu 22.04/24.04/26.04. Installed versions missing from local APT metadata, unsigned or third-party origins, and unsupported distributions are not classified as clean. An installed scan requires verified installed provenance; the more permissive approval enrichment label `official_installed_unverified` is not sufficient to resolve findings.
-
-[OSV querybatch](https://google.github.io/osv.dev/post-v1-querybatch/) returns advisory references. The installed scanner retrieves [advisory details](https://google.github.io/osv.dev/get-v1-vulns/) for severity. It interprets complete CVSS v3.0/v3.1 base vectors using the [FIRST equations](https://www.first.org/cvss/v3.1/specification-document#7-1-Base-Metrics-Equations), preserving source, type, and original vector. Missing, malformed, unsupported, or unavailable severity remains unknown. CVSS v2/v4 and temporal/environmental vectors are not scored. Advisory lookup failures retain findings and are reported separately as `enrichment_errors`; they do not invalidate complete source-query evidence or block independent package resolution. Previously sourced severity is retained with its original observation timestamp and shown as stale evidence when it cannot be refreshed. Database priority/urgency is not treated as CVSS. Severity detail lookups beyond the per-scan bound remain unknown.
-
-OSV and distribution trackers can be incomplete or delayed, and version-based assessment does not prove exploitability or inspect locally rebuilt files. A complete scan with no findings means no findings in the supported, verified packages evaluated at that time. It is not proof that the host has no vulnerabilities. Container/application dependencies and network testing are outside this feature. Scans never remove packages; an observed removal is only recorded after complete stable inventory evidence. Package ecosystem, source name, installed version, and candidate version are sent to OSV; host credentials are not.
-
-### CVE actions and support
-
-Open **CVE analysis** to work through one of three tabs: **Available fixes** (verified installable fixes), **Priority alerts** (confirmed priority findings without an announced fix), and **End of support** (recognized OS/application support calendars). Filter by server and search, then open a row's details for versions, dated evidence and next steps. Preparing a correction still requires the normal explicit approval workflow; reading or refreshing this page performs no remote scan or installation.
-
-Support rows separate server, component/version and support state in a compact table. Dates use an explicit calendar date, and standard-support expiry stays distinct from an unverified extension. Adjacent server names are visually grouped on desktop while each accessible row retains its server identity; mobile repeats that identity. The table keeps component pagination, with no inferred per-server totals. Dated proofs expand below the selected row.
-
-The data-quality disclosure groups missing, incomplete or old scans by server. An empty action list is not proof of zero vulnerabilities or of no published fixes. Application calendars describe upstream support, not distribution backports; partial historical inventory and extended-support uncertainty remain explicit. **All CVEs** opens the separate full ledger at `/vulnerabilities/all`, retaining server and search. Its advanced filters and package proofs remain available for investigations.
+Only supported official Debian/Ubuntu package identities are evaluated. The package ecosystem, source name and installed/candidate versions are queried against distribution-specific OSV data; host credentials are not sent. Unknown or third-party provenance remains unverified. Docker images, application dependencies and vulnerabilities in packages without an available update are outside this feature.
 
 ### Check hosted applications after an update
 
@@ -884,88 +865,6 @@ Dashboard `risk.vulnerability` separates distinct `reported_cves`, current vendo
 
 References: [Debian triage](https://security-team.debian.org/security_tracker.html#severity-levels) and [Ubuntu status mapping](https://documentation.ubuntu.com/security/security-updates/osv/#mapping-ubuntu-cve-tracker-statuses-in-osv).
 
-### Package-scoped vulnerability resolution evidence
-
-Each accepted proof records the admitted Server/scan identity, exact binary selector (including architecture), installed/source version, ecosystem, assessment source, observation and verification instants, complete query pagination, verified provenance and stable before/after package identity. Changing another package does not invalidate a stable package proof; a truncated or failed final inventory invalidates resolution. The scanner reads distro/source identities without refreshing APT or modifying packages.
-
-An unqualified APT selector can refer to an architecture-qualified dpkg inventory name. Those spellings cannot prove each other absent; unknown native/foreign architectures retain their uncertainty. A retained base-name absence cutoff covers qualified approval aliases only when the complete inventory proved that no architecture of that package was present. Absence of one architecture cannot suppress an unqualified or different-architecture approval. Evaluation proofs still require the exact binary selector and are never borrowed across architectures.
-
-`finding.resolution` records `installed_version_changed`, `package_removed`, or `no_longer_reported`, plus the proving scan and timestamp. These describe observed evidence, not inferred exploit mitigation or a vendor withdrawal. Vendor qualification/withdrawal remains a separate assessment, and a candidate-fix label never closes an installed finding. Reappearance clears closure evidence and preserves the original first observation.
-
-The observation keeps the last validated proof per package and the last complete stable inventory independently of the latest attempt. Per-package absence cutoffs preserve the knowledge of a complete stable inventory after a later inventory contains that package again without an evaluation. Older approval snapshots cannot resurrect findings superseded by a newer evaluation or proven absence, including after a subsequent unknown scan or unknown reinstall; newer approval observations remain visible. These cutoffs do not evaluate the reinstalled version or resolve new findings. Generation/commit guards protect against late results and cancellation; rename, deletion and backup/restore retain their existing ownership. Recovery after an authorized rename keeps the collector's original Server name only for the exact admitted operation and owner already stored in the renamed row. Other Server proofs and replacement generations remain rejected.
-
-Dashboard Projection separates current occurrences, findings not reverified, and resolved history. An occurrence reopened by newer approval evidence is active, excluded from the current resolved count, while its earlier closure remains in the durable ledger. The dashboard shows at most the 50 most recent resolved details with the complete resolved count, so accumulating historical evidence does not grow the inspector or refresh payload without bound. The complete ledger remains available in the Server vulnerability observation. Detail/severity freshness and `enrichment_errors` remain independent from package coverage. Last complete host success remains separately reported. No checkpoint from an interrupted scan is accepted by this contract; future resumable scanning must validate each boundary first.
-
-### Binary components, kernel responsibility and scan scope
-
-CVE views cover the Server's **host OS packages**, using verified official
-Debian/Ubuntu source-package data. Third-party repositories are not covered.
-**Docker images and application dependencies are not scanned**, regardless of
-what a Server is named. No network reachability, process monitoring or complete
-exploitability assessment is performed.
-
-Installed scans and approval enrichment collect fresh component context through
-Host Maintenance Session: `uname -r`, unprivileged `systemd-detect-virt` container
-and VM detection, DPKG ownership of `/boot/vmlinuz-<running release>`, and installed
-`linux-image-*` binary/version/source identities. Collection has a ten-second
-context deadline with transport drainage, a 128 KiB parsed-output bound and at
-most 256 installed images. Missing commands, denied probes, ambiguous ownership,
-image/source changes and unrecognized virtualization remain **unknown**; no
-extra privileges are requested. Installed scans reconcile image identities with
-both inventory boundaries; an invalidated running-image identity also makes
-comparisons with inactive images unknown, while unrelated package changes do not.
-A timed-out probe reconnects through the existing
-session boundary before subsequent package reads. Existing Host Health
-Observation kernel strings do not include exact image/source ownership or
-virtualization, so they cannot substitute for this fresh contextual evidence.
-
-- An **active image** requires exact installed binary/architecture, version,
-  source/version and observed running-image ownership, with VM or non-container
-  evidence. A source match on that image remains visible, with a Server kernel
-  maintenance/reboot review action; it does not prove exploitability.
-- An **inactive image** stays visible and requires review of boot policy and
-  usage. Inactive does not mean risk-free; nothing is automatically removed.
-- In a positively identified **container**, the running kernel is **external**,
-  including when no image is in the guest DPKG inventory. The container-host
-  operator must verify and maintain that kernel. A container update/reboot does
-  not establish host-kernel remediation. SLU never connects to another host.
-- The exact `linux` source / `linux-libc-dev` binary combination is classified as
-  **development headers**, retaining every advisory and rationale. Debian
-  documents that it supplies userspace headers under `/usr/include`, not the
-  running kernel image ([package description](https://packages.debian.org/trixie/linux-libc-dev)).
-  A kernel TCP advisory such as
-  [CVE-2004-0230](https://security-tracker.debian.org/tracker/CVE-2004-0230)
-  matched to that source is not proof of active-kernel exposure through this
-  binary. Header usage and binary applicability still require review. This is
-  a component distinction, not a finding exclusion.
-
-There are no blanket exclusions for `*-dev`, CLIs, old kernels, stopped services
-or old CVEs. Other binaries retain a source-match review signal. Installed,
-executed, exposed and exploitable are separate facts; exposure and exploitability
-remain unknown. Reclassification never closes an occurrence, suppresses its CVE,
-changes vendor qualification/CVSS, or weakens the Package Vulnerability Evaluation
-Proof rules.
-
-The observation API adds `scan.runtime_context` and `finding.runtime`, retained
-in SQLite/backups and across rename/restore. Dashboard Projection adds
-`runtime_context`, `kernel_coverage` (evaluated/external/unknown), `not_scanned`,
-component occurrence counters (zero values may be omitted). `confirmed_cves` still
-means vendor-confirmed **source** matches. A synthetic 1,000-header-match scan
-can therefore retain 1,000 source matches and 1,000 header occurrences with zero
-active-image occurrences. Header occurrences also count as execution unknown;
-these groups are not disjoint. `finding.runtime_view` and `runtime_freshness`
-apply the configured CVE evidence age; stale/future/missing context has unknown
-execution and responsibility while the original `runtime` observation remains
-inspectable. Approval details label their observed execution as a snapshot whose
-current status needs verification. Legacy data defaults to unknown. See the
-[OpenAPI contract](openapi-v1.json).
-
-When a newer accepted scan or approval snapshot supplies host context, retained
-findings use that newer context in `runtime_view`; an older active-image snapshot
-cannot override a changed running-image owner or missing current identity proof.
-The original `runtime` observation and source finding remain available.
-
-
 ### Published fixes and observed APT availability
 
 Each finding now carries additive `availability` evidence. Publisher fix events
@@ -1030,55 +929,6 @@ Sources: [Debian version comparison](https://www.debian.org/doc/debian-policy/ch
 [Ubuntu source-version OSV events](https://documentation.ubuntu.com/security/security-updates/osv/),
 [APT local-cache limitations](https://manpages.debian.org/trixie/apt/apt-cache.8.en.html).
 
-## Verified CVE remediation
+## Legacy CVE data
 
-Open **CVE analysis** for the full-width, filtered and paginated source/package
-explorer, then **Correction plan** for Server/package treatment groups. Vendor
-qualification, runtime component ownership, current package proof and candidate
-installability are separate. A published fix without an addressing installable
-candidate needs review. Development headers and external or inactive kernels do
-not establish an active-kernel vulnerability or its correction. Ubuntu 25.04 has
-**current-source coverage unavailable**; the app does not substitute a historical
-snapshot or report an evaluated zero-CVE success.
-
-**Prepare remediation** is an operational POST. It refreshes APT metadata,
-Package Discovery and Upgrade Plan, health expectations and installed inventory,
-and waits for explicit approval even if scheduled automatic approval is enabled.
-Readers can inspect evidence; they cannot prepare, approve, cancel or retry.
-Preparation performs no package upgrade. The immutable plan binds Server identity
-and configuration, fresh inventory/source versions, candidates, simulations,
-deferrals, health profile and the identities/age of existing CVE proofs.
-
-Review one of the four existing Approval Scopes: all standard upgrades, standard
-security upgrades, kept-back security upgrades, or full upgrade. An addressing
-candidate can be an ordinary point release outside security scope. Review extra
-packages, dependency additions, protected dependency impacts and every removal;
-removals still require explicit confirmation. Standard security updates can also upgrade ordinary dependencies; inspect their simulated versions. Preparation uses read-only simulations of each existing command, and scopes with unavailable transaction evidence cannot be approved. This is the actual maintenance
-scope, not an exact browser-selected CVE subset. Package Deferral continues to
-protect direct, dependency and removal paths. Candidate, source, inventory,
-configuration, health-profile or deferral drift requires fresh preparation or a
-newly published plan and renewed approval. Plans expire after one hour.
-
-After maintenance ends and its Server reservation drains, a durable request
-admits a **new installed-package vulnerability scan** through normal concurrency,
-maintenance and Server admission. Busy/capacity/maintenance conditions keep the
-request queued. Failed, cancelled or partial verification can be retried without repeating
-the update. Restart/restore recover verification only; rename follows a durable
-Server identity, and deletion followed by name reuse cannot inherit the old plan. Changing the Server target keeps verification queued for the original target.
-No restart automatically replays the maintenance transaction.
-
-Maintenance status, health results and CVE verification are independent. A failed
-health check is still visible even if some package corrections are demonstrated.
-Comparison reports corrected package occurrences, removed packages, still-present
-findings, newly observed findings, not-reverified packages and requalifications.
-Partial scans close only packages with complete independent proof. The unique-CVE
-count requires correction/removal on every known occurrence; fixing one of two
-packages is insufficient. Same-version publisher reassessment is a requalification,
-not an installed patch. Runtime active/inactive/external changes do not close
-source findings. Package changes do not prove that a running kernel was corrected.
-
-For an unresolved package without an installable patch, record a risk review with
-owner, reason, treatment decision, optional mitigation and a future reevaluation
-time. Reviews remain visible and do not suppress exposure or create a Package
-Deferral. No review automatically removes packages, edits repositories/configuration,
-upgrades the OS or reboots a Server.
+Legacy installed-package observations and remediation history remain compatible with backup/restore. They are historical records only; the app no longer launches their scans or exposes their workspaces. Use the normal package approval workflow for available updates.

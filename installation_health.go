@@ -172,7 +172,7 @@ func installationSnapshot(ctx context.Context, deps AppDeps) installationDiagnos
 	out.Workers["job_log_pruner"] = deps.InstallationHealth.jobLogPruner.Snapshot(true)
 	out.Workers["scheduler"] = deps.PolicyService.WorkerHealth()
 	out.Workers["host_facts"] = deps.HostFactsRefreshWorker.WorkerHealth(parseBoolEnvWithDefault(automaticHostFactsRefreshEnabledEnv, true))
-	out.Workers["vulnerabilities"] = deps.VulnerabilityScans.WorkerHealth()
+	out.Workers["vulnerabilities"] = installationhealthpkg.WorkerSnapshot{Enabled: false}
 	// A separate read-only lease prevents querying a persistence generation while
 	// restore replaces it. No destination validation or secret-file reads occur.
 	lease, state, ok := deps.MaintenanceCoordinator.TryProbe()

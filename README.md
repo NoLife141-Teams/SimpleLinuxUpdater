@@ -38,7 +38,7 @@ SimpleLinuxUpdater is designed for trusted environments (LAN/VPN). It connects t
 - Four explicit approval scopes: standard updates, standard security updates, kept-back security updates, or a full upgrade with package-removal confirmation
 - Expiring package deferrals per Server and policy, with reasons, audit authors, cumulative inheritance, dependency-safe plans and enforcement before dpkg ([workflow](docs/usage.md#package-deferrals))
 - Approval bound to the displayed job and plan generation, revalidation before execution, and APT enforcement when removals are not approved
-- Distribution-verified CVE assessment for Debian 12/13 and Ubuntu 22.04/24.04/26.04, with fixes and remaining exposure shown separately
+- CVE information for available Debian/Ubuntu package updates, with installed/candidate version comparison before approval
 - Baseline and plan-aware disk/APT pre-checks before approval, including exact simulated size facts with a conservative fallback, plus post-update health checks
 - Durable APT reconciliation and guided repair after uncertain package-manager outcomes
 - Controlled reboot with SSH recovery, uptime reset, and reboot-required verification
@@ -203,22 +203,13 @@ Ways you can help:
 
 MIT. See [LICENSE](LICENSE).
 
-### Installed-package vulnerability scans
+### CVEs in available updates
 
-Distribution triage, applicability/confidence and CVSS are separate. Debian vendor-qualified findings and Ubuntu OSV triage uncertainty remain visible without being automatically treated as confirmed runtime exposure. See [distribution qualification](docs/usage.md#distribution-qualification-and-confidence).
+CVE analysis runs as part of APT package discovery, after `apt update`, for packages with an available update. Status shows update/security counts and verified candidate CVE corrections. **Review updates** opens the package list, where CVE details and distribution evidence expand on demand. A successful scheduled package check also makes this list available without requiring a pending approval.
 
-The selected-host panel exposes a read-only **Scan vulnerabilities** action and compact coverage, freshness and severity counts. **CVE analysis** provides full-width paginated package proofs, including packages with no newer candidate; **Correction plan** prepares manually approved maintenance and independently verifies a new scan afterwards. Never-scanned, unavailable, partial, and complete scans are distinct. Failed scans and updates alone never resolve findings. A partial host scan can resolve a package only with its complete, stable, provenance-verified evaluation proof; unknown packages remain open. Legacy scans without these proofs stay conservative. See [scan behavior and source limits](docs/usage.md#installed-package-vulnerability-scans) and [verified remediation](docs/usage.md#verified-cve-remediation). Ubuntu 25.04 reports current-source coverage unavailable; it never substitutes a historical snapshot or a misleading zero-CVE result.
+Security updates remain visible if CVE data is unavailable. Unknown provenance, unsupported releases and incomplete lookups remain explicit. No available updates means **No packages to update**, never a claim that the server has no vulnerabilities. See [CVE-aware pending approval](docs/usage.md#cve-aware-pending-approval).
 
-Component context distinguishes development headers, active/inactive installed kernel images and external container-host kernels without asserting runtime exploitability. CVE scope is host OS packages only: Docker images and application dependencies are not scanned, and third-party repositories are not covered. Missing or stale read-only probes remain unknown; no additional privileges or other-host access are requested.
-
-Published source fixes, observed candidate source/binary versions, APT metadata uncertainty and installability by the existing Approval Scope/Package Deferral are separate. Candidate fixes do not resolve findings. See [availability semantics](docs/usage.md#published-fixes-and-observed-apt-availability).
-
-Installed scan work, checkpoint recovery, cache/enrichment bounds and reproducible synthetic measurements are documented in [Vulnerability scan performance](docs/vulnerability-scan-performance.md).
-
-- `DEBIAN_UPDATER_VULNERABILITY_SCAN_ENABLED`: `true` by default; `false` disables manual and periodic installed-package scans. Existing asynchronous approval enrichment is independent.
-- `DEBIAN_UPDATER_VULNERABILITY_SCAN_INTERVAL_HOURS`: default `24`, range `0–8760`; `0` disables periodic scans while keeping manual scans available.
-- `DEBIAN_UPDATER_VULNERABILITY_SCAN_TIMEOUT_SECONDS`: default `300`, range `10–900`; total inventory/OSV scan deadline.
-- `DEBIAN_UPDATER_VULNERABILITY_TARGET_LOW_DAYS`, `DEBIAN_UPDATER_VULNERABILITY_TARGET_MEDIUM_DAYS`, `DEBIAN_UPDATER_VULNERABILITY_TARGET_HIGH_DAYS`, `DEBIAN_UPDATER_VULNERABILITY_TARGET_CRITICAL_DAYS`: optional remediation objectives, `0–3650` days from first observation; unset or `0` means no target. Unknown severity never receives a deadline. These objectives do not gate approvals.
+Standalone installed-package scans, periodic vulnerability scanning, the CVE analysis navigation item, the global ledger and separate correction workspace are retired. Their old pages redirect to Status and authenticated APIs return `410 Gone`. Old scan observations remain in SQLite/backups for continuity but do not contribute to Status. Legacy scan/target/security-intelligence environment variables no longer enable a worker.
 
 Application post-check profiles in Admin can verify remote systemd units and HTTP health endpoints per Server or tag, with bounded recovery and blocking/warning results. See [profile configuration](docs/configuration.md#application-post-check-profiles).
 
@@ -238,5 +229,3 @@ See [deployment health checks](docs/deployment.md#installation-health-and-readin
 for maintenance states, Docker probes, metrics and alert examples.
 
 Interface labels are currently provided in English; configurable interface languages are not yet implemented.
-
-Security actions: `/vulnerabilities` groups verified installable fixes and priority unpatched alerts, and shows endoflife.date OS/upstream application lifecycle evidence. The page shows one tab at a time (fixes, critical alerts, support lifecycle), with inline evidence and scan-quality warnings grouped by server. The full ledger is available separately at `/vulnerabilities/all`. Public feed refresh can be disabled with `DEBIAN_UPDATER_SECURITY_INTEL_REFRESH_ENABLED=false`; `DEBIAN_UPDATER_SECURITY_INTEL_SEED_DIR` optionally supplies dated public metadata to an isolated preview. See [Security intelligence configuration](docs/configuration.md#security-actions-and-lifecycle-intelligence) for proof requirements, freshness and application coverage.

@@ -1884,18 +1884,13 @@ func registerProtectedPageRoutes(r *gin.Engine) {
 		c.HTML(http.StatusOK, "manage.html", operatorShellForContext(c, "manage", "Manage Servers"))
 	})
 
-	r.GET("/vulnerabilities", func(c *gin.Context) {
-		setNoStoreHeaders(c)
-		c.HTML(http.StatusOK, "vulnerabilities.html", operatorShellForContext(c, "vulnerabilities", "CVE analysis"))
-	})
-	r.GET("/vulnerabilities/all", func(c *gin.Context) {
-		setNoStoreHeaders(c)
-		c.HTML(http.StatusOK, "vulnerability-ledger.html", operatorShellForContext(c, "vulnerabilities", "CVE details"))
-	})
-	r.GET("/remediation", func(c *gin.Context) {
-		setNoStoreHeaders(c)
-		c.HTML(http.StatusOK, "remediation.html", operatorShellForContext(c, "vulnerabilities", "Correction plan"))
-	})
+	// Bookmarks from the retired standalone scanner return to maintenance.
+	for _, path := range []string{"/vulnerabilities", "/vulnerabilities/all", "/remediation"} {
+		r.GET(path, func(c *gin.Context) {
+			setNoStoreHeaders(c)
+			c.Redirect(http.StatusSeeOther, "/")
+		})
+	}
 	r.GET("/observability", func(c *gin.Context) {
 		setNoStoreHeaders(c)
 		c.HTML(http.StatusOK, "observability.html", operatorShellForContext(c, "observability", "Observability"))
@@ -2288,19 +2283,17 @@ func registerServerAndActionRoutes(r *gin.Engine, deps AppDeps) {
 		c.JSON(http.StatusOK, gin.H{"has_key": status.Configured})
 	})
 
-	r.GET("/api/security-actions", func(c *gin.Context) { handleSecurityActions(c, deps) })
-	r.GET("/api/vulnerabilities", func(c *gin.Context) { handleVulnerabilityExplorer(c, deps) })
-	r.GET("/api/vulnerabilities/:id", func(c *gin.Context) { handleVulnerabilityExplorer(c, deps) })
-	r.GET("/api/vulnerabilities/plan", func(c *gin.Context) { handleRemediationPlan(c, deps) })
-	r.POST("/api/servers/:name/remediation/prepare", func(c *gin.Context) { handlePrepareRemediation(c, deps) })
-	r.GET("/api/servers/:name/remediation", func(c *gin.Context) { handleRemediationHistory(c, deps) })
-	r.GET("/api/servers/:name/remediation/:plan_id", func(c *gin.Context) { handleRemediationDetail(c, deps) })
-	r.GET("/api/servers/:name/remediation/:plan_id/evidence", func(c *gin.Context) { handleRemediationEvidence(c, deps) })
-	r.POST("/api/servers/:name/remediation/:plan_id/retry", func(c *gin.Context) { handleRetryRemediation(c, deps) })
-	r.POST("/api/servers/:name/vulnerabilities/reviews", func(c *gin.Context) { handleRiskReview(c, deps) })
-	r.GET("/api/servers/:name/vulnerabilities", func(c *gin.Context) { handleVulnerabilityObservation(c, deps) })
-	r.POST("/api/servers/:name/vulnerabilities/scan", func(c *gin.Context) { handleVulnerabilityScan(c, deps) })
-	r.POST("/api/servers/:name/vulnerabilities/scans/:scan_id/cancel", func(c *gin.Context) { handleCancelVulnerabilityScan(c, deps) })
+	// Explicit retirement prevents old clients from launching host-wide scans.
+	retiredCVE := func(c *gin.Context) {
+		setNoStoreHeaders(c)
+		c.JSON(http.StatusGone, gin.H{"error": "Standalone vulnerability scanning has been retired. CVE information is included with available package updates."})
+	}
+	for _, path := range []string{"/api/security-actions", "/api/vulnerabilities", "/api/vulnerabilities/:id", "/api/vulnerabilities/plan", "/api/servers/:name/remediation", "/api/servers/:name/remediation/:plan_id", "/api/servers/:name/remediation/:plan_id/evidence", "/api/servers/:name/vulnerabilities"} {
+		r.GET(path, retiredCVE)
+	}
+	for _, path := range []string{"/api/servers/:name/remediation/prepare", "/api/servers/:name/remediation/:plan_id/retry", "/api/servers/:name/vulnerabilities/reviews", "/api/servers/:name/vulnerabilities/scan", "/api/servers/:name/vulnerabilities/scans/:scan_id/cancel"} {
+		r.POST(path, retiredCVE)
+	}
 
 	r.POST("/api/servers/:name/facts/refresh", func(c *gin.Context) {
 		handleServerFactsRefreshWithDeps(c, deps)

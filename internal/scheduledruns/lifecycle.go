@@ -536,6 +536,16 @@ func (l *Lifecycle) runScan(run policies.Run, policy policies.Policy, server ser
 		})
 		if restored != nil {
 			restored.APTMetadata = aptMetadata
+			// Retain the observed available plan for inspection, without granting
+			// approval. Update still performs fresh discovery before maintenance.
+			completed, err := l.deps.CurrentJobManager().GetJob(job.ID)
+			var meta updates.ScheduledJobMeta
+			if err == nil && completed.Status == jobs.StatusSucceeded && json.Unmarshal([]byte(completed.MetaJSON), &meta) == nil && meta.Discovery != nil {
+				discovery := meta.Discovery.Clone()
+				restored.PendingUpdates = discovery.PendingUpdates
+				restored.Upgradable = discovery.Upgradable
+				restored.UpgradePlan = discovery.UpgradePlan
+			}
 		}
 	}, func() {
 		l.deps.ServerState.RestoreStatusSnapshot(server.Name, preStartStatus)

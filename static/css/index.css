@@ -3092,18 +3092,15 @@ body.status-page .table-wrap {
     }
 }
 
-.vulnerability-summary {
+.update-security-summary {
     margin-block: 1rem;
-    padding: 1rem;
-    border: 1px solid var(--border);
-    border-radius: 12px;
-    background: var(--card-alt);
+    padding-block: 1rem;
+    border-block: 1px solid var(--border);
     overflow-wrap: anywhere;
 }
-.vulnerability-summary h3 { margin-top: 0; }
-.vulnerability-summary p { color: var(--subtle); font-size: .85rem; }
-.vulnerability-summary details { margin-top: .75rem; }
-.vulnerability-summary li + li { margin-top: 1rem; }
+.update-security-summary h3 { margin: 0 0 .5rem; font-size: .95rem; }
+.update-security-summary p { margin: .4rem 0; font-size: .85rem; }
+.update-security-summary .inline-btn { margin-top: .5rem; }
 .risk-unknown { color: var(--subtle); border-color: var(--border); }
 
 .runtime-applicability small,

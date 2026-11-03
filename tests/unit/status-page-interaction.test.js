@@ -705,18 +705,18 @@ test("facts refresh filtering does not invent unknown facts before dashboard int
     assert.deepEqual(store.getView().visibleServers.map(server => server.name), []);
 });
 
-test("Status labels describe CVE matches and facts that need refresh", () => {
+test("Status labels describe Updates with CVEs and facts that need refresh", () => {
     const root = path.resolve(__dirname, "../..");
     const template = fs.readFileSync(path.join(root, "templates/index.html"), "utf8");
     const rendering = fs.readFileSync(path.join(root, "static/js/status-rendering.js"), "utf8");
     const index = fs.readFileSync(path.join(root, "static/js/index.js"), "utf8");
 
     assert.match(template, /<span>Host facts to refresh<\/span>/);
-    assert.match(template, /<span>CVE matches<\/span>/);
+    assert.match(template, /<span>Updates with CVEs<\/span>/);
     assert.match(rendering, /Show hosts whose facts need refresh/);
-    assert.match(rendering, /Show hosts with CVE matches/);
+    assert.match(rendering, /Show hosts with CVEs linked to available updates/);
     assert.match(index, /label: "Facts refresh"/);
-    assert.match(index, /label: "CVE matches"/);
+    assert.match(index, /label: "Updates with CVEs"/);
 });
 
 test("Status keeps one attention surface and defers supporting detail", () => {

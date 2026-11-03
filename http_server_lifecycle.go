@@ -149,9 +149,6 @@ func main() {
 	if _, err := loadBackupAutomationDeployment(); err != nil {
 		log.Fatalf("Invalid automated backup configuration: %v", err)
 	}
-	if _, err := loadVulnerabilityScanConfig(); err != nil {
-		log.Fatalf("Invalid vulnerability scan configuration: %v", err)
-	}
 	listenAddr, err := resolveListenAddr(os.Getenv)
 	if err != nil {
 		log.Fatalf("Invalid HTTP listen configuration: %v", err)
@@ -181,13 +178,6 @@ func main() {
 	startPolicyScheduler(deps.PolicyService, deps.PolicyRepository, shutdownCtx, PolicySchedulerOptions{})
 	if parseBoolEnvWithDefault(automaticHostFactsRefreshEnabledEnv, true) && deps.HostFactsRefreshWorker != nil {
 		deps.HostFactsRefreshWorker.Start(shutdownCtx)
-	}
-	if deps.SecurityIntel != nil && parseBoolEnvWithDefault("DEBIAN_UPDATER_SECURITY_INTEL_REFRESH_ENABLED", true) {
-		deps.SecurityIntel.Start(shutdownCtx)
-	}
-	if deps.VulnerabilityScans != nil {
-		deps.VulnerabilityScans.Start(shutdownCtx)
-		deps.Remediation.Start(shutdownCtx)
 	}
 	if deps.BackupAutomation != nil {
 		deps.BackupAutomation.Start(shutdownCtx)

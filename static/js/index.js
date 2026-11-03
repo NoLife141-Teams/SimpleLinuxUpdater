@@ -40,8 +40,6 @@
         });
         let hoveredName = null;
         let expandedHostFactsServers = new Set();
-        let expandedInstalledVulnerabilityServers = new Set();
-        let expandedResolvedVulnerabilityServers = new Set();
         let expandedMiniLists = new Set();
         let expandedCVEFindings = new Set();
         let activePhaseTooltipTarget = null;
@@ -350,7 +348,7 @@
         function pendingStateBadge(state) {
             const normalized = String(state || "").toLowerCase();
             if (normalized === "pending")
-                return `<span class="pending-badge">Scanning CVEs...</span>`;
+                return `<span class="pending-badge">Checking CVEs…</span>`;
             if (normalized === "unavailable")
                 return `<span class="pending-badge">CVE lookup unavailable</span>`;
             if (normalized === "unsupported")
@@ -361,45 +359,26 @@
             return `<span class="pending-badge">Unknown state</span>`;
         }
 
-        function runtimeApplicabilityHtml(finding) {
-            const runtime = finding.runtime_view || finding.runtime || {};
-            const executionLabel = finding.runtime_view ? "Execution" : "Observed execution (current status unverified)";
-            return `<span class="runtime-applicability"><small>Component: ${escapeHtml(runtime.component || "source_match")} · ${executionLabel}: ${escapeHtml(runtime.execution || "unknown")} · Exposure: ${escapeHtml(runtime.exposure || "unknown")} · Exploitability: ${escapeHtml(runtime.exploitability || "unknown")}</small><small>${escapeHtml(runtime.reason || "Source match only; binary applicability requires review")}</small><small>Responsible operator: ${escapeHtml(runtime.owner || "unknown")} · ${escapeHtml(runtime.action || "Collect missing read-only component context")}</small><small>Runtime source: ${escapeHtml(runtime.source || "unknown")} · observed ${escapeHtml(runtime.observed_at || "unknown")} (${escapeHtml(finding.runtime_freshness || "freshness must be verified")}) · Kernel: ${escapeHtml(runtime.kernel_release || "unknown")} · Virtualization: ${escapeHtml(runtime.virtualization || "unknown")}</small></span>`;
-        }
-
-        function fixAvailabilityHtml(finding) {
-            const a = finding.availability || {};
-            const published = a.published || {};
-            const candidate = {addresses: "Candidate addresses these findings; installation unverified", affected: "Candidate still affected", same: "Candidate equals installed version", absent: "No candidate observed", unverified: "Candidate could not be verified"}[a.candidate_state] || "No verified candidate fix in observed data";
-            const publication = {published: "Fix published for this exact release and source", not_established: "No published fix established by the source", withdrawn: "Advisory withdrawn; no package fix demonstrated"}[published.state] || "Publisher fix status unknown";
-            const repository = {published_not_observed: "Fix published but no addressing candidate currently observed here", observed: "Candidate observed in configured repositories"}[a.repository_state] || "Availability unknown";
-            const apt = a.apt || {};
-            return `<span class="fix-availability"><small>${escapeHtml(publication)}${Array.isArray(published.fixed_versions) && published.fixed_versions.length ? ` · Published source versions: ${published.fixed_versions.map(escapeHtml).join(", ")}` : ""} · ${escapeHtml(published.ecosystem || "release unknown")} / ${escapeHtml(published.source_package || "source unknown")}</small><small>Publisher evidence: ${escapeHtml(published.source || "unknown")} · observed ${escapeHtml(published.observed_at || "unknown")} (${escapeHtml(finding.published_fix_freshness || "freshness must be verified")})</small><small>${escapeHtml(candidate)} · Source candidate: ${escapeHtml(a.candidate_source_package || "unknown")} ${escapeHtml(a.candidate_source_version || "unknown")} · Binary candidate: ${escapeHtml(a.candidate_binary_version || finding.candidate_version || "none")} · Origin: ${escapeHtml(a.candidate_origin || "unknown")} · ${escapeHtml(a.candidate_ecosystem || "unverified release")}</small><small>${escapeHtml(repository)} · Candidate query observed ${escapeHtml(a.query_observed_at || "unknown")} (${escapeHtml(finding.availability_freshness || "freshness must be verified")})</small><small>APT index freshness: ${escapeHtml(apt.state || "unknown")} · oldest local index ${escapeHtml(apt.oldest_index_at || "unknown")} · last recorded success ${escapeHtml(apt.last_success_at || "unknown")} · last known refresh outcome: ${escapeHtml(apt.last_refresh_state || "unknown")} · observed ${escapeHtml(apt.last_refresh_at || "unknown")}${apt.last_refresh_error ? ` · ${escapeHtml(apt.last_refresh_error)}` : ""}</small><small>${escapeHtml(a.reason || "No verified candidate fix in observed legacy data; publisher fix status is unknown")}</small>${a.restrictions?.length ? `<small>Observed policy facts (cause requires review): ${a.restrictions.map(escapeHtml).join(", ")}</small>` : ""}${(Array.isArray(a.scopes) ? a.scopes : []).map(scope => `<small>Approval Scope ${escapeHtml(scope.scope)}: ${escapeHtml(scope.state)} · ${escapeHtml(scope.reason)}${scope.removed_packages?.length ? ` · Removals require review: ${scope.removed_packages.map(escapeHtml).join(", ")}` : ""}</small>`).join("")}<small>${escapeHtml(a.action || "Review a fresh maintenance package scan with maintenance permissions")}. Candidate evidence does not resolve an installed finding.</small></span>`;
-        }
-
-        function vulnerabilityFindingListHtml(findings, title, tone) {
+        function vulnerabilityFindingListHtml(findings, title, tone, disclosureKey) {
             if (!findings.length) return "";
-            const items = findings
-                .map((finding) => {
-                    const id = escapeHtml(finding.id || "Unknown CVE");
-                    const url = String(finding.advisory_url || "").trim();
-                    const idHtml = url
-                        ? `<a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">${id}</a>`
-                        : id;
-                    const fixedVersion = String(
-                        finding.fixed_by_version || "",
-                    ).trim();
-                    const assessment = finding.assessment || {};
-                    const vendor = assessment.vendor_status || "unknown";
-                    return `<li>${idHtml}${runtimeApplicabilityHtml(finding)}${fixAvailabilityHtml(finding)}<small>Binary: ${escapeHtml(finding.package || "unknown")} · Source: ${escapeHtml(finding.source_package || assessment.source_package || "unknown")}</small><small>Distribution triage: ${escapeHtml(vendor)} · Applicability: ${escapeHtml(assessment.applicability || "unknown")} · Confidence: ${escapeHtml(assessment.confidence || "unknown")}</small><small>${escapeHtml(assessment.vendor_reason || "Legacy match: distribution triage requires review")}</small><small>Assessment: ${escapeHtml(assessment.ecosystem || "unknown")} / ${escapeHtml(assessment.source_package || "unknown")} ${escapeHtml(assessment.source_version || "unknown")} · observed ${escapeHtml(assessment.observed_at || "unknown")}</small>${fixedVersion ? `<small>Evaluated candidate source version: ${escapeHtml(fixedVersion)}</small>` : ""}</li>`;
-                })
-                .join("");
-            return `
-                <section class="cve-finding-group cve-finding-${tone}">
-                    <h5>${escapeHtml(title)}</h5><p>Host OS packages only. Docker images and application dependencies are not scanned. Third-party repositories are not covered.</p>
-                    <ul>${items}</ul>
-                </section>
-            `;
+            const items = findings.map(finding => {
+                const id = escapeHtml(finding.id || "Unknown CVE");
+                const url = String(finding.advisory_url || "").trim();
+                const link = /^https?:\/\//i.test(url) ? `<a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">${id}</a>` : id;
+                const assessment = finding.assessment || {};
+                const evidenceKey = JSON.stringify([disclosureKey, finding.id || ""]);
+                const qualified = ["unimportant", "not_affected"].includes(assessment.vendor_status);
+                const qualification = qualified ? `Distribution: ${assessment.vendor_status}`
+                    : assessment.confidence === "vendor_confirmed" ? "Distribution-confirmed source match" : "Distribution assessment needs review";
+                return `<li>${link} <small>${escapeHtml(qualification)}</small>
+                    <details class="cve-evidence" data-cve-evidence-key="${escapeHtml(evidenceKey)}" ${expandedCVEFindings.has(evidenceKey) ? "open" : ""}><summary>Evidence</summary>
+                        <p>${escapeHtml(assessment.vendor_reason || "Distribution assessment unavailable")}</p>
+                        <p>Installed: ${escapeHtml(finding.installed_version || "unknown")} → Candidate: ${escapeHtml(finding.candidate_version || "unknown")}</p>
+                        <p>${escapeHtml(assessment.ecosystem || "unknown")} / ${escapeHtml(assessment.source_package || finding.source_package || "unknown")} · ${escapeHtml(finding.source || "Distribution data")}</p>
+                        <p>Observed: ${escapeHtml(assessment.observed_at || "unknown")}</p>
+                    </details></li>`;
+            }).join("");
+            return `<section class="cve-finding-group cve-finding-${tone}"><h5>${escapeHtml(title)}</h5><ul>${items}</ul></section>`;
         }
 
         function cveFindingsDisclosureKey(server, update) {
@@ -432,11 +411,11 @@
             const open = expandedCVEFindings.has(disclosureKey);
             return `
                 <details class="cve-findings" data-cve-disclosure-key="${escapeHtml(disclosureKey)}" ${open ? "open" : ""}>
-                    <summary>View ${findings.length} reported package/CVE match${findings.length > 1 ? "es" : ""}</summary>
+                    <summary>CVE details (${findings.length})</summary>
                     <div class="cve-findings-content">
-                        ${vulnerabilityFindingListHtml(fixed, "Absent from the candidate source assessment", "fixed")}
-                        ${vulnerabilityFindingListHtml(remaining, "Still reported in the candidate source assessment", "remaining")}
-                        ${vulnerabilityFindingListHtml(findings.filter(f => !["fixed_by_candidate", "still_affected"].includes(f.disposition)), "Candidate availability requires review", "remaining")}
+                        ${vulnerabilityFindingListHtml(fixed, "Not reported for the proposed version", "fixed", disclosureKey)}
+                        ${vulnerabilityFindingListHtml(remaining, "Still reported for the proposed version", "remaining", disclosureKey)}
+                        ${vulnerabilityFindingListHtml(findings.filter(f => !["fixed_by_candidate", "still_affected"].includes(f.disposition)), "Correction could not be verified", "remaining", disclosureKey)}
                         <p class="cve-findings-source">${source}${scannedAt}</p>
                     </div>
                 </details>
@@ -671,12 +650,6 @@
                 (update) =>
                     !!update.kept_back || !!update.requires_full_upgrade,
             ).length;
-            const stateCounts = updates.reduce((acc, update) => {
-                const state = String(update.cve_state || "").toLowerCase();
-                acc[state] = (acc[state] || 0) + 1;
-                return acc;
-            }, {});
-
             const rows = updates
                 .map((update) => {
                     const pkg = escapeHtml(update.package || "unknown");
@@ -728,7 +701,7 @@
                         if (findings.length > 0) {
                             if (fixedFindings.length) {
                                 badges.push(
-                                    `<span class="pending-badge pending-badge-cve">${fixedFindings.length} candidate source fixes</span>`,
+                                    `<span class="pending-badge pending-badge-cve">${fixedFindings.length} potential CVE fixes</span>`,
                                 );
                             }
                             if (remainingFindings.length) {
@@ -738,7 +711,7 @@
                             }
                         } else if (cves.length > 0) {
                             badges.push(
-                                `<span class="pending-badge">Legacy CVE data — rescan required</span>`,
+                                `<span class="pending-badge">CVE details need a fresh update check</span>`,
                             );
                         } else {
                             badges.push(
@@ -781,13 +754,8 @@
                         <span class="pending-badge">${updates.length} package${updates.length > 1 ? "s" : ""}</span>
                         <span class="pending-badge pending-badge-security">${securityCount} security</span>
                         <span class="pending-badge">${keptBackCount} kept back</span>
-                        <span class="pending-badge">${stateCounts.ready || 0} ready</span>
-                        <span class="pending-badge">${stateCounts.pending || 0} scanning</span>
-                        <span class="pending-badge">${stateCounts.unavailable || 0} unavailable</span>
-                        <span class="pending-badge">${stateCounts.unsupported || 0} unknown coverage</span>
-                        <span class="pending-badge">${stateCounts.skipped || 0} skipped</span>
                     </div>
-                    ${hasPending ? `<p class="pending-note">CVE scan in progress; list will update automatically.</p>` : ""}
+                    ${hasPending ? `<p class="pending-note">Checking CVEs for available updates…</p>` : ""}
                     <div class="table-wrap">
                         <table class="pending-table">
                             <thead>
@@ -971,7 +939,7 @@
                     },
                     {
                         key: "high_risk",
-                        label: "CVE matches",
+                        label: "Updates with CVEs",
                         count: highRiskCount,
                     },
                 ];
@@ -1310,50 +1278,20 @@
             }
         }
 
-        function vulnerabilitySummaryHtml(selected, safeDataName) {
-            const info = selected.vulnerability;
-            const action = selected.actions.scan_vulnerabilities || {};
-            if (!info) return "";
-            const findingsOpen = expandedInstalledVulnerabilityServers.has(
-                selected.server.name,
-            );
-            const findings = info.findings
-                .map(
-                    (finding) => `<li>
-                <strong>${escapeHtml(finding.id)} · ${escapeHtml(finding.package)}</strong>
-                <p>Severity: ${escapeHtml(finding.severity || "unknown")} · ${escapeHtml(finding.dispositionLabel)}</p>
-                <p>${escapeHtml(finding.qualificationLabel)} · Distribution triage: ${escapeHtml(finding.assessment?.vendor_status || "unknown")} · Vendor priority: ${escapeHtml(finding.assessment?.vendor_priority || "unknown")} · Applicability: ${escapeHtml(finding.assessment?.applicability || "unknown")}</p>
-                <p>${escapeHtml(finding.assessment?.vendor_reason || "Legacy match: distribution triage requires review")}</p>
-                <p>Assessment source: ${escapeHtml(finding.assessment?.source || "unknown")} · ${escapeHtml(finding.assessment?.ecosystem || "unknown")} / ${escapeHtml(finding.assessment?.source_package || "unknown")} ${escapeHtml(finding.assessment?.source_version || "unknown")} · modified ${escapeHtml(finding.assessment?.modified_at || "unknown")} · observed ${escapeHtml(finding.assessment?.observed_at || "unknown")} (${escapeHtml(finding.assessment_freshness || "unknown")})</p>
-                <p>${runtimeApplicabilityHtml(finding)}</p>
-                <p>${fixAvailabilityHtml(finding)}</p>
-                <p>Installed: ${escapeHtml(finding.installed_version || "unknown")} · Candidate: ${escapeHtml(finding.candidate_version || "none")}</p>
-                <p>First seen: ${escapeHtml(finding.first_seen || "unknown")} · Last seen: ${escapeHtml(finding.last_seen || "unknown")} · Age: ${Number(finding.age_days || 0)} days · Evidence: ${escapeHtml(finding.freshness || "unknown")}</p>
-                <p>${finding.target_at ? `Remediation target: ${escapeHtml(finding.target_at)}${finding.overdue ? " · overdue" : ""}` : "No remediation target configured for this severity"}</p>
-                <p>Source: ${escapeHtml(finding.source || "unknown")}${finding.severity_value ? ` · ${escapeHtml(finding.severity_type)}: ${escapeHtml(finding.severity_value)} · ${escapeHtml(finding.severity_source)} · severity observed ${escapeHtml(finding.severity_observed_at || "unknown")} (${escapeHtml(finding.severity_freshness || "unknown")})` : " · Severity unavailable"}</p>
-            </li>`,
-                )
-                .join("");
-            return `<section class="vulnerability-summary" aria-label="Installed package vulnerabilities">
-                <h3>Installed package vulnerabilities</h3><p><a href="/vulnerabilities/all?server=${encodeURIComponent(selected.server.name)}">Open full CVE analysis</a> · <a href="/remediation?server=${encodeURIComponent(selected.server.name)}">Prepare remediation and review verification</a></p>
-                <p><strong>${escapeHtml(info.stateLabel)}</strong> · ${escapeHtml(info.resultLabel)} · Freshness: ${escapeHtml(info.freshnessLabel)}</p>
-                <p>${escapeHtml(info.coverageLabel)}</p>
-                <p>${escapeHtml(info.scopeLabel)}</p>
-                <p>${escapeHtml(info.kernelCoverageLabel)}</p>
-                <p>${escapeHtml(info.componentCountsLabel)}</p>
-                <p>${escapeHtml(info.qualificationCountsLabel)}</p>
-                <p>${escapeHtml(info.evidenceCountsLabel)}</p>
-                <p>${escapeHtml(info.availabilityCountsLabel)}</p>
-                ${info.scan_id ? `<p>Scan: ${escapeHtml(info.scan_id)} · ${escapeHtml(info.progressLabel)}</p>` : ""}
-                <p>Latest attempt: ${escapeHtml(info.started_at || "never")} → ${escapeHtml(info.finished_at || "—")}</p>
-                <p>Accepted inventory: ${escapeHtml(info.accepted_at || "none")} · Last complete success: ${escapeHtml(info.last_success || "never")}</p>
-                ${info.errors.length ? `<p>${info.errors.map(escapeHtml).join("; ")}</p>` : ""}
-                ${info.enrichment_errors.length ? `<p>Advisory enrichment incomplete: ${info.enrichment_errors.map(escapeHtml).join("; ")}. Package evaluation evidence is independent.</p>` : ""}
-                <button type="button" class="inline-btn" data-action="scan-vulnerabilities" data-name="${safeDataName}" ${action.enabled ? "" : "disabled"} title="${escapeHtml(action.reason || "Vulnerability scan unavailable")}">Scan vulnerabilities</button>
-                ${info.state === "running" && info.scan_id && canManageMaintenance ? `<button type="button" class="inline-btn" data-action="cancel-vulnerability-scan" data-name="${safeDataName}" data-scan-id="${escapeHtml(info.scan_id)}">Cancel vulnerability scan</button>` : ""}
-                ${findings ? `<details class="installed-vulnerability-findings" data-name="${safeDataName}" ${findingsOpen ? "open" : ""}><summary>${info.findings.length} active package findings</summary><ul>${findings}</ul></details>` : ""}
-                ${info.resolved_findings.length ? `<details class="resolved-vulnerability-findings" data-name="${safeDataName}" ${expandedResolvedVulnerabilityServers.has(selected.server.name) ? "open" : ""}><summary>${escapeHtml(info.resolvedFindingsLabel)}</summary>${info.resolvedPreviewTruncated ? "<p>Showing the most recent resolutions.</p>" : ""}<ul>${info.resolved_findings.map(f => `<li><strong>${escapeHtml(f.id)} · ${escapeHtml(f.package)}</strong><p>${escapeHtml(f.resolutionLabel)} · Verified: ${escapeHtml(f.resolution?.verified_at || f.resolved_at || "unknown")} · Scan: ${escapeHtml(f.resolution?.scan_id || "legacy")}</p><p>Source: ${escapeHtml(f.resolution?.source || "inventory proof")}</p></li>`).join("")}</ul></details>` : ""}
-                <p class="inspector-note">Coverage is limited to verified official Debian/Ubuntu packages and available OSV data. Unknown provenance is not a clean result. Scans do not change packages.</p>
+        function updateSecuritySummaryHtml(selected, safeDataName) {
+            const info = selected.updateCVEs || {};
+            const updates = selected.server.pending_updates || [];
+            const count = Number(selected.triage.pending_packages || updates.length || 0);
+            const security = Number(selected.triage.security_updates || 0);
+            const fixes = Number(info.correctable || 0);
+            const incomplete = info.state !== "ready";
+            const summary = count > 0 ? `${count} update${count === 1 ? "" : "s"} · ${security} security`
+                : selected.risk.label === "No packages to update" ? "No packages to update" : "Check for available updates";
+            return `<section class="update-security-summary" aria-label="Available updates">
+                <h3>Available updates</h3><p><strong>${escapeHtml(summary)}</strong></p>
+                ${count > 0 ? `<p>${incomplete ? "CVE lookup incomplete" : `${fixes} verified CVE fix${fixes === 1 ? "" : "es"}`}</p>` : ""}
+                ${info.checked_at ? `<p class="subtle">Checked ${escapeHtml(formatRelativeTimestamp(info.checked_at))}</p>` : ""}
+                ${updates.length ? `<button type="button" class="inline-btn" data-action="open-drawer" data-name="${safeDataName}" data-tab="pending">Review updates</button>` : ""}
             </section>`;
         }
 
@@ -1451,10 +1389,9 @@
             panel.innerHTML = `
                 <div class="selected-status-row">
                     <span class="status-pill status-${safeStatus}">${escapeHtml(server.disabled ? "Disabled" : statusLabel(server.status))}</span>
-                    <span class="risk-chip risk-${escapeHtml(getRiskLevel(server))}">${escapeHtml(getRiskLabel(server))}</span>
                     <span class="stage-chip phase-${escapeHtml(timeline.state || "idle")}">${escapeHtml(timelineDisplayLabel(timeline, { lastRunPrefix: true }))}</span>
                 </div>
-                ${vulnerabilitySummaryHtml(selected, safeDataName)}
+                ${updateSecuritySummaryHtml(selected, safeDataName)}
  ${applicationPostchecksHtml(server)}
                 ${
                     recommendedAction.key !== "healthy"
@@ -1480,7 +1417,6 @@
                     ${triage.can_approve_full ? `<button type="button" class="inline-btn btn-full-upgrade" data-action="approve-full" data-name="${safeDataName}" title="Run apt full-upgrade">Full (${approvalCounts.full})</button>` : ""}
 	                    ${canRunUpdate ? `<button type="button" class="inline-btn primary-action" data-action="update-server" data-name="${safeDataName}">Update</button>` : ""}
                     <button type="button" class="inline-btn btn-ghost" data-action="open-drawer" data-name="${safeDataName}" data-tab="logs">Logs</button>
-                    ${hasPendingUpdates(server) ? `<button type="button" class="inline-btn btn-ghost" data-action="open-drawer" data-name="${safeDataName}" data-tab="pending">Packages</button>` : ""}
                 </div>
                 <div class="inspector-tools">
                     <span class="mini-label">Tools</span>
@@ -2710,7 +2646,7 @@
             }
         }
 
-        function handleServerAction(action, name, tab = "logs", scanID = "") {
+        function handleServerAction(action, name, tab = "logs") {
             if (!name) return;
             if (action === "open-drawer") {
                 openDrawer(name, tab || "logs");
@@ -2760,14 +2696,6 @@
                 disablePasswordlessApt(name);
                 return;
             }
-            if (action === "cancel-vulnerability-scan") {
-                cancelVulnerabilityScan(name, scanID);
-                return;
-            }
-            if (action === "scan-vulnerabilities") {
-                scanVulnerabilities(name);
-                return;
-            }
             if (action === "refresh-facts") {
                 refreshHostFacts(name);
             }
@@ -2791,7 +2719,6 @@
                     button.dataset.action || "",
                     button.dataset.name || "",
                     button.dataset.tab || "logs",
-                        button.dataset.scanId || "",
                 );
                 return;
             }
@@ -2858,7 +2785,6 @@
                         button.dataset.action || "",
                         button.dataset.name || "",
                         button.dataset.tab || "logs",
-                        button.dataset.scanId || "",
                     );
                     return;
                 }
@@ -3566,8 +3492,8 @@
             "toggle",
             (event) => {
                 const details = event.target;
-                if (!details?.matches?.("details.cve-findings")) return;
-                const disclosureKey = details.dataset.cveDisclosureKey;
+                if (!details?.matches?.("details.cve-findings, details.cve-evidence")) return;
+                const disclosureKey = details.dataset.cveDisclosureKey || details.dataset.cveEvidenceKey;
                 if (!disclosureKey) return;
                 if (details.open) {
                     expandedCVEFindings.add(disclosureKey);
@@ -3880,68 +3806,6 @@
             }
         }
 
-        async function cancelVulnerabilityScan(name, scanID) {
-            const lifetime = lifecycle.capture();
-            if (!scanID) return;
-            try {
-                const response = await fetch(`/api/servers/${encodeURIComponent(name)}/vulnerabilities/scans/${encodeURIComponent(scanID)}/cancel`, {method: "POST"});
-                if (!lifecycle.isCurrent(lifetime)) return;
-                const payload = await response.json().catch(() => ({}));
-                if (!lifecycle.isCurrent(lifetime)) return;
-                if (!response.ok) { statusActionAdapter.notify(payload.error || "Failed to cancel vulnerability scan"); return; }
-                await fetchServers(true, "vulnerability-scan-cancelling");
-            } catch (error) {
-                if (lifecycle.isCurrent(lifetime) && error?.name !== "AbortError") statusActionAdapter.notify("Failed to cancel vulnerability scan");
-            }
-        }
-
-        async function scanVulnerabilities(name) {
-            const lifetime = lifecycle.capture();
-
-            await runSingleHostAction(
-                name,
-                "scan_vulnerabilities",
-                "scan vulnerabilities",
-                async () => {
-                    const lifetime = lifecycle.capture();
-
-                    try {
-                        const response = await fetch(
-                            `/api/servers/${encodeURIComponent(name)}/vulnerabilities/scan`,
-                            { method: "POST" },
-                        );
-                        if (!lifecycle.isCurrent(lifetime)) return;
-                        if (!response.ok) {
-                            const payload = await response
-                                .json()
-                                .catch(() => ({}));
-                            if (!lifecycle.isCurrent(lifetime)) return;
-                            statusActionAdapter.notify(
-                                payload.error ||
-                                    "Failed to start vulnerability scan",
-                            );
-                            return false;
-                        }
-                        lifecycle.discardResponse(response);
-                        return true;
-                    } catch (err) {
-                        if (
-                            !lifecycle.isCurrent(lifetime) ||
-                            err?.name === "AbortError"
-                        )
-                            return;
-                        statusActionAdapter.notify(
-                            err?.message ||
-                                "Failed to start vulnerability scan",
-                        );
-                        return false;
-                    }
-                },
-                ["servers", "dashboard"],
-            );
-            if (!lifecycle.isCurrent(lifetime)) return;
-        }
-
         async function refreshHostFacts(name) {
             const lifetime = lifecycle.capture();
 
@@ -3997,7 +3861,6 @@
                         button.dataset.action || "",
                         button.dataset.name || "",
                         button.dataset.tab || "logs",
-                        button.dataset.scanId || "",
                     );
                 }
             },
@@ -4009,16 +3872,14 @@
                 const details = e.target;
                 if (
                     !details?.matches?.(
-                        "details.facts-more, details.installed-vulnerability-findings, details.resolved-vulnerability-findings",
+                        "details.facts-more",
                     )
                 )
                     return;
                 const hostName =
                     details.dataset.name || getStatusView().primaryServerName;
                 if (!hostName) return;
-                const expandedServers = details.matches("details.facts-more")
-                    ? expandedHostFactsServers
-                    : details.classList.contains("resolved-vulnerability-findings") ? expandedResolvedVulnerabilityServers : expandedInstalledVulnerabilityServers;
+                const expandedServers = expandedHostFactsServers;
                 if (details.open) {
                     expandedServers.add(hostName);
                 } else {

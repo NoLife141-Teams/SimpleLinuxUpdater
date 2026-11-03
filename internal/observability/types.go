@@ -105,7 +105,9 @@ type DashboardHealthInfo struct {
 }
 
 type DashboardRiskInfo struct {
-	Vulnerability   DashboardVulnerabilityInfo `json:"vulnerability"`
+	UpdateCVEs UpdateCVEInfo `json:"update_cves"`
+	// Historical in-process projections only; excluded from the update dashboard API.
+	Vulnerability   DashboardVulnerabilityInfo `json:"-"`
 	Level           string                     `json:"level"`
 	Summary         string                     `json:"summary"`
 	PendingPackages int                        `json:"pending_packages"`

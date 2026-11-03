@@ -133,7 +133,7 @@
     "/api/servers/{name}/vulnerabilities": {
       "get": {
         "operationId": "get_api_servers_name_vulnerabilities",
-        "summary": "GET /api/servers/:name/vulnerabilities",
+        "summary": "Retired standalone CVE endpoint",
         "x-slu-scope": "operational:read",
         "security": [
           {
@@ -151,26 +151,6 @@
           }
         ],
         "responses": {
-          "200": {
-            "description": "Success",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/VulnerabilityObservation"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "Invalid request or additional data after the first JSON document. Returns a single JSON error before mutation.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
           "401": {
             "description": "Request rejected. No secrets are included.",
             "content": {
@@ -191,36 +171,6 @@
               }
             }
           },
-          "404": {
-            "description": "Request rejected. No secrets are included.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "Request rejected. No secrets are included.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "413": {
-            "description": "Request body exceeds the route byte limit. JSON commands default to 1048576 bytes; specialized route limits apply. Returns a single JSON error before mutation.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
           "429": {
             "description": "Request rejected. No secrets are included.",
             "content": {
@@ -231,18 +181,8 @@
               }
             }
           },
-          "500": {
-            "description": "Request rejected. No secrets are included.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "503": {
-            "description": "Request rejected. No secrets are included.",
+          "410": {
+            "description": "Standalone scanning retired",
             "content": {
               "application/json": {
                 "schema": {
@@ -251,7 +191,9 @@
               }
             }
           }
-        }
+        },
+        "deprecated": true,
+        "description": "CVE information is now scoped to available APT package updates. This endpoint cannot start a scan or remediation."
       }
     },
     "/api/dashboard/summary": {
@@ -377,7 +319,7 @@
             }
           }
         },
-        "description": " Distribution qualification is included in risk.vulnerability; see VulnerabilityQualificationCounts and VulnerabilityAssessment. Legacy risk.cves/high_risk_cve retain reported-source-match semantics. Fleet also exposes vendor_confirmed_cve_hosts, review_cve_hosts, vendor_qualified_cve_hosts and withdrawn_cve_hosts (host counts)."
+        "description": " CVE information is limited to available package updates. risk.update_cves summarizes verified candidate fixes and incomplete lookups. risk.cves and high_risk_cve count only CVEs/hosts associated with those updates. Legacy installed scans do not contribute."
       }
     },
     "/api/observability/summary": {
@@ -2300,7 +2242,7 @@
     "/api/servers/{name}/vulnerabilities/scan": {
       "post": {
         "operationId": "post_api_servers_name_vulnerabilities_scan",
-        "summary": "POST /api/servers/:name/vulnerabilities/scan",
+        "summary": "Retired standalone CVE endpoint",
         "x-slu-scope": "maintenance:write",
         "security": [
           {
@@ -2318,26 +2260,6 @@
           }
         ],
         "responses": {
-          "202": {
-            "description": "Scan accepted asynchronously. Poll GET /api/servers/{name}/vulnerabilities for the persisted result.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/VulnerabilityScanAccepted"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "Invalid request or additional data after the first JSON document. Returns a single JSON error before mutation.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
           "401": {
             "description": "Request rejected. No secrets are included.",
             "content": {
@@ -2358,36 +2280,6 @@
               }
             }
           },
-          "404": {
-            "description": "Request rejected. No secrets are included.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "Request rejected. No secrets are included.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "413": {
-            "description": "Request body exceeds the route byte limit. JSON commands default to 1048576 bytes; specialized route limits apply. Returns a single JSON error before mutation.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
           "429": {
             "description": "Request rejected. No secrets are included.",
             "content": {
@@ -2398,18 +2290,8 @@
               }
             }
           },
-          "500": {
-            "description": "Request rejected. No secrets are included.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "503": {
-            "description": "Request rejected. No secrets are included.",
+          "410": {
+            "description": "Standalone scanning retired",
             "content": {
               "application/json": {
                 "schema": {
@@ -2430,7 +2312,9 @@
             }
           }
         },
-        "x-slu-request-body-limit-bytes": 1048576
+        "x-slu-request-body-limit-bytes": 1048576,
+        "deprecated": true,
+        "description": "CVE information is now scoped to available APT package updates. This endpoint cannot start a scan or remediation."
       }
     },
     "/api/servers/{name}/postchecks/test": {
@@ -3257,7 +3141,7 @@
     "/api/servers/{name}/vulnerabilities/scans/{scan_id}/cancel": {
       "post": {
         "operationId": "cancelInstalledVulnerabilityScan",
-        "summary": "Cancel the exact active scan on this Server",
+        "summary": "Retired standalone CVE endpoint",
         "x-slu-scope": "maintenance:write",
         "security": [
           {
@@ -3283,26 +3167,6 @@
           }
         ],
         "responses": {
-          "202": {
-            "description": "Cancellation requested; wait for terminal observation/dashboard progress. Repeating while draining is idempotent.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/VulnerabilityScanCancellation"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "Invalid request or additional data after the first JSON document. Returns a single JSON error before mutation.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
           "401": {
             "description": "Request rejected. No secrets are included.",
             "content": {
@@ -3323,36 +3187,6 @@
               }
             }
           },
-          "404": {
-            "description": "Request rejected. No secrets are included.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "Scan is no longer active for this Server (including stale or different-Server identity); no effect.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "413": {
-            "description": "Request body exceeds the route byte limit. JSON commands default to 1048576 bytes; specialized route limits apply. Returns a single JSON error before mutation.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
           "429": {
             "description": "Request rejected. No secrets are included.",
             "content": {
@@ -3363,18 +3197,8 @@
               }
             }
           },
-          "500": {
-            "description": "Request rejected. No secrets are included.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "503": {
-            "description": "Request rejected. No secrets are included.",
+          "410": {
+            "description": "Standalone scanning retired",
             "content": {
               "application/json": {
                 "schema": {
@@ -3385,7 +3209,8 @@
           }
         },
         "x-slu-request-body-limit-bytes": 1048576,
-        "description": "Cookie sessions or operational personal Bearer token with maintenance:write. Returns 202 while cancellation drains SSH, source HTTP and persistence; resources remain reserved until drainage. A stale identity or identity belonging to another Server returns 409 without affecting the active scan."
+        "description": "CVE information is now scoped to available APT package updates. This endpoint cannot start a scan or remediation.",
+        "deprecated": true
       }
     },
     "/api/audit-events/export": {
@@ -3688,7 +3513,7 @@
     "/api/vulnerabilities": {
       "get": {
         "operationId": "get_api_vulnerabilities",
-        "summary": "Grouped current CVE evidence, bounded pagination; all qualifications remain consultable",
+        "summary": "Retired standalone CVE endpoint",
         "x-slu-scope": "operational:read",
         "security": [
           {
@@ -3761,16 +3586,6 @@
           }
         ],
         "responses": {
-          "400": {
-            "description": "Invalid request or additional data after the first JSON document. Returns a single JSON error before mutation.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
           "401": {
             "description": "Request rejected. No secrets are included.",
             "content": {
@@ -3791,36 +3606,6 @@
               }
             }
           },
-          "404": {
-            "description": "Request rejected. No secrets are included.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "Request rejected. No secrets are included.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "413": {
-            "description": "Request body exceeds the route byte limit. JSON commands default to 1048576 bytes; specialized route limits apply. Returns a single JSON error before mutation.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
           "429": {
             "description": "Request rejected. No secrets are included.",
             "content": {
@@ -3831,43 +3616,25 @@
               }
             }
           },
-          "500": {
-            "description": "Request rejected. No secrets are included.",
+          "410": {
+            "description": "Standalone scanning retired",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "503": {
-            "description": "Request rejected. No secrets are included.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "200": {
-            "description": "Success. Evidence and operational outcomes remain independent.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object"
                 }
               }
             }
           }
-        }
+        },
+        "deprecated": true,
+        "description": "CVE information is now scoped to available APT package updates. This endpoint cannot start a scan or remediation."
       }
     },
     "/api/vulnerabilities/{id}": {
       "get": {
         "operationId": "get_api_vulnerabilities_id",
-        "summary": "Paginated package evidence for one CVE",
+        "summary": "Retired standalone CVE endpoint",
         "x-slu-scope": "operational:read",
         "security": [
           {
@@ -3906,16 +3673,6 @@
           }
         ],
         "responses": {
-          "400": {
-            "description": "Invalid request or additional data after the first JSON document. Returns a single JSON error before mutation.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
           "401": {
             "description": "Request rejected. No secrets are included.",
             "content": {
@@ -3936,36 +3693,6 @@
               }
             }
           },
-          "404": {
-            "description": "Request rejected. No secrets are included.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "Request rejected. No secrets are included.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "413": {
-            "description": "Request body exceeds the route byte limit. JSON commands default to 1048576 bytes; specialized route limits apply. Returns a single JSON error before mutation.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
           "429": {
             "description": "Request rejected. No secrets are included.",
             "content": {
@@ -3976,43 +3703,25 @@
               }
             }
           },
-          "500": {
-            "description": "Request rejected. No secrets are included.",
+          "410": {
+            "description": "Standalone scanning retired",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "503": {
-            "description": "Request rejected. No secrets are included.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "200": {
-            "description": "Success. Evidence and operational outcomes remain independent.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object"
                 }
               }
             }
           }
-        }
+        },
+        "deprecated": true,
+        "description": "CVE information is now scoped to available APT package updates. This endpoint cannot start a scan or remediation."
       }
     },
     "/api/vulnerabilities/plan": {
       "get": {
         "operationId": "get_api_vulnerabilities_plan",
-        "summary": "Whole-Server impact estimates and paginated package treatment groups. Filters never alter Server totals.",
+        "summary": "Retired standalone CVE endpoint",
         "x-slu-scope": "operational:read",
         "security": [
           {
@@ -4064,16 +3773,6 @@
           }
         ],
         "responses": {
-          "400": {
-            "description": "Invalid request or additional data after the first JSON document. Returns a single JSON error before mutation.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
           "401": {
             "description": "Request rejected. No secrets are included.",
             "content": {
@@ -4094,36 +3793,6 @@
               }
             }
           },
-          "404": {
-            "description": "Request rejected. No secrets are included.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "Request rejected. No secrets are included.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "413": {
-            "description": "Request body exceeds the route byte limit. JSON commands default to 1048576 bytes; specialized route limits apply. Returns a single JSON error before mutation.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
           "429": {
             "description": "Request rejected. No secrets are included.",
             "content": {
@@ -4134,43 +3803,25 @@
               }
             }
           },
-          "500": {
-            "description": "Request rejected. No secrets are included.",
+          "410": {
+            "description": "Standalone scanning retired",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "503": {
-            "description": "Request rejected. No secrets are included.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "200": {
-            "description": "Success. Evidence and operational outcomes remain independent.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object"
                 }
               }
             }
           }
-        }
+        },
+        "deprecated": true,
+        "description": "CVE information is now scoped to available APT package updates. This endpoint cannot start a scan or remediation."
       }
     },
     "/api/servers/{name}/remediation": {
       "get": {
         "operationId": "get_api_servers_name_remediation",
-        "summary": "Recent immutable maintenance plans, compact verification summaries, and visible risk reviews",
+        "summary": "Retired standalone CVE endpoint",
         "x-slu-scope": "operational:read",
         "security": [
           {
@@ -4188,16 +3839,6 @@
           }
         ],
         "responses": {
-          "400": {
-            "description": "Invalid request or additional data after the first JSON document. Returns a single JSON error before mutation.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
           "401": {
             "description": "Request rejected. No secrets are included.",
             "content": {
@@ -4218,36 +3859,6 @@
               }
             }
           },
-          "404": {
-            "description": "Request rejected. No secrets are included.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "Request rejected. No secrets are included.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "413": {
-            "description": "Request body exceeds the route byte limit. JSON commands default to 1048576 bytes; specialized route limits apply. Returns a single JSON error before mutation.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
           "429": {
             "description": "Request rejected. No secrets are included.",
             "content": {
@@ -4258,43 +3869,25 @@
               }
             }
           },
-          "500": {
-            "description": "Request rejected. No secrets are included.",
+          "410": {
+            "description": "Standalone scanning retired",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "503": {
-            "description": "Request rejected. No secrets are included.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "200": {
-            "description": "Success. Evidence and operational outcomes remain independent.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object"
                 }
               }
             }
           }
-        }
+        },
+        "deprecated": true,
+        "description": "CVE information is now scoped to available APT package updates. This endpoint cannot start a scan or remediation."
       }
     },
     "/api/servers/{name}/remediation/{plan_id}": {
       "get": {
         "operationId": "get_api_servers_name_remediation_plan_id",
-        "summary": "Immutable transaction with all four Approval Scopes; bounded before/after outcome page",
+        "summary": "Retired standalone CVE endpoint",
         "x-slu-scope": "operational:read",
         "security": [
           {
@@ -4327,16 +3920,6 @@
           }
         ],
         "responses": {
-          "400": {
-            "description": "Invalid request or additional data after the first JSON document. Returns a single JSON error before mutation.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
           "401": {
             "description": "Request rejected. No secrets are included.",
             "content": {
@@ -4357,36 +3940,6 @@
               }
             }
           },
-          "404": {
-            "description": "Request rejected. No secrets are included.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "Request rejected. No secrets are included.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "413": {
-            "description": "Request body exceeds the route byte limit. JSON commands default to 1048576 bytes; specialized route limits apply. Returns a single JSON error before mutation.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
           "429": {
             "description": "Request rejected. No secrets are included.",
             "content": {
@@ -4397,44 +3950,25 @@
               }
             }
           },
-          "500": {
-            "description": "Request rejected. No secrets are included.",
+          "410": {
+            "description": "Standalone scanning retired",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "503": {
-            "description": "Request rejected. No secrets are included.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "200": {
-            "description": "Success. Evidence and operational outcomes remain independent.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object"
                 }
               }
             }
           }
         },
-        "description": "The immutable transaction.preparation.scope_simulations map binds fresh read-only simulations of all, security, security_kept_back and full_upgrade to opaque dependency/version/origin digests. Each scope exposes available, digest, sanitized packages (package, architecture, current_version, candidate_version), new_packages, removed_packages and extra_packages. A scope without a complete executable simulation cannot be approved. The security scope can include ordinary dependency upgrades. Revalidation requires renewed consent if any actual scope changes; raw command output and repository credentials are not exposed. transaction.preparation.source_identity binds fresh APT/dpkg source and candidate metadata, provenance, release proofs, holds and pins. Its package map exposes binary/source versions, ecosystems and provenance decisions. Same-binary-version source/provenance drift requires renewed consent and cannot reuse an obsolete candidate-fix forecast. Repository credentials, release-file paths and raw output are omitted."
+        "description": "CVE information is now scoped to available APT package updates. This endpoint cannot start a scan or remediation.",
+        "deprecated": true
       }
     },
     "/api/servers/{name}/remediation/{plan_id}/evidence": {
       "get": {
         "operationId": "get_api_servers_name_remediation_plan_id_evidence",
-        "summary": "Captured installed inventory and package evaluation proof with bounded findings",
+        "summary": "Retired standalone CVE endpoint",
         "x-slu-scope": "operational:read",
         "security": [
           {
@@ -4474,16 +4008,6 @@
           }
         ],
         "responses": {
-          "400": {
-            "description": "Invalid request or additional data after the first JSON document. Returns a single JSON error before mutation.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
           "401": {
             "description": "Request rejected. No secrets are included.",
             "content": {
@@ -4504,36 +4028,6 @@
               }
             }
           },
-          "404": {
-            "description": "Request rejected. No secrets are included.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "Request rejected. No secrets are included.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "413": {
-            "description": "Request body exceeds the route byte limit. JSON commands default to 1048576 bytes; specialized route limits apply. Returns a single JSON error before mutation.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
           "429": {
             "description": "Request rejected. No secrets are included.",
             "content": {
@@ -4544,43 +4038,25 @@
               }
             }
           },
-          "500": {
-            "description": "Request rejected. No secrets are included.",
+          "410": {
+            "description": "Standalone scanning retired",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "503": {
-            "description": "Request rejected. No secrets are included.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "200": {
-            "description": "Success. Evidence and operational outcomes remain independent.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object"
                 }
               }
             }
           }
-        }
+        },
+        "deprecated": true,
+        "description": "CVE information is now scoped to available APT package updates. This endpoint cannot start a scan or remediation."
       }
     },
     "/api/servers/{name}/remediation/prepare": {
       "post": {
         "operationId": "post_api_servers_name_remediation_prepare",
-        "summary": "Refresh discovery/simulation and wait for explicit approval even under auto approval. Never updates packages during preparation.",
+        "summary": "Retired standalone CVE endpoint",
         "x-slu-scope": "maintenance:write",
         "security": [
           {
@@ -4598,16 +4074,6 @@
           }
         ],
         "responses": {
-          "400": {
-            "description": "Invalid request or additional data after the first JSON document. Returns a single JSON error before mutation.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
           "401": {
             "description": "Request rejected. No secrets are included.",
             "content": {
@@ -4628,36 +4094,6 @@
               }
             }
           },
-          "404": {
-            "description": "Request rejected. No secrets are included.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "Request rejected. No secrets are included.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "413": {
-            "description": "Request body exceeds the route byte limit. JSON commands default to 1048576 bytes; specialized route limits apply. Returns a single JSON error before mutation.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
           "429": {
             "description": "Request rejected. No secrets are included.",
             "content": {
@@ -4668,43 +4104,25 @@
               }
             }
           },
-          "500": {
-            "description": "Request rejected. No secrets are included.",
+          "410": {
+            "description": "Standalone scanning retired",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "503": {
-            "description": "Request rejected. No secrets are included.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "200": {
-            "description": "Success. Evidence and operational outcomes remain independent.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object"
                 }
               }
             }
           }
-        }
+        },
+        "deprecated": true,
+        "description": "CVE information is now scoped to available APT package updates. This endpoint cannot start a scan or remediation."
       }
     },
     "/api/servers/{name}/remediation/{plan_id}/retry": {
       "post": {
         "operationId": "post_api_servers_name_remediation_plan_id_retry",
-        "summary": "Queue independent CVE verification only. Does not repeat maintenance.",
+        "summary": "Retired standalone CVE endpoint",
         "x-slu-scope": "maintenance:write",
         "security": [
           {
@@ -4730,16 +4148,6 @@
           }
         ],
         "responses": {
-          "400": {
-            "description": "Invalid request or additional data after the first JSON document. Returns a single JSON error before mutation.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
           "401": {
             "description": "Request rejected. No secrets are included.",
             "content": {
@@ -4760,36 +4168,6 @@
               }
             }
           },
-          "404": {
-            "description": "Request rejected. No secrets are included.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "Request rejected. No secrets are included.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "413": {
-            "description": "Request body exceeds the route byte limit. JSON commands default to 1048576 bytes; specialized route limits apply. Returns a single JSON error before mutation.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
           "429": {
             "description": "Request rejected. No secrets are included.",
             "content": {
@@ -4800,43 +4178,25 @@
               }
             }
           },
-          "500": {
-            "description": "Request rejected. No secrets are included.",
+          "410": {
+            "description": "Standalone scanning retired",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "503": {
-            "description": "Request rejected. No secrets are included.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "202": {
-            "description": "Success. Evidence and operational outcomes remain independent.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object"
                 }
               }
             }
           }
-        }
+        },
+        "deprecated": true,
+        "description": "CVE information is now scoped to available APT package updates. This endpoint cannot start a scan or remediation."
       }
     },
     "/api/servers/{name}/vulnerabilities/reviews": {
       "post": {
         "operationId": "post_api_servers_name_vulnerabilities_reviews",
-        "summary": "Record an immutable risk review for an unresolved package finding. Does not suppress exposure or change Package Deferral.",
+        "summary": "Retired standalone CVE endpoint",
         "x-slu-scope": "maintenance:write",
         "security": [
           {
@@ -4854,16 +4214,6 @@
           }
         ],
         "responses": {
-          "400": {
-            "description": "Invalid request or additional data after the first JSON document. Returns a single JSON error before mutation.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
           "401": {
             "description": "Request rejected. No secrets are included.",
             "content": {
@@ -4884,36 +4234,6 @@
               }
             }
           },
-          "404": {
-            "description": "Request rejected. No secrets are included.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "Request rejected. No secrets are included.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "413": {
-            "description": "Request body exceeds the route byte limit. JSON commands default to 1048576 bytes; specialized route limits apply. Returns a single JSON error before mutation.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
           "429": {
             "description": "Request rejected. No secrets are included.",
             "content": {
@@ -4924,32 +4244,12 @@
               }
             }
           },
-          "500": {
-            "description": "Request rejected. No secrets are included.",
+          "410": {
+            "description": "Standalone scanning retired",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "503": {
-            "description": "Request rejected. No secrets are included.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "201": {
-            "description": "Success. Evidence and operational outcomes remain independent.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object"
                 }
               }
             }
@@ -4995,13 +4295,15 @@
               }
             }
           }
-        }
+        },
+        "deprecated": true,
+        "description": "CVE information is now scoped to available APT package updates. This endpoint cannot start a scan or remediation."
       }
     },
     "/api/security-actions": {
       "get": {
         "operationId": "get_api_security_actions",
-        "summary": "Read paginated installable security fixes, priority unpatched alerts and lifecycle evidence",
+        "summary": "Retired standalone CVE endpoint",
         "x-slu-scope": "operational:read",
         "security": [
           {
@@ -5070,16 +4372,6 @@
           }
         ],
         "responses": {
-          "400": {
-            "description": "Invalid request or additional data after the first JSON document. Returns a single JSON error before mutation.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
           "401": {
             "description": "Request rejected. No secrets are included.",
             "content": {
@@ -5100,36 +4392,6 @@
               }
             }
           },
-          "404": {
-            "description": "Request rejected. No secrets are included.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "Request rejected. No secrets are included.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "413": {
-            "description": "Request body exceeds the route byte limit. JSON commands default to 1048576 bytes; specialized route limits apply. Returns a single JSON error before mutation.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
           "429": {
             "description": "Request rejected. No secrets are included.",
             "content": {
@@ -5140,38 +4402,19 @@
               }
             }
           },
-          "500": {
-            "description": "Request rejected. No secrets are included.",
+          "410": {
+            "description": "Standalone scanning retired",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "503": {
-            "description": "Request rejected. No secrets are included.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "200": {
-            "description": "Success. Evidence and operational outcomes remain independent.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/SecurityActions"
                 }
               }
             }
           }
         },
-        "description": "Read-only projection of accepted installed-package evidence and cached public endoflife.date/CISA metadata. Does not refresh APT, contact SSH targets or fetch intelligence during the request. Unknown or stale evidence does not establish absence of fixes or vulnerabilities."
+        "description": "CVE information is now scoped to available APT package updates. This endpoint cannot start a scan or remediation.",
+        "deprecated": true
       }
     }
   },
@@ -6699,7 +5942,10 @@
           },
           "inventory_source": {
             "type": "string",
-            "enum": ["accepted_inventory", "recorded_findings"],
+            "enum": [
+              "accepted_inventory",
+              "recorded_findings"
+            ],
             "description": "Application inventory provenance. Recorded unresolved findings are a partial historical inventory, used only when accepted raw package inventory is unavailable."
           },
           "inventory_partial": {
@@ -6712,7 +5958,9 @@
           },
           "inventory_version_state": {
             "type": "string",
-            "enum": ["conflicting"],
+            "enum": [
+              "conflicting"
+            ],
             "description": "Equally dated installed observations disagree; version and lifecycle cycle stay unknown."
           },
           "support_context": {

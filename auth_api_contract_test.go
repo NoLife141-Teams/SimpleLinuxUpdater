@@ -27,6 +27,7 @@ func TestPersonalAPIOpenAPIContractMatchesRoutesScopesTypesErrorsAndPagination(t
 		} `json:"info"`
 		Paths map[string]map[string]struct {
 			Scope      string `json:"x-slu-scope"`
+			Deprecated bool   `json:"deprecated"`
 			Parameters []struct {
 				Name   string `json:"name"`
 				Schema struct {
@@ -65,7 +66,11 @@ func TestPersonalAPIOpenAPIContractMatchesRoutesScopesTypesErrorsAndPagination(t
 		if operation.Scope != permission.Scope {
 			t.Errorf("scope drift: %s", key)
 		}
-		for _, status := range []string{"400", "401", "403", "404", "409", "413", "429", "500", "503"} {
+		statuses := []string{"400", "401", "403", "404", "409", "413", "429", "500", "503"}
+		if operation.Deprecated {
+			statuses = []string{"401", "403", "410", "429"}
+		}
+		for _, status := range statuses {
 			if _, ok := operation.Responses[status]; !ok {
 				t.Errorf("%s missing error %s", key, status)
 			}

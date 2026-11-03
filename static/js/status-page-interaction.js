@@ -6,14 +6,15 @@
     const defaultPresentationFacts = projectionConsumption
         ? projectionConsumption.presentationFacts
         : null;
-    const api = factory(defaultPresentationFacts);
+    const pendingUpdates = isCommonJS ? require("./pending-updates-interaction.js") : root.PendingUpdatesInteraction;
+    const api = factory(defaultPresentationFacts, pendingUpdates);
     if (isCommonJS) {
         module.exports = api;
     }
     if (root && !isCommonJS) {
         root.StatusPageInteraction = api;
     }
-}(typeof globalThis !== "undefined" ? globalThis : this, function statusPageInteractionFactory(defaultPresentationFacts) {
+}(typeof globalThis !== "undefined" ? globalThis : this, function statusPageInteractionFactory(defaultPresentationFacts, pendingUpdates) {
     "use strict";
 
     const transientBlockingStatuses = new Set([
@@ -217,6 +218,7 @@
         let primaryServerName = "";
         let selectedServerNames = new Set();
         let drawer = { open: false, serverName: "", tab: "logs", logFollow: true };
+        const pendingUpdatesInteraction = pendingUpdates.createStore();
         function createStreamState() {
             return {
                 nextRequestId: 1,
@@ -1060,6 +1062,9 @@
                     ...stateEffects(),
                     ...(tab === "logs" ? logRecoveryEffect(drawer.serverName, jobLogsByServer.get(drawer.serverName)) : [])
                 ];
+            } else if (event.type === "pendingUpdatesChanged") {
+                pendingUpdatesInteraction.dispatch(event.intent, serversByName.get(drawer.serverName));
+                return stateEffects({ scope: "pendingUpdates", priority: "immediate" });
             } else if (event.type === "drawerLogFollowChanged") {
                 drawer = { ...drawer, logFollow: !!event.value };
                 return stateEffects({ render: false });
@@ -1268,6 +1273,7 @@
                 hiddenSelectedNames,
                 visibleSelectedServers: cloneValue(pageServers.filter(server => selectedServerNames.has(server.name))),
                 drawer: cloneValue(drawer),
+                pendingUpdates: cloneValue(pendingUpdatesInteraction.view(serversByName.get(drawer.serverName))),
                 jobLogs: Object.fromEntries(Array.from(jobLogsByServer.entries()).map(([name, state]) => [name, {
                     jobId: state.jobId,
                     lastSequence: state.lastSequence,

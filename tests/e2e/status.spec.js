@@ -195,103 +195,22 @@ test("pending updates drawer keeps scroll position after server refresh", async 
         .click();
     const pendingPanel = page.locator("#drawer-panel-pending");
     await expect(pendingPanel).toHaveClass(/active/);
-    await expect(pendingPanel.locator("tbody tr")).toHaveCount(80);
-    await expect
-        .poll(() =>
-            pendingPanel.evaluate((el) => el.scrollHeight - el.clientHeight),
-        )
-        .toBeGreaterThan(0);
-    const pendingTableLayout = await pendingPanel.evaluate((panel) => {
-        const approvalActions = document.querySelector(
-            "#status-drawer-approval-actions",
-        );
-        const heading = panel.querySelector(".pending-updates > h4");
-        const summary = panel.querySelector(".pending-summary");
-        const wrap = panel.querySelector(".pending-updates > .table-wrap");
-        const riskHeader = wrap
-            .querySelector("th:last-child")
-            .getBoundingClientRect();
-        const approvalRect = approvalActions.getBoundingClientRect();
-        const headingRect = heading.getBoundingClientRect();
-        const summaryRect = summary.getBoundingClientRect();
-        const wrapRect = wrap.getBoundingClientRect();
-        return {
-            approvalToHeadingGap: headingRect.top - approvalRect.bottom,
-            headingToSummaryGap: summaryRect.top - headingRect.bottom,
-            gapAbove: wrapRect.top - summaryRect.bottom,
-            clientWidth: wrap.clientWidth,
-            scrollWidth: wrap.scrollWidth,
-            riskRight: riskHeader.right,
-            visibleRight: wrapRect.right,
-        };
-    });
-    expect(
-        Math.abs(
-            pendingTableLayout.approvalToHeadingGap -
-                pendingTableLayout.headingToSummaryGap,
-        ),
-        "approval controls, pending heading, and summary must use the same vertical spacing",
-    ).toBeLessThanOrEqual(1);
-    expect(
-        pendingTableLayout.gapAbove,
-        "pending table must be separated from its summary",
-    ).toBeGreaterThanOrEqual(9);
-    expect(
-        pendingTableLayout.scrollWidth,
-        "pending updates must fit without horizontal scrolling",
-    ).toBeLessThanOrEqual(pendingTableLayout.clientWidth + 1);
-    expect(
-        pendingTableLayout.riskRight,
-        "the Risk column must remain visible inside the drawer",
-    ).toBeLessThanOrEqual(pendingTableLayout.visibleRight + 1);
-
-    await pendingPanel.evaluate((el) => {
-        el.scrollTop = 520;
-    });
-    const beforeRefresh = await pendingPanel.evaluate((el) => el.scrollTop);
-    expect(beforeRefresh).toBeGreaterThan(0);
-
-    servers = [
-        makeServer(
-            "demo-host",
-            "pending_approval",
-            makePendingUpdates(80).map((update) => ({
-                ...update,
-                cve_state: "ready",
-            })),
-            { tags: ["prod"] },
-        ),
-        servers[1],
-    ];
-    await page.evaluate(() => window.fetchServers());
-
-    await expect
-        .poll(() => pendingPanel.evaluate((el) => el.scrollTop))
-        .toBeGreaterThanOrEqual(beforeRefresh - 1);
-
+    await expect(pendingPanel.locator("tbody tr")).toHaveCount(6);
+    await pendingPanel.getByRole("navigation", { name: "Packages pages" }).getByRole("button", { name: "Next →", exact: true }).click();
+    await expect(pendingPanel.getByRole("navigation", { name: "Packages pages" })).toContainText("7–12 of 80 packages");
+    await page.setViewportSize({ width: 1697, height: 480 });
+    await expect.poll(() => pendingPanel.evaluate(el => el.scrollHeight - el.clientHeight)).toBeGreaterThan(70);
+    await pendingPanel.evaluate(el => { el.scrollTop = 70; });
+    const beforeRefresh = await pendingPanel.evaluate(el => el.scrollTop);
+    servers = [makeServer("demo-host", "pending_approval", makePendingUpdates(80).map(update => ({ ...update, cve_state: "ready" })), { tags: ["prod"] }), servers[1]];
+    await page.evaluate(() => window.fetchServers(true, "pending-list-refresh"));
+    await expect(pendingPanel.getByRole("navigation", { name: "Packages pages" })).toContainText("7–12 of 80 packages");
+    await expect.poll(() => pendingPanel.evaluate(el => el.scrollTop)).toBeGreaterThanOrEqual(beforeRefresh - 1);
     await page.setViewportSize({ width: 390, height: 844 });
-    await expect
-        .poll(() =>
-            pendingPanel.locator(".table-wrap").evaluate((element) => {
-                const cells = Array.from(
-                    element.querySelectorAll("tbody tr:first-child td"),
-                );
-                return {
-                    fitsWithoutHorizontalScrolling:
-                        element.scrollWidth <= element.clientWidth + 1,
-                    labels: cells.map((cell) =>
-                        getComputedStyle(cell, "::before").content.replaceAll(
-                            '"',
-                            "",
-                        ),
-                    ),
-                };
-            }),
-        )
-        .toEqual({
-            fitsWithoutHorizontalScrolling: true,
-            labels: ["Package", "Version", "Risk"],
-        });
+    expect(await pendingPanel.locator(".pending-package-table-wrap").evaluate(el => el.scrollWidth <= el.clientWidth + 1)).toBe(true);
+    await expect(pendingPanel.getByRole("columnheader", { name: "Available version", exact: true })).toBeVisible();
+    await expect(page.locator("#drawer-approve-all")).toBeVisible();
+
 });
 
 test("stale facts recommendation renders its refresh action in the table and inspector", async ({
@@ -2327,16 +2246,16 @@ test("package deferrals 473 approval shows executable transactions CVE exposure 
     await expect(panel).toContainText("Dependency conflict");
     await expect(panel).toContainText("CVE");
     await expect(panel).toContainText("Install curl:amd64 version 2");
-    await panel.locator("details.cve-findings > summary").click();
+    await panel.getByRole("button", { name: "Details for openssl:amd64", exact: true }).click();
     await expect(panel).toContainText("CVE-2026-1000");
     await captureDeferral473(
         page,
-        panel.locator(".pending-updates"),
+        panel.locator(".pending-workspace"),
         "desktop-approval-affected.png",
     );
     await captureDeferral473(
         page,
-        panel.locator(".pending-updates"),
+        panel.locator(".pending-workspace"),
         "mobile-approval-affected.png",
         true,
     );

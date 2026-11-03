@@ -251,3 +251,11 @@ absent from production builds and permits expiry scenarios without a five-minute
 wait. New secret-bearing scenarios disable traces, video and screenshots.
 
 The standalone CVE workspace adapters are retired. Status presents only available package updates, with compact security/CVE counts and per-package details in its existing drawer. Old CVE workspace routes redirect to Status.
+
+Available-update inspection is composed by Status Page Interaction through
+`PendingUpdatesInteraction`. Its transient filters, package/reference pagination,
+selected package version and single source-proof selection survive accepted
+refreshes. A removed or changed package version closes its old inspector.
+`PendingUpdatesView` renders the projection; the Status adapter owns delegated
+input/click listeners, focus and scroll restoration. Inspection emits no server
+commands and filtering does not alter Approval Scope or Package Deferral facts.

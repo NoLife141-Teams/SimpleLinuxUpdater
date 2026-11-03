@@ -1,0 +1,86 @@
+/* Available updates use one compact list and an optional package inspector. */
+body.status-page .pending-workspace { font-size: 14px; animation: pending-enter 160ms ease-out; }
+body.status-page .pending-workspace h4,
+body.status-page .pending-workspace h5 { margin: 0; font-weight: 600; letter-spacing: -0.02em; }
+body.status-page .pending-workspace h4 { font-size: 18px; }
+body.status-page .pending-workspace h5 { font-size: 14px; }
+body.status-page .pending-workspace-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; margin: 12px 0 16px; }
+body.status-page .pending-workspace-head > span,
+body.status-page .pending-workspace h4 span { color: var(--muted); font-size: 12px; font-weight: 400; }
+body.status-page .pending-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+body.status-page .pending-control { padding: 7px 10px; border: 0; background: transparent; color: var(--muted); border-radius: 5px; font-size: 12px; transition: color 140ms, background 140ms; }
+body.status-page .pending-control:hover { color: var(--text); background: var(--card-alt); }
+body.status-page .pending-control:disabled { opacity: 0.4; cursor: default; }
+body.status-page .pending-control:focus-visible,
+body.status-page .pending-workspace input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+body.status-page .pending-filters { display: flex; gap: 4px; }
+body.status-page .pending-filters [aria-pressed="true"] { background: var(--card-alt); color: var(--text); }
+body.status-page .pending-filters span { color: var(--muted); margin-left: 6px; }
+body.status-page .pending-search { display: block; width: min(240px, 100%); }
+body.status-page .pending-search input { width: 100%; min-width: 0; margin: 0; padding: 8px 10px; background: var(--bg); border: 1px solid var(--border); border-radius: 5px; color: var(--text); font: inherit; font-size: 13px; }
+body.status-page .pending-package-table-wrap { width: 100%; }
+body.status-page .pending-package-table { width: 100%; min-width: 0; border-collapse: collapse; table-layout: fixed; }
+body.status-page .pending-package-table th { text-align: left; font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); padding: 10px 0; border-bottom: 1px solid var(--border); }
+body.status-page .pending-package-table th:first-child { width: 39%; }
+body.status-page .pending-package-table th:nth-child(2) { width: 41%; }
+body.status-page .pending-package-table td { padding: 12px 8px 12px 0; border-bottom: 1px solid rgba(var(--border-rgb), 0.45); vertical-align: middle; overflow-wrap: anywhere; }
+body.status-page .pending-package-table td:nth-child(2) { font-size: 12px; color: var(--muted); }
+body.status-page .pending-package-table th:last-child,
+body.status-page .pending-package-table td:last-child { text-align: right; padding-right: 0; }
+body.status-page .pending-package-table td:last-child .pending-control { color: var(--accent); padding: 7px 0 7px 4px; white-space: nowrap; }
+body.status-page .pending-package-table tbody tr:hover { background: rgba(var(--accent-rgb), 0.03); }
+body.status-page .pending-package-name { font-weight: 500; }
+body.status-page .pending-kinds { display: flex; flex-wrap: wrap; gap: 4px 8px; }
+body.status-page .pending-kind { color: var(--warning); font-size: 11px; line-height: 1.6; }
+body.status-page .pending-kind-warning { font-weight: 600; }
+body.status-page .pending-pagination { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 13px 0; color: var(--muted); font-size: 12px; }
+body.status-page .pending-pagination > div { display: flex; gap: 6px; }
+body.status-page .pending-pagination .pending-control { border: 1px solid var(--border); padding: 5px 9px; }
+body.status-page .pending-coverage-note { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-size: 12px; color: var(--muted); padding: 6px 0 14px; }
+body.status-page .pending-coverage-note button { color: var(--accent); }
+body.status-page .pending-note,
+body.status-page .pending-qualification { color: var(--muted); font-size: 13px; line-height: 1.65; margin: 8px 0 14px; }
+body.status-page .pending-qualification { font-size: 12px; }
+body.status-page .pending-lookup-error { color: var(--warning-text); font-size: 13px; line-height: 1.65; padding-left: 10px; border-left: 2px solid var(--warning); }
+body.status-page .pending-package-heading { display: flex; align-items: baseline; flex-wrap: wrap; gap: 10px; margin: 14px 0; }
+body.status-page .pending-package-heading h4 { font-size: 23px; overflow-wrap: anywhere; }
+body.status-page .pending-version-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; padding: 0 0 16px; border-bottom: 1px solid var(--border); margin: 0 0 18px; }
+body.status-page .pending-version-pair dt,
+body.status-page .pending-cve-evidence dt { font-size: 11px; color: var(--muted); margin-bottom: 7px; }
+body.status-page .pending-version-pair dd,
+body.status-page .pending-cve-evidence dd { margin: 0; font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+body.status-page .pending-workspace:has(.pending-cve-list) .pending-search { width: 100%; margin-bottom: 7px; }
+body.status-page .pending-cve-item { padding: 2px 0; border-bottom: 1px solid rgba(var(--border-rgb), 0.45); }
+body.status-page .pending-cve-item > button { width: 100%; display: flex; justify-content: space-between; gap: 12px; text-align: left; padding: 11px 0; color: var(--text); }
+body.status-page .pending-cve-item > button > span:last-child { color: var(--muted); white-space: nowrap; }
+body.status-page .pending-cve-item > button[aria-expanded="true"] { color: var(--accent); }
+body.status-page .pending-cve-item small { display: block; font-size: 11px; color: var(--muted); margin: 0 0 7px; }
+body.status-page .pending-cve-reported small { color: var(--warning); }
+body.status-page .pending-cve-evidence { border-top: 1px solid var(--border); margin-top: 10px; padding: 6px 0 16px; animation: pending-enter 160ms ease-out; }
+body.status-page .pending-cve-evidence p { color: var(--muted); font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; }
+body.status-page .pending-cve-evidence dl { display: grid; gap: 12px; }
+body.status-page .pending-cve-evidence a { color: var(--accent); font-size: 12px; }
+body.status-page .pending-source-context { color: var(--muted); font-size: 11px; line-height: 1.7; overflow-wrap: anywhere; padding: 12px 0; }
+body.status-page .pending-coverage-heading { margin: 18px 0 12px; }
+body.status-page .pending-coverage-counts { border-block: 1px solid var(--border); padding: 17px 0; display: grid; gap: 15px; margin: 18px 0; }
+body.status-page .pending-coverage-counts > div { display: flex; justify-content: space-between; gap: 15px; font-size: 13px; }
+body.status-page .pending-coverage-counts dd { margin: 0; white-space: nowrap; }
+body.status-page #status-drawer-approval-actions { margin: 12px 0 0; padding-top: 14px; border-top: 1px solid var(--border); gap: 8px; }
+@keyframes pending-enter { from { opacity: 0; transform: translateX(5px); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) { body.status-page .pending-workspace, body.status-page .pending-cve-evidence { animation: none; } body.status-page .pending-control { transition: none; } }
+@media (max-width: 520px) {
+    body.status-page .pending-toolbar { flex-wrap: wrap; }
+    body.status-page .pending-search { width: 100%; }
+    body.status-page .pending-workspace-head { flex-wrap: wrap; gap: 6px; }
+    body.status-page .pending-package-table th:first-child { width: 36%; }
+    body.status-page .pending-package-table th:nth-child(2) { width: 39%; }
+    body.status-page .pending-pagination { flex-wrap: wrap; }
+    body.status-page .pending-control { font-size: 11px; }
+    body.status-page .pending-version-pair { gap: 10px; }
+    body.status-page .pending-package-table td { padding-right: 5px; }
+}
+body.status-page .pending-workspace .pending-note:not(.pending-drift-note) { border: 0; background: none; padding: 0; border-radius: 0; }
+body.status-page .pending-package-table .pending-kinds:has(.pending-kind:only-child):not(:has(.pending-kind-warning)) { display: inline-flex; margin-left: 7px; }
+@media (max-width: 520px) {
+    body.status-page .pending-package-table .pending-kinds:has(.pending-kind:only-child):not(:has(.pending-kind-warning)) { display: flex; margin-left: 0; }
+}

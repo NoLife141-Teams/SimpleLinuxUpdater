@@ -19,7 +19,7 @@
 Use a named volume for persistence:
 
 ```bash
-docker run --env-file .env -p 8080:8080 -v debian-updater-data:/data ghcr.io/nolife141-teams/simplelinuxupdater:v0.5.1
+docker run --env-file .env -p 8080:8080 -v debian-updater-data:/data ghcr.io/nolife141-teams/simplelinuxupdater:v0.5.2
 ```
 
 The image explicitly sets `DEBIAN_UPDATER_LISTEN_ADDR=:8080`. To limit access on
@@ -36,7 +36,7 @@ Release tags publish images to GitHub Container Registry:
 Example:
 
 ```bash
-docker pull ghcr.io/nolife141-teams/simplelinuxupdater:v0.5.1
+docker pull ghcr.io/nolife141-teams/simplelinuxupdater:v0.5.2
 ```
 
 ## Binary deployment
@@ -119,12 +119,13 @@ If an attacker obtains both the SQLite DB and the encryption key file, stored se
 
 ## Upgrade procedure
 
-Follow the [v0.5.1 upgrade, restore and rollback guide](upgrading.md)
+Follow the [v0.5.2 upgrade, restore and rollback guide](upgrading.md)
 for concrete Docker and binary archive commands. Export and verify a backup
 before stopping the old process, retain its matching image/binary and assets,
-then deploy the candidate with the same data paths. The initial account becomes
-administrator, setup stays closed and old sessions are signed out once. New
-sessions survive subsequent restarts. Review recovered jobs, renew interrupted
+then deploy the candidate with the same data paths. Setup stays closed. When
+upgrading from v0.4.16 or earlier, the initial account becomes administrator and
+old sessions are signed out once. Existing v0.5.x sessions retain their normal
+lifecycle across application restarts. Review recovered jobs, renew interrupted
 approvals and update the [managed helper](usage.md#managed-helper-installation)
 before resuming maintenance.
 

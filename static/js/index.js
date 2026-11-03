@@ -3294,12 +3294,14 @@
             const button = event.target.closest("button[data-pending-action]");
             if (!button || button.disabled) return;
             const action = button.dataset.pendingAction, value = button.dataset.pendingValue;
+            const paginationPosition = button.closest('[data-pending-pagination]')?.dataset.pendingPagination;
             handlePendingIntent(action, value);
             const controls = [...drawerPendingElement.querySelectorAll("button[data-pending-action]")];
             const focus = action === "back" && value
                 ? controls.find(control => control.dataset.pendingAction === "package" && control.dataset.pendingValue === value)
                 : action === "package" || action === "coverage" ? null
-                : controls.find(control => !control.disabled && control.dataset.pendingAction === action && control.dataset.pendingValue === value);
+                : controls.find(control => !control.disabled && control.dataset.pendingAction === action && control.dataset.pendingValue === value
+                    && (!paginationPosition || control.closest('[data-pending-pagination]')?.dataset.pendingPagination === paginationPosition));
             (focus || drawerPendingElement.querySelector("[data-pending-heading]"))?.focus({ preventScroll: true });
         });
 

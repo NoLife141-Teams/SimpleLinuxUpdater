@@ -7,8 +7,9 @@
     'use strict';
     const escape = value => String(value ?? '').replace(/[&<>"']/g, char => ({'&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;'}[char]));
     const button = (action, value, label, extra = '') => `<button type="button" class="pending-control" data-pending-action="${action}" data-pending-value="${escape(value)}" ${extra}>${label}</button>`;
-    function pagination(page, type, noun) {
-        return `<nav class="pending-pagination" aria-label="${noun} pages"><span role="status" aria-live="polite">${page.start}–${page.end} of ${page.total} ${noun.toLowerCase()}</span><div>
+    function pagination(page, type, noun, position = 'bottom') {
+        const top = position === 'top';
+        return `<nav class="pending-pagination${top ? ' pending-pagination-top' : ''}" data-pending-pagination="${position}" aria-label="${top ? `${noun} pagination (top)` : `${noun} pages`}"><span${top ? '' : ' role="status" aria-live="polite"'}>${page.start}–${page.end} of ${page.total} ${noun.toLowerCase()}</span><div>
             ${button(type, 'previous', '← Previous', page.page === 0 ? 'disabled' : '')}
             ${button(type, 'next', 'Next →', page.page + 1 >= page.pages ? 'disabled' : '')}</div></nav>`;
     }
@@ -32,7 +33,7 @@
                 ${button('filter', 'all', `All <span>${view.total}</span>`, `aria-pressed="${view.filter === 'all'}"`)}
                 ${button('filter', 'security', `Security <span>${view.security}</span>`, `aria-pressed="${view.filter === 'security'}"`)}</div>
                 ${search('pending-package-search', 'Filter packages', view.query, 'search')}</div>
-            ${lookupNotice(view)}<div class="pending-package-table-wrap"><table class="pending-package-table"><thead><tr><th>Package</th><th>Available version</th><th><span class="sr-only">Details</span></th></tr></thead><tbody>
+            ${lookupNotice(view)}${pagination(view.packages, 'page', 'Packages', 'top')}<div class="pending-package-table-wrap"><table class="pending-package-table"><thead><tr><th>Package</th><th>Available version</th><th><span class="sr-only">Details</span></th></tr></thead><tbody>
             ${view.packages.items.map(update => `<tr><td><span class="pending-package-name">${escape(update.package || 'Unknown package')}</span><div class="pending-kinds">${badges(update)}</div></td><td>${escape(update.candidate_version || 'Unknown')}</td><td>
                 ${button('package', model.packageKey(update), 'Details →', `aria-label="Details for ${escape(update.package || 'unknown package')}"`)}</td></tr>`).join('')}</tbody></table></div>
             ${!view.packages.total ? '<p class="drawer-empty">No matching packages.</p>' : ''}${pagination(view.packages, 'page', 'Packages')}
@@ -81,7 +82,7 @@
             <div class="pending-workspace-head"><h4>${findings.length ? `CVE references <span>${findings.length}</span>` : 'CVE information'}</h4>${findings.length ? `<span>${unknown ? 'Update effect unconfirmed' : 'Source comparison'}</span>` : ''}</div>
             <p class="${state === 'unavailable' ? 'pending-lookup-error' : 'pending-note'}">${context}</p>
             ${sharedQualification ? `<p class="pending-qualification">${escape(sharedQualification)}</p>` : ''}
-            ${findings.length ? `${search('pending-cve-search', 'Find a CVE', view.cveQuery, 'cve-search')}<div class="pending-cve-list">
+            ${findings.length ? `${search('pending-cve-search', 'Find a CVE', view.cveQuery, 'cve-search')}${pagination(view.findings, 'cve-page', 'References', 'top')}<div class="pending-cve-list">
                 ${view.findings.items.map(finding => `<div class="pending-cve-item ${finding.disposition === 'still_affected' ? 'pending-cve-reported' : ''}">
                     ${button('evidence', finding.id, `<span>${escape(finding.id || 'Unknown CVE')}</span><span>View source ↗</span>`, `aria-expanded="${view.evidenceID === String(finding.id || '')}" ${view.evidenceID === String(finding.id || '') ? 'aria-controls="pending-cve-evidence"' : ''}`)}
                     ${!unknown ? `<small>${escape(disposition(finding))}</small>` : ''}

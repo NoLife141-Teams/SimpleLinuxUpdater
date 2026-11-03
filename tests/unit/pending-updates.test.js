@@ -9,9 +9,10 @@ const host = updates => ({name:'host',pending_updates:updates});
 test('inspection filters and pages all packages without changing the approval plan',()=>{
     const store=createStore(), server=host(Array.from({length:17},(_,i)=>update(`package-${i}`,{security:i%2===0})));
     const before=JSON.stringify(server);
-    assert.equal(store.view(server).packages.items.length,6);
+    assert.equal(store.view(server).packages.items.length,15);
     store.dispatch({action:'page',value:'next'},server);
-    assert.equal(store.view(server).packages.start,7);
+    assert.equal(store.view(server).packages.start,16);
+    assert.equal(store.view(server).packages.items.length,2);
     store.dispatch({action:'filter',value:'security'},server);
     assert.equal(store.view(server).packages.total,9);
     store.dispatch({action:'search',value:'package-16'},server);

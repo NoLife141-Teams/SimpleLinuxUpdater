@@ -4,7 +4,7 @@
     else root.PendingUpdatesInteraction = api;
 }(typeof globalThis !== 'undefined' ? globalThis : this, function () {
     'use strict';
-    const packagePageSize = 6, cvePageSize = 5;
+    const packagePageSize = 15, cvePageSize = 5;
     const packageKey = update => JSON.stringify([update.install_package || update.package || '', update.current_version || '', update.candidate_version || '']);
     const text = value => String(value || '');
     const paginate = (items, requested, size) => {

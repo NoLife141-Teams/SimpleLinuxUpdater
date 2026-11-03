@@ -1,5 +1,5 @@
 /* Available updates use one compact list and an optional package inspector. */
-body.status-page .pending-workspace { font-size: 14px; animation: pending-enter 160ms ease-out; }
+body.status-page .pending-workspace { font-size: 14px; }
 body.status-page .pending-workspace h4,
 body.status-page .pending-workspace h5 { margin: 0; font-weight: 600; letter-spacing: -0.02em; }
 body.status-page .pending-workspace h4 { font-size: 18px; }

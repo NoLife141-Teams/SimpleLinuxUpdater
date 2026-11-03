@@ -10,6 +10,7 @@ The format is inspired by Keep a Changelog, and this project uses Semantic Versi
 
 - Present available updates in a searchable, paginated list with a full-width package inspector. Keep CVE coverage limitations in a quiet shared summary, paginate CVE references, and open one source proof at a time while preserving approval scopes and source qualifications.
 - Reduce spacing in the available-package list and show 15 packages per page, while preserving comfortable mobile touch targets.
+- Provide Previous and Next controls above and below package and CVE lists.
 
 ### Fixed
 

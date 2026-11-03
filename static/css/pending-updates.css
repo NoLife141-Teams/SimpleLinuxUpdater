@@ -36,6 +36,7 @@ body.status-page .pending-kind-warning { font-weight: 600; }
 body.status-page .pending-pagination { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 13px 0; color: var(--muted); font-size: 12px; }
 body.status-page .pending-pagination > div { display: flex; gap: 6px; }
 body.status-page .pending-pagination .pending-control { border: 1px solid var(--border); padding: 5px 9px; }
+body.status-page .pending-pagination-top { padding: 0 0 8px; }
 body.status-page .pending-coverage-note { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-size: 12px; color: var(--muted); padding: 6px 0 14px; }
 body.status-page .pending-coverage-note button { color: var(--accent); }
 body.status-page .pending-note,

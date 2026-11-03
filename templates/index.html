@@ -6,7 +6,8 @@
     <title>SimpleLinuxUpdater</title>
     <link rel="icon" type="image/png" href="/static/logo.png">
     <link rel="stylesheet" href="/static/css/base.css?v=metadata-contrast-517-20261029">
-    <link rel="stylesheet" href="/static/css/index.css?v=cve-provenance-20261103">
+    <link rel="stylesheet" href="/static/css/pending-updates.css?v=compact-cve-20261103">
+    <link rel="stylesheet" href="/static/css/index.css?v=compact-cve-20261103">
     <link rel="stylesheet" href="/static/css/status-polish.css?v=20260919">
 <link rel="stylesheet" href="/static/css/package-deferrals.css?v=ui-components-515-20261029">
 </head>
@@ -372,12 +373,6 @@
             <button class="btn-ghost inline-btn drawer-tab" id="drawer-tab-logs">Logs</button>
             <button class="btn-ghost inline-btn drawer-tab" id="drawer-tab-pending">Pending updates</button>
         </div>
-        <div class="drawer-approval-actions hidden" id="status-drawer-approval-actions">
-            <button class="btn-success inline-btn" id="drawer-approve-all">Approve (0)</button>
-            <button class="btn-security inline-btn" id="drawer-approve-security">Standard security (0)</button>
-            <button class="btn-security inline-btn" id="drawer-approve-security-kept-back">Kept-back security (0)</button>
-            <button class="btn-full-upgrade inline-btn" id="drawer-approve-full">Full upgrade (0)</button>
-        </div>
         <div class="drawer-content">
             <section class="drawer-panel" id="drawer-panel-logs">
                 <div class="logs-toolbar">
@@ -390,6 +385,12 @@
                 <div class="logs" id="drawer-logs" role="log" aria-live="polite" aria-relevant="additions text" aria-atomic="false" aria-label="Job output"></div>
             </section>
             <section class="drawer-panel" id="drawer-panel-pending"></section>
+        </div>
+        <div class="drawer-approval-actions hidden" id="status-drawer-approval-actions">
+            <button class="btn-success inline-btn" id="drawer-approve-all">Approve (0)</button>
+            <button class="btn-security inline-btn" id="drawer-approve-security">Standard security (0)</button>
+            <button class="btn-security inline-btn" id="drawer-approve-security-kept-back">Kept-back security (0)</button>
+            <button class="btn-full-upgrade inline-btn" id="drawer-approve-full">Full upgrade (0)</button>
         </div>
     </aside>
 
@@ -410,7 +411,9 @@
     <script src="/static/js/common.js?v=quality-pass-20260711a"></script>
     <div class="phase-tooltip hidden" id="phase-tooltip" role="tooltip"></div>
     <script src="/static/js/dashboard-projection-consumption.js?v=apt-update-cve-scope-20261103"></script>
-    <script src="/static/js/status-page-interaction.js?v=apt-update-cve-scope-20261103"></script>
+    <script src="/static/js/pending-updates-interaction.js?v=compact-cve-20261103"></script>
+    <script src="/static/js/pending-updates-view.js?v=compact-cve-20261103"></script>
+    <script src="/static/js/status-page-interaction.js?v=compact-cve-20261103"></script>
     <script src="/static/js/status-formatting.js?v=job-log-stream-20260724"></script>
     <script src="/static/js/status-transport.js?v=frontend-isolation-20261027"></script>
     <script src="/static/js/status-rendering.js?v=apt-update-cve-scope-20261103"></script>
@@ -420,6 +423,6 @@
     <script src="/static/js/index-bulk-actions.js?v=frontend-isolation-20261027"></script>
     <script src="/static/js/package-deferrals.js?v=frontend-isolation-20261027"></script>
 <script src="/static/js/status-snapshot-adapter.js?v=frontend-isolation-20261027"></script>
-<script src="/static/js/index.js?v=cve-provenance-20261103"></script>
+<script src="/static/js/index.js?v=compact-cve-20261103"></script>
 </body>
 </html>

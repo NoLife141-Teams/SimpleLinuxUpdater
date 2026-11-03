@@ -41,7 +41,6 @@
         let hoveredName = null;
         let expandedHostFactsServers = new Set();
         let expandedMiniLists = new Set();
-        let expandedCVEFindings = new Set();
         let activePhaseTooltipTarget = null;
         let drawerLogScrollTop = 0;
         let drawerPendingScrollTop = 0;
@@ -159,6 +158,8 @@
                     effect.scope === "serverState"
                 ) {
                     renderServerState();
+                } else if (effect.type === "render" && effect.scope === "pendingUpdates") {
+                    statusViewScope.run(renderDrawer);
                 } else if (effect.type === "renderDrawerLogs") {
                     renderDrawerLogs(effect.serverName);
                 } else if (effect.type === "renderSyncState") {
@@ -343,83 +344,6 @@
                     return `<div class="log-line${classAttr}">${escapeHtml(printable)}</div>`;
                 })
                 .join("");
-        }
-
-        function pendingStateBadge(state) {
-            const normalized = String(state || "").toLowerCase();
-            if (normalized === "pending")
-                return `<span class="pending-badge">Checking CVEs…</span>`;
-            if (normalized === "unavailable")
-                return `<span class="pending-badge">CVE lookup unavailable</span>`;
-            if (normalized === "unsupported")
-                return `<span class="pending-badge">Coverage unknown</span>`;
-            if (normalized === "skipped")
-                return `<span class="pending-badge">CVE lookup skipped</span>`;
-            if (normalized === "ready") return "";
-            return `<span class="pending-badge">Unknown state</span>`;
-        }
-
-        function vulnerabilityFindingListHtml(findings, title, tone, disclosureKey) {
-            if (!findings.length) return "";
-            const items = findings.map(finding => {
-                const id = escapeHtml(finding.id || "Unknown CVE");
-                const url = String(finding.advisory_url || "").trim();
-                const link = /^https?:\/\//i.test(url) ? `<a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">${id}</a>` : id;
-                const assessment = finding.assessment || {};
-                const evidenceKey = JSON.stringify([disclosureKey, finding.id || ""]);
-                const qualified = ["unimportant", "not_affected"].includes(assessment.vendor_status);
-                const qualification = qualified ? `Distribution: ${assessment.vendor_status}`
-                    : assessment.confidence === "vendor_confirmed" ? "Distribution-confirmed source match" : "Distribution assessment needs review";
-                return `<li>${link} <small>${escapeHtml(qualification)}</small>
-                    <details class="cve-evidence" data-cve-evidence-key="${escapeHtml(evidenceKey)}" ${expandedCVEFindings.has(evidenceKey) ? "open" : ""}><summary>Evidence</summary>
-                        <p>${escapeHtml(assessment.vendor_reason || "Distribution assessment unavailable")}</p>
-                        <p>Installed: ${escapeHtml(finding.installed_version || "unknown")} → Candidate: ${escapeHtml(finding.candidate_version || "unknown")}</p>
-                        <p>${escapeHtml(assessment.ecosystem || "unknown")} / ${escapeHtml(assessment.source_package || finding.source_package || "unknown")} · ${escapeHtml(finding.source || "Distribution data")}</p>
-                        <p>Observed: ${escapeHtml(assessment.observed_at || "unknown")}</p>
-                    </details></li>`;
-            }).join("");
-            return `<section class="cve-finding-group cve-finding-${tone}"><h5>${escapeHtml(title)}</h5><ul>${items}</ul></section>`;
-        }
-
-        function cveFindingsDisclosureKey(server, update) {
-            return JSON.stringify([
-                String(server?.name || ""),
-                String(update?.install_package || update?.package || ""),
-                String(update?.candidate_version || ""),
-            ]);
-        }
-
-        function vulnerabilityFindingsHtml(update, disclosureKey) {
-            const findings = Array.isArray(update.cve_findings)
-                ? update.cve_findings
-                : [];
-            if (!findings.length) return "";
-            const fixed = findings.filter(
-                (finding) => finding.disposition === "fixed_by_candidate",
-            );
-            const remaining = findings.filter(
-                (finding) => finding.disposition === "still_affected",
-            );
-            const source = escapeHtml(
-                update.cve_source ||
-                    findings[0]?.source ||
-                    "Official distribution data",
-            );
-            const scannedAt = update.cve_scanned_at
-                ? ` · scanned ${escapeHtml(update.cve_scanned_at)}`
-                : "";
-            const open = expandedCVEFindings.has(disclosureKey);
-            return `
-                <details class="cve-findings" data-cve-disclosure-key="${escapeHtml(disclosureKey)}" ${open ? "open" : ""}>
-                    <summary>CVE details (${findings.length})</summary>
-                    <div class="cve-findings-content">
-                        ${vulnerabilityFindingListHtml(fixed, "Not reported for the proposed version", "fixed", disclosureKey)}
-                        ${vulnerabilityFindingListHtml(remaining, "Still reported for the proposed version", "remaining", disclosureKey)}
-                        ${vulnerabilityFindingListHtml(findings.filter(f => !["fixed_by_candidate", "still_affected"].includes(f.disposition)), "Correction could not be verified", "remaining", disclosureKey)}
-                        <p class="cve-findings-source">${source}${scannedAt}</p>
-                    </div>
-                </details>
-            `;
         }
 
         function hasPendingUpdates(server) {
@@ -630,179 +554,11 @@
             return `${enabled ? "" : "disabled"} title="${escapeHtml(title)}"`;
         }
 
-        function pendingProvenanceHtml(server, updates) {
-            const groups = [
-                {
-                    title: "Installed origin unverified",
-                    explanation: "OSV results use official distribution data, but APT no longer exposes the origin of the installed version.",
-                    packages: updates.filter(update =>
-                        String(update.cve_state || "").toLowerCase() === "ready" &&
-                        String(update.cve_coverage || "").toLowerCase() === "official_installed_unverified"),
-                },
-                {
-                    title: "Coverage unknown",
-                    explanation: "Installed package provenance or candidate repository is not officially verified; no vulnerability claim is made.",
-                    packages: updates.filter(update =>
-                        String(update.cve_state || "").toLowerCase() === "unsupported"),
-                },
-            ].filter(group => group.packages.length);
-            const affected = groups.reduce(
-                (count, group) => count + group.packages.length, 0,
-            );
-            if (!affected) return "";
-            const key = JSON.stringify(["provenance", String(server?.name || ""), updates.map(update => JSON.stringify([
-                String(update.install_package || update.package || ""),
-                String(update.current_version || ""), String(update.candidate_version || ""),
-            ])).sort()]);
-            return `<details class="pending-provenance" data-cve-disclosure-key="${escapeHtml(key)}" ${expandedCVEFindings.has(key) ? "open" : ""}>
-                <summary>Provenance warnings for ${affected} of ${updates.length} packages</summary>
-                <div class="pending-provenance-content">${groups.map(group => `<section>
-                    <h5>${escapeHtml(group.title)} (${group.packages.length})</h5>
-                    <p>${escapeHtml(group.explanation)}</p>
-                    <p>Packages: ${group.packages.map(update => escapeHtml(update.package || "unknown")).join(", ")}</p>
-                </section>`).join("")}</div>
-            </details>`;
-        }
-
-        function renderPendingUpdatesHtml(server, includeHeading = true) {
-            const updates = Array.isArray(server?.pending_updates)
-                ? server.pending_updates
-                : [];
-            if (!hasPendingUpdates(server)) {
-                return `<p class="drawer-empty">No pending update details for this server.</p>`;
-            }
-            const driftReason = pendingApprovalDriftReason(server);
-
-            const hasPending = updates.some(
-                (update) =>
-                    String(update.cve_state || "").toLowerCase() === "pending",
-            );
-            const securityCount = updates.filter(
-                (update) => !!update.security,
-            ).length;
-            const keptBackCount = updates.filter(
-                (update) =>
-                    !!update.kept_back || !!update.requires_full_upgrade,
-            ).length;
-            const rows = updates
-                .map((update) => {
-                    const pkg = escapeHtml(update.package || "unknown");
-                    const cveDisclosureKey = cveFindingsDisclosureKey(
-                        server,
-                        update,
-                    );
-                    const currentVersion = escapeHtml(
-                        update.current_version || "?",
-                    );
-                    const candidateVersion = escapeHtml(
-                        update.candidate_version || "?",
-                    );
-                    const source = escapeHtml(update.source || "");
-                    const state = String(update.cve_state || "").toLowerCase();
-                    const coverage = String(
-                        update.cve_coverage || "",
-                    ).toLowerCase();
-                    const cves = Array.isArray(update.cves) ? update.cves : [];
-                    const findings = Array.isArray(update.cve_findings)
-                        ? update.cve_findings
-                        : [];
-                    const fixedFindings = findings.filter(
-                        (finding) =>
-                            finding.disposition === "fixed_by_candidate",
-                    );
-                    const remainingFindings = findings.filter(
-                        (finding) => finding.disposition === "still_affected",
-                    );
-
-                    const badges = [];
-                    if (update.deferred)
-                        badges.push(
-                            `<span class="pending-badge pending-badge-security">Deferred — security exposure remains</span>`,
-                        );
-                    if (update.security)
-                        badges.push(
-                            `<span class="pending-badge pending-badge-security">Security</span>`,
-                        );
-                    if (update.kept_back || update.requires_full_upgrade) {
-                        badges.push(
-                            `<span class="pending-badge">Kept back</span>`,
-                        );
-                        badges.push(
-                            `<span class="pending-badge">Requires full-upgrade</span>`,
-                        );
-                    }
-                    if (state === "ready") {
-                        if (findings.length > 0) {
-                            if (fixedFindings.length) {
-                                badges.push(
-                                    `<span class="pending-badge pending-badge-cve">${fixedFindings.length} potential CVE fixes</span>`,
-                                );
-                            }
-                            if (remainingFindings.length) {
-                                badges.push(
-                                    `<span class="pending-badge pending-badge-cve-remaining">${remainingFindings.length} still reported</span>`,
-                                );
-                            }
-                        } else if (cves.length > 0) {
-                            badges.push(
-                                `<span class="pending-badge">CVE details need a fresh update check</span>`,
-                            );
-                        } else {
-                            badges.push(
-                                `<span class="pending-badge">No source matches reported</span>`,
-                            );
-                        }
-                        if (coverage === "official_installed_unverified") {
-                            badges.push(
-                                `<span class="pending-badge">Installed provenance unverified</span>`,
-                            );
-                        }
-                    } else {
-                        badges.push(pendingStateBadge(state));
-                    }
-
-                    return `
-                    <tr>
-                        <td>
-                            <div>${pkg}</div>
-                            ${source ? `<div class="subtle">${source}</div>` : ""}
-                        </td>
-                        <td>${currentVersion} &rarr; ${candidateVersion}</td>
-                        <td>
-                            <div class="pending-badges">${badges.join("")}</div>
-                            ${vulnerabilityFindingsHtml(update, cveDisclosureKey)}
-                        </td>
-                    </tr>
-                `;
-                })
-                .join("");
-
-            return `
-                <div class="pending-updates">
-                    ${includeHeading ? "<h4>Pending updates (security first)</h4>" : ""}
- ${window.PackageDeferrals.approvalHTML(server.upgrade_plan)}
-                    ${driftReason ? `<p class="pending-note pending-drift-note" title="${escapeHtml(driftReason)}">${escapeHtml(driftReason)}. Approval actions stay disabled until the host is pending approval again.</p>` : ""}
-                    <div class="pending-summary">
-                        <span class="pending-badge">${updates.length} package${updates.length > 1 ? "s" : ""}</span>
-                        <span class="pending-badge pending-badge-security">${securityCount} security</span>
-                        <span class="pending-badge">${keptBackCount} kept back</span>
-                    </div>
-                    ${hasPending ? `<p class="pending-note">Checking CVEs for available updates…</p>` : ""}
-                    ${pendingProvenanceHtml(server, updates)}
-                    <div class="table-wrap">
-                        <table class="pending-table">
-                            <thead>
-                                <tr>
-                                    <th>Package</th>
-                                    <th>Version</th>
-                                    <th>Risk</th>
-                                </tr>
-                            </thead>
-                            <tbody>${rows}</tbody>
-                        </table>
-                    </div>
-                </div>
-            `;
+        function renderPendingUpdatesHtml(server) {
+            return window.PendingUpdatesView.render(getStatusView().pendingUpdates, {
+                deferrals: window.PackageDeferrals.approvalHTML(server.upgrade_plan),
+                driftReason: pendingApprovalDriftReason(server),
+            });
         }
 
         function renderSyncState() {
@@ -2284,7 +2040,14 @@
 
             if (drawerState.tab === "pending") {
                 const pendingScrollTop = drawerPendingScrollTop;
-                pendingPanel.innerHTML = renderPendingUpdatesHtml(server, true);
+                const focusedInput = pendingPanel.contains(document.activeElement) && document.activeElement.matches("input[data-pending-input]")
+                    ? { id: document.activeElement.id, start: document.activeElement.selectionStart, end: document.activeElement.selectionEnd } : null;
+                pendingPanel.innerHTML = renderPendingUpdatesHtml(server);
+                if (focusedInput) {
+                    const input = document.getElementById(focusedInput.id);
+                    input?.focus({ preventScroll: true });
+                    if (input && focusedInput.start !== null) input.setSelectionRange(focusedInput.start, focusedInput.end);
+                }
                 lifecycle.requestAnimationFrame(() => {
                     const maxScrollTop = Math.max(
                         0,
@@ -3520,22 +3283,26 @@
                 drawerPendingScrollTop = drawerPendingElement.scrollTop;
             }
         });
-        lifecycle.listen(
-            drawerPendingElement,
-            "toggle",
-            (event) => {
-                const details = event.target;
-                if (!details?.matches?.("details.cve-findings, details.cve-evidence, details.pending-provenance")) return;
-                const disclosureKey = details.dataset.cveDisclosureKey || details.dataset.cveEvidenceKey;
-                if (!disclosureKey) return;
-                if (details.open) {
-                    expandedCVEFindings.add(disclosureKey);
-                } else {
-                    expandedCVEFindings.delete(disclosureKey);
-                }
-            },
-            true,
-        );
+        function handlePendingIntent(action, value) {
+            if (!["evidence", "cve-search", "search"].includes(action)) drawerPendingScrollTop = 0;
+            dispatchStatusInteraction({ type: "pendingUpdatesChanged", intent: { action, value } });
+        }
+        lifecycle.listen(drawerPendingElement, "input", (event) => {
+            const input = event.target.closest("[data-pending-input]");
+            if (input) handlePendingIntent(input.dataset.pendingInput, input.value);
+        });
+        lifecycle.listen(drawerPendingElement, "click", (event) => {
+            const button = event.target.closest("button[data-pending-action]");
+            if (!button || button.disabled) return;
+            const action = button.dataset.pendingAction, value = button.dataset.pendingValue;
+            handlePendingIntent(action, value);
+            const controls = [...drawerPendingElement.querySelectorAll("button[data-pending-action]")];
+            const focus = action === "back" && value
+                ? controls.find(control => control.dataset.pendingAction === "package" && control.dataset.pendingValue === value)
+                : action === "package" || action === "coverage" ? null
+                : controls.find(control => !control.disabled && control.dataset.pendingAction === action && control.dataset.pendingValue === value);
+            (focus || drawerPendingElement.querySelector("[data-pending-heading]"))?.focus({ preventScroll: true });
+        });
 
         lifecycle.listen(
             document,

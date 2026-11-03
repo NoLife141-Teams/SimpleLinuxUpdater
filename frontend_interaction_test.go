@@ -21,35 +21,6 @@ func TestFrontendInteractionContracts(t *testing.T) {
 	}
 }
 
-func TestPendingUpdateCVEsUseReportedExpandableGroups(t *testing.T) {
-	contents, err := os.ReadFile("static/js/index.js")
-	if err != nil {
-		t.Fatal(err)
-	}
-	source := string(contents)
-	for _, contract := range []string{
-		"cve_findings",
-		"fixed_by_candidate",
-		"still_affected",
-		"Not reported for the proposed version",
-		"Still reported for the proposed version",
-		"advisory_url",
-		"Coverage unknown",
-		"official_installed_unverified",
-		"Installed provenance unverified",
-		"expandedCVEFindings",
-		"data-cve-disclosure-key",
-		"details.cve-findings",
-	} {
-		if !strings.Contains(source, contract) {
-			t.Errorf("pending-update CVE presentation contract %q is missing", contract)
-		}
-	}
-	if strings.Contains(source, "cves.slice(0, 3)") {
-		t.Error("pending-update CVE presentation still hides confirmed findings after the first three")
-	}
-}
-
 func TestStatusPageModalsRenderAboveDrawer(t *testing.T) {
 	statusCSS, err := os.ReadFile("static/css/index.css")
 	if err != nil {

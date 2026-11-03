@@ -92,6 +92,9 @@ func TestDiscoverPackageUpdatesReturnsSuccessfulEmptyOutcome(t *testing.T) {
 	if !outcome.Empty() {
 		t.Fatalf("outcome = %+v, want successful empty discovery", outcome)
 	}
+	if !outcome.AvailableUpdatesComplete {
+		t.Fatal("successful APT upgradable list did not establish complete availability")
+	}
 	if outcome.PendingPackageCount != 0 || outcome.SecurityPackageCount != 0 {
 		t.Fatalf("counts = pending %d security %d, want 0/0", outcome.PendingPackageCount, outcome.SecurityPackageCount)
 	}
@@ -157,6 +160,9 @@ func TestDiscoverPackageUpdatesFallsBackWhenMetadataCommandFails(t *testing.T) {
 	}
 	if !reflect.DeepEqual(result.Upgradable, []string{"openssl", "bash"}) {
 		t.Fatalf("upgradable = %#v, want summary fallback list", result.Upgradable)
+	}
+	if result.AvailableUpdatesComplete {
+		t.Fatal("standard-upgrade fallback established complete available-update discovery")
 	}
 	wantCommands := []string{AptListUpgradableCmd, AptFullUpgradeSimCmd, AptListMetadataCmd}
 	if !reflect.DeepEqual(runner.commands, wantCommands) {

@@ -2,52 +2,48 @@ package main
 
 import (
 	"encoding/json"
+	"net/http"
 	"testing"
 
-	"debian-updater/internal/observability"
 	"debian-updater/internal/vulnerabilities"
 )
 
-func TestSecurityActionsReaderRouteIsReadOnlyAndBounded(t *testing.T) {
+func TestStandaloneCVERoutesAreRetiredWithoutStartingWork(t *testing.T) {
 	app := newIsolatedTestApp(t)
-	app.authenticate(t)
-	if _, err := app.Deps.AuthService.CreateAccount("actions-reader", testPasswordStrong, "reader"); err != nil {
-		t.Fatal(err)
+	cookie := app.authenticate(t)
+	for _, path := range []string{"/vulnerabilities", "/vulnerabilities/all?server=example", "/remediation"} {
+		r := identityRequest(app, "GET", path, cookie, "", nil)
+		if r.Code != http.StatusSeeOther || r.Header().Get("Location") != "/" {
+			t.Fatal(path, r.Code, r.Body.String())
+		}
 	}
-	reader := identityLogin(t, app, "actions-reader")
-	response := identityRequest(app, "GET", "/api/security-actions?page_size=1", reader, "", nil)
-	if response.Code != 200 {
-		t.Fatal(response.Code, response.Body.String())
+	for method, paths := range map[string][]string{
+		"GET":  {"/api/security-actions", "/api/vulnerabilities", "/api/vulnerabilities/CVE-2026-1000", "/api/vulnerabilities/plan", "/api/servers/one/vulnerabilities", "/api/servers/one/remediation", "/api/servers/one/remediation/old", "/api/servers/one/remediation/old/evidence"},
+		"POST": {"/api/servers/one/vulnerabilities/scan", "/api/servers/one/vulnerabilities/scans/old/cancel", "/api/servers/one/vulnerabilities/reviews", "/api/servers/one/remediation/prepare", "/api/servers/one/remediation/old/retry"},
+	} {
+		for _, path := range paths {
+			r := identityRequest(app, method, path, cookie, "", nil)
+			if r.Code != http.StatusGone || r.Header().Get("Cache-Control") == "" {
+				t.Fatal(path, r.Code, r.Body.String())
+			}
+		}
 	}
-	var data struct {
-		Fixes, Alerts, Lifecycle []json.RawMessage
-		Pages                    int
+	var count int
+	if err := app.Deps.DB().QueryRow(`SELECT COUNT(*) FROM jobs`).Scan(&count); err != nil || count != 0 {
+		t.Fatal("retired endpoint created work", count, err)
 	}
-	if err := json.Unmarshal(response.Body.Bytes(), &data); err != nil {
-		t.Fatal(err)
-	}
-	if len(data.Fixes) > 1 || len(data.Alerts) > 1 || len(data.Lifecycle) > 1 || data.Pages < 1 {
-		t.Fatal("unbounded response")
-	}
-	if response.Header().Get("Cache-Control") == "" {
-		t.Fatal("security inventory response may be cached")
-	}
-	if r := identityRequest(app, "GET", "/api/security-actions?page_size=1000", reader, "", nil); r.Code != 400 {
-		t.Fatal("invalid pagination accepted")
+	if app.Deps.UpdateService.EnsureDeps().RecordApprovalFindings != nil || app.Deps.SecurityIntel != nil {
+		t.Fatal("standalone intelligence still composed")
 	}
 }
 
-func TestSecurityActionsReadsLegacyFindingInventoryWithoutRewritingObservations(t *testing.T) {
+func TestLegacyCVEObservationsDoNotContributeToStatusOrGetRewritten(t *testing.T) {
 	app := newIsolatedTestApp(t)
 	cookie := app.authenticate(t)
 	if _, err := app.Deps.ServerInventoryService.Create(Server{Name: "legacy-recorded", Host: "192.0.2.97", User: "root"}); err != nil {
 		t.Fatal(err)
 	}
-	at := "2020-01-01T00:00:00Z"
-	observation := vulnerabilities.Observation{Accepted: &vulnerabilities.Scan{State: "partial", Distro: "debian 11", Inventoried: 500, FinishedAt: at, Packages: []vulnerabilities.Package{}}, Findings: []vulnerabilities.Finding{
-		{ID: "CVE-2026-1000", Package: "python3.9-minimal:amd64", InstalledVersion: "3.9.2-1", LastSeen: at},
-		{ID: "CVE-2026-1001", Package: "nodejs", CandidateVersion: "22.1"},
-	}}
+	observation := vulnerabilities.Observation{Accepted: &vulnerabilities.Scan{State: "partial", Distro: "debian 13", Inventoried: 500}, Findings: []vulnerabilities.Finding{{ID: "CVE-2026-1000", Package: "old-package"}}}
 	raw, err := json.Marshal(observation)
 	if err != nil {
 		t.Fatal(err)
@@ -55,26 +51,27 @@ func TestSecurityActionsReadsLegacyFindingInventoryWithoutRewritingObservations(
 	if _, err = app.Deps.DB().Exec(`INSERT INTO server_vulnerability_observations (server_name, observation) VALUES (?, ?)`, "legacy-recorded", string(raw)); err != nil {
 		t.Fatal(err)
 	}
-	response := identityRequest(app, "GET", "/api/security-actions?server=legacy-recorded&q=python&page_size=1", cookie, "", nil)
-	if response.Code != 200 {
-		t.Fatal(response.Code, response.Body.String())
+	r := identityRequest(app, "GET", "/api/dashboard/summary", cookie, "", nil)
+	if r.Code != 200 {
+		t.Fatal(r.Code, r.Body.String())
 	}
-	var data observability.SecurityActions
-	if err = json.Unmarshal(response.Body.Bytes(), &data); err != nil {
+	var summary dashboardSummaryResponse
+	if err = json.Unmarshal(r.Body.Bytes(), &summary); err != nil {
 		t.Fatal(err)
 	}
-	if data.LifecycleTotal != 1 || len(data.Lifecycle) != 1 {
-		t.Fatalf("legacy installed application missing from API: %+v", data)
+	if len(summary.Servers) != 1 || len(summary.Servers[0].Risk.CVEs) != 0 {
+		t.Fatal(summary)
 	}
-	row := data.Lifecycle[0]
-	if row.Component != "python3.9-minimal:amd64" || row.Version != "3.9.2-1" || row.InventorySource != "recorded_findings" || !row.InventoryPartial || row.InventoryObservedAt != at || row.InventoryFreshness != "stale" {
-		t.Fatalf("legacy inventory provenance or freshness lost: %+v", row)
+	var payload map[string]any
+	if err = json.Unmarshal(r.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	risk := payload["servers"].([]any)[0].(map[string]any)["risk"].(map[string]any)
+	if _, found := risk["vulnerability"]; found {
+		t.Fatal("legacy scan exposed on Status", risk)
 	}
 	var after string
-	if err = app.Deps.DB().QueryRow(`SELECT observation FROM server_vulnerability_observations WHERE server_name = ?`, "legacy-recorded").Scan(&after); err != nil {
-		t.Fatal(err)
-	}
-	if after != string(raw) {
-		t.Fatal("read-only lifecycle query rewrote recorded evidence")
+	if err = app.Deps.DB().QueryRow(`SELECT observation FROM server_vulnerability_observations WHERE server_name=?`, "legacy-recorded").Scan(&after); err != nil || after != string(raw) {
+		t.Fatal("legacy data changed", err)
 	}
 }

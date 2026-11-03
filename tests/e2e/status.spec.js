@@ -131,7 +131,7 @@ test("pending updates drawer keeps scroll position after server refresh", async 
     await expect(
         page
             .locator("#selected-host-panel")
-            .getByRole("button", { name: "Update" }),
+            .getByRole("button", { name: "Update", exact: true }),
     ).toHaveCount(0);
     await expect(page.locator("#approval-triage-table tbody")).toContainText(
         "demo-host",
@@ -322,7 +322,7 @@ test("stale facts recommendation renders its refresh action in the table and ins
         "Recommended: Refresh host facts",
     );
     await expect(tableRefresh).toBeEnabled();
-    await expect(row.getByRole("button", { name: "Update" })).toHaveCount(0);
+    await expect(row.getByRole("button", { name: "Update", exact: true })).toHaveCount(0);
     await expect(inspector.locator(".recommended-action")).toContainText(
         "Refresh host facts",
     );
@@ -375,181 +375,6 @@ test("status availability defaults to enabled and remembers disabled or all serv
     await expect(rows).toHaveCount(1);
 });
 
-test("installed vulnerability scans show trust states and residual exposure without pending updates", async ({
-    baseURL,
-    page,
-}) => {
-    const server = makeServer("installed-host", "done");
-    let scanState = "not_scanned";
-    let started = 0;
-    await stubDashboardApi(page, () => [server]);
-    await page.route(
-        "**/api/servers/installed-host/vulnerabilities/scan",
-        (route) => {
-            started += 1;
-            return fulfillJson(route, { status: "running" }, 202);
-        },
-    );
-    await page.route("**/api/dashboard/summary*", (route) => {
-        const summary = makeDashboardSummary([server]);
-        const host = summary.servers[0];
-        const exposed = scanState === "partial" || scanState === "unavailable";
-        host.risk = {
-            level: "unknown",
-            summary: exposed
-                ? "1 confirmed CVE · unknown severity"
-                : "Installed packages not scanned",
-            vulnerability: {
-                state: scanState,
-                coverage: scanState === "not_scanned" ? "unknown" : scanState,
-                freshness: scanState === "unavailable" ? "stale" : "fresh",
-                result: exposed
-                    ? "confirmed_exposure"
-                    : scanState === "complete"
-                      ? "no_findings"
-                      : "unknown",
-                inventoried: 2,
-                evaluated: scanState === "partial" ? 1 : 2,
-                unknown: scanState === "partial" ? 1 : 0,
-                unsupported: 0,
-                findings: exposed
-                    ? [
-                          {
-                              id: "CVE-2026-1000",
-                              package: "installed-package",
-                              severity: "unknown",
-                              disposition: "no_fix_available",
-                              first_seen: "2026-10-01T00:00:00Z",
-                              last_seen: "2026-10-25T00:00:00Z",
-                              age_days: 24,
-                              source: "Debian Security Tracker via OSV",
-                          },
-                      ]
-                    : [],
-            },
-        };
-        host.approval_triage = {
-            ...host.approval_triage,
-            cve_count: exposed ? 1 : 0,
-            risk_level: "unknown",
-            risk_label: host.risk.summary,
-        };
-        host.actions = {
-            scan_vulnerabilities: {
-                enabled: scanState !== "running",
-                readiness: scanState === "running" ? "in_progress" : "ready",
-                reason:
-                    scanState === "running"
-                        ? "Vulnerability scan in progress"
-                        : "Ready",
-            },
-        };
-        return fulfillJson(route, summary);
-    });
-    await ensureAuthenticatedSession(page);
-    const section = page.getByRole("region", {
-        name: "Installed package vulnerabilities",
-    });
-    await expect(section).toContainText("Never scanned");
-    await section.getByRole("button", { name: "Scan vulnerabilities" }).click();
-    await expect.poll(() => started).toBe(1);
-    for (const [state, label] of [
-        ["running", "Scan running"],
-        ["partial", "Partial scan"],
-        ["unavailable", "Scan unavailable"],
-        ["complete", "Complete scan"],
-    ]) {
-        scanState = state;
-        server.status = state === "running" ? "vulnerability_scan" : "done";
-        await page.reload();
-        await expect(section).toContainText(label);
-        if (state === "running") {
-            await expect(
-                section.getByRole("button", { name: "Scan vulnerabilities" }),
-            ).toBeDisabled();
-            await expect(
-                page.locator("#selected-host-panel .status-pill"),
-            ).toHaveClass(/status-vulnerability_scan/);
-            await expect(
-                page.locator(
-                    '#servers-table tr[data-name="installed-host"] .status-pill',
-                ),
-            ).toHaveClass(/status-vulnerability_scan/);
-        } else if (state !== "complete") {
-            await section.locator("summary").click();
-            await expect(section.locator("details")).toHaveAttribute(
-                "open",
-                "",
-            );
-            await page.evaluate(() => window.fetchDashboardSummary(true));
-            await expect(section.locator("details")).toHaveAttribute(
-                "open",
-                "",
-            );
-            await expect(section).toContainText("CVE-2026-1000");
-            await expect(section).toContainText("No verified candidate fix in observed data");
-            await expect(section).toContainText("Severity: unknown");
-            await expect(section).toContainText("Age: 24 days");
-            if (state === "unavailable")
-                await expect(section).toContainText("Freshness: stale");
-            await section.locator("summary").click();
-            await page.evaluate(() => window.fetchDashboardSummary(true));
-            await expect(section.locator("details")).not.toHaveAttribute(
-                "open",
-                "",
-            );
-        } else {
-            await expect(section).toContainText(
-                "No findings in evaluated packages",
-            );
-            await expect(section).not.toContainText("CVE-2026-1000");
-        }
-    }
-    await page.setViewportSize({ width: 390, height: 844 });
-    await expect(section).toBeVisible();
-    const overflow = await page.evaluate(
-        () => document.documentElement.scrollWidth > window.innerWidth,
-    );
-    expect(overflow).toBe(false);
-});
-
-test("partial package resolution shows remaining uncertainty and inspectable proof", async ({ page }) => {
-    const server = makeServer("proof-host", "done");
-    let resolutionCount = 1;
-    await stubDashboardApi(page, () => [server]);
-    await page.route("**/api/dashboard/summary*", route => {
-        const summary = makeDashboardSummary([server]);
-        summary.servers[0].risk = { level: "unknown", cves: ["CVE-2026-2000"], vulnerability: {
-            state: "partial", coverage: "partial", freshness: "fresh", result: "needs_review",
-            inventoried: 2, evaluated: 1, unknown: 1, unsupported: 0,
-            reported_cves: 1, needs_review_cves: 1, occurrences: 1,
-            current_occurrences: 0, unverified_occurrences: 1, resolved_occurrences: resolutionCount,
-            findings: [{id: "CVE-2026-2000", package: "unverified-package", evidence_state: "not_reverified", freshness: "stale", severity: "unknown"}],
-            resolved_findings: [{id: "CVE-2026-1000", package: "updated-package", resolved_at: "2026-10-02T00:00:00Z", resolution: {reason: "installed_version_changed", scan_id: "proof-528", verified_at: "2026-10-02T00:00:00Z", source: "https://example.invalid/querybatch"}}],
-            enrichment_errors: ["Optional advisory details unavailable"]
-        }};
-        return fulfillJson(route, summary);
-    });
-    await ensureAuthenticatedSession(page);
-    const section = page.getByRole("region", {name: "Installed package vulnerabilities"});
-    await expect(section).toContainText("Partial scan");
-    await expect(section).toContainText("0 current package findings · 1 not reverified · 1 resolved by scan evidence");
-    await expect(section).toContainText("Advisory enrichment incomplete");
-    await section.getByText("1 active package findings", {exact: true}).click();
-    await expect(section).toContainText("CVE-2026-2000");
-    await section.getByText("1 resolved package findings", {exact: true}).click();
-    await expect(section).toContainText("CVE-2026-1000");
-    await expect(section).toContainText("No longer reported after installed version changed");
-    await expect(section).toContainText("Scan: proof-528");
-    resolutionCount = 120;
-    await page.evaluate(() => window.fetchDashboardSummary(true));
-    await expect(section).toContainText("1 of 120 resolved package findings");
-    await expect(section).toContainText("Showing the most recent resolutions.");
-    await expect(section.locator(".resolved-vulnerability-findings")).toHaveAttribute("open", "");
-    await page.setViewportSize({width: 390, height: 844});
-    expect(await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth)).toBe(false);
-});
-
 test("attention metrics and filters use the same facts and CVE semantics", async ({
     baseURL,
     page,
@@ -567,7 +392,7 @@ test("attention metrics and filters use the same facts and CVE semantics", async
     const cveMetric = page.locator('[data-metric-filter="high_risk"]');
     await expect(factsMetric).toContainText("Host facts to refresh");
     await expect(factsMetric.locator("strong")).toHaveText("2");
-    await expect(cveMetric).toContainText("CVE matches");
+    await expect(cveMetric).toContainText("Hosts with CVE updates");
     await expect(cveMetric.locator("strong")).toHaveText("1");
 
     const factsFilter = page.locator('[data-fleet-filter="stale_facts"]');
@@ -585,7 +410,7 @@ test("attention metrics and filters use the same facts and CVE semantics", async
         .toEqual(["stale-host", "unknown-host"]);
 
     const cveFilter = page.locator('[data-fleet-filter="high_risk"]');
-    await expect(cveFilter).toContainText("CVE matches");
+    await expect(cveFilter).toContainText("Update CVEs");
     await expect(cveFilter.locator("strong")).toHaveText("1");
     await cveFilter.evaluate((button) => button.click());
     const cveRows = page.locator("#servers-table tbody tr[data-name]");
@@ -2151,15 +1976,12 @@ test("operator pages share one responsive and accessible application shell", asy
         ["/", "/", "Status"],
         ["/manage", "/manage", "Manage Servers"],
         ["/observability", "/observability", "Observability"],
-        ["/vulnerabilities", "/vulnerabilities", "CVE analysis"],
-        ["/remediation", "/vulnerabilities", "Correction plan"],
         ["/admin", "/admin", "Admin"],
     ];
     const expectedLinks = [
         ["Status", "/"],
         ["Manage Servers", "/manage"],
         ["Observability", "/observability"],
-        ["CVE analysis", "/vulnerabilities"],
         ["Admin", "/admin"],
         ["Account", "/account"],
     ];
@@ -2505,7 +2327,7 @@ test("package deferrals 473 approval shows executable transactions CVE exposure 
     await expect(panel).toContainText("Dependency conflict");
     await expect(panel).toContainText("CVE");
     await expect(panel).toContainText("Install curl:amd64 version 2");
-    await panel.locator("details.cve-findings summary").click();
+    await panel.locator("details.cve-findings > summary").click();
     await expect(panel).toContainText("CVE-2026-1000");
     await captureDeferral473(
         page,
@@ -2548,78 +2370,3 @@ test("package deferrals 473 approval shows executable transactions CVE exposure 
         "pending update changed",
     );
 });
-
-test("distribution qualification explains a critical CVSS source match without confirming exposure", async ({ page }) => {
-    const server=makeServer("triage-host","done");
-    await stubDashboardApi(page,()=>[server]);
-    await page.route("**/api/dashboard/summary*",route=>{
-        const summary=makeDashboardSummary([server]);
-        summary.servers[0].risk={level:"unknown",summary:"1 reported CVE · 0 vendor-confirmed source matches · 1 vendor-qualified",vulnerability:{
-            state:"complete",freshness:"fresh",result:"qualified_findings",inventoried:1,evaluated:1,unknown:0,unsupported:0,
-            reported_cves:1,confirmed_cves:0,needs_review_cves:0,vendor_qualified_cves:1,withdrawn_cves:0,occurrences:1,
-            findings:[{id:"CVE-2007-2243",package:"example-client",severity:"critical",disposition:"no_fix_available",qualification:"vendor_qualified",assessment_freshness:"fresh",assessment:{
-                vendor_status:"unimportant",vendor_priority:"unimportant",applicability:"source_match",confidence:"vendor_qualified",
-                vendor_reason:"Vendor triage retained <not executable>",ecosystem:"Debian:13",source_package:"openssh",source_version:"1:1.0-1",
-                source:"https://example.invalid/advisory",modified_at:"2026-10-01T00:00:00Z",observed_at:"2026-10-02T00:00:00Z"
-            }}]
-        }};
-        return fulfillJson(route,summary);
-    });
-    await ensureAuthenticatedSession(page);
-    const section=page.getByRole("region",{name:"Installed package vulnerabilities"});
-    await expect(section).toContainText("1 reported CVEs · 0 vendor-confirmed source matches");
-    await section.locator("summary").click();
-    await expect(section).toContainText("Vendor-qualified: inspect rationale");
-    await expect(section).toContainText("Distribution triage: unimportant");
-    await expect(section).toContainText("Vendor triage retained <not executable>");
-    await expect(section).toContainText("Severity: critical");
-    await expect(section).toContainText("Debian:13 / openssh 1:1.0-1");
-    await expect(section).not.toContainText("Confirmed exposure");
-    await page.setViewportSize({width:390,height:844});
-    await expect(section).toContainText("Vendor-qualified: inspect rationale");
-});
-
-for (const context of ["active", "inactive", "external", "unknown"]) {
-    test(`component applicability explains ${context} kernel context without asserting exposure`, async ({page}) => {
-        const headers = context === "unknown";
-        const binary = headers ? "linux-libc-dev:amd64" : `linux-image-${context === "inactive" ? "6.0" : "6.1"}-synthetic:amd64`;
-        const kernelCoverage = ["active", "inactive"].includes(context) ? "evaluated" : context;
-        const runtime = {component: headers ? "development_headers" : "kernel_image", execution: context, exposure: "unknown", exploitability: "unknown",
-            owner: context === "external" ? "container_host" : "server", action: context === "external" ? "Ask the container-host operator to verify its kernel; container reboot cannot establish remediation" : context === "inactive" ? "Review boot policy; inactive does not mean risk-free" : "Review component usage before Server maintenance",
-            reason: "Component <requires review>; source match does not prove running-kernel exposure", source: "injected-session", observed_at: "2026-10-30T00:00:00Z", virtualization: context === "external" ? "container" : context === "unknown" ? "unknown" : "vm"};
-        const finding = {id: "CVE-2004-0230", package: binary, source_package: "linux", severity: "high", disposition: "still_affected", runtime, runtime_view: runtime, runtime_freshness: "fresh"};
-        const server = makeServer("component-host", "pending_approval", [{package: binary,current_version: "1", candidate_version: "1", cve_state: "ready", cves:[finding.id], cve_findings:[finding]}]);
-        await stubDashboardApi(page, () => [server]);
-        await page.route("**/api/dashboard/summary*", route => {
-            const summary = makeDashboardSummary([server]);
-            summary.servers[0].risk = {level: "unknown", vulnerability: {state:"complete",freshness:"fresh",result:"needs_review",kernel_coverage:kernelCoverage,
-                inventoried:1,evaluated:1,reported_cves:1,occurrences:1,header_occurrences:Number(headers),runtime_unknown_occurrences:Number(headers),active_kernel_occurrences:Number(context === "active"),inactive_kernel_occurrences:Number(context === "inactive"),external_kernel_occurrences:Number(context === "external"),findings:[finding]}};
-            return fulfillJson(route,summary);
-        });
-        await ensureAuthenticatedSession(page);
-        const section = page.getByRole("region",{name:"Installed package vulnerabilities"});
-        await expect(section).toContainText("Docker images and application dependencies are not scanned");
-        await expect(section).toContainText(`${Number(context === "active")} active kernel image matches`);
-        await expect(section).toContainText(`${Number(context === "inactive")} inactive kernel image matches`);
-        await expect(section).toContainText(`${Number(headers)} development-header matches`);
-        await expect(section).toContainText(kernelCoverage === "external" ? "External container-host kernel" : kernelCoverage === "evaluated" ? "Running kernel context evaluated" : "Running kernel context unknown");
-        await section.locator(".installed-vulnerability-findings > summary").click();
-        await expect(section).toContainText("Component <requires review>");
-        await expect(section).toContainText(`Execution: ${context}`);
-        await expect(section).toContainText("Exposure: unknown");
-        await expect(section).toContainText("Exploitability: unknown");
-        await expect(section).toContainText("CVE-2004-0230");
-        if (context === "external") await expect(section).toContainText("container reboot cannot establish remediation");
-        if (context === "inactive") await expect(section).toContainText("inactive does not mean risk-free");
-        await page.locator('#servers-table [data-action="open-drawer"][data-tab="pending"][data-name="component-host"]').click();
-        const approval = page.locator("#drawer-panel-pending .cve-findings").first();
-        await approval.locator("summary").click();
-        await expect(approval).toContainText(`Binary: ${binary} · Source: linux`);
-        await expect(approval).toContainText("Docker images and application dependencies are not scanned");
-        await page.keyboard.press("Escape");
-        await page.setViewportSize({width:390,height:844});
-        await expect(section).toContainText("Exposure: unknown");
-        expect(await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth)).toBe(false);
-        if (context === "external") await section.screenshot({path:"/tmp/slu-527-component-mobile.png"});
-    });
-}

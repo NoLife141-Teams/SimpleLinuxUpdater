@@ -179,7 +179,7 @@ test("unknown data stays explicit and optional extras degrade independently", ()
     const view = project({ statusView: statusView({ servers: [server], dashboardServers: [{ name: "unknown", health: {} }] }), extras: { recentActivity: null, policySummary: null } });
     assert.equal(view.selectedHost.timeline.state, "idle");
     assert.equal(view.selectedHost.triage.facts_state, "unknown");
-    assert.equal(view.selectedHost.risk.label, "Installed packages not scanned");
+    assert.equal(view.selectedHost.risk.label, "Check for available updates");
     assert.deepEqual(view.panels.recentActivity, []);
     assert.equal(view.summaries.policyCount, null);
 });
@@ -319,112 +319,12 @@ test("availability scope excludes hidden hosts from fleet totals, attention pane
     }
 });
 
-test("installed vulnerability confidence and residual exposure survive projection", () => {
-    for (const [state, label] of [["not_scanned", "Never scanned"], ["unavailable", "Scan unavailable"], ["partial", "Partial scan"], ["complete", "Complete scan"], ["cancelled", "Scan cancelled"], ["interrupted", "Scan interrupted"]]) {
-        const view = project({ statusView: statusView({
-            servers: [{ name: "alpha", status: "done", pending_updates: [] }],
-            dashboardServers: [{ name: "alpha", risk: {
-                level: "unknown", summary: "1 confirmed CVE · unknown severity",
-                vulnerability: { state, freshness: "stale", result: "confirmed_exposure", inventoried: 10, evaluated: 8, unknown: 1, unsupported: 1,
-                    findings: [{ id: "CVE-2026-1000", package: "pkg", severity: "unknown", disposition: "no_fix_available", first_seen: "2026-10-01T00:00:00Z" }] }
-            }, approval_triage: { cve_count: 1 } }]
-        }) });
-        assert.equal(view.selectedHost.vulnerability.stateLabel, label);
-        assert.equal(view.selectedHost.vulnerability.freshnessLabel, "stale");
-        assert.equal(view.selectedHost.vulnerability.resultLabel, "Historical source matches — review required");
-        assert.match(view.selectedHost.vulnerability.coverageLabel, /8 of 10/);
-        assert.equal(view.selectedHost.vulnerability.findings[0].dispositionLabel, "No verified candidate fix in observed data");
-        assert.equal(view.selectedHost.risk.level, "unknown");
-        assert.equal(view.panels.risk.length, 1);
-    }
-});
-
-
-test("partial package resolution keeps unverified exposure separate from inspectable closure evidence", () => {
-    const view = project({statusView: statusView({
-        servers: [{name: "proof-host", status: "done"}],
-        dashboardServers: [{name: "proof-host", risk: {vulnerability: {
-            state: "partial", current_occurrences: 0, unverified_occurrences: 1, resolved_occurrences: 1,
-            findings: [{id: "CVE-B", package: "bb", evidence_state: "not_reverified"}],
-            resolved_findings: [{id: "CVE-A", package: "aa", resolution: {reason: "installed_version_changed", scan_id: "proof-scan", verified_at: "2026-10-02T00:00:00Z"}}],
-            enrichment_errors: ["Optional detail unavailable"]
-        }}}]
+test("available update details remain inspectable outside approval", () => {
+    const view = project({statusView: statusView({servers: [{name: "alpha", status: "idle", pending_updates: [{package: "example", cves: ["CVE-1"]}]}],
+        dashboardServers: [{name: "alpha", risk: {update_cves: {state: "incomplete", correctable: 0}}}]
     })});
-    const info = view.selectedHost.vulnerability;
-    assert.match(info.evidenceCountsLabel, /0 current package findings · 1 not reverified · 1 resolved by scan evidence/);
-    assert.deepEqual(info.findings.map(f => f.id), ["CVE-B"]);
-    assert.equal(info.findings[0].evidence_state, "not_reverified");
-    assert.equal(info.resolved_findings[0].resolution.scan_id, "proof-scan");
-    assert.match(info.resolved_findings[0].resolutionLabel, /installed version changed/);
-    assert.deepEqual(info.enrichment_errors, ["Optional detail unavailable"]);
-    assert.equal(info.resolvedFindingsLabel, "1 resolved package findings");
-    assert.equal(info.resolvedPreviewTruncated, false);
-});
-
-test("resolution preview distinguishes visible details from the complete count", () => {
-    const view = project({statusView: statusView({
-        servers: [{name: "preview-host", status: "done"}],
-        dashboardServers: [{name: "preview-host", risk: {vulnerability: {
-            resolved_occurrences: 120,
-            resolved_findings: [{id: "CVE-A", package: "pkg", resolution: {reason: "package_removed"}}]
-        }}}]
-    })});
-    assert.equal(view.selectedHost.vulnerability.resolvedFindingsLabel, "1 of 120 resolved package findings");
-    assert.equal(view.selectedHost.vulnerability.resolvedPreviewTruncated, true);
-});
-
-test("installed scan progress carries identity and observed facts without estimated percentage", () => {
-    for (const [phase, label] of Object.entries({metadata: "Metadata and provenance", inventory_verification: "Inventory verification", persistence: "Persistence", enrichment: "Advisory enrichment"})) {
-        const view = project({statusView: statusView({servers: [{name: "alpha", status: "vulnerability_scan"}], dashboardServers: [{name: "alpha", risk: {vulnerability: {
-            scan_id: "scan-493", state: "running", progress: {phase, inventoried: 9, metadata: 4, evaluated: 2, unknown: 1, unsupported: 1}, findings: []
-        }}}]})});
-        const info = view.selectedHost.vulnerability;
-        assert.equal(info.scan_id, "scan-493");
-        assert.ok(info.progressLabel.startsWith(`${label} · 9 inventoried · 4 metadata collected · 2 evaluated`), info.progressLabel);
-        assert.doesNotMatch(info.progressLabel, /%|ETA/);
-    }
-});
-
-test("vendor qualification remains separate from CVSS and unique CVE counters", () => {
-    const view = project({statusView: statusView({
-        servers: [{name: "triage-host", status: "done"}],
-        dashboardServers: [{name: "triage-host", risk: {level: "unknown", vulnerability: {
-            state: "complete", result: "qualified_findings", reported_cves: 1, confirmed_cves: 0, needs_review_cves: 0,
-            vendor_qualified_cves: 1, withdrawn_cves: 0, occurrences: 2,
-            findings: [{id: "CVE-2007-2243", severity: "critical", qualification: "vendor_qualified", assessment: {vendor_status: "unimportant", applicability: "source_match"}}]
-        }}}]
-    })});
-    const info=view.selectedHost.vulnerability;
-    assert.match(info.qualificationCountsLabel,/1 reported CVEs · 0 vendor-confirmed source matches/);
-    assert.match(info.qualificationCountsLabel,/1 vendor-qualified · 0 withdrawn · 2 package occurrences/);
-    assert.equal(info.findings[0].severity,"critical");
-    assert.equal(info.findings[0].qualificationLabel,"Vendor-qualified: inspect rationale");
-    assert.equal(info.findings[0].assessment.vendor_status,"unimportant");
-    assert.equal(view.selectedHost.risk.level,"unknown");
-});
-
-test("component scope and kernel ownership stay separate from vendor source counts", () => {
-    for (const kernel of ["evaluated", "external", "unknown"]) {
-        const view = project({statusView: statusView({servers: [{name: "component-host", status: "done"}], dashboardServers: [{name: "component-host", risk: {vulnerability: {
-            kernel_coverage: kernel, reported_cves: 1000, confirmed_cves: 1000, header_occurrences: 1000,
-            active_kernel_occurrences: 0, runtime_unknown_occurrences: 1000,
-            findings: [{id: "CVE-2004-0230", package: "linux-libc-dev", runtime_view: {component: "development_headers", execution: "unknown", exposure: "unknown", reason: "Headers do not prove running-kernel exposure"}}]
-        }}}]})});
-        const info = view.selectedHost.vulnerability;
-        assert.match(info.scopeLabel, /Docker images and application dependencies are not scanned/);
-        assert.match(info.scopeLabel, /Third-party repositories are not covered/);
-        assert.match(info.componentCountsLabel, /0 active kernel image matches/);
-        assert.match(info.componentCountsLabel, /1000 development-header matches/);
-        assert.equal(info.findings[0].runtime_view.execution, "unknown");
-        assert.match(info.qualificationCountsLabel, /1000 vendor-confirmed source matches/);
-        assert.match(info.kernelCoverageLabel, kernel === "external" ? /External container-host kernel/ : kernel === "evaluated" ? /context evaluated/ : /context unknown/);
-    }
-});
-
-test("fix availability dimensions and counters survive dashboard consumption", () => {
-    const availability = {published: {state: "published", fixed_versions: ["1:1.0-1+deb12u1", "1:1.0-1+deb12u3"]}, candidate_state: "same", repository_state: "published_not_observed", apt: {state: "stale", last_refresh_state: "failed"}};
-    const view = project({statusView: statusView({servers: [{name: "alpha", status: "done"}], dashboardServers: [{name: "alpha", risk: {vulnerability: {published_fix_occurrences: 2, candidate_addressed_occurrences: 1, resolved_occurrences: 0, findings: [{id: "CVE-2026-1000", availability}]}}}]})});
-    assert.deepEqual(view.selectedHost.vulnerability.findings[0].availability, availability);
-    assert.match(view.selectedHost.vulnerability.availabilityCountsLabel, /2 package findings with a published fix · 1 addressed by an observed candidate · 0 resolved/);
-    assert.equal(availability.candidate_state, "same");
+    assert.equal(view.selectedHost.hasPendingUpdates, true);
+    assert.deepEqual(view.selectedHost.updateCVEs, {state: "incomplete", correctable: 0});
+    assert.equal(view.selectedHost.vulnerability, undefined);
+    assert.equal(view.selectedHost.pendingApproval, false);
 });

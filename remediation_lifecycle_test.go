@@ -521,9 +521,14 @@ func TestRemediationRolesReviewAndReadRoutes(t *testing.T) {
 			t.Fatalf("%s %d %s", path, rec.Code, rec.Body.String())
 		}
 	}
-	for _, path := range []string{"/vulnerabilities", "/remediation", "/api/vulnerabilities", "/api/vulnerabilities/plan"} {
-		if rec := identityRequest(app, "GET", path, reader, "", nil); rec.Code != 200 {
-			t.Fatalf("%s %d %s", path, rec.Code, rec.Body.String())
+	for _, path := range []string{"/vulnerabilities", "/remediation"} {
+		if rec := identityRequest(app, "GET", path, reader, "", nil); rec.Code != 303 || rec.Header().Get("Location") != "/" {
+			t.Fatal(path, rec.Code)
+		}
+	}
+	for _, path := range []string{"/api/vulnerabilities", "/api/vulnerabilities/plan"} {
+		if rec := identityRequest(app, "GET", path, reader, "", nil); rec.Code != 410 {
+			t.Fatal(path, rec.Code)
 		}
 	}
 }

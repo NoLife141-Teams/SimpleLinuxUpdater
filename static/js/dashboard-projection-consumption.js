@@ -188,7 +188,7 @@
             if (cveCount > 0) riskLabel = `${cveCount} CVE`;
             else if (securityUpdates > 0) riskLabel = `${securityUpdates} security`;
             else if (pendingPackages > 0) riskLabel = "Package updates";
-            else riskLabel = "Installed packages not scanned";
+            else riskLabel = "Check for available updates";
         }
         const riskLevel = (text(rawTriage.risk_level) || text(rawRisk.level) || "unknown").toLowerCase();
         const riskOrder = canonicalCount(rawTriage, "risk_order", fallbackRiskOrder[riskLevel] || 0);
@@ -234,7 +234,7 @@
                 .map(value => text(value))
                 .find(value => value && value.toLowerCase() !== "no maintenance activity") || "Completed with errors"
             : "";
-        const actions = Object.fromEntries(["update", "autoremove", "repair_apt", "reboot", "enable_apt", "disable_apt", "refresh_facts", "scan_vulnerabilities", "approve_all", "approve_security", "approve_security_kept_back", "approve_full", "cancel"]
+        const actions = Object.fromEntries(["update", "autoremove", "repair_apt", "reboot", "enable_apt", "disable_apt", "refresh_facts", "approve_all", "approve_security", "approve_security_kept_back", "approve_full", "cancel"]
             .map(key => [key, actionFor(actionViews, key)]));
         const rawRecommendedAction = record(intelligence.recommended_action);
         const reconciliationFallback = statusValue === "needs_reconciliation";
@@ -272,8 +272,8 @@
             pendingApproval,
             runtimePending,
             timelinePending,
-            hasPendingUpdates: pendingApproval && pendingUpdates.length > 0,
-            vulnerability: vulnerabilityPresentation(rawRisk.vulnerability),
+            hasPendingUpdates: pendingUpdates.length > 0,
+            updateCVEs: clone(record(rawRisk.update_cves)),
             risk: { label: riskLabel, level: riskLevel, order: riskOrder, cveCount, securityUpdates, pendingPackages },
             auth,
             driftReason,
@@ -293,38 +293,6 @@
             canReboot: actionEnabled(actionViews, "reboot", false),
             canRunSudoers: actionEnabled(actionViews, "enable_apt", transientFallback),
             canRefreshFacts: actionEnabled(actionViews, "refresh_facts", transientFallback)
-        };
-    }
-
-    function vulnerabilityPresentation(raw) {
-        const info = record(raw);
-        const resolvedCount = count(info.resolved_occurrences);
-        const resolvedPreviewCount = list(info.resolved_findings).length;
-        const labels = { not_scanned: "Never scanned", unavailable: "Scan unavailable", partial: "Partial scan", complete: "Complete scan", running: "Scan running", cancelled: "Scan cancelled", interrupted: "Scan interrupted" };
-        const dispositions = { fixed_by_candidate: "Candidate addresses these findings; installation unverified", still_affected: "Candidate still affected", no_fix_available: "No verified candidate fix in observed data", candidate_unverified: "Candidate could not be verified" };
-        return {
-            ...clone(info),
-            stateLabel: labels[text(info.state)] || labels.not_scanned,
-            progressLabel: (() => {
-                const progress = record(info.progress);
-                const phase = {inventory: "Inventory", metadata: "Metadata and provenance", evaluation: "Evaluation", inventory_verification: "Inventory verification", persistence: "Persistence", enrichment: "Advisory enrichment"}[text(progress.phase)] || "Preparing";
-                return `${phase} · ${count(progress.inventoried)} inventoried · ${count(progress.metadata)} metadata collected · ${count(progress.evaluated)} evaluated · ${count(progress.unknown)} unknown · ${count(progress.unsupported)} unsupported`;
-            })(),
-            coverageLabel: `${count(info.evaluated)} of ${count(info.inventoried)} installed packages evaluated; ${count(info.unknown)} unknown; ${count(info.unsupported)} unsupported`,
-            scopeLabel: "Host OS packages only; verified official Debian/Ubuntu provenance. Third-party repositories are not covered. Docker images and application dependencies are not scanned.",
-            kernelCoverageLabel: {evaluated: "Running kernel context evaluated; source matches do not prove exploitability", external: "External container-host kernel; host operator verification required"}[text(info.kernel_coverage)] || "Running kernel context unknown; collect missing read-only facts",
-            componentCountsLabel: `${count(info.active_kernel_occurrences)} active kernel image matches · ${count(info.inactive_kernel_occurrences)} inactive kernel image matches · ${count(info.external_kernel_occurrences)} external kernel image matches · ${count(info.header_occurrences)} development-header matches · ${count(info.runtime_unknown_occurrences)} execution unknown`,
-            freshnessLabel: text(info.freshness, "unknown"),
-            qualificationCountsLabel: `${count(info.reported_cves)} reported CVEs · ${count(info.confirmed_cves)} vendor-confirmed source matches · ${count(info.needs_review_cves)} to review · ${count(info.vendor_qualified_cves)} vendor-qualified · ${count(info.withdrawn_cves)} withdrawn · ${count(info.occurrences)} package occurrences`,
-            availabilityCountsLabel: `${count(info.published_fix_occurrences)} package findings with a published fix · ${count(info.candidate_addressed_occurrences)} addressed by an observed candidate · ${count(info.resolved_occurrences)} resolved by installed-package evidence`,
-            evidenceCountsLabel: `${count(info.current_occurrences)} current package findings · ${count(info.unverified_occurrences)} not reverified · ${count(info.resolved_occurrences)} resolved by scan evidence`,
-            resolvedFindingsLabel: `${resolvedPreviewCount < resolvedCount ? `${resolvedPreviewCount} of ` : ""}${resolvedCount} resolved package findings`,
-            resolvedPreviewTruncated: resolvedPreviewCount < resolvedCount,
-            resultLabel: { confirmed_exposure: "Historical source matches — review required", vendor_confirmed: "Vendor-confirmed source matches; runtime applicability unverified", needs_review: "Source matches require review", qualified_findings: "Qualified findings; inspect vendor reasoning", no_findings: "No findings in evaluated packages", inconclusive: "Inconclusive" }[text(info.result)] || "Exposure unknown",
-            findings: list(info.findings).map(finding => ({ ...clone(record(finding)), qualificationLabel: {vendor_confirmed:"Vendor-confirmed source match",vendor_qualified:"Vendor-qualified: inspect rationale",withdrawn:"Advisory withdrawn; no package fix demonstrated"}[text(record(finding).qualification)] || "Applicability requires review", dispositionLabel: text(record(record(finding).availability).candidate_state) === "unverified" ? "Candidate could not be verified" : text(record(finding).disposition) === "fixed_by_candidate" && !record(finding).availability ? "Historical candidate assessment; rescan required" : dispositions[text(record(finding).disposition)] || "Fix status unknown" })),
-            resolved_findings: list(info.resolved_findings).map(finding => ({ ...clone(record(finding)), resolutionLabel: {installed_version_changed:"No longer reported after installed version changed",package_removed:"Package removal verified",no_longer_reported:"No longer reported by a complete package assessment"}[text(record(record(finding).resolution).reason)] || "Historical resolution; proof unavailable" })),
-            enrichment_errors: list(info.enrichment_errors).map(value => text(value)),
-            errors: list(info.errors).map(value => text(value))
         };
     }
 

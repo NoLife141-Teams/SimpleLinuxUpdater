@@ -10,8 +10,6 @@ import (
 	"encoding/json"
 	"errors"
 	"log"
-	"net/http"
-	"strconv"
 	"sync"
 	"time"
 
@@ -311,109 +309,6 @@ func (s *remediationLifecycle) Reconcile(ctx context.Context) error {
 func remediationJobTerminal(state string) bool {
 	return state == "succeeded" || state == "failed" || state == "cancelled" || state == "interrupted"
 }
-func handlePrepareRemediation(c *gin.Context, deps AppDeps) {
-	lifecycle := newServerActionLifecycle(deps, func(action, targetType, targetName, status, message string, meta map[string]any) {
-		auditWithService(deps.AuditService, c, action, targetType, targetName, status, message, meta)
-	})
-	result := lifecycle.startAction(c.Param("name"), actorFromContext(c), c.ClientIP(), "", serverActionStartSpec{status: "updating", packageMutation: true, jobKind: jobKindUpdate, auditAction: "remediation.prepare", startFailure: "Failed to prepare remediation", createFailure: "Failed to create preparation job", successMessage: "Fresh package discovery started; explicit approval is required", runWithJob: func(service *UpdateService, server Server, actor, ip string, policy RetryPolicy, id, _ string) {
-		service.RunUpdateJob(deps.Remediation.request(server, actor, ip, id, policy))
-		_ = deps.Remediation.Reconcile(currentApplicationMaintenanceContext())
-	}})
-	c.JSON(result.statusCode, result.body)
-}
-func remediationOwnedPlan(c *gin.Context, deps AppDeps) (remediation.Plan, bool) {
-	p, err := deps.Remediation.repo().Load(c.Request.Context(), c.Param("plan_id"))
-	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Remediation plan not found"})
-		return p, false
-	}
-	name, err := deps.Remediation.repo().ServerName(c.Request.Context(), p.ServerKey)
-	if err != nil || name != c.Param("name") {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Remediation plan is not attached to this Server"})
-		return p, false
-	}
-	return p, true
-}
-func handleRemediationHistory(c *gin.Context, deps AppDeps) {
-	if _, found := deps.ServerState.FindByName(c.Param("name")); !found {
-		c.JSON(404, gin.H{"error": "Server not found"})
-		return
-	}
-	var key string
-	err := deps.DB().QueryRowContext(c.Request.Context(), `SELECT id FROM remediation_servers WHERE server_name=?`, c.Param("name")).Scan(&key)
-	if err != nil {
-		c.JSON(200, gin.H{"plans": []remediation.Plan{}, "reviews": []remediation.Review{}})
-		return
-	}
-	plans, err := deps.Remediation.repo().List(c.Request.Context(), key)
-	if err != nil {
-		c.JSON(500, gin.H{"error": "Remediation history unavailable"})
-		return
-	}
-	for i := range plans {
-		if job, e := deps.CurrentJobManager().GetJob(plans[i].JobID); e == nil {
-			plans[i].UpdateStatus = job.Status
-		}
-		plans[i] = publicRemediationPlan(plans[i])
-		plans[i].Snapshot = nil
-		if plans[i].Comparison != nil {
-			plans[i].Comparison.Outcomes = nil
-		}
-	}
-	reviews, err := deps.Remediation.repo().Reviews(c.Request.Context(), key)
-	if err != nil {
-		c.JSON(500, gin.H{"error": "Risk reviews unavailable"})
-		return
-	}
-	setNoStoreHeaders(c)
-	c.JSON(200, gin.H{"plans": plans, "reviews": reviews})
-}
-func handleRemediationDetail(c *gin.Context, deps AppDeps) {
-	p, ok := remediationOwnedPlan(c, deps)
-	if !ok {
-		return
-	}
-	if job, e := deps.CurrentJobManager().GetJob(p.JobID); e == nil {
-		p.UpdateStatus = job.Status
-	}
-	page := 1
-	if raw := c.Query("page"); raw != "" {
-		v, err := strconv.Atoi(raw)
-		if err != nil || v < 1 || v > 1000000 {
-			c.JSON(400, gin.H{"error": "Invalid page"})
-			return
-		}
-		page = v
-	}
-	total := 0
-	if p.Comparison != nil {
-		total = len(p.Comparison.Outcomes)
-		page = min(page, max(1, (total+49)/50))
-		start := (page - 1) * 50
-		p.Comparison.Outcomes = p.Comparison.Outcomes[start:min(start+50, total)]
-	}
-	setNoStoreHeaders(c)
-	c.JSON(200, gin.H{"plan": publicRemediationPlan(p), "page": page, "pages": max(1, (total+49)/50), "total": total})
-}
-func handleRetryRemediation(c *gin.Context, deps AppDeps) {
-	p, ok := remediationOwnedPlan(c, deps)
-	if !ok {
-		return
-	}
-	if p.State != "verification_failed" && p.State != "partially_verified" {
-		c.JSON(409, gin.H{"error": "Verification is not retryable in its current state"})
-		return
-	}
-	previousState := p.State
-	p.State = "queued"
-	p.Message = "Verification retry queued; maintenance will not be repeated"
-	if err := deps.Remediation.repo().Save(c.Request.Context(), p, previousState); err != nil {
-		c.JSON(409, gin.H{"error": "Verification changed; refresh"})
-		return
-	}
-	auditWithService(deps.AuditService, c, "remediation.retry", "server", c.Param("name"), "queued", p.Message, map[string]any{"remediation_plan_id": p.ID, "update_job_id": p.JobID})
-	c.JSON(202, gin.H{"message": p.Message})
-}
 func handleRiskReview(c *gin.Context, deps AppDeps) {
 	var v remediation.Review
 	if err := c.ShouldBindJSON(&v); err != nil || !v.Valid(deps.Now()) {
@@ -631,64 +526,4 @@ func buildRemediationTransaction(name string, status *ServerStatus, before vulne
 		out.Scopes = append(out.Scopes, row)
 	}
 	return out
-}
-
-// Evidence is bounded separately from the immutable transaction and outcome pages.
-func handleRemediationEvidence(c *gin.Context, deps AppDeps) {
-	p, ok := remediationOwnedPlan(c, deps)
-	if !ok {
-		return
-	}
-	page := 1
-	if raw := c.Query("page"); raw != "" {
-		v, err := strconv.Atoi(raw)
-		if err != nil || v < 1 || v > 1000000 {
-			c.JSON(400, gin.H{"error": "Invalid evidence page"})
-			return
-		}
-		page = v
-	}
-	var inventory []PendingUpdate
-	if json.Unmarshal(p.Inventory, &inventory) != nil {
-		inventory = []PendingUpdate{}
-	}
-	pkg := c.Query("package")
-	if len(pkg) > 300 {
-		c.JSON(400, gin.H{"error": "Invalid package"})
-		return
-	}
-	facts := []PendingUpdate{}
-	findings := []vulnerabilities.Finding{}
-	for _, f := range inventory {
-		if pkg == "" || f.Package == pkg {
-			facts = append(facts, f)
-		}
-	}
-	for _, f := range p.Before.Findings {
-		if pkg != "" && f.Package == pkg {
-			findings = append(findings, f)
-		}
-	}
-	total := max(len(facts), len(findings))
-	pages := max(1, (total+49)/50)
-	page = min(page, pages)
-	start := (page - 1) * 50
-	facts = facts[min(start, len(facts)):min(start+50, len(facts))]
-	findings = findings[min(start, len(findings)):min(start+50, len(findings))]
-	setNoStoreHeaders(c)
-	c.JSON(200, gin.H{"plan_id": p.ID, "before_scan_id": p.BeforeScanID, "before_at": p.BeforeAt, "inventory": facts, "findings": findings, "package_proof": p.Before.PackageProofs[pkg], "page": page, "pages": pages, "total": total})
-}
-
-// Operational readers receive health decisions, never maintenance command output.
-func publicRemediationPlan(p remediation.Plan) remediation.Plan {
-	if p.Completion != nil {
-		public := map[string]any{}
-		for _, key := range []string{"status", "upgrade_completed", "postchecks_enabled", "postchecks_passed", "postcheck_failed", "postcheck_warnings", "approval_scope", "approved_package_count", "approved_packages", "interrupted", "remediation_plan_id", "remediation_digest", "before_scan_id", "last_error_class"} {
-			if value, ok := p.Completion[key]; ok {
-				public[key] = value
-			}
-		}
-		p.Completion = public
-	}
-	return p
 }

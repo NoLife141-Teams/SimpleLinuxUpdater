@@ -123,6 +123,7 @@ A bounded, authenticated, host-key-verified execution context for performing mai
 _Avoid_: SSH helper bundle, update connection
 
 **Distribution Vulnerability Assessment**:
+In the active product this enriches only available APT package updates; standalone installed-package scanning and its workspaces are retired. Historical scan records remain backup-compatible and do not contribute to Dashboard Projection.
 The source-attributed evaluation of a vulnerability for an exact distribution ecosystem, source package and version, including vendor triage/priority, applicability/confidence and observation freshness. It is distinct from CVSS, candidate availability, runtime exploitability and resolution of an installed-package finding. Missing or stale assessments require review; vendor-qualified and withdrawn advisories remain visible without being represented as package fixes.
 _Avoid_: CVSS verdict, confirmed vulnerability from an OSV ID alone
 

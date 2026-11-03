@@ -5,18 +5,10 @@ import (
 	"testing"
 	"time"
 
-	"debian-updater/internal/observability"
-	"debian-updater/internal/securityintel"
 	"debian-updater/internal/vulnerabilities"
 )
 
-func TestRunUpdateRetainsApprovalOnlyCriticalWatchAfterCancellation(t *testing.T) {
-	for _, age := range []time.Duration{0, 31 * 24 * time.Hour, 60 * 24 * time.Hour, 90 * 24 * time.Hour} {
-		t.Run(age.String(), func(t *testing.T) { testRunUpdateRetainsApprovalOnlyCriticalWatchAfterCancellation(t, age) })
-	}
-}
-
-func testRunUpdateRetainsApprovalOnlyCriticalWatchAfterCancellation(t *testing.T, publicationAge time.Duration) {
+func TestRunUpdateCVEEnrichmentDoesNotCreateStandaloneWatchAfterCancellation(t *testing.T) {
 	app := newIsolatedTestApp(t)
 	server, err := app.Deps.ServerInventoryService.Create(Server{Name: "approval-priority", Host: "192.0.2.96", User: "root"})
 	if err != nil {
@@ -25,13 +17,12 @@ func testRunUpdateRetainsApprovalOnlyCriticalWatchAfterCancellation(t *testing.T
 	now := app.Deps.Now().UTC()
 	at := now.Add(-time.Hour).Format(time.RFC3339)
 	f := VulnerabilityFinding{ID: "CVE-2026-9999", SourcePackage: "example", Severity: "critical", SeveritySource: "synthetic", SeverityObservedAt: at, PublishedAt: at, Assessment: vulnerabilities.Assessment{Ecosystem: "Debian:12", SourcePackage: "example", SourceVersion: "1", VendorStatus: "affected", Confidence: "vendor_confirmed", Applicability: "source_match", Source: "synthetic", ObservedAt: at}, Availability: &vulnerabilities.FixAvailability{Published: vulnerabilities.PublishedFix{State: "not_established", Source: "synthetic", ObservedAt: at, Ranges: []vulnerabilities.FixRange{{Type: "ECOSYSTEM", Events: []vulnerabilities.VersionEvent{{Introduced: "0"}}}}}, CandidateState: "affected"}}
-	f.PublishedAt = now.Add(-time.Hour).Add(-publicationAge).Format(time.RFC3339)
 	deps := testUpdateServiceDeps(t)
 	deps.ServerState = app.Deps.ServerState
 	deps.CurrentJobManager = app.Deps.CurrentJobManager
 	deps.RecordApprovalFindings = app.Deps.UpdateService.EnsureDeps().RecordApprovalFindings
-	if deps.RecordApprovalFindings == nil {
-		t.Fatal("composed runtime has no positive-history admission hook")
+	if deps.RecordApprovalFindings != nil {
+		t.Fatal("composed runtime still records a standalone CVE watch")
 	}
 	deps.Now = func() time.Time { return now }
 	deps.StartJobRunner = func(_ string, run func()) { run() }
@@ -47,6 +38,10 @@ func testRunUpdateRetainsApprovalOnlyCriticalWatchAfterCancellation(t *testing.T
 	})
 	var service *UpdateService
 	deps.WaitForApprovalPollContext = func(context.Context) error {
+		pending := deps.ServerState.CurrentStatusSnapshot(server.Name).PendingUpdates
+		if len(pending) != 1 || pending[0].CVEState != "ready" || len(pending[0].CVEFindings) != 1 {
+			t.Fatal("available update lost its CVE details", pending)
+		}
 		if _, ok := service.CancelPendingUpdate(server.Name); !ok {
 			t.Fatal("pending cancellation rejected")
 		}
@@ -72,33 +67,16 @@ func testRunUpdateRetainsApprovalOnlyCriticalWatchAfterCancellation(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if observation.Accepted != nil || observation.LastAttempt.State != "" || len(observation.Findings) != 1 || observation.Findings[0].PrioritySince != at {
-		t.Fatalf("approval history changed installed coverage or missed watch: %+v", observation)
+	if observation.Accepted != nil || observation.LastAttempt.State != "" || len(observation.Findings) != 0 {
+		t.Fatalf("available update created standalone vulnerability history: %+v", observation)
 	}
-	build := func(clock time.Time) observability.SecurityActions {
-		t.Helper()
-		summary, err := app.Deps.ObservabilityService.BuildDashboardSummaryContextWithOptions(context.Background(), "7d", clock, observability.DashboardSummaryOptions{OmitCommandHistory: true})
-		if err != nil {
-			t.Fatal(err)
-		}
-		return observability.BuildSecurityActions(summary, securityintel.Snapshot{}, observability.SecurityActionQuery{}, clock)
-	}
-	if initial := build(now); initial.AlertTotal != 1 {
-		t.Fatalf("approval-only alert was not displayed: %+v", initial)
-	}
-	if stale := build(now.Add(48 * time.Hour)); stale.AlertTotal != 0 || stale.ReviewPriority != 1 {
-		t.Fatalf("unresolved alert lost its priority on expiry: %+v", stale)
-	}
-	later := now.Add(60 * 24 * time.Hour)
-	next := observation.Findings[0]
-	next.LastSeen = later.Format(time.RFC3339)
-	next.SeverityObservedAt = next.LastSeen
-	next.Assessment.ObservedAt = next.LastSeen
-	next.Availability.Published.ObservedAt = next.LastSeen
-	if err := repo.RecordPositiveFindings(context.Background(), server.Name, []vulnerabilities.Finding{next}); err != nil {
+	summary, err := app.Deps.ObservabilityService.BuildDashboardSummary("7d", now)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if refreshed := build(later); refreshed.AlertTotal != 1 {
-		t.Fatalf("refreshed watch aged out after disclosure window: %+v", refreshed)
+	for _, host := range summary.Servers {
+		if len(host.Risk.CVEs) != 0 {
+			t.Fatal("cancelled update still contributes CVEs", host.Risk)
+		}
 	}
 }

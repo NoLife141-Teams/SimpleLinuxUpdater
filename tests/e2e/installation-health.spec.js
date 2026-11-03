@@ -12,7 +12,7 @@ test("production installation health is public, admin cookie diagnostics refresh
  const directory=await fs.mkdtemp(path.join(os.tmpdir(),"slu-health-494-"));
  const port=await new Promise((resolve,reject)=>{const socket=net.createServer();socket.on("error",reject);socket.listen(0,"127.0.0.1",()=>{const port=socket.address().port;socket.close(()=>resolve(port));});});
  const url=`http://127.0.0.1:${port}`;
- const env={...Object.fromEntries(Object.entries(process.env).filter(([key])=>!key.startsWith("DEBIAN_UPDATER_"))),GIN_MODE:"release",DEBIAN_UPDATER_LISTEN_ADDR:`127.0.0.1:${port}`,DEBIAN_UPDATER_DB_PATH:path.join(directory,"servers.db"),DEBIAN_UPDATER_HOST_FACTS_AUTO_REFRESH_ENABLED:"false",DEBIAN_UPDATER_VULNERABILITY_SCAN_ENABLED:"false"};
+ const env={...Object.fromEntries(Object.entries(process.env).filter(([key])=>!key.startsWith("DEBIAN_UPDATER_"))),GIN_MODE:"release",DEBIAN_UPDATER_LISTEN_ADDR:`127.0.0.1:${port}`,DEBIAN_UPDATER_DB_PATH:path.join(directory,"servers.db"),DEBIAN_UPDATER_HOST_FACTS_AUTO_REFRESH_ENABLED:"false",DEBIAN_UPDATER_VULNERABILITY_SCAN_ENABLED:"true"};
  let log="";
  const child=spawn(binary,[],{cwd:path.resolve("."),env,stdio:["ignore","pipe","pipe"]});
  child.stdout.on("data",data=>{log+=data});child.stderr.on("data",data=>{log+=data});

@@ -22,7 +22,7 @@ import (
 )
 
 func TestScheduledScanRetainsObservedAPTRefreshAcrossStatusRestoration(t *testing.T) {
-	for _, outcome := range []string{"succeeded", "partial", "failed"} {
+	for _, outcome := range []string{"succeeded", "partial", "failed", "discovery_failed", "discovery_incomplete"} {
 		t.Run(outcome, func(t *testing.T) {
 			db, repository, _, audits := newReconciliationHarness(t)
 			now := time.Date(2026, 10, 30, 0, 0, 0, 0, time.UTC)
@@ -47,7 +47,10 @@ func TestScheduledScanRetainsObservedAPTRefreshAcrossStatusRestoration(t *testin
 					return updates.HostCommandResult{}, nil
 				},
 				DiscoverPackagesFunc: func(context.Context, updates.HostOperationRequest) (updates.HostPackageDiscoveryResult, error) {
-					return updates.HostPackageDiscoveryResult{}, nil
+					if outcome == "discovery_failed" {
+						return updates.HostPackageDiscoveryResult{}, errors.New("synthetic package discovery failure")
+					}
+					return updates.HostPackageDiscoveryResult{Outcome: updates.PackageDiscoveryOutcome{AvailableUpdatesComplete: outcome != "discovery_incomplete"}}, nil
 				},
 			}
 			service := updates.NewService(updates.ServiceDeps{
@@ -79,29 +82,40 @@ func TestScheduledScanRetainsObservedAPTRefreshAcrossStatusRestoration(t *testin
 				t.Fatal(result.Err)
 			}
 			status := state.CurrentStatusSnapshot(server.Name)
-			if status.Status != "done" || status.APTMetadata.LastRefreshState != outcome || status.APTMetadata.LastRefreshAt != now.Format(time.RFC3339Nano) {
+			wantRefresh := outcome
+			if outcome == "discovery_failed" || outcome == "discovery_incomplete" {
+				wantRefresh = "succeeded"
+			}
+			if status.Status != "done" || status.APTMetadata.LastRefreshState != wantRefresh || status.APTMetadata.LastRefreshAt != now.Format(time.RFC3339Nano) {
 				t.Fatalf("refresh evidence lost during status restoration: %+v", status)
 			}
 			wantSuccess := previousSuccess
-			if outcome == "succeeded" {
+			if wantRefresh == "succeeded" {
 				wantSuccess = now.Format(time.RFC3339Nano)
 			}
 			if status.APTMetadata.LastSuccessAt != wantSuccess {
 				t.Fatalf("last success = %s, want %s", status.APTMetadata.LastSuccessAt, wantSuccess)
+			}
+			wantChecked := now.Format(time.RFC3339Nano)
+			if outcome == "failed" || outcome == "discovery_failed" || outcome == "discovery_incomplete" {
+				wantChecked = ""
+			}
+			if status.EmptyPackageDiscoveryRefreshAt != wantChecked {
+				t.Fatalf("package discovery observation = %q, want %q", status.EmptyPackageDiscoveryRefreshAt, wantChecked)
 			}
 			job, err := jm.GetJob(result.JobID)
 			if err != nil {
 				t.Fatal(err)
 			}
 			wantJob := jobs.StatusSucceeded
-			if outcome == "failed" {
+			if outcome == "failed" || outcome == "discovery_failed" {
 				wantJob = jobs.StatusFailed
 			}
 			if job.Status != wantJob {
 				t.Fatalf("job=%+v", job)
 			}
 			action := "schedule.run.completed"
-			if outcome == "failed" {
+			if outcome == "failed" || outcome == "discovery_failed" {
 				action = "schedule.run.failed"
 			}
 			listed, err := audits.List(audit.ListFilter{Action: action, TargetName: server.Name})

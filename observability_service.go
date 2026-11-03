@@ -8,7 +8,6 @@ import (
 	healthpkg "debian-updater/internal/health"
 	observabilitypkg "debian-updater/internal/observability"
 	serverpkg "debian-updater/internal/servers"
-	"debian-updater/internal/vulnerabilities"
 
 	"github.com/alexedwards/argon2id"
 )
@@ -39,17 +38,6 @@ func NewMetricsAccessCredential(deps MetricsAccessCredentialDeps) MetricsAccessC
 func observabilityServiceDepsWithDefaults(deps ObservabilityServiceDeps) ObservabilityServiceDeps {
 	if deps.DB == nil {
 		deps.DB = getDB
-	}
-	if deps.VulnerabilityObservations == nil {
-		deps.VulnerabilityObservations = (vulnerabilities.Repository{DB: deps.DB}).All
-	}
-	cfg, err := loadVulnerabilityScanConfig()
-	if err == nil {
-		deps.VulnerabilityTargetDays = cfg.TargetDays
-		deps.VulnerabilityScanEnabled = cfg.Enabled
-		if cfg.Interval > 0 {
-			deps.VulnerabilityMaxAge = cfg.Interval
-		}
 	}
 	if deps.DBPath == nil {
 		deps.DBPath = dbPath

@@ -630,6 +630,40 @@
             return `${enabled ? "" : "disabled"} title="${escapeHtml(title)}"`;
         }
 
+        function pendingProvenanceHtml(server, updates) {
+            const groups = [
+                {
+                    title: "Installed origin unverified",
+                    explanation: "OSV results use official distribution data, but APT no longer exposes the origin of the installed version.",
+                    packages: updates.filter(update =>
+                        String(update.cve_state || "").toLowerCase() === "ready" &&
+                        String(update.cve_coverage || "").toLowerCase() === "official_installed_unverified"),
+                },
+                {
+                    title: "Coverage unknown",
+                    explanation: "Installed package provenance or candidate repository is not officially verified; no vulnerability claim is made.",
+                    packages: updates.filter(update =>
+                        String(update.cve_state || "").toLowerCase() === "unsupported"),
+                },
+            ].filter(group => group.packages.length);
+            const affected = groups.reduce(
+                (count, group) => count + group.packages.length, 0,
+            );
+            if (!affected) return "";
+            const key = JSON.stringify(["provenance", String(server?.name || ""), updates.map(update => JSON.stringify([
+                String(update.install_package || update.package || ""),
+                String(update.current_version || ""), String(update.candidate_version || ""),
+            ])).sort()]);
+            return `<details class="pending-provenance" data-cve-disclosure-key="${escapeHtml(key)}" ${expandedCVEFindings.has(key) ? "open" : ""}>
+                <summary>Provenance warnings for ${affected} of ${updates.length} packages</summary>
+                <div class="pending-provenance-content">${groups.map(group => `<section>
+                    <h5>${escapeHtml(group.title)} (${group.packages.length})</h5>
+                    <p>${escapeHtml(group.explanation)}</p>
+                    <p>Packages: ${group.packages.map(update => escapeHtml(update.package || "unknown")).join(", ")}</p>
+                </section>`).join("")}</div>
+            </details>`;
+        }
+
         function renderPendingUpdatesHtml(server, includeHeading = true) {
             const updates = Array.isArray(server?.pending_updates)
                 ? server.pending_updates
@@ -736,8 +770,6 @@
                         <td>${currentVersion} &rarr; ${candidateVersion}</td>
                         <td>
                             <div class="pending-badges">${badges.join("")}</div>
-                            ${state === "unsupported" ? `<p class="pending-note">Installed package provenance or candidate repository is not officially verified; no vulnerability claim is made.</p>` : ""}
-                            ${state === "ready" && coverage === "official_installed_unverified" ? `<p class="pending-note">OSV results use official distribution data, but APT no longer exposes the origin of the installed version.</p>` : ""}
                             ${vulnerabilityFindingsHtml(update, cveDisclosureKey)}
                         </td>
                     </tr>
@@ -756,6 +788,7 @@
                         <span class="pending-badge">${keptBackCount} kept back</span>
                     </div>
                     ${hasPending ? `<p class="pending-note">Checking CVEs for available updates…</p>` : ""}
+                    ${pendingProvenanceHtml(server, updates)}
                     <div class="table-wrap">
                         <table class="pending-table">
                             <thead>
@@ -3492,7 +3525,7 @@
             "toggle",
             (event) => {
                 const details = event.target;
-                if (!details?.matches?.("details.cve-findings, details.cve-evidence")) return;
+                if (!details?.matches?.("details.cve-findings, details.cve-evidence, details.pending-provenance")) return;
                 const disclosureKey = details.dataset.cveDisclosureKey || details.dataset.cveEvidenceKey;
                 if (!disclosureKey) return;
                 if (details.open) {

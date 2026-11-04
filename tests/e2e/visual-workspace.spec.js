@@ -1,6 +1,32 @@
 const { test, expect, ensureAuthenticatedSession } = require('./support/fixtures');
 const { stubDashboardApi, stubManageApi, stubAdminApi, makeServer, makePendingUpdates, fulfillJson } = require('./support/builders');
 
+for (const width of [390, 1440]) {
+    test(`secondary fleet metrics filter the maintenance queue at ${width}px`, async ({ page }) => {
+        await stubDashboardApi(page, () => [
+            makeServer('fresh-host', 'done'),
+            makeServer('stale-host', 'done', [], { facts_state: 'stale' }),
+            makeServer('unknown-host', 'done', [], { facts_state: 'unknown' }),
+            makeServer('cve-host', 'pending_approval', makePendingUpdates(1)),
+        ]);
+        await ensureAuthenticatedSession(page);
+        await page.setViewportSize({ width, height: 844 });
+        await page.goto('/');
+        const secondary = page.locator('.fleet-secondary-metrics');
+        if (width <= 980) await secondary.locator(':scope > summary').click();
+        const rows = page.locator('#servers-table tbody tr[data-name]');
+        await expect(rows).toHaveCount(4);
+        await secondary.locator('[data-metric-filter="stale_facts"]').click();
+        await expect.poll(() => rows.evaluateAll(nodes => nodes.map(node => node.dataset.name).sort()))
+            .toEqual(['stale-host', 'unknown-host']);
+        await secondary.locator('[data-metric-filter="high_risk"]').click();
+        await expect(rows).toHaveCount(1);
+        await expect(rows).toHaveAttribute('data-name', 'cve-host');
+        await page.locator('.fleet-primary-metrics [data-metric-filter=""]').click();
+        await expect(rows).toHaveCount(4);
+    });
+}
+
 test('mobile shell, disclosures and server actions stay usable without horizontal scrolling', async ({ page }) => {
     await stubDashboardApi(page, () => [makeServer('web-01', 'pending_approval', makePendingUpdates(3))]);
     await ensureAuthenticatedSession(page);

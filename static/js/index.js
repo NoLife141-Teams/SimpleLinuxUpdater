@@ -2633,9 +2633,9 @@
             });
         }
 
-        const metricStrip = document.querySelector(".metric-strip");
-        if (metricStrip) {
-            lifecycle.listen(metricStrip, "click", (e) => {
+        const fleetMetrics = document.querySelector(".fleet-metrics");
+        if (fleetMetrics) {
+            lifecycle.listen(fleetMetrics, "click", (e) => {
                 const button = e.target.closest("button[data-metric-filter]");
                 if (!button) return;
                 applyFleetQuickFilter(button.dataset.metricFilter || "");

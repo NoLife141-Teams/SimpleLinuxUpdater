@@ -1,3 +1,4 @@
+const { navigateSection, openSectionNavigation } = require("./support/fixtures");
 const { test, expect, ensureAuthenticatedSession } = require('./support/fixtures');
 const { stubAdminApi, stubManageApi, stubDashboardApi, makeServer, fulfillJson } = require('./support/builders');
 const fs = require('node:fs');
@@ -27,7 +28,9 @@ async function navClearsHeader(page, prefix) {
 }
 async function scrollAndSettle(page, delta) {
     const before = await page.evaluate(() => scrollY);
-    await page.mouse.wheel(0, delta);
+    const limit = await page.evaluate(() => document.documentElement.scrollHeight - innerHeight);
+    const travel = delta > 0 && before >= limit - 1 ? -delta : delta < 0 && before <= 1 ? -delta : delta;
+    await page.mouse.wheel(0, travel);
     await expect.poll(() => page.evaluate(() => scrollY)).not.toBe(before);
     let previous, stable = 0;
     await expect.poll(async () => {
@@ -51,7 +54,7 @@ for (const prefix of ['manage', 'admin']) {
         for (const width of [390, 900, 1284, 900, 700, 768]) {
             await page.setViewportSize({ width, height: 884 });
             await navClearsHeader(page, prefix);
-            await page.locator(`[data-${prefix}-section-link="${section}"]`).click();
+            await navigateSection(page, prefix, section);
             await expect(heading).toBeFocused();
             await expect.poll(() => page.evaluate(({ prefix, section }) => {
                 const nav = document.getElementById(`${prefix}-section-nav`).getBoundingClientRect();
@@ -132,9 +135,12 @@ test('Status filter human words remain whole with visible counters and long tech
     await ensureAuthenticatedSession(page);
     for (const width of [1284, 900, 768, 390]) {
         await page.setViewportSize({ width, height: 884 });
+        await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
         for (const label of ['Pending', 'Facts refresh']) {
             const filter = page.locator('#fleet-status-filters button').filter({ has: page.locator('span', { hasText: label }) });
+            if (width <= 980 && !(await page.locator(".fleet-rail").evaluate(node => node.open))) await page.locator(".fleet-filter-toggle").click();
             await expect(filter).toBeVisible();
+            await expect.poll(async () => {
             const words = await filter.locator('span').evaluate(node => {
                 const text = node.firstChild, value = text.textContent;
                 return Array.from(value.matchAll(/\S+/g), match => {
@@ -145,7 +151,8 @@ test('Status filter human words remain whole with visible counters and long tech
                     return { lines: rects.length, fits: rects.every(r => r.left >= bounds.left - 1 && r.right <= bounds.right + 1) };
                 });
             });
-            expect(words.every(word => word.lines === 1 && word.fits)).toBe(true);
+            return words.every(word => word.lines === 1 && word.fits);
+            }, { message: `${width}px ${label} words stay whole after disclosure layout` }).toBe(true);
             await expect(filter.locator('strong')).toBeVisible();
             await filter.focus();
             await expect(filter).toBeFocused();

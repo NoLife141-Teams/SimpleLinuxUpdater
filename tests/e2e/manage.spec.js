@@ -374,7 +374,7 @@ test("successful per-server-key creation clears the displayed filename", async (
 
     await page.goto("/manage");
     await page
-        .getByRole("link", { name: /Add Server Create an SSH target/ })
+        .locator('[data-manage-section-link="add-server"]')
         .click();
     await page
         .locator('input[name="add-auth-method"][value="per-server-key"]')
@@ -431,7 +431,7 @@ test("add-server validation failures render inline and focus the first invalid f
 
     await page.goto("/manage");
     await page
-        .getByRole("link", { name: /Add Server Create an SSH target/ })
+        .locator('[data-manage-section-link="add-server"]')
         .click();
     const submit = page.locator("#onboarding-next");
     await submit.click();
@@ -670,7 +670,7 @@ test("Manage Servers confines responsive overflow to data tables", async ({
         ).toBe(1);
 
         await expect(
-            page.getByRole("link", { name: /Add Server Create an SSH target/ }),
+            page.locator('[data-manage-section-link="add-server"]'),
         ).toBeVisible();
         await expect(
             page.getByRole("button", { name: "Prev", exact: true }),
@@ -689,7 +689,7 @@ test("Manage Servers section navigation focuses the destination heading without 
     await page.goto("/manage");
 
     await page
-        .getByRole("link", { name: /Add Server Create an SSH target/ })
+        .locator('[data-manage-section-link="add-server"]')
         .click();
 
     const heading = page.locator("#manage-section-add-server-heading");
@@ -709,12 +709,8 @@ test("Manage Servers section navigation follows the visible workspace while scro
     });
     await page.goto("/manage");
 
-    const addServerLink = page.getByRole("link", {
-        name: /Add Server Create an SSH target/,
-    });
-    const directoryLink = page.getByRole("link", {
-        name: /Server directory \d+ servers/,
-    });
+    const addServerLink = page.locator('[data-manage-section-link="add-server"]');
+    const directoryLink = page.locator('[data-manage-section-link="directory"]');
     const auditLink = page.locator('[data-manage-section-link="audit"]');
     await addServerLink.click();
     await expect(addServerLink).toHaveAttribute("aria-current", "location");
@@ -735,9 +731,8 @@ test("Manage Servers section navigation follows the visible workspace while scro
     await expect(directoryLink).not.toHaveAttribute("aria-current", "location");
     await expect(page).toHaveURL(/#manage-section-audit$/);
 
-    await page.evaluate(() =>
-        window.scrollTo(0, document.documentElement.scrollHeight),
-    );
+    await page.mouse.move(8, 400);
+    await page.mouse.wheel(0, 100000);
 
     await expect(auditLink).toHaveAttribute("aria-current", "location");
     await expect(directoryLink).not.toHaveAttribute("aria-current", "location");
@@ -1217,6 +1212,7 @@ test("inventory import preserves navigation and editor focus when validation fin
                     '[data-action="edit-server"][data-name="focus-fixture"]',
                 )
                 .click();
+            await expect(page.locator("#edit-name")).toBeFocused();
             focused = page.locator("#edit-host");
             await focused.fill("operator-draft.example");
         }
@@ -1586,9 +1582,8 @@ test("inventory import keeps accepted result focus when viewport tracking change
     await started;
     // Viewport observation can change the navigation highlight while the disabled
     // initiating button releases keyboard focus. It is not a newer focus target.
-    await page.evaluate(() =>
-        window.scrollTo(0, document.documentElement.scrollHeight),
-    );
+    await page.mouse.move(8, 400);
+    await page.mouse.wheel(0, 100000);
     await expect
         .poll(() =>
             page.evaluate(

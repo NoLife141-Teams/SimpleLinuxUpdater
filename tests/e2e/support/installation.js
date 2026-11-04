@@ -26,9 +26,10 @@ async function startInstallation(binary = process.env.SLU_E2E_TEST_BINARY, trans
         throw new Error(
             "SLU_E2E_TEST_BINARY must name the disposable Go test composition",
         );
-    const directory = await fs.mkdtemp(
+    // Deployment-path validation rejects symlink ancestors, including macOS /var.
+    const directory = await fs.realpath(await fs.mkdtemp(
         path.join(os.tmpdir(), "slu-browser-476-"),
-    );
+    ));
     const ready = path.join(directory, "ready.json");
     const log = await fs.open(path.join(directory, "server.log"), "w");
     const child = spawn(

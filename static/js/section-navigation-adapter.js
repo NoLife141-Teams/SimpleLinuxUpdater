@@ -147,6 +147,8 @@
         }
         badge.hidden = !inArea;
         if (workspace.activeSection === sectionID) {
+            const currentLabel = link.closest("nav")?.querySelector("[data-section-current]");
+            if (currentLabel) currentLabel.textContent = link.querySelector("span")?.textContent || sectionID;
             const track = link.parentElement;
             const bounds = link.getBoundingClientRect();
             const viewport = track.getBoundingClientRect();

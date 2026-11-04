@@ -23,7 +23,7 @@ test("Admin remount cancels old reads and preserves one account and timezone lis
     await stubAdminApi(page, state);
     const errors = [];
     page.on("pageerror", (error) => errors.push(String(error)));
-    await page.goto("/admin");
+    await page.goto("/admin#admin-section-account-security");
     await expect(page.locator("#auth-session-status")).toContainText(
         "2 active sessions",
     );

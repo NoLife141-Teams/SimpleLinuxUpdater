@@ -1,3 +1,4 @@
+const { openMainNavigation } = require("./support/fixtures");
 const { test, expect, password, ensureAuthenticatedSession } = require('./support/fixtures');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -16,6 +17,7 @@ for (const role of ['reader', 'operator']) {
                 })).status;
             }, { role, password });
             expect(created).toBe(201);
+            await openMainNavigation(page);
             await page.locator('#logout-btn').click();
             await expect(page).toHaveURL(/\/login$/);
             await page.locator('#username').fill(role);
@@ -44,6 +46,7 @@ for (const role of ['reader', 'operator']) {
                 await expect(page.getByRole('heading', { name: 'Access denied', level: 1 })).toBeVisible();
                 await expect(page.getByText('Your account does not have permission to open this page.')).toBeVisible();
                 await expect(page.locator('body')).toHaveAttribute('data-account-role', role);
+                await openMainNavigation(page);
                 await expect(page.getByRole('navigation', { name: 'Main navigation' })).toBeVisible();
                 await expect(page.locator('a[href="/admin"], a[href="/manage"]')).toHaveCount(0);
                 await expect(page.locator('main')).toHaveCount(1);
@@ -70,6 +73,7 @@ for (const role of ['reader', 'operator']) {
                 await page.waitForLoadState('networkidle');
             }
             await page.goto('/admin');
+            await openMainNavigation(page);
             await page.locator('#logout-btn').click();
             await expect(page).toHaveURL(/\/login$/);
             expect(await page.evaluate(async () => (await (await fetch('/api/auth/status')).json()).authenticated)).toBe(false);

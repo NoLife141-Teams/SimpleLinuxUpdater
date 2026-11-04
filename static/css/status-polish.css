@@ -91,7 +91,7 @@ body.status-page .mini-action,
 body.status-page .rail-controls input,
 body.status-page .rail-controls select {
     min-height: 34px;
-    padding: 6px 9px;
+    padding: 6px var(--control-padding-end, 9px) 6px 9px;
     border-radius: 6px;
     font-size: 12px;
     line-height: 1.3;

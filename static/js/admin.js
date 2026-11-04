@@ -477,10 +477,11 @@
         }
 
         function initializeAdminWorkspace() {
-            let collapsedSections = [];
+            let collapsedSections = adminPageInteraction.getView().workspace.sections
+                .filter(section => section.id !== "app-time").map(section => section.id);
             try {
                 const stored = JSON.parse(
-                    localStorage.getItem(adminSectionPreferenceKey) || "[]",
+                    localStorage.getItem(adminSectionPreferenceKey) || "null",
                 );
                 if (Array.isArray(stored)) collapsedSections = stored;
             } catch (_) {

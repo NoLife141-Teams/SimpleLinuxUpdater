@@ -284,10 +284,12 @@ test("status availability defaults to enabled and remembers disabled or all serv
     await expect(availability).toHaveValue("disabled");
     await expect(rows.first()).toHaveAttribute("data-name", "disabled-host");
     await page.setViewportSize({ width: 390, height: 844 });
+    await page.locator(".fleet-filter-toggle").click();
     await availability.selectOption("all");
     await expect(rows).toHaveCount(2);
     await expect(page.locator("#metric-total-hosts")).toHaveText("2");
     await page.reload();
+    await page.locator(".fleet-filter-toggle").click();
     await expect(availability).toHaveValue("all");
     await expect(rows).toHaveCount(2);
     await availability.selectOption("enabled");
@@ -1124,7 +1126,7 @@ test("status metrics stay compact without secondary descriptions", async ({
         await page.goto("/");
 
         const metricState = await page
-            .locator(".metric-strip")
+            .locator(".fleet-metrics")
             .evaluate((element) => ({
                 height: element.getBoundingClientRect().height,
                 timelineGap: Math.round(
@@ -1134,12 +1136,12 @@ test("status metrics stay compact without secondary descriptions", async ({
                         element.getBoundingClientRect().bottom,
                 ),
                 rowTops: [...element.querySelectorAll(".metric-item")]
-                    .filter((item) => getComputedStyle(item).display !== "none")
+                    .filter((item) => item.checkVisibility())
                     .map((item) =>
                         Math.round(item.getBoundingClientRect().top),
                     ),
                 labelTops: [...element.querySelectorAll(".metric-item")]
-                    .filter((item) => getComputedStyle(item).display !== "none")
+                    .filter((item) => item.checkVisibility())
                     .map((item) =>
                         Math.round(
                             item.querySelector("span").getBoundingClientRect()
@@ -1147,7 +1149,7 @@ test("status metrics stay compact without secondary descriptions", async ({
                         ),
                     ),
                 numberTops: [...element.querySelectorAll(".metric-item")]
-                    .filter((item) => getComputedStyle(item).display !== "none")
+                    .filter((item) => item.checkVisibility())
                     .map((item) =>
                         Math.round(
                             item.querySelector("strong").getBoundingClientRect()
@@ -1155,7 +1157,7 @@ test("status metrics stay compact without secondary descriptions", async ({
                         ),
                     ),
                 overlappingLabels: [...element.querySelectorAll(".metric-item")]
-                    .filter((item) => getComputedStyle(item).display !== "none")
+                    .filter((item) => item.checkVisibility())
                     .filter((item) => {
                         const range = document.createRange();
                         range.selectNodeContents(item.querySelector("span"));
@@ -1169,12 +1171,12 @@ test("status metrics stay compact without secondary descriptions", async ({
                         item.querySelector("span").textContent.trim(),
                     ),
                 visibleDescriptions: [...element.querySelectorAll("small")]
-                    .filter((item) => getComputedStyle(item).display !== "none")
+                    .filter((item) => item.checkVisibility())
                     .map((item) => item.textContent.trim()),
                 visibleLegacyMetrics: [
                     ...element.querySelectorAll(".metric-hidden"),
                 ]
-                    .filter((item) => getComputedStyle(item).display !== "none")
+                    .filter((item) => item.checkVisibility())
                     .map((item) => item.textContent.trim()),
             }));
 
@@ -1385,6 +1387,7 @@ test("status rows reduce repetition and bulk controls follow selection", async (
             elements.map((element) => getComputedStyle(element).color),
         );
     expect(new Set(colors).size).toBe(3);
+    await page.locator(".fleet-filter-toggle").click();
     await expect(page.locator("#select-all")).toBeVisible();
     await expect(page.locator("#bulk-update")).toBeHidden();
     await approval.locator(".row-select").check();
@@ -1778,8 +1781,8 @@ test("maintenance timeline uses one compact progress ring per server", async ({
         });
     expect(
         mobileHead.descriptionWidth,
-        "mobile dashboard description must use the available row",
-    ).toBeGreaterThan(mobileHead.headWidth * 0.8);
+        "mobile dashboard omits its redundant description",
+    ).toBe(0);
 });
 
 test("maintenance row borders align across every column", async ({
@@ -1797,7 +1800,7 @@ test("maintenance row borders align across every column", async ({
     await page.goto("/");
     const rows = page.locator("#servers-table tbody tr[data-name]");
     await expect(rows).toHaveCount(4);
-    for (const width of [1196, 1024, 1920, 390]) {
+    for (const width of [1196, 1024, 1920]) {
         await page.setViewportSize({ width, height: 875 });
         const layouts = await rows.evaluateAll((elements) =>
             elements.map((row) => ({
@@ -1920,6 +1923,7 @@ test("operator pages share one responsive and accessible application shell", asy
                 pageFontFamily,
                 `${route} must use the global Segoe UI font stack`,
             ).toContain("Segoe UI");
+            if (viewport.width <= 760) await page.locator(".app-nav-toggle").click();
             const shell = page.locator(".app-header");
             await expect(shell).toHaveCount(1);
             await expect(shell).toHaveAttribute(

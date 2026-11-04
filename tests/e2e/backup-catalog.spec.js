@@ -1,4 +1,4 @@
-const { test, expect, password, ensureAuthenticatedSession } = require('./support/fixtures');
+const { test, expect, password, ensureAuthenticatedSession, navigateSection } = require('./support/fixtures');
 const fs = require('node:fs/promises');
 const crypto = require('node:crypto');
 test.use({ backupCatalogFixture: true, trace: 'off', screenshot: 'off', video: 'off' });
@@ -7,7 +7,7 @@ test('Admin catalog publishes, downloads encrypted bytes and reverifies with exp
     await ensureAuthenticatedSession(page);
     await page.setViewportSize({ width: 390, height: 844 });
     await page.goto('/admin');
-    await page.locator('[data-admin-section-link="backup"]').click();
+    await navigateSection(page, 'admin', 'backup');
     const catalog = page.locator('#backup-archive-catalog');
     await expect(catalog).toContainText('No registered automated archives.');
     const initialDocumentWidth = await page.evaluate(() => document.documentElement.scrollWidth);

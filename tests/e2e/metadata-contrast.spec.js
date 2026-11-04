@@ -1,3 +1,4 @@
+const { navigateSection, openSectionNavigation } = require("./support/fixtures");
 const { test, expect, ensureAuthenticatedSession } = require('./support/fixtures');
 const { stubAdminApi, stubManageApi, stubDashboardApi, fulfillJson } = require('./support/builders');
 const fs = require('node:fs');
@@ -99,24 +100,27 @@ for (const width of [390, 768, 1284]) {
             await page.goto(`/${prefix}#${prefix}-section-${first}`);
             const link = page.locator(`#${prefix}-section-nav a[href="#${prefix}-section-${first}"]`);
             const detail = link.locator('small');
+            const informative = prefix === 'manage' || width <= 1100 ? link.locator('span').first() : detail;
+            await openSectionNavigation(page, prefix);
             await expect(detail).toHaveText(prefix === 'manage' ? 'Not configured' : 'America/Toronto');
             await expect(link).toHaveAttribute('aria-current', 'location');
-            await check(detail, evidence, 'selected detail');
-            await page.locator(`#${prefix}-section-nav a[href="#${prefix}-section-${second}"]`).click();
+            await check(informative, evidence, 'selected detail');
+            await navigateSection(page, prefix, second);
+            await openSectionNavigation(page, prefix);
             await expect(link).not.toHaveAttribute('aria-current', 'location');
             await page.evaluate(() => document.activeElement?.blur());
             await page.mouse.move(0, 0);
-            await check(detail, evidence, 'neutral detail');
+            await check(informative, evidence, 'neutral detail');
             await check(link.locator('span').first(), evidence, 'neutral title');
             await expect(link).not.toHaveAttribute('aria-current', 'location');
             await link.hover();
-            await check(detail, evidence, 'hover detail');
+            await check(informative, evidence, 'hover detail');
             // Actual keyboard focus, not a simulated CSS class.
             await page.keyboard.press('Tab');
             await link.focus();
             await expect(link).toBeFocused();
             expect(await link.evaluate(node => node.matches(':focus-visible'))).toBe(true);
-            await check(detail, evidence, 'focus detail');
+            await check(informative, evidence, 'focus detail');
             await save(page, info, `${prefix}-${width}`, evidence);
         }
         await page.goto('/observability');

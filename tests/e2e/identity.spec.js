@@ -1,3 +1,4 @@
+const { openMainNavigation } = require("./support/fixtures");
 const { test, expect } = require("./support/fixtures");
 const crypto = require("node:crypto");
 
@@ -102,6 +103,7 @@ test.describe("named identities on isolated installations", () => {
         await page.locator("#action-confirm-submit").click();
         await expect(page.locator("#token-list")).toContainText("revoked");
         expect((await api(page, "/api/servers", "GET")).status).toBe(200);
+        await openMainNavigation(page);
         await page.locator("#logout-btn").click();
         await expect(page).toHaveURL(`${baseURL}/login`);
         await page.locator("#username").fill("reader");
@@ -159,7 +161,8 @@ test.describe("named identities on isolated installations", () => {
                 forbiddenReads.push(new URL(response.url()).pathname);
         });
         for (const role of ["reader", "operator"]) {
-            await page.locator("#logout-btn").click();
+            await openMainNavigation(page);
+        await page.locator("#logout-btn").click();
             await expect(page).toHaveURL(`${baseURL}/login`);
             await page.locator("#username").fill(role);
             await page.locator("#password").fill(password);
@@ -242,14 +245,18 @@ test.describe("named identities on isolated installations", () => {
         await expect(page.locator("#mfa-status")).toHaveText(
             "Authenticator enabled.",
         );
-        await page.locator("#reauth-password").fill(password);
+        if (!(await page.locator('.account-identity-disclosure').evaluate(node => node.open)))
+                await page.locator('.account-identity-disclosure > summary').click();
+            await page.locator("#reauth-password").fill(password);
         await page.locator("#reauth-code").fill(codes[0]);
         await page.getByRole("button", { name: "Confirm identity" }).click();
         await expect(page.locator("#account-status")).toContainText(
             "invalid authentication factor",
         );
         await expect(page.locator("#reauth-password")).toHaveValue("");
-        await page.locator("#reauth-password").fill(password);
+        if (!(await page.locator('.account-identity-disclosure').evaluate(node => node.open)))
+                await page.locator('.account-identity-disclosure > summary').click();
+            await page.locator("#reauth-password").fill(password);
         await page.locator("#reauth-code").fill(codes[1]);
         await page.getByRole("button", { name: "Confirm identity" }).click();
         await expect(page.locator("#account-status")).toContainText(

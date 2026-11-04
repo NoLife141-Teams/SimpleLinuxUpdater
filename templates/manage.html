@@ -5,9 +5,10 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>SimpleLinuxUpdater - Manage Servers</title>
     <link rel="icon" type="image/png" href="/static/logo.png">
-    <link rel="stylesheet" href="/static/css/base.css?v=metadata-contrast-517-20261029">
+    <link rel="stylesheet" href="/static/css/base.css?v=select-spacing-global-20261104">
     <link rel="stylesheet" href="/static/css/manage.css?v=metadata-contrast-517-20261029">
 <link rel="stylesheet" href="/static/css/package-deferrals.css?v=ui-components-515-20261029">
+    <link rel="stylesheet" href="/static/css/operator-workspace.css?v=admin-horizontal-20261104">
 </head>
 <body data-account-role="{{.Role}}">
     <div class="dashboard-shell">
@@ -18,34 +19,126 @@
                 <div>
                     <div class="eyebrow">Fleet registry</div>
                     <h1>Manage Servers</h1>
-                    <p class="muted">Register hosts, tune credentials, rotate keys, and review activity from the same dense operations workspace.</p>
+                    <p class="muted">Find servers, manage SSH access, and review inventory changes.</p>
                 </div>
                 <div class="head-meta" aria-label="Registry metadata">
                     <button class="primary-action inline-btn" id="add-server-action" type="button">Add Server</button>
-                    <span class="meta-pill">Server directory</span>
-                    <span class="meta-pill">SSH credentials</span>
-                    <span class="meta-pill">Audit trail</span>
+                    <a class="btn-ghost inline-btn" href="#manage-section-import">Import inventory</a>
                 </div>
             </section>
 
             <nav class="manage-section-nav fade-in" id="manage-section-nav" aria-label="Manage Servers sections">
                 <div class="manage-section-nav-track">
+                    <a href="#manage-section-directory" data-manage-section-link="directory" aria-current="location"><span>Server directory</span><small data-manage-section-nav-summary="directory">Loading inventory…</small></a>
                     <a href="#manage-section-global-key" data-manage-section-link="global-key"><span>Global SSH Credential</span><small data-manage-section-nav-summary="global-key">Checking…</small></a>
                     <a href="#manage-section-add-server" data-manage-section-link="add-server"><span>Add Server</span><small data-manage-section-nav-summary="add-server">Create an SSH target</small></a>
                     <a href="#manage-section-import" data-manage-section-link="import"><span>Import inventory</span><small data-manage-section-nav-summary="import">CSV or JSON · disabled by default</small></a>
-                    <a href="#manage-section-directory" data-manage-section-link="directory" aria-current="location"><span>Server directory</span><small data-manage-section-nav-summary="directory">Loading inventory…</small></a>
                     <a href="#manage-section-audit" data-manage-section-link="audit"><span>Audit trail</span><small data-manage-section-nav-summary="audit">Loading events…</small></a>
                 </div>
             </nav>
 
-            <section class="metric-strip manage-summary fade-in" aria-label="Server inventory summary">
-                <article class="metric-item"><span>Total servers</span><strong id="manage-summary-total">0</strong><small>Registered SSH targets</small></article>
-                <article class="metric-item"><span>Host credentials</span><strong id="manage-summary-host-auth">0</strong><small>Password or per-server key</small></article>
-                <article class="metric-item"><span>Global SSH Credential</span><strong id="manage-summary-global-auth">0</strong><small>Using the app-wide credential</small></article>
-                <article class="metric-item"><span>Multiple credentials</span><strong id="manage-summary-ambiguous" class="manage-metric-warning">0</strong><small>Review authentication intent</small></article>
-                <article class="metric-item"><span>Missing authentication</span><strong id="manage-summary-missing-auth" class="bad">0</strong><small>No usable credential</small></article>
-                <article class="metric-item"><span>Authentication unknown</span><strong id="manage-summary-unknown-auth" class="manage-metric-warning">0</strong><small>Credential status unavailable</small></article>
-                <article class="metric-item"><span>Host trust issues</span><strong id="manage-summary-host-trust" class="bad">0</strong><small>Missing or unchecked host key</small></article>
+
+
+            <section class="workspace fade-in section-spaced manage-workspace-section" id="manage-section-directory" data-manage-section="directory" aria-labelledby="manage-section-directory-heading">
+                <div class="workspace-head">
+                    <div>
+                        <div class="eyebrow">Registry table</div>
+                        <h2 id="manage-section-directory-heading" tabindex="-1">Server directory</h2>
+                        <p class="muted workspace-note">Disable a server to pause maintenance while keeping its configuration and history. Enable it again to resume. Active operations must finish first.</p>
+                    </div>
+                    <div class="manage-section-controls">
+                        <span class="manage-section-summary" data-manage-section-summary="directory" hidden>Loading inventory…</span>
+                        <button class="btn-ghost inline-btn manage-section-toggle" type="button" data-manage-section-toggle="directory" aria-expanded="true" aria-controls="manage-section-directory-content">
+                            <span data-manage-section-toggle-label>Collapse</span><span class="manage-section-toggle-icon" aria-hidden="true"></span>
+                        </button>
+                    </div>
+                </div>
+                <div class="manage-section-content" id="manage-section-directory-content" data-manage-section-content="directory">
+                <div class="control-strip">
+                    <div class="controls manage-filter-grid">
+                        <label class="filter-field" for="search"><span>Search</span><input type="text" id="search" placeholder="Name, host, user, or tag"></label>
+                        <label class="filter-field" for="tag-filter"><span>Tag</span><input type="text" id="tag-filter" placeholder="Exact tag or fragment"></label>
+                        <label class="filter-field" for="auth-filter"><span>Authentication</span><select id="auth-filter">
+                            <option value="">All auth</option>
+                            <option value="password">Has password</option>
+                            <option value="key">Has key</option>
+                        </select></label>
+                        <label class="filter-field" for="group-by"><span>Group by</span><select id="group-by">
+                            <option value="">No grouping</option>
+                            <option value="tag">Group by tag</option>
+                            <option value="auth">Group by auth</option>
+                        </select></label>
+                        <label class="filter-field" for="page-size"><span>Page size</span><select id="page-size">
+                            <option value="20">20 per page</option>
+                            <option value="25">25 per page</option>
+                            <option value="50">50 per page</option>
+                            <option value="100">100 per page</option>
+                        </select></label>
+                        <button class="btn-ghost inline-btn clear-filters-btn" id="clear-server-filters" type="button">Clear filters</button>
+                    </div>
+                    <span class="muted filter-result" id="server-filter-result" role="status">Loading inventory…</span>
+                </div>
+
+<details class="inventory-tool-disclosure"><summary>Export inventory</summary>                <div class="card section-spaced" id="inventory-export">
+                    <h3 class="sr-only">Export inventory</h3>
+                    <p class="subtle">JSON v1 contains name, host, port, user and tags only. Reimported hosts are disabled, without credentials or host-key trust.</p>
+                    <label for="inventory-export-scope">Export scope<select id="inventory-export-scope"><option value="">Choose a scope</option><option value="selection">Explicit selection</option><option value="filtered">Entire filtered view</option><option value="all">All inventory</option></select></label>
+                    <p id="inventory-export-count" role="status" aria-live="polite">Choose an export scope to review its count.</p>
+                    <button class="btn-ghost" id="inventory-export-download" type="button" disabled>Download inventory JSON</button>
+                    <button class="btn-ghost" id="inventory-export-cancel" type="button" hidden>Cancel inventory export</button>
+                    <p id="inventory-export-feedback" role="status" aria-live="polite"></p>
+                </div>
+</details>
+                <details id="inventory-bulk" class="inventory-tool-disclosure" aria-label="Bulk inventory administration"><summary>Bulk inventory administration <span id="bulk-selection-summary">0 selected</span></summary>
+                    <div class="inventory-bulk-content">
+                    <p class="muted">Select individual checkboxes on each page, up to 1,000 hosts. Changing filters or page size clears selection. Pagination keeps explicitly selected hosts; hidden hosts are never selected automatically.</p>
+                    <p id="bulk-selection-count" role="status" aria-live="polite">0 selected</p>
+                    <details><summary>Selected hosts</summary><ul id="bulk-selected-names"></ul></details>
+                    <div class="import-actions">
+                        <label for="bulk-add-tags">Add tags<input id="bulk-add-tags" type="text" maxlength="4096" placeholder="production, web"></label>
+                        <label for="bulk-remove-tags">Remove tags<input id="bulk-remove-tags" type="text" maxlength="4096" placeholder="staging"></label>
+                        <label for="bulk-availability">Availability<select id="bulk-availability"><option value="">Keep current availability</option><option value="enable">Enable</option><option value="disable">Disable</option></select></label>
+                        <button class="btn-ghost" id="bulk-clear" type="button">Clear selection</button>
+                        <button class="primary-action" id="bulk-preview-button" type="button" disabled>Preview changes</button>
+                    </div>
+                    <p id="bulk-feedback" role="status" aria-live="polite" tabindex="-1"></p>
+                    <div id="bulk-preview" hidden>
+                        <h4 id="bulk-preview-heading" tabindex="-1">Review bulk changes</h4><p id="bulk-notice" class="muted"></p>
+                        <div class="import-table-scroll" tabindex="0" role="region" aria-label="Bulk inventory preview"><table class="import-table"><thead><tr><th>Server</th><th>Before</th><th>After</th><th>Policy schedule before</th><th>Policy schedule after</th><th>Validation</th></tr></thead><tbody id="bulk-preview-rows"></tbody></table></div>
+                        <button class="primary-action" id="bulk-review-button" type="button">Review confirmation</button>
+                    </div>
+                    <div id="bulk-confirmation" hidden><h4 id="bulk-confirm-heading" tabindex="-1">Confirm reviewed bulk changes</h4><p id="bulk-confirm-count"></p><p>The confirmation applies exactly to the selection, normalized values and revisions in this preview. Enabling resumes normal scheduling and automatic refreshes.</p><div class="import-actions"><button class="btn-ghost" id="bulk-back" type="button">Back to preview</button><button class="primary-action" id="bulk-confirm" type="button">Apply reviewed changes</button></div></div>
+                </div></details>
+
+                <div class="table-shell">
+                    <div class="table-shell-head">
+                        <div class="table-shell-title">
+                            <span class="table-shell-label">Hosts</span>
+                            <span class="table-shell-subtle">Registered SSH targets and auth posture.</span>
+                        </div>
+                        <div class="pagination">
+                            <button class="btn-ghost inline-btn" id="prev-page" type="button">Prev</button>
+                            <span id="page-info" class="muted"></span>
+                            <button class="btn-ghost inline-btn" id="next-page" type="button">Next</button>
+                        </div>
+                    </div>
+                    <div class="table-wrap">
+                        <table id="manage-servers-table">
+                            <thead>
+                                <tr>
+                                    <th class="sortable" data-sort-key="name"><button type="button" class="sort-header-btn" data-sort-trigger="name" aria-label="Sort by Name"><span class="col-title">Name</span></button></th>
+                                    <th class="sortable" data-sort-key="host"><button type="button" class="sort-header-btn" data-sort-trigger="host" aria-label="Sort by Host"><span class="col-title">Host</span></button></th>
+                                    <th class="sortable" data-sort-key="user"><button type="button" class="sort-header-btn" data-sort-trigger="user" aria-label="Sort by User"><span class="col-title">User</span></button></th>
+                                    <th class="sortable" data-sort-key="tags"><button type="button" class="sort-header-btn" data-sort-trigger="tags" aria-label="Sort by Tags"><span class="col-title">Tags</span></button></th>
+                                    <th>Access</th>
+                                    <th class="actions-col">Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody></tbody>
+                        </table>
+                    </div>
+                </div>
+                </div>
             </section>
 
             <section class="manage-grid fade-in">
@@ -207,107 +300,6 @@
                 </div>
             </section>
 
-            <section class="workspace fade-in section-spaced manage-workspace-section" id="manage-section-directory" data-manage-section="directory" aria-labelledby="manage-section-directory-heading">
-                <div class="workspace-head">
-                    <div>
-                        <div class="eyebrow">Registry table</div>
-                        <h2 id="manage-section-directory-heading" tabindex="-1">Server directory</h2>
-                        <p class="muted workspace-note">Disable a server to pause maintenance while keeping its configuration and history. Enable it again to resume. Active operations must finish first.</p>
-                    </div>
-                    <div class="manage-section-controls">
-                        <span class="manage-section-summary" data-manage-section-summary="directory" hidden>Loading inventory…</span>
-                        <button class="btn-ghost inline-btn manage-section-toggle" type="button" data-manage-section-toggle="directory" aria-expanded="true" aria-controls="manage-section-directory-content">
-                            <span data-manage-section-toggle-label>Collapse</span><span class="manage-section-toggle-icon" aria-hidden="true"></span>
-                        </button>
-                    </div>
-                </div>
-                <div class="manage-section-content" id="manage-section-directory-content" data-manage-section-content="directory">
-                <div class="card section-spaced" id="inventory-export">
-                    <h3>Export inventory</h3>
-                    <p class="subtle">JSON v1 contains name, host, port, user and tags only. Reimported hosts are disabled, without credentials or host-key trust.</p>
-                    <label for="inventory-export-scope">Export scope<select id="inventory-export-scope"><option value="">Choose a scope</option><option value="selection">Explicit selection</option><option value="filtered">Entire filtered view</option><option value="all">All inventory</option></select></label>
-                    <p id="inventory-export-count" role="status" aria-live="polite">Choose an export scope to review its count.</p>
-                    <button class="btn-ghost" id="inventory-export-download" type="button" disabled>Download inventory JSON</button>
-                    <button class="btn-ghost" id="inventory-export-cancel" type="button" hidden>Cancel inventory export</button>
-                    <p id="inventory-export-feedback" role="status" aria-live="polite"></p>
-                </div>
-                <div class="control-strip">
-                    <div class="controls manage-filter-grid">
-                        <label class="filter-field" for="search"><span>Search</span><input type="text" id="search" placeholder="Name, host, user, or tag"></label>
-                        <label class="filter-field" for="tag-filter"><span>Tag</span><input type="text" id="tag-filter" placeholder="Exact tag or fragment"></label>
-                        <label class="filter-field" for="auth-filter"><span>Authentication</span><select id="auth-filter">
-                            <option value="">All auth</option>
-                            <option value="password">Has password</option>
-                            <option value="key">Has key</option>
-                        </select></label>
-                        <label class="filter-field" for="group-by"><span>Group by</span><select id="group-by">
-                            <option value="">No grouping</option>
-                            <option value="tag">Group by tag</option>
-                            <option value="auth">Group by auth</option>
-                        </select></label>
-                        <label class="filter-field" for="page-size"><span>Page size</span><select id="page-size">
-                            <option value="20">20 per page</option>
-                            <option value="25">25 per page</option>
-                            <option value="50">50 per page</option>
-                            <option value="100">100 per page</option>
-                        </select></label>
-                        <button class="btn-ghost inline-btn clear-filters-btn" id="clear-server-filters" type="button">Clear filters</button>
-                    </div>
-                    <span class="muted filter-result" id="server-filter-result" role="status">Loading inventory…</span>
-                </div>
-
-                <div id="inventory-bulk" class="card" aria-label="Bulk inventory administration">
-                    <h3>Bulk inventory administration</h3>
-                    <p class="muted">Select individual checkboxes on each page, up to 1,000 hosts. Changing filters or page size clears selection. Pagination keeps explicitly selected hosts; hidden hosts are never selected automatically.</p>
-                    <p id="bulk-selection-count" role="status" aria-live="polite">0 selected</p>
-                    <details><summary>Selected hosts</summary><ul id="bulk-selected-names"></ul></details>
-                    <div class="import-actions">
-                        <label for="bulk-add-tags">Add tags<input id="bulk-add-tags" type="text" maxlength="4096" placeholder="production, web"></label>
-                        <label for="bulk-remove-tags">Remove tags<input id="bulk-remove-tags" type="text" maxlength="4096" placeholder="staging"></label>
-                        <label for="bulk-availability">Availability<select id="bulk-availability"><option value="">Keep current availability</option><option value="enable">Enable</option><option value="disable">Disable</option></select></label>
-                        <button class="btn-ghost" id="bulk-clear" type="button">Clear selection</button>
-                        <button class="primary-action" id="bulk-preview-button" type="button" disabled>Preview changes</button>
-                    </div>
-                    <p id="bulk-feedback" role="status" aria-live="polite" tabindex="-1"></p>
-                    <div id="bulk-preview" hidden>
-                        <h4 id="bulk-preview-heading" tabindex="-1">Review bulk changes</h4><p id="bulk-notice" class="muted"></p>
-                        <div class="import-table-scroll" tabindex="0" role="region" aria-label="Bulk inventory preview"><table class="import-table"><thead><tr><th>Server</th><th>Before</th><th>After</th><th>Policy schedule before</th><th>Policy schedule after</th><th>Validation</th></tr></thead><tbody id="bulk-preview-rows"></tbody></table></div>
-                        <button class="primary-action" id="bulk-review-button" type="button">Review confirmation</button>
-                    </div>
-                    <div id="bulk-confirmation" hidden><h4 id="bulk-confirm-heading" tabindex="-1">Confirm reviewed bulk changes</h4><p id="bulk-confirm-count"></p><p>The confirmation applies exactly to the selection, normalized values and revisions in this preview. Enabling resumes normal scheduling and automatic refreshes.</p><div class="import-actions"><button class="btn-ghost" id="bulk-back" type="button">Back to preview</button><button class="primary-action" id="bulk-confirm" type="button">Apply reviewed changes</button></div></div>
-                </div>
-
-                <div class="table-shell">
-                    <div class="table-shell-head">
-                        <div class="table-shell-title">
-                            <span class="table-shell-label">Hosts</span>
-                            <span class="table-shell-subtle">Registered SSH targets and auth posture.</span>
-                        </div>
-                        <div class="pagination">
-                            <button class="btn-ghost inline-btn" id="prev-page" type="button">Prev</button>
-                            <span id="page-info" class="muted"></span>
-                            <button class="btn-ghost inline-btn" id="next-page" type="button">Next</button>
-                        </div>
-                    </div>
-                    <div class="table-wrap">
-                        <table id="manage-servers-table">
-                            <thead>
-                                <tr>
-                                    <th class="sortable" data-sort-key="name"><button type="button" class="sort-header-btn" data-sort-trigger="name" aria-label="Sort by Name"><span class="col-title">Name</span></button></th>
-                                    <th class="sortable" data-sort-key="host"><button type="button" class="sort-header-btn" data-sort-trigger="host" aria-label="Sort by Host"><span class="col-title">Host</span></button></th>
-                                    <th class="sortable" data-sort-key="user"><button type="button" class="sort-header-btn" data-sort-trigger="user" aria-label="Sort by User"><span class="col-title">User</span></button></th>
-                                    <th class="sortable" data-sort-key="tags"><button type="button" class="sort-header-btn" data-sort-trigger="tags" aria-label="Sort by Tags"><span class="col-title">Tags</span></button></th>
-                                    <th>Access</th>
-                                    <th class="actions-col">Actions</th>
-                                </tr>
-                            </thead>
-                            <tbody></tbody>
-                        </table>
-                    </div>
-                </div>
-                </div>
-            </section>
-
             <section class="workspace fade-in section-spaced manage-workspace-section" id="manage-section-audit" data-manage-section="audit" aria-labelledby="manage-section-audit-heading">
                 <div class="workspace-head">
                     <div>
@@ -396,6 +388,16 @@
                 </div>
                 </div>
             </section>
+            <details class="inventory-summary-disclosure"><summary>Credential and trust summary</summary>            <section class="metric-strip manage-summary fade-in" aria-label="Server inventory summary">
+                <article class="metric-item"><span>Total servers</span><strong id="manage-summary-total">0</strong><small>Registered SSH targets</small></article>
+                <article class="metric-item"><span>Host credentials</span><strong id="manage-summary-host-auth">0</strong><small>Password or per-server key</small></article>
+                <article class="metric-item"><span>Global SSH Credential</span><strong id="manage-summary-global-auth">0</strong><small>Using the app-wide credential</small></article>
+                <article class="metric-item"><span>Multiple credentials</span><strong id="manage-summary-ambiguous" class="manage-metric-warning">0</strong><small>Review authentication intent</small></article>
+                <article class="metric-item"><span>Missing authentication</span><strong id="manage-summary-missing-auth" class="bad">0</strong><small>No usable credential</small></article>
+                <article class="metric-item"><span>Authentication unknown</span><strong id="manage-summary-unknown-auth" class="manage-metric-warning">0</strong><small>Credential status unavailable</small></article>
+                <article class="metric-item"><span>Host trust issues</span><strong id="manage-summary-host-trust" class="bad">0</strong><small>Missing or unchecked host key</small></article>
+            </section></details>
+
         </main>
     </div>
 
@@ -548,7 +550,7 @@
     <script src="/static/js/browser-effects.js?v=frontend-isolation-20261027"></script>
     <script src="/static/js/common.js?v=quality-pass-20260711b"></script>
     <script src="/static/js/section-navigation.js?v=section-navigation-20261029"></script>
-    <script src="/static/js/section-navigation-adapter.js?v=ui-responsive-514-fragment-20261029"></script>
+    <script src="/static/js/section-navigation-adapter.js?v=admin-horizontal-20261104"></script>
     <script src="/static/js/manage-page-interaction.js?v=section-navigation-20261029"></script>
     <script src="/static/js/server-onboarding-interaction.js?v=server-onboarding-20261009"></script>
     <script src="/static/js/server-onboarding.js?v=frontend-isolation-20261027"></script>
@@ -556,10 +558,10 @@
     <script src="/static/js/manage-policy-overrides.js?v=manage-interaction-20260713a"></script>
     <script src="/static/js/inventory-import.js?v=frontend-isolation-20261027"></script>
     <script src="/static/js/package-deferrals.js?v=frontend-isolation-20261027"></script>
-<script src="/static/js/manage-workspace-adapter.js?v=ui-responsive-514-20261029"></script>
+<script src="/static/js/manage-workspace-adapter.js?v=visual-preview-20261104"></script>
 <script src="/static/js/manage-audit-adapter.js?v=frontend-isolation-20261027"></script>
 <script src="/static/js/operational-exports.js?v=operational-exports-20261028"></script>
-<script src="/static/js/inventory-bulk.js?v=bulk-inventory-20261027"></script>
+<script src="/static/js/inventory-bulk.js?v=visual-preview-20261104"></script>
 <script src="/static/js/manage.js?v=ui-components-515-file-label-20261029"></script>
 </body>
 </html>

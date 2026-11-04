@@ -60,7 +60,9 @@ test('account creation and password admit one command under delayed responses', 
     await expect(page.locator('#account-current-password')).toHaveValue('');
 });
 test('bad password stays in context, genuine revoked session returns to login', async ({ page, context }) => {
-    await page.locator('#reauth-password').fill('WrongSynthetic123');
+    if (!(await page.locator('.account-identity-disclosure').evaluate(node => node.open)))
+                await page.locator('.account-identity-disclosure > summary').click();
+            await page.locator('#reauth-password').fill('WrongSynthetic123');
     await page.locator('#reauth-password').press('Enter');
     await expect(page.locator('#account-status')).toContainText('invalid credentials');
     await expect(page).toHaveURL(/\/account$/);
@@ -68,7 +70,9 @@ test('bad password stays in context, genuine revoked session returns to login', 
     const other = await context.newPage();
     await other.goto('/account');
     await other.evaluate(() => window.__nativeFetch('/api/auth/logout', { method: 'POST' }));
-    await page.locator('#reauth-password').fill(password);
+    if (!(await page.locator('.account-identity-disclosure').evaluate(node => node.open)))
+                await page.locator('.account-identity-disclosure > summary').click();
+            await page.locator('#reauth-password').fill(password);
     await page.locator('#reauth-password').press('Enter');
     await expect(page).toHaveURL(/\/login$/);
     await other.close();
@@ -438,6 +442,8 @@ for (const outcome of ['confirmed', 'rejected', 'enrollment-cancelled', 'token-a
             expect(reads).toBe(3);
             await page.locator('#token-dismiss').click();
         } else {
+            if (!(await page.locator('.account-identity-disclosure').evaluate(node => node.open)))
+                await page.locator('.account-identity-disclosure > summary').click();
             await page.locator('#reauth-password').fill(outcome === 'confirmed' ? password : 'WrongSynthetic123');
             await page.locator('#reauth-password').press('Enter');
             await expect(page.locator('#account-status')).toContainText(outcome === 'confirmed' ? 'Identity confirmed' : 'invalid credentials');

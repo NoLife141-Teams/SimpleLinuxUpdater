@@ -1,3 +1,4 @@
+const { openMainNavigation } = require("./support/fixtures");
 const { test, expect, ensureAuthenticatedSession } = require('./support/fixtures');
 const { stubAdminApi, stubManageApi, stubDashboardApi, makeServer, fulfillJson } = require('./support/builders');
 const fs = require('node:fs');
@@ -71,6 +72,7 @@ for (const width of [1284, 390]) {
         const widths = [], controls = [];
         for (const route of ['/', '/manage', '/account']) {
             await page.goto(route);
+            await openMainNavigation(page);
             const previous = page.locator('#logout-btn');
             await previous.focus();
             await openConfirmation(page);

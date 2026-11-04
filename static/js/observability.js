@@ -341,6 +341,7 @@ let refreshTimeoutId = null;
         function renderSummaryWithoutData(presentation) {
             document.getElementById('kpi-success-rate-card').dataset.severity = 'neutral';
             document.getElementById('kpi-success-icon').textContent = '—';
+            document.getElementById('kpi-success-severity').textContent = '';
             document.getElementById('kpi-success-rate').textContent = presentation.stateLabel;
             document.getElementById('kpi-success-context').textContent = presentation.detail;
             document.getElementById('kpi-total').textContent = presentation.stateLabel;
@@ -413,7 +414,8 @@ let refreshTimeoutId = null;
             const successCard = document.getElementById('kpi-success-rate-card');
             successCard.dataset.severity = severity.state;
             document.getElementById('kpi-success-icon').textContent = severityIcons[severity.state] || '—';
-            document.getElementById('kpi-success-rate').textContent = totalRuns > 0 ? `${successRate.toFixed(2)}% · ${severity.label}` : 'No data';
+            document.getElementById('kpi-success-severity').textContent = totalRuns > 0 ? severity.label : '';
+            document.getElementById('kpi-success-rate').textContent = totalRuns > 0 ? `${successRate.toFixed(2)}%` : 'No data';
             document.getElementById('kpi-success-context').textContent =
                 totalRuns > 0 ? `${plural(successRuns, 'successful run')} · ${plural(failedRuns, 'failed run')}` : 'No update runs in selected window';
             document.getElementById('kpi-total').textContent = String(totalRuns);

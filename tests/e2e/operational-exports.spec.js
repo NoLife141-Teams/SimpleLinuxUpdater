@@ -17,6 +17,7 @@ async function seed(page, count) {
     },count);
     expect(statuses.every(status=>status===201)).toBe(true);
     await page.goto("/manage");
+    await page.locator(".inventory-tool-disclosure > summary").filter({hasText:"Export inventory"}).click();
     await expect(page.locator("#manage-servers-table tbody tr")).toHaveCount(Math.min(count,20));
 }
 
@@ -43,7 +44,7 @@ test("inventory exports explicit selection, entire filtered view and all, then r
             return {status:result.status,inventory};
         },result.value);
         expect(imported.status).toBe(201);expect(imported.inventory).toHaveLength(23);expect(imported.inventory.every(row=>row.disabled&&!row.has_key&&!row.has_password&&row.host_key_status!=="trusted")).toBe(true);
-        await destination.goto("/manage");await destination.locator("#inventory-export-scope").selectOption("all");await expect(destination.locator("#inventory-export-count")).toContainText("23 hosts");
+        await destination.goto("/manage");await destination.locator(".inventory-tool-disclosure > summary").filter({hasText:"Export inventory"}).click();await destination.locator("#inventory-export-scope").selectOption("all");await expect(destination.locator("#inventory-export-count")).toContainText("23 hosts");
         expect((await downloadJSON(destination,"#inventory-export-download")).value).toEqual(result.value);
     } finally {await context.close();await installation.stop();}
     await page.locator("#tag-filter").fill("no-match");await page.locator("#inventory-export-scope").selectOption("filtered");await expect(page.locator("#inventory-export-count")).toContainText("0 hosts");expect((await downloadJSON(page,"#inventory-export-download")).value).toEqual([]);

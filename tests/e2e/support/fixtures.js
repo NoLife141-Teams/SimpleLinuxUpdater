@@ -42,6 +42,11 @@ async function ensureAuthenticatedSession(page) {
     await expect(page.locator("#logout-btn")).toBeAttached();
     await expect(page.locator(".brand-lockup")).toBeVisible();
 }
+async function openMainNavigation(page) {
+    const toggle = page.locator(".app-nav-toggle");
+    if (await toggle.isVisible() && await toggle.getAttribute("aria-expanded") !== "true")
+        await toggle.click();
+}
 async function openSectionNavigation(page, prefix) {
     if (prefix !== "admin" || page.viewportSize().width > 1100) return;
     const picker = page.locator(".admin-section-picker");
@@ -68,4 +73,5 @@ module.exports = {
     signIn,
     navigateSection,
     openSectionNavigation,
+    openMainNavigation,
 };

@@ -38,7 +38,9 @@ test('mobile shell, disclosures and server actions stay usable without horizonta
     }
     await page.setViewportSize({ width: 390, height: 844 });
     await page.goto('/');
-    const approve = await row.getByRole('button', { name: 'Approve (3)', exact: true }).boundingBox();
+    const approveButton = row.getByRole('button', { name: 'Approve (3)', exact: true });
+    await expect(approveButton).toBeVisible();
+    const approve = await approveButton.boundingBox();
     expect(approve.y + approve.height).toBeLessThanOrEqual(844);
     await row.getByRole('button', { name: 'Packages', exact: true }).click();
     await expect(page.locator('#status-drawer')).toHaveAttribute('aria-hidden', 'false');

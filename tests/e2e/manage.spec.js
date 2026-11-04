@@ -1212,6 +1212,7 @@ test("inventory import preserves navigation and editor focus when validation fin
                     '[data-action="edit-server"][data-name="focus-fixture"]',
                 )
                 .click();
+            await expect(page.locator("#edit-name")).toBeFocused();
             focused = page.locator("#edit-host");
             await focused.fill("operator-draft.example");
         }

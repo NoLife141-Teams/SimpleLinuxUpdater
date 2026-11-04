@@ -24,6 +24,7 @@
             sectionLink.closest("details")?.removeAttribute("open");
     });
     document.addEventListener("keydown", event => {
+        if (event.target.closest?.('[role="dialog"], dialog')) return;
         if (event.key === "Escape" && document.querySelector(".app-header.is-menu-open")) {
             closeMenu(true);
             event.preventDefault();

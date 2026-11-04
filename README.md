@@ -1,6 +1,6 @@
 # SimpleLinuxUpdater
 
-Version: v0.5.3
+Version: v0.5.4
 
 SimpleLinuxUpdater is a self-hosted web UI that helps you manage apt updates on Debian-based servers over SSH. It provides an approval workflow, health checks, audit history, and basic observability so you can update hosts confidently without logging into each machine.
 
@@ -14,7 +14,7 @@ SimpleLinuxUpdater is a self-hosted web UI that helps you manage apt updates on 
 
 - [Overview](#overview)
 - [Features](#features)
-- [Upgrading to v0.5.3](#upgrading-to-v053)
+- [Upgrading to v0.5.4](#upgrading-to-v054)
 - [Quick start](#quick-start)
 - [Documentation](#documentation)
 - [Security](#security)
@@ -52,22 +52,22 @@ SimpleLinuxUpdater is designed for trusted environments (LAN/VPN). It connects t
 - Local administrator password recovery with hidden terminal entry, exclusive installation locking and atomic session revocation/audit; see [lost access recovery](docs/troubleshooting.md#forgotten-admin-password)
 - In-app encrypted backup/restore (DB + config, optional `known_hosts`) for host/container migration
 
-## Upgrading to v0.5.3
+## Upgrading to v0.5.4
 
-Export and verify an encrypted backup before replacing the executable and web
-assets together. From v0.5.2, the available-update drawer gains a searchable list
-of 15 packages per page, full-width CVE details, shared coverage explanations,
-and pagination above and below both lists. Background refreshes keep the lists
-still. Package filters do not change the approval scope.
+Export and verify an encrypted backup, finish or cancel pending maintenance,
+then replace the executable and web assets together. From v0.5.3, Status,
+Manage Servers, Observability, Admin and Account gain clearer spacing,
+collapsible secondary tools and responsive navigation. On mobile, use **Menu**
+for page navigation and **Settings** for Admin sections. Existing section
+preferences are retained; use **Expand** to reveal a collapsed section.
 
-No new required environment variable, database migration or SSH helper protocol
-is introduced relative to v0.5.2. Finish or cancel pending maintenance before
-restarting; interrupted approvals require a fresh APT check and renewed approval.
-CVE information remains limited to available updates. Follow the
-[upgrade and rollback guide](docs/upgrading.md), including the retired scanner
-behavior when upgrading from v0.5.1.
-Upgrades from v0.4.16 or earlier must also follow the
-[v0.5.0 account, scheduling and helper requirements](CHANGELOG.md#v050---2026-10-29).
+No new required environment variable, application database migration or SSH
+helper protocol is introduced relative to v0.5.3. The SQLite driver updates
+from v1.60.1 to v1.61.1 together with its transitive dependencies, and `x/net`
+updates to v0.62.0. Interrupted approvals require a fresh APT check and renewed
+approval. CVE information
+remains limited to available updates. Follow the
+[upgrade and rollback guide](docs/upgrading.md) for earlier-version requirements.
 
 ## Quick start
 
@@ -75,8 +75,8 @@ Upgrades from v0.4.16 or earlier must also follow the
 
 ```bash
 cp .env-template .env
-docker pull ghcr.io/nolife141-teams/simplelinuxupdater:v0.5.3
-docker run --env-file .env -p 8080:8080 -v debian-updater-data:/data ghcr.io/nolife141-teams/simplelinuxupdater:v0.5.3
+docker pull ghcr.io/nolife141-teams/simplelinuxupdater:v0.5.4
+docker run --env-file .env -p 8080:8080 -v debian-updater-data:/data ghcr.io/nolife141-teams/simplelinuxupdater:v0.5.4
 ```
 
 Open `http://localhost:8080`.
@@ -144,7 +144,7 @@ Download the archive for your platform from GitHub Releases and run the included
 Example (Linux amd64):
 
 ```bash
-VERSION="0.5.3"
+VERSION="0.5.4"
 APP="SimpleLinuxUpdater_${VERSION}"
 ARCHIVE="${APP}_linux_amd64.tar.gz"
 

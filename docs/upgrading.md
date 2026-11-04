@@ -1,18 +1,35 @@
 [Documentation map](README.md) | [Deployment](deployment.md) | [Accounts and API](personal-api.md) | [CI](ci-and-release.md)
 
-# Upgrading to v0.5.3
+# Upgrading to v0.5.4
 
 Use the image digest recorded in the published release's `publication.json`,
 or download the matching versioned binary archive and checksum list.
 
+## From v0.5.3
+
+Export and verify a backup, finish or cancel pending maintenance, then replace
+the executable and web assets together. v0.5.4 changes operator-page layout and
+navigation and updates the SQLite driver from v1.60.1 to v1.61.1 with its
+transitive dependencies. `golang.org/x/net` updates from v0.61.0 to v0.62.0.
+It introduces no new application database migration,
+required environment variable or SSH helper protocol. Accounts, sessions,
+policies, secrets, package deferrals and Approval Scope retain their contracts.
+
+On mobile, open **Menu** to switch pages and **Settings** to choose an Admin
+section. Status keeps secondary metrics and filters in disclosures; Manage
+starts with the directory and places export and bulk tools in disclosures.
+Saved section preferences are retained. Use **Expand** to reveal section
+content; a collapsed Metrics section now hides its controls correctly.
+
 ## From v0.5.2
 
 Export and verify a backup, finish or cancel pending maintenance, then replace
-the executable and web assets together using the procedures below. v0.5.3
-changes the available-update interface; it introduces no new database migration,
-required environment variable, SSH helper protocol or dependency change relative
-to v0.5.2. Accounts, sessions, policies, secrets and package deferrals retain
-their contracts. Interrupted approvals require fresh discovery and approval.
+the executable and web assets together using the procedures below. Also account
+for the operator-page and SQLite changes above. The available-update interface
+introduced in v0.5.3 adds no application database migration, required environment
+variable or SSH helper protocol relative to v0.5.2. Accounts, sessions, policies,
+secrets and package deferrals retain their contracts. Interrupted approvals
+require fresh discovery and approval.
 
 The package drawer now shows 15 packages per page, search and security filters,
 with Previous/Next controls above and below package and CVE lists. Details opens
@@ -52,17 +69,17 @@ on the upgraded database.
 ## From v0.5.0
 
 Also account for the additive remediation-history/risk-review tables and package
-evidence introduced in v0.5.1. Those records remain retained in v0.5.3, while the
+evidence introduced in v0.5.1. Those records remain retained in v0.5.4, while the
 standalone workflow is retired as described above. The historical
 [v0.5.1 qualification record](release-v0.5.1-readiness.md) describes that release's
-measured checks and limits; it does not qualify v0.5.3.
+measured checks and limits; it does not qualify v0.5.4.
 
 ## From v0.4.16 or earlier
 
 Also follow the [v0.5.0 compatibility notes](../CHANGELOG.md#v050---2026-10-29)
 for account/session migration, policy changes and the protocol 3 managed helper.
 The pinned automated old-version qualification below remains based on published
-v0.4.16; it is not a separate v0.5.2-to-v0.5.3 migration proof.
+v0.4.16; it is not a separate v0.5.3-to-v0.5.4 migration proof.
 
 ## Before changing the application
 

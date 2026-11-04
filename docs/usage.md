@@ -4,6 +4,7 @@
 
 ## Table of contents
 
+- [Navigate the operator pages](#navigate-the-operator-pages)
 - [Add and manage servers](#add-and-manage-servers)
 - [Authentication flow](#authentication-flow)
 - [Trust a host key](#trust-a-host-key)
@@ -17,6 +18,21 @@
 - [Observability and metrics](#observability-and-metrics)
 - [Backup and restore](#backup-and-restore)
 - [How SimpleLinuxUpdater compares](#how-simplelinuxupdater-compares-to-scripts-and-ansible)
+
+## Navigate the operator pages
+
+Use the top navigation to switch between Status, Manage Servers, Observability,
+Admin and Account. On mobile, open **Menu** for these links. Admin keeps its
+horizontal section navigation on desktop; open **Settings** on mobile to choose
+a section. Section links expand their destination and move focus to its heading.
+**Expand** and **Collapse** control section content and retain your preference.
+
+Status keeps secondary fleet metrics and **Filters & bulk actions** in
+collapsible areas on smaller screens. Manage opens on the Server directory;
+expand **Export inventory** for exports. The bulk tools open on the first host
+selection and respect manual closing during subsequent refreshes. Account's
+manual identity-confirmation form is also collapsible; sensitive actions still
+request identity confirmation when required.
 
 ## Add and manage servers
 

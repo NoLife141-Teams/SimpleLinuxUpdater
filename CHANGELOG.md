@@ -6,6 +6,31 @@ The format is inspired by Keep a Changelog, and this project uses Semantic Versi
 
 ## [Unreleased]
 
+## [v0.5.4] - 2026-11-04
+
+### Changed
+
+- Unify spacing, headings and control styling across Status, Manage Servers, Observability, Admin and Account.
+- Prioritize server rows and common actions, with collapsible secondary fleet metrics, inventory export and bulk tools, and manual identity confirmation.
+- Keep horizontal Admin section navigation on desktop and provide compact Menu and Settings pickers on mobile, retaining saved section preferences.
+- Inset dropdown arrows consistently and separate expanded Admin headers from their content. Preserve native dropdowns in forced-color mode.
+- Update `modernc.org/sqlite` from v1.60.1 to v1.61.1 and its transitive dependencies.
+- Update `golang.org/x/net` from v0.61.0 to v0.62.0, addressing the HTML-package advisories GO-2026-6860 and GO-2026-6866; the affected packages are not imported by this application.
+
+### Fixed
+
+- Restore server quick filters from the secondary Status metrics.
+- Render the Observability success-rate value at the correct scale with a separate severity label.
+- Hide Metrics content when its Admin section is collapsed.
+- Keep Escape inside a dialog from also closing the background mobile navigation.
+- Open inventory bulk tools on the first selection while respecting manual closing during later refreshes.
+
+### v0.5.4 upgrade notes
+
+- No new application database migration, required environment variable or SSH helper protocol is introduced relative to v0.5.3. Replace the executable and web assets together and retain existing data paths.
+- Export and verify a backup, then finish or cancel maintenance before restarting. Interrupted approvals require a fresh APT check and renewed approval.
+- Available-update CVE scope, account permissions and Approval Scope retain their existing contracts. See the [upgrade and rollback guidance](docs/upgrading.md).
+
 ## [v0.5.3] - 2026-11-03
 
 ### Changed

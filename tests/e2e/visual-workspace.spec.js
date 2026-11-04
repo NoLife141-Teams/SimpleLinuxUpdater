@@ -66,8 +66,10 @@ test('mobile shell, disclosures and server actions stay usable without horizonta
     await page.goto('/');
     const approveButton = row.getByRole('button', { name: 'Approve (3)', exact: true });
     await expect(approveButton).toBeVisible();
-    const approve = await approveButton.boundingBox();
-    expect(approve.y + approve.height).toBeLessThanOrEqual(844);
+    await expect.poll(() => approveButton.evaluateAll(buttons => {
+        const bounds = buttons[0]?.getBoundingClientRect();
+        return Boolean(bounds && bounds.width > 0 && bounds.height > 0 && bounds.top >= 0 && bounds.bottom <= 844);
+    }), { message: 'Approval stays visible inside the first mobile viewport during refresh' }).toBe(true);
     await row.getByRole('button', { name: 'Packages', exact: true }).click();
     await expect(page.locator('#status-drawer')).toHaveAttribute('aria-hidden', 'false');
     await expect(page.locator('#status-drawer-status .status-pill')).toHaveText(/pending approval/i);

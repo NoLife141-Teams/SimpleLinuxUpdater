@@ -5,8 +5,9 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>SimpleLinuxUpdater - Observability</title>
     <link rel="icon" type="image/png" href="/static/logo.png">
-    <link rel="stylesheet" href="/static/css/base.css?v=metadata-contrast-517-20261029">
+    <link rel="stylesheet" href="/static/css/base.css?v=visual-preview-20261104">
     <link rel="stylesheet" href="/static/css/observability.css?v=ui-responsive-514-20261029">
+    <link rel="stylesheet" href="/static/css/operator-workspace.css?v=visual-preview-20261104">
 </head>
 <body data-account-role="{{.Role}}">
     <div class="dashboard-shell">
@@ -15,9 +16,9 @@
         <main class="dashboard-main observability-main">
             <section class="dashboard-head fade-in" aria-label="Telemetry summary">
                 <div>
-                    <div class="eyebrow">Telemetry deck</div>
+                    <div class="eyebrow">Update history</div>
                     <h1>Observability</h1>
-                    <p class="muted">Track success rate, duration, and failure patterns with the same dense operations language as the dashboard.</p>
+                    <p class="muted">Review maintenance outcomes, duration, and host health over time.</p>
                 </div>
                 <div class="head-meta" aria-label="Telemetry metadata">
                     <span class="meta-pill" id="observability-source">Audit + health snapshots</span>
@@ -32,7 +33,7 @@
             <section class="workspace fade-in" id="observability-summary" aria-labelledby="update-metrics-heading" aria-busy="true">
                 <div class="workspace-head">
                     <div>
-                        <div class="eyebrow">Query controls</div>
+                        <div class="eyebrow">Maintenance outcomes</div>
                         <h2 id="update-metrics-heading">Update metrics</h2>
                     </div>
                     <div class="source-lifecycle" id="summary-lifecycle" data-state="loading">
@@ -52,7 +53,7 @@
                         <button class="primary-action" id="refresh-btn" type="button">Refresh</button>
                         <span id="range-label" class="muted"></span>
                     </div>
-                    <span class="muted">Refreshes automatically every 15 seconds while this page is visible.</span>
+                    <span class="muted">Auto-refreshes while this page is visible.</span>
                 </div>
                 <div id="error-banner" class="error-banner" role="alert" aria-live="assertive"></div>
 
@@ -60,6 +61,7 @@
                     <article class="metric-item kpi" id="kpi-success-rate-card" data-severity="neutral">
                         <span>Success rate</span>
                         <strong class="kpi-value"><span id="kpi-success-icon" aria-hidden="true">—</span> <span id="kpi-success-rate">Loading</span></strong>
+                        <span class="kpi-severity-label" id="kpi-success-severity"></span>
                         <small id="kpi-success-context">Waiting for accepted data</small>
                     </article>
                     <article class="metric-item kpi">
@@ -277,6 +279,6 @@
     <script src="/static/auth.js"></script>
     <script src="/static/js/common.js?v=quality-pass-20260711b"></script>
     <script src="/static/js/observability-page-interaction.js?v=review-fixes-20260729b"></script>
-    <script src="/static/js/observability.js?v=review-fixes-20260729b"></script>
+    <script src="/static/js/observability.js?v=visual-preview-20261104"></script>
 </body>
 </html>

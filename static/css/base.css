@@ -241,7 +241,7 @@ button:active,
 .panel-kicker,
 .hero-panel-label,
 .table-shell-label,
-.metric-item span,
+.metric-item > span,
 .form-label,
 label {
     font-family: var(--mono);

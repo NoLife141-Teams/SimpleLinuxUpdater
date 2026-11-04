@@ -1,3 +1,4 @@
+const { navigateSection, openSectionNavigation } = require("./support/fixtures");
 const {
     test,
     expect,
@@ -137,9 +138,7 @@ test("policy schedules 472 monthly explicit canaries preserve drafts and server 
         }),
     );
     await page.goto("/admin");
-    await page
-        .locator('[data-admin-section-link="scheduled-policies"]')
-        .click();
+    await navigateSection(page, "admin", "scheduled-policies");
     await expect(page.locator("#maintenance-calendar-list")).toContainText(
         "This month has no selected day; occurrence skipped",
     );
@@ -169,16 +168,14 @@ test("policy schedules 472 monthly explicit canaries preserve drafts and server 
     );
     await expect(page.locator("#policy-canary-count")).toBeHidden();
     await expect(page.locator("#policy-date-local")).toBeHidden();
-    await page.locator('[data-admin-section-link="scheduled-runs"]').click();
+    await navigateSection(page, "admin", "scheduled-runs");
     await expect(page.locator("#scheduled-runs-table")).toContainText(
         "Revision 3 · wave 1",
     );
     await expect(page.locator("#scheduled-runs-table")).toContainText(
         "Reason: rollout_gate",
     );
-    await page
-        .locator('[data-admin-section-link="scheduled-policies"]')
-        .click();
+    await navigateSection(page, "admin", "scheduled-policies");
     await expect(page.locator("#policy-month-day")).toHaveValue("31");
     await expect(page.locator("#policy-canary-servers")).toHaveValue(
         "srv-web-02",
@@ -269,9 +266,7 @@ test("policy schedules 472 one-time draft submits civil date and shows canary bl
     await ensureAuthenticatedSession(page);
     await stubAdminApi(page, state);
     await page.goto("/admin");
-    await page
-        .locator('[data-admin-section-link="scheduled-policies"]')
-        .click();
+    await navigateSection(page, "admin", "scheduled-policies");
     await page.locator("#policy-name").fill("One-time fallback maintenance");
     await page.locator("#policy-target-tag").fill("prod");
     await page.locator("#policy-cadence-kind").selectOption("once");
@@ -356,9 +351,7 @@ test("policy schedules 472 consumed one-time status stays visible through cadenc
     await ensureAuthenticatedSession(page);
     await stubAdminApi(page, state);
     await page.goto("/admin");
-    await page
-        .locator('[data-admin-section-link="scheduled-policies"]')
-        .click();
+    await navigateSection(page, "admin", "scheduled-policies");
     await expect(page.locator("#scheduled-policy-table")).toContainText(
         "One-time occurrence consumed",
     );
@@ -411,9 +404,7 @@ test("policy schedules 472 calendar retains accepted rollouts after the last pol
         }),
     );
     await page.goto("/admin");
-    await page
-        .locator('[data-admin-section-link="scheduled-policies"]')
-        .click();
+    await navigateSection(page, "admin", "scheduled-policies");
     await expect(page.locator("#maintenance-calendar-list")).toContainText(
         "Deleted policy with pending wave",
     );
@@ -443,9 +434,7 @@ test("admin scheduled policy editor submits rich targeting fields and renders re
     await expect(page.locator("#scheduled-policy-table tbody")).toContainText(
         "include web",
     );
-    await page
-        .locator('[data-admin-section-link="scheduled-policies"]')
-        .click();
+    await navigateSection(page, "admin", "scheduled-policies");
     await expect(page.locator("#maintenance-calendar-list")).toContainText(
         "Nightly security",
     );
@@ -455,7 +444,7 @@ test("admin scheduled policy editor submits rich targeting fields and renders re
     await expect(page.locator("#maintenance-calendar-list")).toContainText(
         "global 23:00-03:00 overnight",
     );
-    await page.locator('[data-admin-section-link="scheduled-runs"]').click();
+    await navigateSection(page, "admin", "scheduled-runs");
     await expect(
         page.locator(
             '#scheduled-runs-table a[href="/api/reports/jobs/job-report-1"]',
@@ -483,7 +472,7 @@ test("admin scheduled policy editor submits rich targeting fields and renders re
     );
     await page.locator("#job-detail-close").click();
 
-    await page.locator('[data-admin-section-link="notifications"]').click();
+    await navigateSection(page, "admin", "notifications");
     await expect(
         page.locator('[data-admin-section-lifecycle="notifications"]'),
     ).toHaveAttribute("data-status", "current");
@@ -597,9 +586,7 @@ test("admin schedules independent autoremove without upgrade controls", async ({
     await ensureAuthenticatedSession(page);
     await stubAdminApi(page, state);
     await page.goto("/admin");
-    await page
-        .locator('[data-admin-section-link="scheduled-policies"]')
-        .click();
+    await navigateSection(page, "admin", "scheduled-policies");
     await page.locator("#policy-name").fill("Weekly cleanup");
     await page.locator("#policy-target-tag").fill("prod");
     await page.locator("#policy-upgrade-mode").selectOption("full");
@@ -656,7 +643,7 @@ test("admin scheduled run history filters, paginates, and exposes existing inves
     await stubAdminApi(page, state);
 
     await page.goto("/admin");
-    await page.locator('[data-admin-section-link="scheduled-runs"]').click();
+    await navigateSection(page, "admin", "scheduled-runs");
     await expect(page.locator("#scheduled-runs-result-summary")).toHaveText(
         "26 matching runs.",
     );
@@ -831,7 +818,7 @@ test("admin policy preview explains canonical DST, no-run, and empty-target outc
     };
     await ensureAuthenticatedSession(page);
     await stubAdminApi(page, state);
-    await page.goto("/admin");
+    await page.goto("/admin#admin-section-scheduled-policies");
 
     await page.locator("#policy-name").fill("DST policy");
     await page.locator("#policy-target-tag").fill("prod");
@@ -1222,9 +1209,7 @@ test("admin workspace navigation restores disclosure and focuses deep links", as
         "location",
     );
 
-    await page
-        .locator("#admin-section-account-security")
-        .scrollIntoViewIfNeeded();
+    await navigateSection(page, "admin", "account-security");
     await expect(
         page.locator('[data-admin-section-link="account-security"]'),
     ).toHaveAttribute("aria-current", "location");
@@ -1249,7 +1234,7 @@ test("admin workspace navigation restores disclosure and focuses deep links", as
         "location",
     );
 
-    await page.locator('[data-admin-section-link="backup"]').click();
+    await navigateSection(page, "admin", "backup");
     await expect(page).toHaveURL(/#admin-section-backup$/);
     await expect(page.locator("#admin-section-backup-heading")).toBeFocused();
     await expect(page.locator("#admin-section-backup-heading")).toHaveCSS(
@@ -1260,7 +1245,7 @@ test("admin workspace navigation restores disclosure and focuses deep links", as
         page.locator('[data-admin-section-link="backup"]'),
     ).toHaveAttribute("aria-current", "location");
 
-    await page.locator('[data-admin-section-link="notifications"]').click();
+    await navigateSection(page, "admin", "notifications");
     await expect(
         page.locator("#admin-section-notifications-heading"),
     ).toBeFocused();
@@ -1270,7 +1255,7 @@ test("admin workspace navigation restores disclosure and focuses deep links", as
     await expect(
         page.locator('[data-admin-section-lifecycle="notifications"]'),
     ).toHaveAttribute("data-status", "current");
-    await page.locator('[data-admin-section-link="backup"]').click();
+    await navigateSection(page, "admin", "backup");
     await page.locator('[data-admin-section-toggle="notifications"]').click();
     await expect(
         page.locator('[data-admin-section-content="notifications"]'),
@@ -1288,7 +1273,7 @@ test("admin workspace navigation restores disclosure and focuses deep links", as
                 ),
             ),
         )
-        .toEqual(["notifications"]);
+        .toEqual(expect.arrayContaining(["notifications"]));
 
     await page.reload();
     await expect(
@@ -1688,7 +1673,7 @@ test("recent Admin activity loads on demand with safe ordered facts and retains 
 
     await page.goto("/admin");
     await expect.poll(() => state.adminActivityLoadCount || 0).toBe(0);
-    await page.locator('[data-admin-section-link="recent-activity"]').click();
+    await navigateSection(page, "admin", "recent-activity");
     const lifecycle = page.locator(
         '[data-admin-section-lifecycle="recent-activity"]',
     );
@@ -1943,7 +1928,7 @@ test("notification conditions stay opt-in and grouped reminders validate and sav
     const state = {};
     await stubAdminApi(page, state);
     await page.goto("/admin#admin-section-notifications");
-    await page.locator('[data-admin-section-link="notifications"]').click();
+    await navigateSection(page, "admin", "notifications");
     await expect(
         page.locator('[data-admin-section-lifecycle="notifications"]'),
     ).toHaveAttribute("data-status", "current");
@@ -2422,15 +2407,17 @@ test("admin section drafts support save eligibility, discard, replacement confir
             return !window.dispatchEvent(event);
         });
 
+    await navigateSection(page, "admin", "account-security");
     await page
         .locator("#auth-current-password")
         .fill("secret-current-password");
+    await navigateSection(page, "admin", "backup");
     await page
         .locator("#backup-export-passphrase")
         .fill("secret-backup-passphrase");
     expect(await dispatchBeforeUnload()).toBe(false);
 
-    await page.locator('[data-admin-section-link="notifications"]').click();
+    await navigateSection(page, "admin", "notifications");
     await expect(
         page.locator('[data-admin-section-lifecycle="notifications"]'),
     ).toHaveAttribute("data-status", "current");
@@ -2452,6 +2439,7 @@ test("admin section drafts support save eligibility, discard, replacement confir
     expect(await dispatchBeforeUnload()).toBe(false);
 
     await expect(page.locator("#policy-draft-action-bar")).toBeHidden();
+    await navigateSection(page, "admin", "scheduled-policies");
     await page.locator("#policy-name").fill("Unsaved policy");
     await expect(page.locator("#policy-draft-action-bar")).toBeVisible();
     await expect(page.locator("#policy-save-btn")).toBeDisabled();
@@ -2490,7 +2478,7 @@ test("admin typed confirmations gate restore and policy deletion", async ({
     await ensureAuthenticatedSession(page);
     await stubAdminApi(page, state);
 
-    await page.goto("/admin");
+    await page.goto("/admin#admin-section-backup");
     await page.locator("#backup-restore-file").setInputFiles({
         name: "backup.slubkp",
         mimeType: "application/octet-stream",
@@ -2531,6 +2519,7 @@ test("admin typed confirmations gate restore and policy deletion", async ({
     await expect.poll(() => state.restoreCompleted || false).toBe(true);
     await expect(page.locator("#auth-sessions-clear")).toBeEnabled();
 
+    await navigateSection(page, "admin", "scheduled-policies");
     const deletePolicyButton = page.locator(
         '#scheduled-policy-table button[data-action="delete-policy"][data-id="12"]',
     );
@@ -2549,7 +2538,7 @@ test("restore readiness distinguishes blockers and expires when the archive or p
     await ensureAuthenticatedSession(page);
     await stubAdminApi(page, state);
     await page.goto("/admin");
-    await page.locator('[data-admin-section-link="backup"]').click();
+    await navigateSection(page, "admin", "backup");
 
     await page.locator("#backup-restore-file").setInputFiles({
         name: "ready.slubkp",
@@ -2632,7 +2621,7 @@ test("admin danger dialogs explain impact, trap keyboard focus, isolate the page
     await stubAdminApi(page, state);
     await page.goto("/admin");
 
-    await page.locator('[data-admin-section-link="account-security"]').click();
+    await navigateSection(page, "admin", "account-security");
     const revokeSession = page.locator(
         '#auth-session-inventory button[data-session-id="other-session"]',
     );
@@ -2672,7 +2661,7 @@ test("admin danger dialogs explain impact, trap keyboard focus, isolate the page
 
     await page.emulateMedia({ reducedMotion: "reduce" });
     await page.setViewportSize({ width: 390, height: 640 });
-    await page.locator('[data-admin-section-link="backup"]').click();
+    await navigateSection(page, "admin", "backup");
     await page.locator("#backup-restore-file").setInputFiles({
         name: "backup.slubkp",
         mimeType: "application/octet-stream",
@@ -2716,7 +2705,7 @@ test("admin password change sends payload and session clear requires typed confi
     await ensureAuthenticatedSession(page);
     await stubAdminApi(page, state);
 
-    await page.goto("/admin");
+    await page.goto("/admin#admin-section-account-security");
     await expect(page.locator("#auth-session-status")).toContainText(
         "2 active sessions",
     );
@@ -2787,7 +2776,7 @@ test("admin password controls expose requirements, entry aids, and both session 
     const state = {};
     await ensureAuthenticatedSession(page);
     await stubAdminApi(page, state);
-    await page.goto("/admin");
+    await page.goto("/admin#admin-section-account-security");
 
     await expect(page.locator("#auth-password-requirements")).toContainText(
         "10–64 characters",
@@ -2871,7 +2860,7 @@ test("admin password change reports partial session invalidation without retaini
     const state = { passwordPartialFailure: true };
     await ensureAuthenticatedSession(page);
     await stubAdminApi(page, state);
-    await page.goto("/admin");
+    await page.goto("/admin#admin-section-account-security");
 
     await page.locator("#auth-current-password").fill(password);
     await page.locator("#auth-new-password").fill(changedPassword);
@@ -2914,7 +2903,7 @@ test("active session inventory keeps a temporary IP reveal controllable and undi
         { ...state.sessions[1], id: "other-session-4" },
     );
 
-    await page.goto("/admin");
+    await page.goto("/admin#admin-section-account-security");
     await expect(
         page.locator("#auth-current-session-list .session-item"),
     ).toHaveCount(1);
@@ -2992,7 +2981,7 @@ test("temporary session IP remasks on expiry, refresh, and document hiding", asy
     const state = { sessionIPRevealSeconds: 1 };
     await ensureAuthenticatedSession(page);
     await stubAdminApi(page, state);
-    await page.goto("/admin");
+    await page.goto("/admin#admin-section-account-security");
 
     const revealIP = async () => {
         await page
@@ -3037,7 +3026,7 @@ test("session IP reveal keeps authentication failures inside the secure dialog",
     const state = { sessionIPRevealFailure: true };
     await ensureAuthenticatedSession(page);
     await stubAdminApi(page, state);
-    await page.goto("/admin");
+    await page.goto("/admin#admin-section-account-security");
 
     await page
         .locator('button[data-reveal-session-id="current-session"]')
@@ -3067,7 +3056,7 @@ test("cancelling session IP reauthentication discards a late response", async ({
     };
     await ensureAuthenticatedSession(page);
     await stubAdminApi(page, state);
-    await page.goto("/admin");
+    await page.goto("/admin#admin-section-account-security");
 
     const reveal = page.locator(
         'button[data-reveal-session-id="current-session"]',

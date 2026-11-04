@@ -39,7 +39,18 @@ async function ensureAuthenticatedSession(page) {
         "fresh installation accepts its one fixture credential",
     ).toBe(true);
     await page.goto("/");
-    await expect(page.locator("#logout-btn")).toBeVisible();
+    await expect(page.locator("#logout-btn")).toBeAttached();
+    await expect(page.locator(".brand-lockup")).toBeVisible();
+}
+async function openSectionNavigation(page, prefix) {
+    if (prefix !== "admin" || page.viewportSize().width > 1100) return;
+    const picker = page.locator(".admin-section-picker");
+    if (!(await picker.evaluate(node => node.open)))
+        await picker.locator(":scope > summary").click();
+}
+async function navigateSection(page, prefix, sectionID) {
+    await openSectionNavigation(page, prefix);
+    await page.locator(`[data-${prefix}-section-link="${sectionID}"]`).click();
 }
 async function signIn(page) {
     await page.locator("#username").fill(username);
@@ -55,4 +66,6 @@ module.exports = {
     changedPassword,
     ensureAuthenticatedSession,
     signIn,
+    navigateSection,
+    openSectionNavigation,
 };

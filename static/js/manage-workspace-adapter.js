@@ -36,7 +36,7 @@
                 if (navSummary) navSummary.textContent = section.summary;
                 if (summary) {
                     summary.textContent = section.summary;
-                    summary.hidden = !section.collapsed;
+                    summary.hidden = !section.collapsed || section.id === "global-key";
                 }
                 if (toggle) {
                     toggle.setAttribute(

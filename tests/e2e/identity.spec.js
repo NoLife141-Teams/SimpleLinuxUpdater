@@ -242,14 +242,18 @@ test.describe("named identities on isolated installations", () => {
         await expect(page.locator("#mfa-status")).toHaveText(
             "Authenticator enabled.",
         );
-        await page.locator("#reauth-password").fill(password);
+        if (!(await page.locator('.account-identity-disclosure').evaluate(node => node.open)))
+                await page.locator('.account-identity-disclosure > summary').click();
+            await page.locator("#reauth-password").fill(password);
         await page.locator("#reauth-code").fill(codes[0]);
         await page.getByRole("button", { name: "Confirm identity" }).click();
         await expect(page.locator("#account-status")).toContainText(
             "invalid authentication factor",
         );
         await expect(page.locator("#reauth-password")).toHaveValue("");
-        await page.locator("#reauth-password").fill(password);
+        if (!(await page.locator('.account-identity-disclosure').evaluate(node => node.open)))
+                await page.locator('.account-identity-disclosure > summary').click();
+            await page.locator("#reauth-password").fill(password);
         await page.locator("#reauth-code").fill(codes[1]);
         await page.getByRole("button", { name: "Confirm identity" }).click();
         await expect(page.locator("#account-status")).toContainText(

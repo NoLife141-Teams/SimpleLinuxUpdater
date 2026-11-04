@@ -16,9 +16,10 @@
         let acceptedFragment = location.hash;
         function updateOffsets() {
             if (!container || !nav) return;
+            const sidebar = page === "admin" && window.innerWidth > 1100;
             const pinned = header && ["sticky", "fixed"].includes(getComputedStyle(header).position);
             container.style.setProperty("--app-header-offset", `${pinned ? Math.ceil(header.getBoundingClientRect().height) : 0}px`);
-            container.style.setProperty("--section-nav-height", `${Math.ceil(nav.getBoundingClientRect().height)}px`);
+            container.style.setProperty("--section-nav-height", `${sidebar ? 0 : Math.ceil(nav.getBoundingClientRect().height)}px`);
         }
         function publish(event) {
             const before = interaction.getView().workspace.activeSection;
@@ -43,7 +44,9 @@
                     const rect = section.getBoundingClientRect();
                     return { id: section.getAttribute(attribute), top: rect.top, bottom: rect.bottom };
                 }),
-                anchorY: (nav?.getBoundingClientRect().bottom || 0) + 8,
+                anchorY: page === "admin" && window.innerWidth > 1100
+                    ? (header?.getBoundingClientRect().bottom || 0) + 16
+                    : (nav?.getBoundingClientRect().bottom || 0) + 8,
                 scrollY: window.scrollY,
                 viewportHeight: window.innerHeight,
                 documentHeight: document.documentElement.scrollHeight,
@@ -147,6 +150,8 @@
         }
         badge.hidden = !inArea;
         if (workspace.activeSection === sectionID) {
+            const currentLabel = link.closest("nav")?.querySelector("[data-section-current]");
+            if (currentLabel) currentLabel.textContent = link.querySelector("span")?.textContent || sectionID;
             const track = link.parentElement;
             const bounds = link.getBoundingClientRect();
             const viewport = track.getBoundingClientRect();

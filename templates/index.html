@@ -5,11 +5,12 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>SimpleLinuxUpdater</title>
     <link rel="icon" type="image/png" href="/static/logo.png">
-    <link rel="stylesheet" href="/static/css/base.css?v=metadata-contrast-517-20261029">
+    <link rel="stylesheet" href="/static/css/base.css?v=visual-preview-20261104">
     <link rel="stylesheet" href="/static/css/pending-updates.css?v=top-pagination-20261103">
     <link rel="stylesheet" href="/static/css/index.css?v=compact-cve-20261103b">
     <link rel="stylesheet" href="/static/css/status-polish.css?v=20260919">
 <link rel="stylesheet" href="/static/css/package-deferrals.css?v=ui-components-515-20261029">
+    <link rel="stylesheet" href="/static/css/operator-workspace.css?v=visual-preview-20261104">
 </head>
 <body class="status-page" data-account-role="{{.Role}}">
     <div class="dashboard-shell">
@@ -20,7 +21,7 @@
                 <div>
                     <div class="eyebrow">Status dashboard</div>
                     <h1>Fleet status</h1>
-                    <p class="muted">Package approvals, running phases, and host facts are tracked from one operator surface.</p>
+                    <p class="muted">Review approvals, monitor maintenance, and inspect host health.</p>
                 </div>
                 <div class="head-meta" aria-label="Runtime metadata">
                     <span class="version-pill">v0.5.3</span>
@@ -30,7 +31,9 @@
             </section>
 
             <section class="variant-c-layout">
-	            <aside class="fleet-rail fade-in" aria-label="Fleet filters">
+	            <details class="fleet-rail fade-in" aria-label="Fleet filters" data-responsive-disclosure open>
+                    <summary class="fleet-filter-toggle">Filters &amp; bulk actions</summary>
+                    <div class="fleet-filter-body">
 	                <div class="rail-section">
 	                    <div class="eyebrow">Fleet filters</div>
 	                    <h2>Fleet filters</h2>
@@ -101,66 +104,74 @@
 	                    <strong id="metric-auth-posture">--</strong>
 	                    <span id="metric-auth-note">Password/key mix</span>
 	                </div>
-	            </aside>
+	            </div>
+                </details>
 
                 <section class="timeline-column">
-                    <section class="metric-strip fade-in" aria-label="Fleet metrics">
-                        <button type="button" class="metric-item metric-button" data-metric-filter="">
-                            <span>Total hosts</span>
-                            <strong id="metric-total-hosts">0</strong>
-                            <small id="metric-total-note">No servers loaded</small>
-                        </button>
-                        <button type="button" class="metric-item metric-button" data-metric-filter="pending_approval">
-                            <span>Pending approvals</span>
-                            <strong id="metric-pending-approvals">0</strong>
-                            <small>Awaiting operator review</small>
-                        </button>
-                        <button type="button" class="metric-item metric-button" data-metric-filter="active">
-                            <span>Active phases</span>
-                            <strong id="metric-prechecks">0</strong>
-                            <small>Queued or running jobs</small>
-                        </button>
-                        <article class="metric-item metric-hidden">
-                            <span>In progress</span>
-                            <strong id="metric-active-runs">0</strong>
-                            <small>Live maintenance jobs</small>
-                        </article>
-                        <article class="metric-item">
-                            <span>Done</span>
-                            <strong id="metric-done-hosts">0</strong>
-                            <small>Terminal success</small>
-                        </article>
-                        <article class="metric-item">
-                            <span>Pending packages</span>
-                            <strong id="metric-pending-packages">0</strong>
-                            <small>Across approval queues</small>
-                        </article>
-                        <article class="metric-item">
-                            <span><svg class="status-section-icon" aria-hidden="true" focusable="false"><use href="/static/status-icons.svg#shield"></use></svg>Security updates</span>
-                            <strong id="metric-security-updates">0</strong>
-                            <small>Security-marked packages</small>
-                        </article>
-                        <button type="button" class="metric-item metric-button" data-metric-filter="stale_facts">
-                            <span>Host facts to refresh</span>
-                            <strong id="metric-stale-facts">0</strong>
-                            <small>Stale or unknown intelligence</small>
-                        </button>
-                        <button type="button" class="metric-item metric-button" data-metric-filter="high_risk">
-                            <span>Hosts with CVE updates</span>
-                            <strong id="metric-high-risk-cve">0</strong>
-                            <small>Hosts with CVEs linked to available updates</small>
-                        </button>
-                        <article class="metric-item metric-hidden">
-                            <span>Reachable hosts</span>
-                            <strong id="metric-reachable-hosts">0</strong>
-                            <small>Not currently failed</small>
-                        </article>
-	                        <article class="metric-item metric-hidden">
-	                            <span>Failed hosts</span>
-	                            <strong id="metric-failed-hosts">0</strong>
-	                            <small>Needs attention</small>
-	                        </article>
-		                    </section>
+                    <section class="fleet-metrics fade-in" aria-label="Fleet metrics">
+                        <div class="metric-strip fleet-primary-metrics">
+                            <button type="button" class="metric-item metric-button" data-metric-filter="">
+                                <span>Total hosts</span>
+                                <strong id="metric-total-hosts">0</strong>
+                                <small id="metric-total-note">No servers loaded</small>
+                            </button>
+                            <button type="button" class="metric-item metric-button" data-metric-filter="pending_approval">
+                                <span>Pending approvals</span>
+                                <strong id="metric-pending-approvals">0</strong>
+                                <small>Awaiting operator review</small>
+                            </button>
+                            <button type="button" class="metric-item metric-button" data-metric-filter="active">
+                                <span>Active phases</span>
+                                <strong id="metric-prechecks">0</strong>
+                                <small>Queued or running jobs</small>
+                            </button>
+                            <article class="metric-item">
+                                <span><svg class="status-section-icon" aria-hidden="true" focusable="false"><use href="/static/status-icons.svg#shield"></use></svg>Security updates</span>
+                                <strong id="metric-security-updates">0</strong>
+                                <small>Security-marked packages</small>
+                            </article>
+                        </div>
+                        <details class="fleet-secondary-metrics" data-responsive-disclosure open>
+                            <summary>More fleet metrics</summary>
+                            <div class="metric-strip">
+                                <article class="metric-item metric-hidden">
+                                    <span>In progress</span>
+                                    <strong id="metric-active-runs">0</strong>
+                                    <small>Live maintenance jobs</small>
+                                </article>
+                                <article class="metric-item">
+                                    <span>Done</span>
+                                    <strong id="metric-done-hosts">0</strong>
+                                    <small>Terminal success</small>
+                                </article>
+                                <article class="metric-item">
+                                    <span>Pending packages</span>
+                                    <strong id="metric-pending-packages">0</strong>
+                                    <small>Across approval queues</small>
+                                </article>
+                                <button type="button" class="metric-item metric-button" data-metric-filter="stale_facts">
+                                    <span>Host facts to refresh</span>
+                                    <strong id="metric-stale-facts">0</strong>
+                                    <small>Stale or unknown intelligence</small>
+                                </button>
+                                <button type="button" class="metric-item metric-button" data-metric-filter="high_risk">
+                                    <span>Hosts with CVE updates</span>
+                                    <strong id="metric-high-risk-cve">0</strong>
+                                    <small>Hosts with CVEs linked to available updates</small>
+                                </button>
+                                <article class="metric-item metric-hidden">
+                                    <span>Reachable hosts</span>
+                                    <strong id="metric-reachable-hosts">0</strong>
+                                    <small>Not currently failed</small>
+                                </article>
+                                <article class="metric-item metric-hidden">
+                                    <span>Failed hosts</span>
+                                    <strong id="metric-failed-hosts">0</strong>
+                                    <small>Needs attention</small>
+                                </article>
+                            </div>
+                        </details>
+                    </section>
 
 		                    <section class="priority-attention-strip hidden fade-in" id="priority-attention-strip" aria-label="Priority attention">
 	                        <article class="ops-panel priority-panel">
@@ -423,6 +434,6 @@
     <script src="/static/js/index-bulk-actions.js?v=frontend-isolation-20261027"></script>
     <script src="/static/js/package-deferrals.js?v=frontend-isolation-20261027"></script>
 <script src="/static/js/status-snapshot-adapter.js?v=frontend-isolation-20261027"></script>
-<script src="/static/js/index.js?v=top-pagination-20261103"></script>
+<script src="/static/js/index.js?v=visual-preview-20261104"></script>
 </body>
 </html>

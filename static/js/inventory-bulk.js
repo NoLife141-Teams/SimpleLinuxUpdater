@@ -3,6 +3,7 @@ window.InventoryBulk = Object.freeze({
         const lifecycle = window.BrowserEffects.create();
         lifecycle.init();
         const area = document.getElementById("inventory-bulk");
+        let previousSelectionCount = 0;
         const get = id => document.getElementById(id);
         function text(tag, value) { const node = document.createElement(tag); node.textContent = value; return node; }
         function schedule(value) {
@@ -15,6 +16,9 @@ window.InventoryBulk = Object.freeze({
             const page = store.getView();
             const view = page.inventoryBulk;
             area.setAttribute("aria-busy", String(view.busy));
+            get("bulk-selection-summary").textContent = `${view.selected.length} selected`;
+            if (view.selected.length && !previousSelectionCount) area.open = true;
+            previousSelectionCount = view.selected.length;
             get("bulk-selection-count").textContent = `${view.selected.length} selected (including any explicitly selected on other pages)`;
             get("bulk-selected-names").replaceChildren(...view.selected.map(name => text("li", name)));
             for (const id of ["bulk-add-tags", "bulk-remove-tags", "bulk-availability", "bulk-clear", "search", "tag-filter", "auth-filter", "group-by", "page-size"]) get(id).disabled = view.busy;

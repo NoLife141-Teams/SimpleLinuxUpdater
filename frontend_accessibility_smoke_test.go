@@ -28,7 +28,7 @@ func TestOperatorPagesExposeAccessibleResponsiveShells(t *testing.T) {
 			}
 			body := recorder.Body.String()
 			for _, contract := range []string{
-				`<meta name="viewport"`, `<nav class="app-nav" aria-label="Main navigation">`, `<main`,
+				`<meta name="viewport"`, `<nav id="app-navigation" class="app-nav" aria-label="Main navigation">`, `aria-controls="app-navigation"`, `<main`,
 				`id="logout-btn"`, `type="button"`,
 			} {
 				if !strings.Contains(body, contract) {

@@ -1175,10 +1175,12 @@
                     : "No scheduled run";
             title.textContent = server.name || "Selected host";
             subtitle.textContent = `${server.user || "user"}@${server.host || "host"}:${server.port || 22}`;
+            const phaseLabel = timelineDisplayLabel(timeline, { lastRunPrefix: true });
+            const repeatsRuntimeStatus = phaseLabel.toLowerCase() === statusLabel(server.status).toLowerCase();
             panel.innerHTML = `
                 <div class="selected-status-row">
                     <span class="status-pill status-${safeStatus}">${escapeHtml(server.disabled ? "Disabled" : statusLabel(server.status))}</span>
-                    <span class="stage-chip phase-${escapeHtml(timeline.state || "idle")}">${escapeHtml(timelineDisplayLabel(timeline, { lastRunPrefix: true }))}</span>
+                    ${repeatsRuntimeStatus ? "" : `<span class="stage-chip phase-${escapeHtml(timeline.state || "idle")}">${escapeHtml(phaseLabel)}</span>`}
                 </div>
                 ${updateSecuritySummaryHtml(selected, safeDataName)}
  ${applicationPostchecksHtml(server)}
@@ -1972,7 +1974,7 @@
             }
 
             const safeStatus = safeStatusClass(server.status);
-            const safeStatusText = escapeHtml(server.status || "unknown");
+            const safeStatusText = escapeHtml(statusLabel(server.status));
             const isPendingApproval = server.status === "pending_approval";
             const hasPending = hasPendingUpdates(server);
             const driftReason = pendingApprovalDriftReason(server);

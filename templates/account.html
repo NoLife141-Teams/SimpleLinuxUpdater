@@ -4,9 +4,10 @@
  <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
  <title>SimpleLinuxUpdater - Account</title>
  <link rel="icon" type="image/png" href="/static/logo.png">
- <link rel="stylesheet" href="/static/css/base.css?v=metadata-contrast-517-20261029">
+ <link rel="stylesheet" href="/static/css/base.css?v=visual-preview-20261104">
  <link rel="stylesheet" href="/static/css/reauthentication.css?v=account-commands-20261027">
  <link rel="stylesheet" href="/static/css/account.css?v=account-ui-516-20261029">
+    <link rel="stylesheet" href="/static/css/operator-workspace.css?v=visual-preview-20261104">
 </head>
 <body data-account-role="{{.Role}}">
  <div class="dashboard-shell">
@@ -15,12 +16,12 @@
   <section class="hero"><div class="eyebrow">Account security</div><h1>Your account</h1><p id="identity-summary" class="muted">Loading identity…</p></section>
   <p id="account-status" tabindex="-1" role="status" aria-live="polite"></p>
   <p class="muted" id="account-timezone">Dates shown in UTC.</p>
-  <section class="card"><h2>Confirm your identity</h2><p class="muted">Sensitive changes require your password and, when enabled, a fresh authenticator or recovery code. Confirmation lasts five minutes.</p>
+  <details class="account-identity-disclosure"><summary>Confirm your identity <span>For sensitive changes</span></summary><div class="account-identity-content"><p class="muted">Sensitive changes require your password and, when enabled, a fresh authenticator or recovery code. Confirmation lasts five minutes.</p>
    <form id="reauth-form"><label for="reauth-password">Current password</label><input id="reauth-password" type="password" autocomplete="current-password" required maxlength="64">
    <label for="reauth-code">Authenticator or recovery code (if enabled)</label><input id="reauth-code" autocomplete="one-time-code" maxlength="32">
    <button class="primary-action" type="submit">Confirm identity</button></form>
    <p class="account-feedback" id="reauth-feedback" role="status" aria-live="polite" tabindex="-1" hidden></p>
-  </section>
+  </div></details>
   <section class="card"><h2>Multi-factor authentication</h2><p id="mfa-status"></p>
    <button class="primary-action" id="mfa-enroll" type="button">Set up authenticator</button><button class="btn-danger" id="mfa-disable" type="button" hidden>Disable MFA</button>
    <div id="mfa-enrollment" hidden><p>Enter this secret in your authenticator. Enrollment expires in ten minutes. Enabling MFA signs out all your browser sessions and revokes all your personal tokens. Save the recovery codes before signing in again.</p><pre id="mfa-secret" class="one-time-secret"></pre>

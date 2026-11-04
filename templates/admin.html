@@ -5,11 +5,12 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>SimpleLinuxUpdater - Admin</title>
     <link rel="icon" type="image/png" href="/static/logo.png">
-    <link rel="stylesheet" href="/static/css/base.css?v=metadata-contrast-517-20261029">
+    <link rel="stylesheet" href="/static/css/base.css?v=visual-preview-20261104">
     <link rel="stylesheet" href="/static/css/admin.css?v=metadata-contrast-517-20261029">
     <link rel="stylesheet" href="/static/css/application-postchecks.css?v=1">
 <link rel="stylesheet" href="/static/css/package-deferrals.css?v=ui-components-515-20261029">
     <link rel="stylesheet" href="/static/css/reauthentication.css?v=account-commands-20261027">
+    <link rel="stylesheet" href="/static/css/operator-workspace.css?v=visual-preview-20261104">
 </head>
 <body data-account-role="{{.Role}}">
     <div class="dashboard-shell">
@@ -20,16 +21,17 @@
             <div>
                 <div class="eyebrow">Operations control</div>
                 <h1>Admin</h1>
-                <p class="muted">Handle scheduling, backup, metrics access, and app-wide settings from one deliberate control page.</p>
+                <p class="muted">Configure maintenance policies, notifications, backups, and access.</p>
             </div>
             <div class="head-meta" aria-label="Admin metadata">
                 <span class="meta-pill danger">Sensitive controls</span>
-                <span class="meta-pill">Scheduled policy</span>
-                <span class="meta-pill">Disaster recovery</span>
+
             </div>
         </section>
 
         <nav class="admin-section-nav fade-in" id="admin-section-nav" aria-label="Admin sections">
+            <details class="admin-section-picker" data-responsive-disclosure open>
+                <summary>Settings <strong data-section-current>App Time</strong></summary>
             <div class="admin-section-nav-track">
                 <a href="#admin-section-app-time" data-admin-section-link="app-time"><span>App Time</span><small data-admin-section-nav-summary="app-time">Loading</small></a>
                 <a href="#admin-section-notifications" data-admin-section-link="notifications"><span>Notifications</span><small data-admin-section-nav-summary="notifications">Loading</small></a>
@@ -42,6 +44,7 @@
                 <a href="#admin-section-installation" data-admin-section-link="installation"><span>Installation Health</span><small data-admin-section-nav-summary="installation">Unavailable</small></a>
                 <a href="#admin-section-metrics" data-admin-section-link="metrics"><span>Metrics</span><small data-admin-section-nav-summary="metrics">Loading</small></a>
             </div>
+            </details>
         </nav>
 
 
@@ -1181,7 +1184,7 @@
     <script src="/static/js/admin-timezone-picker.js?v=frontend-isolation-20261027"></script>
     <script src="/static/js/scheduled-policy-administration-interaction.js?v=scheduled-autoremove-20261020"></script>
     <script src="/static/js/section-navigation.js?v=section-navigation-20261029"></script>
-    <script src="/static/js/section-navigation-adapter.js?v=ui-responsive-514-fragment-20261029"></script>
+    <script src="/static/js/section-navigation-adapter.js?v=visual-preview-20261104"></script>
     <script src="/static/js/admin-page-interaction.js?v=admin-explicit-profile-20261029"></script>
     <script src="/static/js/admin-session-ip-reveal.js?v=frontend-isolation-20261027"></script>
     <script src="/static/js/application-postcheck-adapter.js?v=admin-profile-test-eligibility-20261029"></script>
@@ -1190,6 +1193,6 @@
 <script src="/static/js/admin-account-adapter.js?v=frontend-isolation-20261027"></script>
 <script src="/static/js/admin-backup-adapter.js?v=backup-catalog-20261028"></script>
 <script src="/static/js/admin-policies-adapter.js?v=frontend-isolation-20261027"></script>
-<script src="/static/js/admin.js?v=ui-responsive-514-20261029"></script>
+<script src="/static/js/admin.js?v=visual-preview-20261104"></script>
 </body>
 </html>

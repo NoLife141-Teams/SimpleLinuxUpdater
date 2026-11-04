@@ -1,3 +1,4 @@
+const { navigateSection, openSectionNavigation } = require("./support/fixtures");
 const { test, expect, ensureAuthenticatedSession } = require("./support/fixtures");
 const { stubAdminApi, stubManageApi, makeServer } = require("./support/builders");
 
@@ -7,7 +8,7 @@ async function settle(page) {
         const current = await page.evaluate(() => Array.from(document.querySelectorAll('[data-admin-section], [data-manage-section]')).map(node => {
             const rect = node.getBoundingClientRect();
             return `${Math.round(rect.top + scrollY)}:${Math.round(rect.height)}`;
-        }).join('|'));
+        }).join('|') + `@${scrollY}`);
         stable = current === previous ? stable + 1 : 0;
         previous = current;
         return stable;
@@ -60,10 +61,11 @@ for (const prefix of ["manage", "admin"]) {
                     // A slow image must not suspend tracking of the reader's scroll.
                     await page.mouse.move(8, 400);
                     await expect.poll(async () => {
-                        await page.mouse.wheel(0, 100000);
+                        await page.evaluate(() => { dispatchEvent(new WheelEvent("wheel", {deltaY:1000})); scrollTo(0,document.documentElement.scrollHeight); });
                         return active(page, prefix);
                     }).toBe(prefix === "manage" ? "audit" : "metrics");
-                    await page.locator(`[data-${prefix}-section-link="${destination}"]`).click();
+                    await settle(page);
+                    await navigateSection(page, prefix, destination);
                 }
                 const url = page.url();
                 release();
@@ -93,11 +95,11 @@ for (const prefix of ["manage", "admin"]) {
             const errors = [];
             page.on('pageerror', error => errors.push(String(error)));
             await page.goto(`/${prefix}`);
-            await expect(page.locator(prefix === 'manage' ? '#manage-servers-table' : '#auth-session-status')).toBeVisible();
+            await expect(page.locator(prefix === 'manage' ? '#manage-servers-table' : '#admin-section-app-time-heading')).toBeVisible();
             // Finish lazy reads before measuring the layout; then preserve the disclosure state.
             const ids = await page.locator(`[data-${prefix}-section-link]`).evaluateAll((nodes, prefix) => nodes.map(node => node.getAttribute(`data-${prefix}-section-link`)), prefix);
             for (const id of ids) {
-                await page.locator(`[data-${prefix}-section-link="${id}"]`).click();
+                await navigateSection(page, prefix, id);
                 await settle(page);
             }
             if (prefix === 'admin') {
@@ -107,7 +109,7 @@ for (const prefix of ["manage", "admin"]) {
             await page.evaluate(() => scrollTo(0,0));
             await settle(page);
             const layout = await rows(page, prefix);
-            if (viewport.width === 1284 && prefix === 'manage') expect(layout[0].ids).toEqual(['global-key','add-server']);
+            if (viewport.width === 1284 && prefix === 'manage') expect(layout[0].ids).toEqual(['directory']);
             if (viewport.width === 390) expect(layout.every(row => row.ids.length === 1)).toBe(true);
             const maxScroll = await page.evaluate(() => document.documentElement.scrollHeight-innerHeight);
             const samples = [];
@@ -159,14 +161,14 @@ for (const prefix of ["manage", "admin"]) {
             await expect.poll(() => active(page,prefix)).toBe(second);
         // A reflow may move the focused card completely outside the viewport.
         // Keep its keyboard focus and allow geometry to follow the visible row.
-        await page.locator(`[data-${prefix}-section-link="${second}"]`).click();
+        await navigateSection(page, prefix, second);
         await expect.poll(() => active(page,prefix)).toBe(second);
         await page.evaluate(() => history.replaceState({navigationTest: "preserved"}, "", location.href));
         await page.locator(`[data-${prefix}-section-toggle="${second}"]`).click();
         expect(await page.evaluate(() => history.state)).toEqual({navigationTest: "preserved"});
         await expect(page.locator(`[data-${prefix}-section-content="${second}"]`)).toBeHidden();
-        await page.locator(`[data-${prefix}-section-link="${first}"]`).click();
-        await page.locator(`[data-${prefix}-section-link="${second}"]`).click();
+        await navigateSection(page, prefix, first);
+        await navigateSection(page, prefix, second);
         await expect(page.locator(`[data-${prefix}-section-content="${second}"]`)).toBeVisible();
         await page.goBack();
         await expect(page.locator(`#${prefix}-section-${first}-heading`)).toBeFocused();
@@ -183,7 +185,7 @@ for (const prefix of ["manage", "admin"]) {
             window.dispatchEvent(new PageTransitionEvent('pagehide', {persisted:true}));
             window.dispatchEvent(new PageTransitionEvent('pageshow', {persisted:true}));
         });
-        await page.locator(`[data-${prefix}-section-link="${first}"]`).click();
+        await navigateSection(page, prefix, first);
         expect(await page.evaluate(() => history.length)).toBe(length + 1);
         await expect(page.locator(`[data-${prefix}-section-link][aria-current=location]`)).toHaveCount(1);
         expect(errors).toEqual([]);
@@ -245,11 +247,11 @@ for (const viewport of [{ width: 1284, height: 884 }, { width: 390, height: 844 
         const ids = await page.locator("[data-admin-section-link]").evaluateAll(nodes => nodes.map(node => node.dataset.adminSectionLink));
         // Complete lazy reads before comparing wheel movement with actual page movement.
         for (const id of ids) {
-            await page.locator(`[data-admin-section-link="${id}"]`).click();
+            await navigateSection(page, "admin", id);
             await expect(page.locator('[data-admin-section-lifecycle][data-status="loading"]')).toHaveCount(0);
             await settle(page);
         }
-        await page.locator('[data-admin-section-link="installation"]').click();
+        await navigateSection(page, "admin", "installation");
         await settle(page);
         const disclosureState = await page.locator("[data-admin-section-toggle]").evaluateAll(nodes => nodes.map(node => node.getAttribute("aria-expanded")));
         await page.evaluate(() => {
@@ -291,6 +293,7 @@ test("Admin loads approaching open sections before their headings enter the view
     await ensureAuthenticatedSession(page);
     const state = {};
     await stubAdminApi(page, state);
+    await page.evaluate(() => localStorage.setItem("simplelinuxupdater.admin.collapsed-sections.v1", "[]"));
     await page.goto("/admin");
     await settle(page);
     expect(state.scheduledRunsLoadCount || 0).toBe(0);
@@ -309,6 +312,7 @@ test("Admin loads approaching open sections before their headings enter the view
 test("A delayed application profile list does not expand an editor while the reader scrolls elsewhere", async ({ page }) => {
     await ensureAuthenticatedSession(page);
     await stubAdminApi(page, {});
+    await page.evaluate(() => localStorage.setItem("simplelinuxupdater.admin.collapsed-sections.v1", "[]"));
     let release, requested = false;
     const ready = new Promise(resolve => { release = resolve; });
     await page.route("**/api/postcheck-profiles", async route => {
@@ -334,7 +338,7 @@ test("A delayed application profile list does not expand an editor while the rea
         await expect(editor).toBeHidden();
         await expect(page.locator("#postcheck-test")).toBeDisabled();
         expect(await page.locator("#admin-section-application-checks").evaluate(node => node.getBoundingClientRect().height)).toBeCloseTo(height, 0);
-        await page.locator('[data-admin-section-link="application-checks"]').click();
+        await navigateSection(page, "admin", "application-checks");
         await page.locator("#postcheck-profile-select").selectOption("web");
         await expect(editor).toBeVisible();
         await expect(page.locator("#postcheck-name")).toHaveValue("Website recovery");
@@ -351,12 +355,12 @@ for (const prefix of ["manage", "admin"]) {
         else await stubAdminApi(page, {});
         await page.goto(`/${prefix}`);
         for (const id of await page.locator(`[data-${prefix}-section-link]`).evaluateAll((nodes, prefix) => nodes.map(node => node.getAttribute(`data-${prefix}-section-link`)), prefix)) {
-            await page.locator(`[data-${prefix}-section-link="${id}"]`).click();
+            await navigateSection(page, prefix, id);
             await settle(page);
         }
-        const destination = prefix === "manage" ? "directory" : "backup";
+        const destination = prefix === "manage" ? "audit" : "backup";
         const previous = prefix === "manage" ? "import" : "scheduled-runs";
-        await page.locator(`[data-${prefix}-section-link="${destination}"]`).click();
+        await navigateSection(page, prefix, destination);
         const button = page.locator(`[data-${prefix}-section-toggle="${destination}"]`);
         await button.focus();
         await settle(page);

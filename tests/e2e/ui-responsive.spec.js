@@ -59,7 +59,7 @@ for (const prefix of ['manage', 'admin']) {
             await expect.poll(() => page.evaluate(({ prefix, section }) => {
                 const nav = document.getElementById(`${prefix}-section-nav`).getBoundingClientRect();
                 const heading = document.getElementById(`${prefix}-section-${section}-heading`).getBoundingClientRect();
-                return heading.top - (prefix === "admin" && innerWidth > 1100 ? document.querySelector(".app-header").getBoundingClientRect().bottom : nav.bottom);
+                return heading.top - nav.bottom;
             }, { prefix, section })).toBeGreaterThanOrEqual(0);
             await page.mouse.move(8, 400);
             await scrollAndSettle(page, 180);
@@ -135,6 +135,7 @@ test('Status filter human words remain whole with visible counters and long tech
     await ensureAuthenticatedSession(page);
     for (const width of [1284, 900, 768, 390]) {
         await page.setViewportSize({ width, height: 884 });
+        await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
         for (const label of ['Pending', 'Facts refresh']) {
             const filter = page.locator('#fleet-status-filters button').filter({ has: page.locator('span', { hasText: label }) });
             if (width <= 980 && !(await page.locator(".fleet-rail").evaluate(node => node.open))) await page.locator(".fleet-filter-toggle").click();

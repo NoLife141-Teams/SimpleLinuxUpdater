@@ -80,6 +80,13 @@ test('mobile settings picker opens the requested section and restores heading fo
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(390);
     await page.setViewportSize({ width: 1440, height: 1000 });
     await expect(page.locator('[data-admin-section-link=backup]')).toBeVisible();
+    const links = await page.locator('[data-admin-section-link]').evaluateAll(nodes => nodes.map(node => {
+        const rect = node.getBoundingClientRect();
+        return { top: Math.round(rect.top), left: rect.left, right: rect.right };
+    }));
+    expect(new Set(links.map(link => link.top)).size).toBe(1);
+    expect(links.at(-1).left).toBeGreaterThan(links[0].left);
+    expect(links.every(link => link.left >= 0 && link.right <= 1440)).toBe(true);
     await page.locator('[data-admin-section-link=backup]').click();
     await expect(page.locator('#admin-section-backup-heading')).toBeFocused();
 });

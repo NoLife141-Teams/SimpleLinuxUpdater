@@ -116,13 +116,8 @@ body.status-page .fleet-metrics .metric-item small { display: none; }
 .admin-main .admin-workspace-section.is-collapsed h2 { font-size: 17px; }
 .admin-main .admin-workspace-section.is-collapsed .eyebrow { display: none; }
 @media (min-width: 1101px) {
-    .admin-main { display: grid; grid-template-columns: 210px minmax(0, 1fr); column-gap: 24px; align-items: start; }
-    .admin-main > .dashboard-head { grid-column: 1 / -1; }
-    .admin-main > .admin-section-nav { grid-column: 1; grid-row: 2 / span 20; margin: 0; padding: 0 12px 0 0; border: 0; border-right: 1px solid var(--border); border-radius: 0; background: transparent; max-height: calc(100svh - var(--app-header-offset, 72px) - 32px); overflow-y: auto; }
-    .admin-main .admin-section-nav-track { display: grid; gap: 4px; overflow: visible; }
-    .admin-main .admin-section-nav a { flex: none; padding: 11px 12px; }
-    .admin-main .admin-section-nav a small { white-space: normal; line-height: 1.4; }
-    .admin-main > .admin-workspace-section { grid-column: 2; scroll-margin-top: calc(var(--app-header-offset, 72px) + 16px); }
+    .admin-main .admin-section-nav-track { display: grid; grid-template-columns: repeat(10, minmax(0, 1fr)); align-items: stretch; overflow-x: visible; }
+    .admin-main .admin-section-nav a { align-content: start; min-height: 58px; }
 }
 @media (max-width: 1100px) {
     .admin-main .admin-section-nav { overflow: visible; padding: 0; }

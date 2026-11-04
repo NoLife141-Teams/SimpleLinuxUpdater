@@ -91,12 +91,17 @@
     scroll-margin-top: calc(var(--app-header-offset, 72px) + var(--section-nav-height, 80px) + 16px);
 }
 
+.admin-workspace-section:not(.is-collapsed) > .workspace-head,
+.admin-workspace-section:not(.is-collapsed) > .table-shell-head {
+    margin-bottom: 16px;
+}
+
 .admin-section-content {
     min-width: 0;
     max-width: 100%;
 }
 
-#admin-section-metrics-content {
+#admin-section-metrics-content:not([hidden]) {
     display: grid;
     gap: 12px;
 }

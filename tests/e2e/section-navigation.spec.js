@@ -31,6 +31,39 @@ async function rows(page, prefix) {
     }, prefix);
 }
 
+for (const width of [390, 1916]) {
+    for (const prefix of ["admin", "manage"]) {
+        test(`${prefix} disclosure buttons keep content hidden or spaced below the header at ${width}px`, async ({ page }) => {
+            await page.setViewportSize({ width, height: 891 });
+            await ensureAuthenticatedSession(page);
+            if (prefix === "admin") await stubAdminApi(page, {});
+            else await stubManageApi(page, { servers: [] });
+            await page.goto(`/${prefix}`);
+            if (prefix === "admin") {
+                await expect(page.locator('[data-admin-section-toggle="metrics"]')).toHaveAttribute('aria-expanded', 'false');
+                await expect(page.locator('[data-admin-section-content="metrics"]')).toBeHidden();
+            }
+            const ids = await page.locator(`[data-${prefix}-section-toggle]`).evaluateAll((nodes, prefix) =>
+                nodes.map(node => node.getAttribute(`data-${prefix}-section-toggle`)), prefix);
+            for (const id of ids) {
+                const button = page.locator(`[data-${prefix}-section-toggle="${id}"]`);
+                const content = page.locator(`[data-${prefix}-section-content="${id}"]`);
+                if (await button.getAttribute('aria-expanded') === 'false') await button.click();
+                await expect(button).toHaveAttribute('aria-expanded', 'true');
+                await expect(content).toBeVisible();
+                await expect.poll(() => page.locator(`[data-${prefix}-section="${id}"]`).evaluate((root, prefix) => {
+                    const head = root.querySelector(':scope > .workspace-head, :scope > .table-shell-head');
+                    const content = root.querySelector(`[data-${prefix}-section-content]`);
+                    return content.getBoundingClientRect().top - head.getBoundingClientRect().bottom;
+                }, prefix), { message: `${prefix}/${id} content clears its disclosure header` }).toBeGreaterThanOrEqual(12);
+                await button.click();
+                await expect(button).toHaveAttribute('aria-expanded', 'false');
+                await expect(content).toBeHidden();
+            }
+        });
+    }
+}
+
 for (const prefix of ["manage", "admin"]) {
     for (const action of ["navigation", "reading"]) {
         test(`${prefix} keeps newer section ${action} when initial resources finish loading`, async ({ page }) => {

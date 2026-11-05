@@ -214,7 +214,7 @@
               "type": "boolean",
               "default": true
             },
-            "description": "false omits active/resolved occurrence arrays while retaining whole-Server counts. Default response remains compatible."
+            "description": "Legacy compatibility parameter; installed-package vulnerability findings and counts are no longer exposed. Available-update CVE data remains in the dashboard summary."
           }
         ],
         "responses": {
@@ -4470,7 +4470,7 @@
           },
           "remediation_digest": {
             "type": "string",
-            "description": "Required exact digest when the pending job is attached to a remediation plan, including through existing approval endpoints. Server/configuration, generation and freshness are validated; fresh discovery revalidates package/source/inventory/dependency/removal drift before execution."
+            "description": "Legacy compatibility field for historical remediation-linked jobs. Independent remediation endpoints are retired; normal approvals use job_id, approval_generation, deferral_revision and applicable removal confirmation."
           }
         }
       },

@@ -8,7 +8,9 @@ SimpleLinuxUpdater is a self-hosted web UI that helps you manage apt updates on 
 [![Go Version](https://img.shields.io/badge/Go-1.26.10-00ADD8?logo=go&logoColor=white)](https://go.dev/dl/)
 [![CI](https://github.com/NoLife141-Teams/SimpleLinuxUpdater/actions/workflows/ci.yml/badge.svg)](https://github.com/NoLife141-Teams/SimpleLinuxUpdater/actions/workflows/ci.yml)
 
-![UI demo](.github/assets/ALSU-screens.gif)
+![Version 0.5.4 interface showing Status, Manage Servers, Observability, Admin and Account](.github/assets/ALSU-screens.gif)
+
+The demo uses fictional hosts and data.
 
 ## Table of contents
 

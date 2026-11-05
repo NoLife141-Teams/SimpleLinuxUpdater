@@ -31,7 +31,7 @@ API requests, downloads and streams as well as pages.
 | `settings:write` | No | No | Yes | No |
 | `backup:write` | No | No | Yes | No |
 
-Operational reads include server status, package plans, vulnerabilities,
+Operational reads include server status, package plans, available-update CVE information,
 observability, health trends, applied deferral snapshots and timezone. They
 exclude raw command output. `/api/servers` returns an empty `logs` preview and no
 application-check profile without `logs:read`; dashboard reads omit command
@@ -209,157 +209,25 @@ Log pagination uses `after_seq` (default 0) and `limit` (default 100, max 500),
 with `next_sequence` and `has_more` in the response. Server discovery returns a
 complete array without pagination.
 
-Installed vulnerability scans (`POST /api/servers/{name}/vulnerabilities/scan`)
-return `202` with `{"status":"running","scope":"installed_packages"}` once
-admitted. Poll `GET /api/servers/{name}/vulnerabilities` for their persisted
-result. Host facts refresh and application-check tests run synchronously and
-return `502` if the remote operation cannot complete, including an SSH transport
-failure.
+Host facts refresh and application-check tests run synchronously and return
+`502` if the remote operation cannot complete, including an SSH transport failure.
 
 Controlled reboot (`POST /api/reboot/{name}`) and APT repair
 (`POST /api/repair/{name}`) require a JSON body containing `{"confirm":true}`
 and `Content-Type: application/json`. Both use `maintenance:write`; omitted or
 false confirmation returns `400` before any host operation is admitted.
 
-## Installed vulnerability scan lifecycle
+## CVE information for available updates
 
-`POST /api/servers/{name}/vulnerabilities/scan` requires `maintenance:write`
-and accepts cookie sessions or operational personal Bearer credentials. Its
-`202` response includes `scan_id`, `job_id` (the same durable execution identity),
-`status: running` and `scope: installed_packages`. Two scans maximum run globally;
-one operation maximum runs on each Server. Busy Server, capacity, disabled scan
-or application maintenance returns `409`; an unknown Server returns `404`.
+CVE information is attached to available APT updates in the server's package
+plan. `GET /api/servers` provides the pending updates and their enrichment;
+`GET /api/dashboard/summary` provides `risk.update_cves` and `risk.cves` for
+available updates. See [CVE details and candidate evidence](usage.md#cves-for-available-updates)
+and the [OpenAPI reference](openapi-v1.json). These results are advisory and do
+not represent an assessment of all installed packages or runtime exploitability.
 
-`POST /api/servers/{name}/vulnerabilities/scans/{scan_id}/cancel` uses the same
-permission and transports. It returns `202` with `status: cancelling` and the
-exact `scan_id` while execution drains. The Server reservation, global capacity
-and Maintenance Coordination shared lease stay held until SSH, source HTTP and
-persistence have returned. Repeating the command during drainage is idempotent.
-An old identity, finished scan, or identity for a different Server returns `409`
-without stopping any other scan. Missing authentication returns `401`; readers
-and tokens without `maintenance:write` receive `403`.
-
-`GET /api/servers/{name}/vulnerabilities` (`operational:read`) exposes
-`last_attempt.scan_id`, `progress`, start/finish timestamps and state
-(`running`, `complete`, `partial`, `unavailable`, `cancelled`, `interrupted`).
-`progress` contains the observed phase (`inventory`, `metadata`, `evaluation`,
-`persistence`) and counts for `inventoried`, `metadata`, `evaluated`, `unknown`,
-`unsupported` and `findings`. Metadata counts packages with collected provenance,
-not packages proven supported. First entry into each phase publishes promptly;
-subsequent updates are bounded to one per second. No percentage or ETA is claimed.
-Dashboard/SSE includes the same sanitary `scan_id` and `progress` facts. Readers
-can inspect these facts; job detail and raw logs still require `logs:read`, and
-Status exposes cancellation only to maintenance operators/administrators.
-
-Startup and backup restoration canonically persist orphaned running attempts as
-`interrupted`, retaining their durable identity and recording the terminal audit
-once. Periodic interruption retry waits between five minutes and one hour (the
-configured scan interval clamped to that range), measured from interruption
-reconciliation; there is no immediate restart loop. Cancelling an operation does
-not schedule an immediate retry. The previous accepted observation, last complete
-success and finding ledger survive cancellation/interruption; freshness becomes
-stale and incomplete coverage never falsely resolves findings. Scans remain
-read-only and never change packages or refresh APT indexes.
-
-
-## Fix publication and candidate availability
-
-`VulnerabilityFinding.availability` is additive on both installed findings and
-pending-update enrichment. It separates exact release/source publisher events
-(`published`, including all ordered ranges and fixed versions), candidate source
-and binary versions with signed origin, observed repository availability, local
-`apt` index/refresh evidence and the four canonical Approval Scope `scopes`.
-`simulated` does not authorize execution or prove installation. Deferred packages,
-proven holds and removal-confirmation requirements remain subject to existing
-maintenance permissions and Package Deferral. Unknown causes remain unknown.
-
-Legacy disposition/API fields remain readable. `no_fix_available` means no
-verified candidate fix in observed data, not no publisher fix;
-`fixed_by_version` is the evaluated candidate source version. Legacy persisted
-records are lazily normalized to unknown additive availability; no database schema
-migration or replacement of existing resolution proofs is required.
-
-Dashboard `risk.vulnerability` adds `published_fix_occurrences` and
-`candidate_addressed_occurrences` (omitted when zero); existing `resolved_occurrences` still requires
-installed-package evidence. Finding `availability_freshness` tracks package and
-query observations while `published_fix_freshness` tracks raw advisory downloads.
-Neither asserts fresh APT indexes. Complete older cached candidate absence cannot
-establish a fix against newer installed positive evidence. Source-detail cache
-objects remain host-independent and preserve actual download timestamps.
-
-Server status can also expose optional `apt_metadata` for a maintenance refresh
-observed by this process. Errors are sanitary reasons; authorized job logs retain
-the command output. These observations do not establish that no later external
-refresh happened and can be unknown after restart. Finding `availability.apt`
-preserves the host metadata context recorded with that observation.
-
-### CVE remediation and evidence
-
-`GET /api/vulnerabilities` and `GET /api/vulnerabilities/:id` provide bounded
-CVE/package pages (`page`, `page_size` 1–100). `GET /api/vulnerabilities/plan`
-provides whole-Server impact and paginated package treatment groups; `server`,
-`package`, `q` and `state` never narrow whole-Server totals or the APT transaction.
-The browser requests compact Dashboard Projection with
-`include_vulnerability_findings=false`; the default dashboard API remains compatible.
-
-Operational `maintenance:write` routes:
-
-- `POST /api/servers/:name/remediation/prepare`: fresh preparation; explicit manual approval.
-- `POST /api/servers/:name/remediation/:plan_id/retry`: verification only; update is never replayed.
-- `POST /api/servers/:name/vulnerabilities/reviews`: required `package`, `owner`, `reason`, `decision`, future RFC3339 `reevaluate_at`; optional `cve`, `mitigation`. Must identify an unresolved finding.
-
-Read routes use `operational:read`:
-
-- `GET /api/servers/:name/remediation`: most recent 100 plans and risk reviews, compact comparison counts.
-- `GET /api/servers/:name/remediation/:plan_id?page=1`: immutable four-scope transaction and 50-outcome comparison page.
-- `GET /api/servers/:name/remediation/:plan_id/evidence?package=example-package&page=1`: captured inventory, source/candidate finding evidence and admitted package proof, bounded to 50 entries. Omit `package` for paginated installed inventory.
-
-Existing approval endpoints/scopes remain canonical. For a remediation-linked
-pending job, send its `remediation_digest` with `job_id`, `approval_generation`,
-`deferral_revision` and applicable `confirm_removals`. Old endpoints cannot omit
-this identity to bypass the plan. Stale or changed plans return 409; fresh
-execution discovery may publish a new generation requiring renewed consent.
-Cookie same-origin protections and PAT role/scope intersection apply unchanged.
-Verification job `parent_job_id` links the update job; audit metadata retains
-plan/digest, update job and before/after scan IDs. `verified` means the proof
-comparison completed, never that every CVE or host health issue was corrected.
-
-Upgrade Plan adds `full_upgrade_simulation_digest`, `full_upgrade_simulation_packages`,
-`kept_back_security_simulation_digest` and `kept_back_security_simulation_packages`.
-Digests bind normalized simulated installs/upgrades/removals, including dependency
-versions, architecture and origins, so drift requires renewed remediation approval.
-Parsed package/version facts are visible; raw simulation output and repository credentials are omitted.
-Risk review persistence revalidates the stable Server owner; a concurrent rename or
-delete/recreate cannot attach the original finding review to the replacement.
-
-The immutable `transaction.preparation.scope_simulations` map separately records
-fresh `-s` simulations of the same four maintenance commands. Download-only
-discovery output supplies URI/disk facts and does not establish dependency
-versions. Each scope binds a digest of actual install/upgrade/removal records,
-including architecture and origin; only sanitized package/version facts, new
-packages, removals and extras are public. Standard security approval can upgrade
-ordinary dependencies, which are displayed explicitly. A scope with unavailable
-or incomplete simulation is rejected by approval endpoints. Every scope is
-simulated again after approval, and changed dependency versions/origins require
-renewed consent. No package mutation command or fifth Approval Scope is added.
-
-`transaction.preparation.source_identity` records fresh structured metadata for
-pending and simulated dependency packages using the existing bounded read-only
-APT/dpkg collector. Its digest also binds current source/candidate mappings,
-release signature proofs, administrator holds and negative pins. Observation
-clock fields are excluded from identity. The package map exposes binary/source
-versions, distribution ecosystems and provenance decisions, without raw output,
-repository credentials or release-file paths. Source/provenance drift at the
-same binary candidate version requires renewed approval and invalidates an
-obsolete candidate-fix forecast; unknown source facts never establish a CVE fix.
-
-Live maintenance approvals bind Server credentials/configuration with HMAC under
-a private app-runtime key; neither the key nor an unkeyed SSH-password verifier
-is persisted or exposed through the public digest. Restart/restore interrupt
-maintenance rather than resuming approval. Durable verification instead uses
-the separate credential-free stable target identity, so a new runtime key
-cannot strand pending verification or cause an update replay.
-
-Architecture-independent APT packages (`all`) use their bare dpkg package name
-for source evidence and forecasts, including explicit `:all` discovery aliases.
-Native and foreign binary identities retain their evidenced architecture.
+The installed-package scan, global vulnerability ledger, remediation and risk
+review endpoints are retired. Authenticated requests to these endpoints return
+`410 Gone`; they cannot start a scan or a remediation. Historical records remain
+in backups but do not contribute to the dashboard. Use the normal discovery and
+approval workflow above to review and apply available updates.

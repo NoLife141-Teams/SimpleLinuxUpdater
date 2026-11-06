@@ -1,6 +1,6 @@
 # SimpleLinuxUpdater
 
-Version: v0.5.4
+Version: v0.5.5
 
 SimpleLinuxUpdater is a self-hosted web UI that helps you manage apt updates on Debian-based servers over SSH. It provides an approval workflow, health checks, audit history, and basic observability so you can update hosts confidently without logging into each machine.
 
@@ -16,7 +16,7 @@ The demo uses fictional hosts and data.
 
 - [Overview](#overview)
 - [Features](#features)
-- [Upgrading to v0.5.4](#upgrading-to-v054)
+- [Upgrading to v0.5.5](#upgrading-to-v055)
 - [Quick start](#quick-start)
 - [Documentation](#documentation)
 - [Security](#security)
@@ -54,21 +54,20 @@ SimpleLinuxUpdater is designed for trusted environments (LAN/VPN). It connects t
 - Local administrator password recovery with hidden terminal entry, exclusive installation locking and atomic session revocation/audit; see [lost access recovery](docs/troubleshooting.md#forgotten-admin-password)
 - In-app encrypted backup/restore (DB + config, optional `known_hosts`) for host/container migration
 
-## Upgrading to v0.5.4
+## Upgrading to v0.5.5
 
 Export and verify an encrypted backup, finish or cancel pending maintenance,
-then replace the executable and web assets together. From v0.5.3, Status,
-Manage Servers, Observability, Admin and Account gain clearer spacing,
-collapsible secondary tools and responsive navigation. On mobile, use **Menu**
-for page navigation and **Settings** for Admin sections. Existing section
-preferences are retained; use **Expand** to reveal a collapsed section.
+then replace the executable and web assets together. v0.5.5 fixes automatic
+backup polling briefly taking the exclusive maintenance lock even when backups
+were disabled or no backup was due. That collision could skip scheduled host
+updates and emit a maintenance notification for each affected host.
 
-No new required environment variable, application database migration or SSH
-helper protocol is introduced relative to v0.5.3. The SQLite driver updates
-from v1.60.1 to v1.61.1 together with its transitive dependencies, and `x/net`
-updates to v0.62.0. Interrupted approvals require a fresh APT check and renewed
-approval. CVE information
-remains limited to available updates. Follow the
+No database migration, required environment variable, dependency change or SSH
+helper protocol change is introduced relative to v0.5.4. Previously skipped
+runs remain in history and are not replayed automatically. Review **Admin →
+Scheduled Runs** and run a manual update check for hosts that need to catch up,
+or let the next allowed scheduled occurrence run. Genuine backup operations
+retain their maintenance protection. Follow the
 [upgrade and rollback guide](docs/upgrading.md) for earlier-version requirements.
 
 ## Quick start
@@ -77,8 +76,8 @@ remains limited to available updates. Follow the
 
 ```bash
 cp .env-template .env
-docker pull ghcr.io/nolife141-teams/simplelinuxupdater:v0.5.4
-docker run --env-file .env -p 8080:8080 -v debian-updater-data:/data ghcr.io/nolife141-teams/simplelinuxupdater:v0.5.4
+docker pull ghcr.io/nolife141-teams/simplelinuxupdater:v0.5.5
+docker run --env-file .env -p 8080:8080 -v debian-updater-data:/data ghcr.io/nolife141-teams/simplelinuxupdater:v0.5.5
 ```
 
 Open `http://localhost:8080`.
@@ -146,7 +145,7 @@ Download the archive for your platform from GitHub Releases and run the included
 Example (Linux amd64):
 
 ```bash
-VERSION="0.5.4"
+VERSION="0.5.5"
 APP="SimpleLinuxUpdater_${VERSION}"
 ARCHIVE="${APP}_linux_amd64.tar.gz"
 

@@ -6,6 +6,19 @@ The format is inspired by Keep a Changelog, and this project uses Semantic Versi
 
 ## [Unreleased]
 
+## [v0.5.5] - 2026-11-06
+
+### Fixed
+
+- Prevent idle automatic backup polling from taking exclusive maintenance admission when backups are disabled, suspended, scheduled for later or waiting for a retry. This avoids skipping coincident scheduled host updates and sending misleading maintenance notifications per host.
+- Preserve exclusive admission for due backups, interrupted backup recovery and temporary archive cleanup, with state revalidation before operating.
+
+### v0.5.5 upgrade notes
+
+- No database migration, required environment variable, dependency change or SSH helper protocol change is introduced relative to v0.5.4. Replace the executable and web assets together and retain existing data paths.
+- Export and verify a backup, then finish or cancel maintenance before restarting. Interrupted approvals require a fresh APT check and renewed approval.
+- Previously skipped scheduled runs are not replayed automatically. Review **Admin → Scheduled Runs**, then run manual update checks for affected hosts as needed or wait for the next allowed scheduled occurrence. Keep notifications enabled to retain visibility into genuine skips. See the [upgrade and rollback guide](docs/upgrading.md).
+
 ## [v0.5.4] - 2026-11-04
 
 ### Changed

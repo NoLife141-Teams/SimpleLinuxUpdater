@@ -1,9 +1,27 @@
 [Documentation map](README.md) | [Deployment](deployment.md) | [Accounts and API](personal-api.md) | [CI](ci-and-release.md)
 
-# Upgrading to v0.5.4
+# Upgrading to v0.5.5
 
 Use the image digest recorded in the published release's `publication.json`,
 or download the matching versioned binary archive and checksum list.
+
+## From v0.5.4
+
+Export and verify a backup, finish or cancel pending maintenance, then replace
+the executable and web assets together. v0.5.5 prevents idle automatic backup
+polling from briefly taking exclusive maintenance admission. Disabled or
+suspended backups, future occurrences and pending retries no longer block
+scheduled host updates during that poll. Due backups, interrupted recovery and
+temporary archive cleanup retain exclusive maintenance protection, and backup
+state is revalidated before any operation.
+
+No database migration, required environment variable, dependency change or SSH
+helper protocol change is introduced relative to v0.5.4. Existing notification
+selections remain in effect. Review **Admin → Scheduled Runs** for prior
+`skipped` outcomes with reason `maintenance`. Those occurrences remain recorded
+and are not replayed automatically. Run a manual update check for each host
+that needs to catch up, or wait for its next allowed scheduled occurrence.
+Interrupted approvals require fresh discovery and approval.
 
 ## From v0.5.3
 
@@ -69,17 +87,17 @@ on the upgraded database.
 ## From v0.5.0
 
 Also account for the additive remediation-history/risk-review tables and package
-evidence introduced in v0.5.1. Those records remain retained in v0.5.4, while the
+evidence introduced in v0.5.1. Those records remain retained in v0.5.5, while the
 standalone workflow is retired as described above. The historical
 [v0.5.1 qualification record](release-v0.5.1-readiness.md) describes that release's
-measured checks and limits; it does not qualify v0.5.4.
+measured checks and limits; it does not qualify v0.5.5.
 
 ## From v0.4.16 or earlier
 
 Also follow the [v0.5.0 compatibility notes](../CHANGELOG.md#v050---2026-10-29)
 for account/session migration, policy changes and the protocol 3 managed helper.
 The pinned automated old-version qualification below remains based on published
-v0.4.16; it is not a separate v0.5.3-to-v0.5.4 migration proof.
+v0.4.16; it is not a separate v0.5.4-to-v0.5.5 migration proof.
 
 ## Before changing the application
 
@@ -130,7 +148,7 @@ Download the target platform archive and its checksum list from the same
 versioned GitHub Release. On Linux amd64, in a new staging directory:
 
 ```bash
-VERSION='0.5.4'
+VERSION='0.5.5'
 ARCHIVE="SimpleLinuxUpdater_${VERSION}_linux_amd64.tar.gz"
 BASE="https://github.com/NoLife141-Teams/SimpleLinuxUpdater/releases/download/v${VERSION}"
 curl --fail --location --output "$ARCHIVE" "$BASE/$ARCHIVE"

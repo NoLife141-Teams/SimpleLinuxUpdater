@@ -483,6 +483,12 @@ func (a *backupAutomation) record(s backupAutomationState, action, status string
 func (a *backupAutomation) Tick(ctx context.Context, manual bool) (resultErr error) {
 	a.health.Tick(a.now())
 	defer func() { a.health.Finish(a.now(), resultErr) }()
+	if !manual {
+		needed, err := a.needsExclusiveTick(ctx)
+		if err != nil || !needed {
+			return err
+		}
+	}
 	lease, decision := a.deps.MaintenanceCoordinator.TryExclusive(maintenancepkg.OperationBackupExport)
 	if !decision.Allowed {
 		shared, allowed := a.deps.MaintenanceCoordinator.TryShared(maintenancepkg.WorkScheduled)

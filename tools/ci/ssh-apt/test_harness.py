@@ -527,8 +527,8 @@ class UbuntuMirrorTests(unittest.TestCase):
             original = "deb https://vendor.example/repository stable main\n"
             third_party.write_text(original)
             subprocess.run(["sh", str(run.HERE / "configure-ubuntu-mirror.sh"), root], check=True)
-            self.assertEqual(classic.read_text(), "deb [signed-by=/ubuntu.gpg] http://azure.archive.ubuntu.com/ubuntu noble main\n")
-            self.assertEqual(deb822.read_text(), "Types: deb\nURIs: https://azure.archive.ubuntu.com/ubuntu\nSuites: noble-security\nComponents: main universe\nSigned-By: /ubuntu.gpg\n")
+            self.assertEqual(classic.read_text(), "deb [signed-by=/ubuntu.gpg] http://mirrors.edge.kernel.org/ubuntu noble main\n")
+            self.assertEqual(deb822.read_text(), "Types: deb\nURIs: https://mirrors.edge.kernel.org/ubuntu\nSuites: noble-security\nComponents: main universe\nSigned-By: /ubuntu.gpg\n")
             self.assertEqual(third_party.read_text(), original)
             before = deb822.read_text()
             subprocess.run(["sh", str(run.HERE / "configure-ubuntu-mirror.sh"), root], check=True)

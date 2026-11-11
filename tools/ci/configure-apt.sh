@@ -7,5 +7,5 @@ Acquire::https::Timeout "30";
 DPkg::Lock::Timeout "60";
 EOF
 
-# The Azure Ubuntu mirror serves release, updates and security pockets.
+# The kernel.org Ubuntu mirror serves release, updates and security pockets.
 sudo sh "$(dirname "$0")/ssh-apt/configure-ubuntu-mirror.sh"

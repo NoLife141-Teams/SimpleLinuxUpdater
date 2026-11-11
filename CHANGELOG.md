@@ -13,7 +13,7 @@ The format is inspired by Keep a Changelog, and this project uses Semantic Versi
 - Recognize updates explicitly deferred by Ubuntu phased rollout in APT simulation output. Pending package lists and details display “Phased rollout · Waiting for Ubuntu” instead of “Requires full-upgrade”.
 - Preserve the phased classification when full-upgrade simulation is unavailable but standard upgrade simulation reports phasing.
 
-- Use the Ubuntu Azure mirror for ephemeral CI hosts and SSH/APT test targets to avoid repeated DNS failures reaching the default Ubuntu repositories; preserve APT signature verification.
+- Use the Ubuntu mirror hosted by kernel.org for ephemeral CI hosts and SSH/APT test targets to avoid repeated DNS failures reaching the default Ubuntu repositories; preserve APT signature verification.
 
 ### Security
 

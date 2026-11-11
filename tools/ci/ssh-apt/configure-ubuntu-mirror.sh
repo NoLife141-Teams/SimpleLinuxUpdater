@@ -9,7 +9,7 @@ if [ "$apt_root" = /etc/apt ]; then
         echo "Ubuntu CI mirror DNS lookup failed" >&2
     fi
 fi
-for source in "$apt_root/sources.list" "$apt_root"/sources.list.d/*.list "$apt_root"/sources.list.d/*.sources; do
+for source in "$apt_root/sources.list" "$apt_root"/*mirrors*.txt "$apt_root"/sources.list.d/*.list "$apt_root"/sources.list.d/*.sources; do
     [ -f "$source" ] || continue
-    sed -i -E 's#(https?://)(archive\.ubuntu\.com|security\.ubuntu\.com)/ubuntu#\1mirrors.edge.kernel.org/ubuntu#g' "$source"
+    sed -i -E 's#(https?://)(([a-z0-9-]+\.)?archive\.ubuntu\.com|security\.ubuntu\.com)/ubuntu#\1mirrors.edge.kernel.org/ubuntu#g' "$source"
 done

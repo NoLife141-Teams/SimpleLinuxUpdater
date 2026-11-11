@@ -537,3 +537,25 @@ class UbuntuMirrorTests(unittest.TestCase):
     def test_missing_source_files_are_allowed(self):
         with tempfile.TemporaryDirectory() as root:
             subprocess.run(["sh", str(run.HERE / "configure-ubuntu-mirror.sh"), root], check=True)
+
+
+class RunnerMirrorListTests(unittest.TestCase):
+    def test_github_runner_mirror_files_and_regional_sources_are_rewritten(self):
+        with tempfile.TemporaryDirectory() as root:
+            apt = Path(root)
+            source_dir = apt / "sources.list.d"
+            source_dir.mkdir()
+            mirror = apt / "apt-mirrors.txt"
+            mirror.write_text("http://azure.archive.ubuntu.com/ubuntu\nhttps://archive.ubuntu.com/ubuntu\nhttps://security.ubuntu.com/ubuntu\n")
+            security = apt / "apt-mirrors-security.txt"
+            security.write_text("https://security.ubuntu.com/ubuntu\n")
+            regional = source_dir / "regional.list"
+            regional.write_text("deb http://us.archive.ubuntu.com/ubuntu noble main\n")
+            deb822 = source_dir / "ubuntu.sources"
+            original = "Types: deb\nURIs: mirror+file:/etc/apt/apt-mirrors.txt\nSuites: resolute\nSigned-By: /ubuntu.gpg\n"
+            deb822.write_text(original)
+            subprocess.run(["sh", str(run.HERE / "configure-ubuntu-mirror.sh"), root], check=True)
+            self.assertEqual(mirror.read_text(), "http://mirrors.edge.kernel.org/ubuntu\nhttps://mirrors.edge.kernel.org/ubuntu\nhttps://mirrors.edge.kernel.org/ubuntu\n")
+            self.assertEqual(security.read_text(), "https://mirrors.edge.kernel.org/ubuntu\n")
+            self.assertEqual(regional.read_text(), "deb http://mirrors.edge.kernel.org/ubuntu noble main\n")
+            self.assertEqual(deb822.read_text(), original)

@@ -788,3 +788,29 @@ func TestPreparePendingUpdatesForCVEScansEveryNamedPackageAndSorts(t *testing.T)
 		t.Fatalf("last CVE state = %q, want pending", prepared[len(prepared)-1].CVEState)
 	}
 }
+
+func TestPhasedUpdatesDoNotRequireFullUpgrade(t *testing.T) {
+	metadata := []servers.PendingUpdate{
+		{Package: "snapd", Raw: "snapd/resolute-updates 2 amd64 [upgradable from: 1]"},
+		{Package: "other", Raw: "other/resolute-updates 2 amd64 [upgradable from: 1]"},
+	}
+	output := "The following upgrades have been deferred due to phasing:\n  snapd\nThe following packages have been kept back:\n  other\n0 upgraded, 0 newly installed, 0 to remove and 2 not upgraded.\n"
+	for _, available := range []bool{true, false} {
+		pending, _, _ := MergeAvailableUpdatesWithStandard(nil, nil, metadata, nil, output, available)
+		if pending[0].PhasedUpdate != available || pending[0].RequiresFull == available || !pending[0].KeptBack {
+			t.Fatalf("available=%t: phased package = %+v", available, pending[0])
+		}
+		if pending[1].PhasedUpdate || !pending[1].RequiresFull {
+			t.Fatalf("ordinary kept-back package = %+v", pending[1])
+		}
+	}
+}
+
+func TestPhasingDetectedFromStandardSimulationWhenFullUpgradeUnavailable(t *testing.T) {
+	metadata := []servers.PendingUpdate{{Package: "snapd", Raw: "snapd/resolute-updates 2 amd64 [upgradable from: 1]"}}
+	pending, _, _ := MergeAvailableUpdatesWithStandard(nil, nil, metadata, nil, "", false,
+		"The following upgrades have been deferred due to phasing:\n  snapd\n0 upgraded, 0 newly installed, 0 to remove and 1 not upgraded.\n")
+	if !pending[0].PhasedUpdate || pending[0].RequiresFull || !pending[0].KeptBack {
+		t.Fatalf("phased package = %+v", pending[0])
+	}
+}

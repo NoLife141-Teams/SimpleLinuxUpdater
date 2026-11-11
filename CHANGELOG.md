@@ -6,6 +6,24 @@ The format is inspired by Keep a Changelog, and this project uses Semantic Versi
 
 ## [Unreleased]
 
+## [v0.5.6] - 2026-11-11
+
+### Fixed
+
+- Recognize updates explicitly deferred by Ubuntu phased rollout in APT simulation output. Pending package lists and details display “Phased rollout · Waiting for Ubuntu” instead of “Requires full-upgrade”.
+- Preserve the phased classification when full-upgrade simulation is unavailable but standard upgrade simulation reports phasing.
+
+- Use the Ubuntu mirror hosted by kernel.org for ephemeral CI hosts and SSH/APT test targets to avoid repeated DNS failures reaching the default Ubuntu repositories; preserve APT signature verification.
+
+### Security
+
+- Build with Go 1.26.11, including the net/http fix for GO-2026-6859 detected by the release vulnerability check.
+
+### v0.5.6 upgrade notes
+
+- No database migration, required environment variable, dependency change or SSH helper protocol change is introduced relative to v0.5.5. Replace the executable and web assets together and retain existing data paths.
+- Run a fresh update check after upgrading to refresh existing pending package classifications. Phased updates remain subject to Ubuntu's rollout; this release does not force their installation.
+
 ## [v0.5.5] - 2026-11-06
 
 ### Fixed

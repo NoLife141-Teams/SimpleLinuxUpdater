@@ -1,6 +1,6 @@
 # SimpleLinuxUpdater
 
-Version: v0.5.6
+Version: v0.5.7
 
 SimpleLinuxUpdater is a self-hosted web UI that helps you manage apt updates on Debian-based servers over SSH. It provides an approval workflow, health checks, audit history, and basic observability so you can update hosts confidently without logging into each machine.
 
@@ -16,7 +16,7 @@ The demo uses fictional hosts and data.
 
 - [Overview](#overview)
 - [Features](#features)
-- [Upgrading to v0.5.6](#upgrading-to-v056)
+- [Upgrading to v0.5.7](#upgrading-to-v057)
 - [Quick start](#quick-start)
 - [Documentation](#documentation)
 - [Security](#security)
@@ -54,18 +54,18 @@ SimpleLinuxUpdater is designed for trusted environments (LAN/VPN). It connects t
 - Local administrator password recovery with hidden terminal entry, exclusive installation locking and atomic session revocation/audit; see [lost access recovery](docs/troubleshooting.md#forgotten-admin-password)
 - In-app encrypted backup/restore (DB + config, optional `known_hosts`) for host/container migration
 
-## Upgrading to v0.5.6
+## Upgrading to v0.5.7
 
 Export and verify an encrypted backup, finish or cancel pending maintenance,
-then replace the executable and web assets together. v0.5.6 identifies Ubuntu
-updates deferred by phased rollout and displays “Phased rollout · Waiting for
-Ubuntu” instead of incorrectly claiming they require a full upgrade.
+then replace the executable and web assets together. v0.5.7 keeps dashboard
+controls usable during live refreshes, including the selected-host Logs button,
+and preserves keyboard focus while package details are enriched.
 
 No database migration, required environment variable, dependency change or SSH
-helper protocol change is introduced relative to v0.5.5. Run a fresh update
-check after upgrading to refresh the classification of existing pending packages.
-Follow the [upgrade and rollback guide](docs/upgrading.md) for earlier-version
-requirements.
+helper protocol change is introduced relative to v0.5.6. Reload open browser
+tabs after deployment to load the updated interface. Interrupted approvals need
+a fresh update check and renewed approval. Follow the
+[upgrade and rollback guide](docs/upgrading.md) for earlier-version requirements.
 
 ## Quick start
 
@@ -73,8 +73,8 @@ requirements.
 
 ```bash
 cp .env-template .env
-docker pull ghcr.io/nolife141-teams/simplelinuxupdater:v0.5.6
-docker run --env-file .env -p 8080:8080 -v debian-updater-data:/data ghcr.io/nolife141-teams/simplelinuxupdater:v0.5.6
+docker pull ghcr.io/nolife141-teams/simplelinuxupdater:v0.5.7
+docker run --env-file .env -p 8080:8080 -v debian-updater-data:/data ghcr.io/nolife141-teams/simplelinuxupdater:v0.5.7
 ```
 
 Open `http://localhost:8080`.
@@ -142,7 +142,7 @@ Download the archive for your platform from GitHub Releases and run the included
 Example (Linux amd64):
 
 ```bash
-VERSION="0.5.6"
+VERSION="0.5.7"
 APP="SimpleLinuxUpdater_${VERSION}"
 ARCHIVE="${APP}_linux_amd64.tar.gz"
 

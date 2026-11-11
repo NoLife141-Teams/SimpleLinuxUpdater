@@ -511,3 +511,29 @@ class HarnessSafetyTests(unittest.TestCase):
 
 
 if __name__ == "__main__": unittest.main()
+
+
+class UbuntuMirrorTests(unittest.TestCase):
+    def test_classic_and_deb822_sources_keep_suites_and_signature_policy(self):
+        with tempfile.TemporaryDirectory() as root:
+            apt = Path(root)
+            sources = apt / "sources.list.d"
+            sources.mkdir()
+            classic = apt / "sources.list"
+            classic.write_text("deb [signed-by=/ubuntu.gpg] http://archive.ubuntu.com/ubuntu noble main\n")
+            deb822 = sources / "ubuntu.sources"
+            deb822.write_text("Types: deb\nURIs: https://security.ubuntu.com/ubuntu\nSuites: noble-security\nComponents: main universe\nSigned-By: /ubuntu.gpg\n")
+            third_party = sources / "vendor.list"
+            original = "deb https://vendor.example/repository stable main\n"
+            third_party.write_text(original)
+            subprocess.run(["sh", str(run.HERE / "configure-ubuntu-mirror.sh"), root], check=True)
+            self.assertEqual(classic.read_text(), "deb [signed-by=/ubuntu.gpg] http://azure.archive.ubuntu.com/ubuntu noble main\n")
+            self.assertEqual(deb822.read_text(), "Types: deb\nURIs: https://azure.archive.ubuntu.com/ubuntu\nSuites: noble-security\nComponents: main universe\nSigned-By: /ubuntu.gpg\n")
+            self.assertEqual(third_party.read_text(), original)
+            before = deb822.read_text()
+            subprocess.run(["sh", str(run.HERE / "configure-ubuntu-mirror.sh"), root], check=True)
+            self.assertEqual(deb822.read_text(), before)
+
+    def test_missing_source_files_are_allowed(self):
+        with tempfile.TemporaryDirectory() as root:
+            subprocess.run(["sh", str(run.HERE / "configure-ubuntu-mirror.sh"), root], check=True)

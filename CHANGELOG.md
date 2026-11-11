@@ -6,6 +6,10 @@ The format is inspired by Keep a Changelog, and this project uses Semantic Versi
 
 ## [Unreleased]
 
+### Fixed
+
+- Preserve dashboard action controls across live refreshes so keyboard focus and accessibility references remain attached to the same host and action. Update labels and permissions in place, including the selected-host panel, server table and pending package details.
+
 ## [v0.5.6] - 2026-11-11
 
 ### Fixed

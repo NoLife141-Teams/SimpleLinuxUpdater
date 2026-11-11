@@ -2293,3 +2293,51 @@ test("package deferrals 473 approval shows executable transactions CVE exposure 
         "pending update changed",
     );
 });
+
+
+test("live refresh preserves host action nodes, focus and updated eligibility", async ({ page }) => {
+    let servers = [makeServer("demo-host", "idle", [], { has_key: true }), makeServer("other-host")];
+    await stubDashboardApi(page, () => servers);
+    await ensureAuthenticatedSession(page);
+    await page.locator('#servers-table button[data-select-host="demo-host"]').click();
+    const selector = '#selected-host-panel button[data-action="open-drawer"][data-tab="logs"]';
+    const logs = await page.locator(selector).elementHandle();
+    const tableLogs = await page.locator('#servers-table tr[data-name="demo-host"] button[data-tab="logs"]').elementHandle();
+    await logs.focus();
+    for (const status of ["idle", "updating", "cancelled"]) {
+        servers = [makeServer("other-host"), makeServer("demo-host", status, [], { has_key: true, logs: `logs-${status}` })];
+        await page.evaluate(() => window.fetchServers(true, "identity-regression"));
+        expect(await logs.evaluate(el => el.isConnected && el === document.querySelector('#selected-host-panel button[data-tab="logs"]'))).toBe(true);
+        expect(await tableLogs.evaluate(el => el.isConnected)).toBe(true);
+        await expect(page.locator(selector)).toBeFocused();
+        if (status === "updating") await expect(page.locator('#selected-host-panel button[data-action="update-server"]')).toHaveCount(0);
+    }
+    await logs.click();
+    await expect(page.locator('#status-drawer')).toHaveAttribute('aria-hidden', 'false');
+    await expect(page.locator('#status-drawer-title')).toHaveText('demo-host');
+    await page.locator('#status-drawer-close').click();
+    await page.locator('#servers-table button[data-select-host="other-host"]').click();
+    expect(await logs.evaluate(el => el.isConnected)).toBe(false);
+    await page.locator(selector).click();
+    await expect(page.locator('#status-drawer-title')).toHaveText('other-host');
+});
+
+test("pending package controls and search selection survive enrichment refresh", async ({ page }) => {
+    let servers = [makeServer("demo-host", "pending_approval", makePendingUpdates(3), { has_key: true })];
+    await stubDashboardApi(page, () => servers);
+    await ensureAuthenticatedSession(page);
+    await page.locator('#servers-table button[data-select-host="demo-host"]').click();
+    await page.locator('#selected-host-panel button[data-tab="pending"]').click();
+    const panel = page.locator('#drawer-panel-pending');
+    const details = await panel.getByRole('button', { name: 'Details for pkg-01', exact: true }).elementHandle();
+    const search = panel.getByRole('searchbox', { name: 'Filter packages', exact: true });
+    await search.fill('pkg');
+    await search.evaluate(el => el.setSelectionRange(1, 2));
+    servers = [makeServer("demo-host", "pending_approval", makePendingUpdates(3).map(p => ({ ...p, cve_state: "ready" })), { has_key: true })];
+    await page.evaluate(() => window.fetchServers(true, "enrichment-identity"));
+    expect(await details.evaluate(el => el.isConnected)).toBe(true);
+    await expect(search).toBeFocused();
+    expect(await search.evaluate(el => [el.selectionStart, el.selectionEnd])).toEqual([1, 2]);
+    await details.click();
+    await expect(panel.getByRole('heading', { name: 'pkg-01', exact: true })).toBeVisible();
+});

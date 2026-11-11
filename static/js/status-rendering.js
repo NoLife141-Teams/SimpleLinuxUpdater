@@ -63,6 +63,66 @@
         };
     }
 
+    // Keys describe the action target, never its changing label or enabled state.
+    function nodeKey(node) {
+        if (node.nodeType !== 1) return "";
+        const attributes = ["data-render-key", "id", "data-action", "data-pending-action", "data-select-host", "data-select-server"];
+        for (const name of attributes) {
+            if (node.hasAttribute(name)) {
+                return JSON.stringify([node.localName, name, node.getAttribute(name),
+                    node.getAttribute("data-name"), node.getAttribute("data-tab"), node.getAttribute("data-pending-value")]);
+            }
+        }
+        return "";
+    }
+
+    function patchNode(current, next) {
+        if (current.nodeType !== 1) {
+            if (current.nodeValue !== next.nodeValue) current.nodeValue = next.nodeValue;
+            return;
+        }
+        for (const attribute of Array.from(current.attributes)) {
+            if (!next.hasAttribute(attribute.name)) current.removeAttribute(attribute.name);
+        }
+        for (const attribute of Array.from(next.attributes)) {
+            if (current.getAttribute(attribute.name) !== attribute.value) current.setAttribute(attribute.name, attribute.value);
+        }
+        if (current.localName === "input") {
+            if (current.value !== next.value) current.value = next.value;
+            if (current.checked !== next.checked) current.checked = next.checked;
+        }
+        patchChildren(current, next);
+    }
+
+    function patchChildren(parent, nextParent) {
+        const remaining = new Set(parent.childNodes);
+        const pools = new Map();
+        const identity = node => JSON.stringify([node.nodeType, node.nodeName, node.namespaceURI, nodeKey(node)]);
+        for (const node of remaining) {
+            const key = identity(node);
+            if (!pools.has(key)) pools.set(key, { nodes: [], index: 0 });
+            pools.get(key).nodes.push(node);
+        }
+        const pairs = Array.from(nextParent.childNodes, next => {
+            const pool = pools.get(identity(next));
+            const current = pool && pool.index < pool.nodes.length ? pool.nodes[pool.index++] : next;
+            remaining.delete(current);
+            return { current, next };
+        });
+        // Remove obsolete siblings first so an unchanged button need not move
+        // just because an action before it disappeared.
+        for (const node of remaining) node.remove();
+        let cursor = parent.firstChild;
+        for (const { current, next } of pairs) {
+            if (current !== cursor) {
+                if (current.parentNode === parent && parent.isConnected && parent.moveBefore) parent.moveBefore(current, cursor);
+                else parent.insertBefore(current, cursor);
+            }
+            if (current !== next) patchNode(current, next);
+            cursor = current.nextSibling;
+        }
+    }
+
     function create(documentRef) {
         function text(id, value) {
             const element = documentRef.getElementById(id);
@@ -70,7 +130,10 @@
         }
 
         function html(element, markup) {
-            if (element) element.innerHTML = String(markup ?? "");
+            if (!element) return;
+            const template = documentRef.createElement("template");
+            template.innerHTML = String(markup ?? "");
+            patchChildren(element, template.content);
         }
 
         function visible(element, show) {
@@ -145,7 +208,7 @@
             text("sync-degraded-last-success", notice.lastSuccessText || "");
         }
 
-        return Object.freeze({ text, html, visible, metrics, metricFilterLabel, metricFilterState, syncNotice, syncState });
+        return Object.freeze({ text, html, patchChildren, visible, metrics, metricFilterLabel, metricFilterState, syncNotice, syncState });
     }
 
     return Object.freeze({ create, syncNotice, createSnapshotScope });

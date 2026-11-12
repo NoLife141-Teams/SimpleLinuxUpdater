@@ -374,7 +374,7 @@ func MergePendingUpdatesWithMetadata(summaryPending []servers.PendingUpdate, met
 	return mergedPending, mergedUpgradable
 }
 
-func MergeAvailableUpdatesWithStandard(standardPending []servers.PendingUpdate, standardUpgradable []string, availablePending []servers.PendingUpdate, availableUpgradable []string, fullUpgradeStdout string, fullUpgradePlanAvailable bool) ([]servers.PendingUpdate, []string, servers.UpgradePlan) {
+func MergeAvailableUpdatesWithStandard(standardPending []servers.PendingUpdate, standardUpgradable []string, availablePending []servers.PendingUpdate, availableUpgradable []string, fullUpgradeStdout string, fullUpgradePlanAvailable bool, standardSimulationOutput ...string) ([]servers.PendingUpdate, []string, servers.UpgradePlan) {
 	if len(availablePending) == 0 {
 		pending := servers.ClonePendingUpdates(standardPending)
 		upgradable := append([]string(nil), standardUpgradable...)
@@ -413,9 +413,22 @@ func MergeAvailableUpdatesWithStandard(standardPending []servers.PendingUpdate, 
 	pending := make([]servers.PendingUpdate, 0, len(availablePending)+len(standardPending))
 	upgradable := make([]string, 0, len(availableUpgradable)+len(standardUpgradable))
 
+	phasedPackages := map[string]bool{}
+	for _, output := range standardSimulationOutput {
+		for _, name := range parseAptSummaryPackages(output, "the following upgrades have been deferred due to phasing:") {
+			phasedPackages[name] = true
+		}
+	}
+	if fullUpgradePlanAvailable {
+		for _, name := range parseAptSummaryPackages(fullUpgradeStdout, "the following upgrades have been deferred due to phasing:") {
+			phasedPackages[name] = true
+		}
+	}
+
 	appendUpdate := func(update servers.PendingUpdate, raw string, selector packageSelector, requiresFull bool) {
 		update.KeptBack = requiresFull
-		update.RequiresFull = requiresFull
+		update.PhasedUpdate = requiresFull && (phasedPackages[selector.selector] || phasedPackages[selector.base])
+		update.RequiresFull = requiresFull && !update.PhasedUpdate
 		if requiresFull && selector.arch != "" && selector.arch != "all" {
 			update.InstallPackage = selector.selector
 		}

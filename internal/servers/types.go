@@ -139,6 +139,7 @@ type ServerStatus struct {
 }
 
 type PendingUpdate struct {
+	PhasedUpdate           bool                   `json:"phased_update,omitempty"`
 	Deferred               bool                   `json:"deferred,omitempty"`
 	Package                string                 `json:"package"`
 	InstallPackage         string                 `json:"install_package,omitempty"`

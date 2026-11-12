@@ -1,9 +1,23 @@
 [Documentation map](README.md) | [Deployment](deployment.md) | [Accounts and API](personal-api.md) | [CI](ci-and-release.md)
 
-# Upgrading to v0.5.7
+# Upgrading to v0.5.8
 
 Use the image digest recorded in the published release's `publication.json`,
 or download the matching versioned binary archive and checksum list.
+
+## From v0.5.7
+
+Export and verify a backup, finish or cancel pending maintenance, then replace
+the executable and web assets together. v0.5.8 updates the SQLite driver from
+v1.61.1 to v1.62.0, `golang.org/x/sys` from v0.49.0 to v0.50.0, and the indirect
+`modernc.org/libc` dependency from v1.79.0 to v1.80.1. CI/release actions and
+Playwright tooling are also refreshed.
+
+No new application database migration, required environment variable or SSH
+helper protocol is introduced relative to v0.5.7. Retain existing data paths;
+accounts, sessions, policies, secrets, Package Deferrals and Approval Scope keep
+their existing contracts. Reload open browser tabs after deployment. Interrupted
+approvals require a fresh update check and renewed approval.
 
 ## From v0.5.6
 
@@ -176,7 +190,7 @@ Download the target platform archive and its checksum list from the same
 versioned GitHub Release. On Linux amd64, in a new staging directory:
 
 ```bash
-VERSION='0.5.7'
+VERSION='0.5.8'
 ARCHIVE="SimpleLinuxUpdater_${VERSION}_linux_amd64.tar.gz"
 BASE="https://github.com/NoLife141-Teams/SimpleLinuxUpdater/releases/download/v${VERSION}"
 curl --fail --location --output "$ARCHIVE" "$BASE/$ARCHIVE"

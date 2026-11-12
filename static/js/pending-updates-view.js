@@ -19,7 +19,7 @@
     function badges(update) {
         return `${update.security ? '<span class="pending-kind">Security</span>' : ''}
             ${update.deferred ? '<span class="pending-kind pending-kind-warning">Deferred — security exposure remains</span>' : ''}
-            ${update.kept_back || update.requires_full_upgrade ? '<span class="pending-kind pending-kind-warning">Kept back · Requires full-upgrade</span>' : ''}`;
+            ${update.phased_update ? '<span class="pending-kind">Phased rollout · Waiting for Ubuntu</span>' : update.kept_back || update.requires_full_upgrade ? '<span class="pending-kind pending-kind-warning">Kept back · Requires full-upgrade</span>' : ''}`;
     }
     function lookupNotice(view) {
         return `${view.pending ? `<p class="pending-note" role="status">Checking CVEs for ${view.pending} available package${view.pending === 1 ? '' : 's'}…</p>` : ''}

@@ -1,9 +1,37 @@
 [Documentation map](README.md) | [Deployment](deployment.md) | [Accounts and API](personal-api.md) | [CI](ci-and-release.md)
 
-# Upgrading to v0.5.5
+# Upgrading to v0.5.7
 
 Use the image digest recorded in the published release's `publication.json`,
 or download the matching versioned binary archive and checksum list.
+
+## From v0.5.6
+
+Export and verify a backup, finish or cancel pending maintenance, then replace
+the executable and web assets together. v0.5.7 keeps dashboard action controls
+stable during live data refreshes. This fixes intermittent clicks on the
+selected-host Logs button and preserves keyboard focus and pending-package
+search selection while the displayed data changes. Action availability and
+labels continue to reflect the latest host state.
+
+No database migration, required environment variable, dependency change or SSH
+helper protocol change is introduced relative to v0.5.6. Reload open browser
+tabs after deployment to load the updated interface. Interrupted approvals
+require a fresh update check and renewed approval.
+
+## From v0.5.5
+
+Export and verify a backup, finish or cancel pending maintenance, then replace
+the executable and web assets together. v0.5.6 distinguishes updates explicitly
+deferred by Ubuntu phasing from updates classified as requiring a full upgrade.
+The pending package list and package details display “Phased rollout · Waiting
+for Ubuntu” for phased updates. Run a fresh update check to refresh existing
+pending package classifications.
+
+No database migration, required environment variable, dependency change or SSH
+helper protocol change is introduced relative to v0.5.5. This release does not
+force installation of phased updates. Interrupted approvals require fresh
+discovery and approval.
 
 ## From v0.5.4
 
@@ -148,7 +176,7 @@ Download the target platform archive and its checksum list from the same
 versioned GitHub Release. On Linux amd64, in a new staging directory:
 
 ```bash
-VERSION='0.5.5'
+VERSION='0.5.7'
 ARCHIVE="SimpleLinuxUpdater_${VERSION}_linux_amd64.tar.gz"
 BASE="https://github.com/NoLife141-Teams/SimpleLinuxUpdater/releases/download/v${VERSION}"
 curl --fail --location --output "$ARCHIVE" "$BASE/$ARCHIVE"

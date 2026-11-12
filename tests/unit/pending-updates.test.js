@@ -109,3 +109,15 @@ test('mixed vendor qualifications do not repeat the generic review message per r
     store.dispatch({action:'cve-search',value:'0043'},server);
     assert.ok(render(store.view(server)).includes('Distribution: unimportant'));
 });
+
+ test('phased rollout takes precedence over legacy full-upgrade classification in list and details', () => {
+    const store = createStore(), pkg = update('snapd', {kept_back:true, requires_full_upgrade:true, phased_update:true});
+    const server = host([pkg]);
+    for (const mode of ['list', 'package']) {
+        if (mode === 'package') store.dispatch({action:'package', value:packageKey(pkg)}, server);
+        const html = render(store.view(server));
+        assert.match(html, /Phased rollout · Waiting for Ubuntu/);
+        assert.doesNotMatch(html, /Requires full-upgrade/);
+    }
+    assert.match(render(createStore().view(host([update('other', {kept_back:true})]))), /Requires full-upgrade/);
+});

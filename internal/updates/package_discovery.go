@@ -51,13 +51,13 @@ func DiscoverPackageUpdates(client SSHConnection, timeout time.Duration, run Pac
 	fullUpgradeOutput := fullUpgradeStdout + "\n" + fullUpgradeStderr
 	metadataStdout, _, metadataErr := run(client, AptListMetadataCmd, nil, timeout)
 	if metadataErr != nil {
-		pending, upgradable, plan := MergeAvailableUpdatesWithStandard(standardPending, standardUpgradable, nil, nil, fullUpgradeOutput, fullUpgradePlanAvailable)
+		pending, upgradable, plan := MergeAvailableUpdatesWithStandard(standardPending, standardUpgradable, nil, nil, fullUpgradeOutput, fullUpgradePlanAvailable, stdout)
 		plan = enrichKeptBackSecurityUpgradePlan(client, timeout, run, pending, plan)
 		return newPackageDiscoveryOutcome(pending, upgradable, plan), nil
 	}
 
 	metadataPending, metadataUpgradable := ParseAptListMetadataEntries(metadataStdout, nil)
-	pending, upgradable, plan := MergeAvailableUpdatesWithStandard(standardPending, standardUpgradable, metadataPending, metadataUpgradable, fullUpgradeOutput, fullUpgradePlanAvailable)
+	pending, upgradable, plan := MergeAvailableUpdatesWithStandard(standardPending, standardUpgradable, metadataPending, metadataUpgradable, fullUpgradeOutput, fullUpgradePlanAvailable, stdout)
 	plan = enrichKeptBackSecurityUpgradePlan(client, timeout, run, pending, plan)
 	outcome := newPackageDiscoveryOutcome(pending, upgradable, plan)
 	outcome.AvailableUpdatesComplete = true

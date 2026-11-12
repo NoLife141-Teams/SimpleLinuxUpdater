@@ -1,7 +1,8 @@
 ARG BASE_IMAGE
 FROM ${BASE_IMAGE}
 ENV DEBIAN_FRONTEND=noninteractive
-RUN apt-get -o Acquire::Retries=3 update && apt-get -y --no-install-recommends install openssh-server sudo curl python3 psmisc procps ca-certificates dpkg-dev systemd && rm -rf /var/lib/apt/lists/* && rm -f /etc/ssh/ssh_host_*_key*
+COPY configure-ubuntu-mirror.sh /tmp/configure-ubuntu-mirror.sh
+RUN sh /tmp/configure-ubuntu-mirror.sh && apt-get -o Acquire::Retries=3 -o APT::Update::Error-Mode=any update && apt-get -y --no-install-recommends install openssh-server sudo curl python3 psmisc procps ca-certificates dpkg-dev systemd && rm -rf /var/lib/apt/lists/* && rm -f /etc/ssh/ssh_host_*_key*
 COPY target.py /usr/local/lib/slu-target.py
 RUN groupadd slu-fixture && useradd -m -g slu-fixture -s /bin/sh operator && mkdir -p /run/sshd /srv/slu-repo /srv/slu-packages /var/lib/slu-fixture && \
     printf 'operator ALL=(root) /bin/sh\n' > /etc/sudoers.d/fixture-bootstrap && chmod 0440 /etc/sudoers.d/fixture-bootstrap && \

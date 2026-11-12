@@ -6,6 +6,20 @@ The format is inspired by Keep a Changelog, and this project uses Semantic Versi
 
 ## [Unreleased]
 
+## [v0.5.8] - 2026-11-11
+
+### Changed
+
+- Update `modernc.org/sqlite` from v1.61.1 to v1.62.0, `golang.org/x/sys` from v0.49.0 to v0.50.0, and the indirect `modernc.org/libc` dependency from v1.79.0 to v1.80.1, with refreshed transitive module checksums.
+- Update the pinned GitHub Actions: `docker/login-action` from v4.7.0 to v4.8.0, `docker/setup-docker-action` from v5.6.0 to v5.7.0, and `softprops/action-gh-release` from v3.0.3 to v3.0.4. Actions remain pinned to full commit SHAs.
+- Update `@playwright/test`, `playwright` and `playwright-core` from v1.64.1 to v1.65.0.
+
+### v0.5.8 upgrade notes
+
+- No new application database migration, required environment variable or SSH helper protocol change is introduced relative to v0.5.7. Replace the executable and web assets together and retain existing data paths.
+- Export and verify a backup, then finish or cancel maintenance before restarting. Reload open browser tabs after deployment. Interrupted approvals require a fresh update check and renewed approval.
+- See the [upgrade and rollback guide](docs/upgrading.md) for earlier-version requirements.
+
 ## [v0.5.7] - 2026-11-11
 
 ### Fixed

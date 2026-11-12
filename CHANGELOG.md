@@ -6,6 +6,17 @@ The format is inspired by Keep a Changelog, and this project uses Semantic Versi
 
 ## [Unreleased]
 
+## [v0.5.7] - 2026-11-11
+
+### Fixed
+
+- Preserve dashboard action controls across live refreshes so keyboard focus and accessibility references remain attached to the same host and action. Update labels and permissions in place, including the selected-host panel, server table and pending package details.
+
+### v0.5.7 upgrade notes
+
+- No database migration, required environment variable, dependency change or SSH helper protocol change is introduced relative to v0.5.6. Replace the executable and web assets together and retain existing data paths.
+- Reload open browser tabs after deployment to load the updated interface. Finish or cancel pending maintenance before restarting; interrupted approvals require a fresh update check and renewed approval.
+
 ## [v0.5.6] - 2026-11-11
 
 ### Fixed

@@ -615,7 +615,7 @@
             const el = document.getElementById(id);
             if (!el) return;
             if (!Array.isArray(servers) || servers.length === 0) {
-                el.innerHTML = miniEmpty(emptyText);
+                statusRendering.html(el, miniEmpty(emptyText));
                 return;
             }
             const limit = Math.max(1, Number(options.limit || 3));
@@ -641,7 +641,7 @@
                           ? risk
                           : `${status} · ${risk}`;
                 return `
-	                    <div class="mini-row compact-row">
+	                    <div class="mini-row compact-row" data-render-key="${safeDataName}">
 	                        <button type="button" class="mini-row-main" data-select-server="${safeDataName}">
 	                            <strong>${safeName || "Unnamed host"}</strong>
 	                            <span title="${escapeHtml(detail)}">${escapeHtml(detail)}</span>
@@ -668,7 +668,7 @@
                     `<div class="mini-more-row">${escapeHtml(moreText)}</div>`,
                 );
             }
-            el.innerHTML = rows.join("");
+            statusRendering.html(el, rows.join(""));
         }
 
         function failureMiniDetail(server) {
@@ -845,7 +845,7 @@
 	                        </div>
 		                    `;
                     return `
-                    <tr data-name="${safeDataName}" class="${rowSelected ? "row-selected" : ""}" aria-selected="${rowSelected ? "true" : "false"}">
+                    <tr data-render-key="host:${safeDataName}" data-name="${safeDataName}" class="${rowSelected ? "row-selected" : ""}" aria-selected="${rowSelected ? "true" : "false"}">
                         <td><button type="button" class="select-host" data-select-host="${safeDataName}" aria-pressed="${rowSelected ? "true" : "false"}">${safeName || "Unnamed host"}</button></td>
                         <td>${escapeHtml(tags)}</td>
                         <td>${Number(triage.pending_packages || 0)}</td>
@@ -866,7 +866,7 @@
                     `<tr class="triage-more-row"><td colspan="9"><button type="button" class="mini-more-row mini-more-button" data-toggle-mini-list="${listID}" aria-expanded="${expanded ? "true" : "false"}">${escapeHtml(label)}</button></td></tr>`,
                 );
             }
-            body.innerHTML = rows.join("");
+            statusRendering.html(body, rows.join(""));
         }
 
         function renderScheduledRuns() {
@@ -894,7 +894,7 @@
                     nextRun.scheduled_for_utc || nextRun.scheduled_for_display,
                 );
                 return `
-                    <div class="mini-row compact-row">
+                    <div class="mini-row compact-row" data-render-key="${safeDataName}">
                         <button type="button" class="mini-row-main" data-select-server="${safeDataName}">
                             <strong>${safeName}</strong>
                             <span>${escapeHtml(label)} · ${escapeHtml(when)}${nextRun.reason === "rollout_waiting" ? ` · ${escapeHtml(nextRun.summary)}` : ""}</span>
@@ -912,7 +912,7 @@
                     `<button type="button" class="mini-more-row mini-more-button" data-toggle-mini-list="${listID}" aria-expanded="${expanded ? "true" : "false"}">${escapeHtml(moreText)}</button>`,
                 );
             }
-            el.innerHTML = rows.join("");
+            statusRendering.html(el, rows.join(""));
         }
 
         function formatActivityTime(evt) {
@@ -993,7 +993,7 @@
                     `<button type="button" class="mini-more-row mini-more-button" data-toggle-mini-list="${listID}" aria-expanded="${expanded ? "true" : "false"}">${escapeHtml(moreText)}</button>`,
                 );
             }
-            el.innerHTML = rows.join("");
+            statusRendering.html(el, rows.join(""));
         }
 
         function renderPriorityAttention(failedServers, rebootHosts) {
@@ -1095,7 +1095,7 @@
                 title.textContent = "No host selected";
                 subtitle.textContent =
                     "Select a table row to inspect host details.";
-                panel.innerHTML = miniEmpty("No host selected.");
+                statusRendering.html(panel, miniEmpty("No host selected."));
                 return;
             }
             const safeName = escapeHtml(server.name || "");
@@ -1177,7 +1177,7 @@
             subtitle.textContent = `${server.user || "user"}@${server.host || "host"}:${server.port || 22}`;
             const phaseLabel = timelineDisplayLabel(timeline, { lastRunPrefix: true });
             const repeatsRuntimeStatus = phaseLabel.toLowerCase() === statusLabel(server.status).toLowerCase();
-            panel.innerHTML = `
+            statusRendering.html(panel, `
                 <div class="selected-status-row">
                     <span class="status-pill status-${safeStatus}">${escapeHtml(server.disabled ? "Disabled" : statusLabel(server.status))}</span>
                     ${repeatsRuntimeStatus ? "" : `<span class="stage-chip phase-${escapeHtml(timeline.state || "idle")}">${escapeHtml(phaseLabel)}</span>`}
@@ -1200,7 +1200,7 @@
                         : ""
                 }
                 ${driftReason ? `<p class="inspector-note pending-drift-note" title="${escapeHtml(driftReason)}">${escapeHtml(driftReason)}. Approval actions stay disabled until the host is pending approval again.</p>` : ""}
-                <div class="inspector-actions inspector-actions-primary">
+                <div class="inspector-actions inspector-actions-primary" data-render-key="primary-actions">
                     ${server.status === "pending_approval" ? `<button type="button" class="inline-btn btn-success" data-action="approve-all" data-name="${safeDataName}" ${buttonStateAttrs(canApproveAll, "Approve standard updates", "No standard updates are eligible")}>Approve (${approvalCounts.standard})</button>` : ""}
                     ${server.status === "pending_approval" ? `<button type="button" class="inline-btn btn-security" data-action="approve-security" data-name="${safeDataName}" ${buttonStateAttrs(canApproveSecurity, "Approve only standard security updates", "No standard security updates are eligible")}>Standard security (${approvalCounts.security ?? 0})</button>` : ""}
                     ${server.status === "pending_approval" ? `<button type="button" class="inline-btn btn-danger" data-action="cancel-upgrade" data-name="${safeDataName}" ${buttonStateAttrs(canCancel, "Cancel pending update", "Cancellation is not available")}>Cancel</button>` : ""}
@@ -1209,7 +1209,7 @@
 	                    ${canRunUpdate ? `<button type="button" class="inline-btn primary-action" data-action="update-server" data-name="${safeDataName}">Update</button>` : ""}
                     <button type="button" class="inline-btn btn-ghost" data-action="open-drawer" data-name="${safeDataName}" data-tab="logs">Logs</button>
                 </div>
-                <div class="inspector-tools">
+                <div class="inspector-tools" data-render-key="tools">
                     <span class="mini-label">Tools</span>
 		                    <div class="inspector-actions inspector-actions-secondary">
 		                        <button type="button" class="inline-btn" data-action="run-autoremove" data-name="${safeDataName}" ${canRunAutoremove ? "" : "disabled"} title="${canRunAutoremove ? "Run apt autoremove" : "Host cannot run autoremove right now"}">Autoremove</button>
@@ -1244,7 +1244,7 @@
                         <div><dt>No-run</dt><dd>${escapeHtml(noRun.summary || "No no-run window active")}</dd></div>
                     </dl>
                 </details>
-            `;
+            `);
         }
 
         function renderDashboardPanels() {
@@ -2046,7 +2046,8 @@
                     ? (pendingPanel.childElementCount ? pendingPanel.scrollTop : drawerPendingScrollTop) : 0;
                 const focusedInput = pendingPanel.contains(document.activeElement) && document.activeElement.matches("input[data-pending-input]")
                     ? { id: document.activeElement.id, start: document.activeElement.selectionStart, end: document.activeElement.selectionEnd } : null;
-                pendingPanel.innerHTML = renderPendingUpdatesHtml(server);
+                if (!samePendingServer) pendingPanel.replaceChildren();
+                statusRendering.html(pendingPanel, renderPendingUpdatesHtml(server));
                 if (focusedInput) {
                     const input = document.getElementById(focusedInput.id);
                     input?.focus({ preventScroll: true });
@@ -2121,7 +2122,7 @@
             hidePhaseTooltip();
             refreshDashboardPresentation();
             const tbody = document.querySelector("#servers-table tbody");
-            tbody.innerHTML = "";
+            const nextBody = document.createElement("tbody");
             const view = getStatusView();
             const totalFiltered = view.visibleServers.length;
             const selectedNames = new Set(view.selectedNames);
@@ -2143,8 +2144,9 @@
                 if (group.key) {
                     const groupRow = document.createElement("tr");
                     groupRow.className = "group-row";
+                    groupRow.dataset.renderKey = `group:${group.key}`;
                     groupRow.innerHTML = `<td colspan="5">${escapeHtml(group.key)}</td>`;
-                    tbody.appendChild(groupRow);
+                    nextBody.appendChild(groupRow);
                 }
                 group.items.forEach((presentation) => {
                     const server = presentation.server;
@@ -2330,6 +2332,7 @@
 	                                <button type="button" class="btn-ghost" data-action="open-drawer" data-name="${safeDataName}" data-tab="logs">Logs</button>
 	                            </div>
 	                          `;
+                    row.dataset.renderKey = `host:${server.name}`;
                     row.innerHTML = `
 	                        <td class="select-col"><input type="checkbox" class="row-select" data-name="${safeDataName}" aria-label="Select ${safeNameHtml}" ${selectedNames.has(server.name) ? "checked" : ""}></td>
                         <td class="name-cell" title="${safeNameHtml}">
@@ -2354,9 +2357,10 @@
                         </td>
                         <td class="actions-col">${actionButtons}</td>
                     `;
-                    tbody.appendChild(row);
+                    nextBody.appendChild(row);
                 });
             });
+            statusRendering.patchChildren(tbody, nextBody);
             applyHoverClass();
 
             updateBulkActionState();

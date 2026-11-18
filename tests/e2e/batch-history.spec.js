@@ -43,7 +43,7 @@ test("Status opens an older batch after paging and restores its link after sign-
     }
 });
 
-test("Status links an interrupted APT job to the same host after rename", async ({ page }) => {
+test("Status links an interrupted APT job to the same host after rename and preserves permissions", async ({ page, baseURL }) => {
     await ensureAuthenticatedSession(page);
     await page.goto("/?maintenance_batch=" + (2).toString(16).padStart(32, "0"));
     const batch = page.locator("#status-batch-panel");
@@ -61,5 +61,20 @@ test("Status links an interrupted APT job to the same host after rename", async 
     await renamed.getByRole("link", { name: "Open host diagnostics" }).click();
     await expect(page).toHaveURL(/\/?\?server_identity=previous-before-rename$/);
     await expect(page.locator("#selected-host-title")).toHaveText("renamed-host");
-    await expect(page.locator("#selected-host-panel").getByRole("button", { name: "Repair APT" })).toBeEnabled();
+    const repair = page.locator("#selected-host-panel").getByRole("button", { name: "Repair APT" });
+    await expect(repair).toBeEnabled();
+
+    const diagnosticURL = page.url();
+    const headers = { Origin: baseURL };
+    const reader = { username: "recovery-reader", password };
+    const created = await page.request.post("/api/auth/accounts", { headers, data: { ...reader, role: "reader" } });
+    expect(created.status()).toBe(201);
+    await page.context().clearCookies();
+    const login = await page.request.post("/api/auth/login", { headers, data: reader });
+    expect(login.ok()).toBe(true);
+    await page.goto(diagnosticURL);
+    await expect(page.locator("#selected-host-title")).toHaveText("renamed-host");
+    await expect(repair).toHaveCount(0);
+    const denied = await page.request.post("/api/repair/renamed-host", { headers, data: { confirm: true } });
+    expect(denied.status()).toBe(403);
 });

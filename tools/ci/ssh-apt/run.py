@@ -416,6 +416,13 @@ class Harness:
             require(self.api.server(name)["status"] == "needs_reconciliation", "restart did not block the host")
             for action in ("update", "autoremove"):
                 self.api.request("POST", f"/api/{action}/{name}", allowed=(409,))
+
+            locked_repair_id = self.api.request("POST", "/api/repair/" + name, {"confirm": True})["job_id"]
+            locked_repair, _ = self.api.wait_job(locked_repair_id, lambda j: j["status"] in TERMINAL, seconds=15)
+            require(locked_repair["status"] == "failed" and locked_repair["error_class"] == "reconciliation_required" and
+                    "APT/DPKG repair blocked: package-manager lock is active." in locked_repair["logs_text"] and
+                    self.api.server(name)["status"] == "needs_reconciliation",
+                    "repair did not respect the active lock and preserve the reconciliation requirement")
             require(upgrades() == baseline_upgrades + 1, "APT mutation was not attempted exactly once")
         finally:
             self.target("rm", "/run/slu-hold-mutation")
@@ -428,7 +435,8 @@ class Harness:
         require(self.target("dpkg", "--audit").strip() == "" and self.version() == "2.0" and
                 upgrades() == baseline_upgrades + 1, "repair did not verify APT state without replaying the upgrade")
         record.update(batch_id=batch_id, job_id=job_id, error_class=job["error_class"],
-                      mutation_attempts=1, repair_job_id=repair_id, final_version=self.version())
+                      mutation_attempts=1, locked_repair_job_id=locked_repair_id,
+                      repair_job_id=repair_id, final_version=self.version())
 
     def qualify(self):
         for user in ("root", "operator"):

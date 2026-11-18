@@ -15,7 +15,9 @@ import (
 
 	auditpkg "debian-updater/internal/audit"
 	authpkg "debian-updater/internal/auth"
+	jobspkg "debian-updater/internal/jobs"
 	maintenancepkg "debian-updater/internal/maintenance"
+	updatespkg "debian-updater/internal/updates"
 
 	"github.com/gin-gonic/gin"
 )
@@ -175,7 +177,7 @@ func (s *statusBatchService) processHost(ctx context.Context, db *sql.DB, reques
 	if ctx.Err() != nil {
 		return
 	}
-	if err := setStatusBatchHost(db, request.ID, target.Name, "queued", "admitting", "", ""); err != nil {
+	if err := recordStatusBatchOutcome(ctx, db, request.ID, target, "queued", "admitting", "", ""); err != nil {
 		log.Printf("claim maintenance batch %s host: %v", request.ID, err)
 		return
 	}
@@ -183,6 +185,7 @@ func (s *statusBatchService) processHost(ctx context.Context, db *sql.DB, reques
 		meta = auditpkg.CloneMeta(meta)
 		meta["account_id"] = account
 		meta["maintenance_batch_id"] = request.ID
+		meta["server_identity"] = target.ServerIdentity
 		if request.RetryOf != "" {
 			meta["maintenance_batch_retry_of"] = request.RetryOf
 		}
@@ -190,13 +193,31 @@ func (s *statusBatchService) processHost(ctx context.Context, db *sql.DB, reques
 			log.Printf("record maintenance batch %s audit: %v", request.ID, err)
 		}
 	}
+	jobReceipt := func(tx *sql.Tx, job JobRecord) error {
+		return recordStatusBatchOutcome(ctx, tx, request.ID, target, "admitting", "accepted", "", job.ID)
+	}
+	outcomeCtx := context.WithoutCancel(ctx)
+	factsReceipt := func(tx *sql.Tx) error {
+		return recordStatusBatchOutcome(outcomeCtx, tx, request.ID, target, "admitting", "completed", "", "")
+	}
+	factsFailureRecorded := false
+	recordFactsFailure := func(message string) {
+		if err := recordStatusBatchOutcome(outcomeCtx, db, request.ID, target, "admitting", "failed", message, ""); err != nil {
+			log.Printf("record failed maintenance batch %s host facts: %v", request.ID, err)
+		} else {
+			factsFailureRecorded = true
+		}
+	}
 	result := jsonResult(http.StatusForbidden, "The account no longer has permission for this action")
 	current, err := s.deps.AuthService.Account(account)
 	if err == nil && !current.Disabled && authpkg.RoleAllows(current.Role, batchActionScope(request.Action)) {
-		result = s.apply(ctx, request.Action, target, actor, clientIP, recordAudit)
+		result = s.apply(ctx, request.Action, target, actor, clientIP, recordAudit, jobReceipt, factsReceipt, recordFactsFailure)
 	} else {
 		recordAudit("maintenance_batch.admission", "server", target.Name, "ignored",
 			"The account no longer has permission for this action", map[string]any{"batch_action": request.Action})
+	}
+	if factsFailureRecorded {
+		return
 	}
 	if result.statusCode != http.StatusOK {
 		state := "refused"
@@ -206,7 +227,7 @@ func (s *statusBatchService) processHost(ctx context.Context, db *sql.DB, reques
 		} else if result.statusCode >= http.StatusInternalServerError {
 			state, message = "uncertain", "Check the job and audit history before attempting this command again."
 		}
-		if err := setStatusBatchHost(db, request.ID, target.Name, "admitting", state, message, ""); err != nil {
+		if err := recordStatusBatchOutcome(outcomeCtx, db, request.ID, target, "admitting", state, message, ""); err != nil {
 			log.Printf("record maintenance batch %s host %s: %v", request.ID, state, err)
 		}
 		return
@@ -215,19 +236,16 @@ func (s *statusBatchService) processHost(ctx context.Context, db *sql.DB, reques
 	if request.Action == "cancel" || batchActionScope(request.Action) == "approvals:write" {
 		jobID = target.Approval.JobID
 	}
-	state := "accepted"
 	if jobID == "" {
-		state = "completed"
-	}
-	if err := setStatusBatchHost(db, request.ID, target.Name, "admitting", state, "", jobID); err != nil {
-		log.Printf("record accepted maintenance batch %s host: %v", request.ID, err)
+		return
 	}
 	waitForBatchHostJob(ctx, db, jobID)
 }
 
-func (s *statusBatchService) apply(ctx context.Context, action string, target statusBatchTarget, actor, clientIP string, recordAudit func(string, string, string, string, string, map[string]any)) serverActionLifecycleResult {
+func (s *statusBatchService) apply(ctx context.Context, action string, target statusBatchTarget, actor, clientIP string, recordAudit func(string, string, string, string, string, map[string]any), jobReceipt jobspkg.AdmissionReceipt, factsReceipt func(*sql.Tx) error, recordFactsFailure func(string)) serverActionLifecycleResult {
 	lifecycle := newServerActionLifecycle(s.deps, recordAudit)
 	lifecycle.expectedServerIdentity = target.ServerIdentity
+	lifecycle.admissionReceipt = jobReceipt
 	identity := target.Approval
 	switch action {
 	case "update":
@@ -235,8 +253,19 @@ func (s *statusBatchService) apply(ctx context.Context, action string, target st
 	case "autoremove":
 		return lifecycle.startAutoremove(target.Name, actor, clientIP, target.ServerIdentity)
 	case "refresh_facts":
+		store, ok := s.deps.HostHealthObservation.(interface {
+			AcceptCollectedFactsWithReceipt(serverFactsRecord, func(*sql.Tx) error) error
+		})
+		if !ok {
+			return jsonResult(http.StatusServiceUnavailable, "Facts storage does not support batch admission")
+		}
 		_, result := runServerFactsRefresh(ctx, s.deps, s.deps.ServerState, target.Name, target.ServerIdentity, func(status, message string, meta map[string]any) {
 			recordAudit(serverFactsRefreshAction, "server", target.Name, status, message, meta)
+		}, serverFactsRefreshPersistence{
+			save: func(record serverFactsRecord) error {
+				return store.AcceptCollectedFactsWithReceipt(record, factsReceipt)
+			},
+			recordError: recordFactsFailure,
 		})
 		return result
 	case "approve_all":
@@ -315,12 +344,12 @@ func (s *statusBatchService) readBatch(ctx context.Context, db *sql.DB, id strin
 	_, active := s.active[batch.ID]
 	s.activeMu.RUnlock()
 	if err == nil {
-		s.projectBatch(ctx, db, &batch, active)
+		s.projectBatch(ctx, db, &batch, active, account)
 	}
 	return batch, err
 }
 
-func (s *statusBatchService) projectBatch(ctx context.Context, db *sql.DB, batch *statusBatch, active bool) {
+func (s *statusBatchService) projectBatch(ctx context.Context, db *sql.DB, batch *statusBatch, active bool, account int64) {
 	for i := range batch.Hosts {
 		host := &batch.Hosts[i]
 		host.Retryable = host.canRetry(active, batch.Action)
@@ -331,11 +360,12 @@ func (s *statusBatchService) projectBatch(ctx context.Context, db *sql.DB, batch
 			}
 		case "admitting":
 			if !active {
-				host.State, host.Message = "uncertain", "Check the job and audit history before attempting this command again."
-				s.reconcileHostFromAudit(ctx, db, batch, host)
+				if !reconcileStatusBatchHost(ctx, db, batch, host, account) {
+					host.State, host.Message = "uncertain", "Check the job and audit history before attempting this command again."
+				}
 			}
 		case "uncertain":
-			s.reconcileHostFromAudit(ctx, db, batch, host)
+			reconcileStatusBatchHost(ctx, db, batch, host, account)
 		}
 		if host.JobID == "" || host.State != "accepted" {
 			continue
@@ -353,25 +383,76 @@ func (s *statusBatchService) projectBatch(ctx context.Context, db *sql.DB, batch
 	}
 }
 
-func (s *statusBatchService) reconcileHostFromAudit(ctx context.Context, db *sql.DB, batch *statusBatch, host *statusBatchHost) {
-	var status, jobID, jobStatus, message string
-	err := db.QueryRowContext(ctx, `SELECT a.status, COALESCE(json_extract(a.meta_json, '$.job_id'), ''), COALESCE(j.status, ''), a.message
+func reconcileStatusBatchHost(ctx context.Context, db *sql.DB, batch *statusBatch, host *statusBatchHost, account int64) bool {
+	query := `WITH proof AS (
+		SELECT a.status, COALESCE(j.id, '') AS job_id, COALESCE(j.status, '') AS job_status, a.message
 		FROM audit_events a LEFT JOIN jobs j ON j.id = json_extract(a.meta_json, '$.job_id')
 		WHERE a.actor = ? AND a.target_type = 'server' AND a.target_name = ? AND json_valid(a.meta_json)
 		  AND json_extract(a.meta_json, '$.maintenance_batch_id') = ?
-		  AND (a.status IN ('started', 'success') OR (a.action = ? AND a.status = 'failure' AND json_extract(a.meta_json, '$.collection_attempted') = 1))
-		ORDER BY a.id DESC LIMIT 1`, batch.Actor, host.Name, batch.ID, serverFactsRefreshAction).Scan(&status, &jobID, &jobStatus, &message)
-	if err == nil {
-		if status == "failure" {
-			host.State, host.Message = "failed", message
-			return
+		  AND json_extract(a.meta_json, '$.account_id') = ?
+		  AND COALESCE(json_extract(a.meta_json, '$.server_identity'), ?) = ?`
+	args := []any{batch.Actor, host.Name, batch.ID, account, host.ServerIdentity, host.ServerIdentity}
+	switch batch.Action {
+	case "update", "autoremove":
+		query += ` AND a.action = ? AND a.status = 'started' AND j.kind = ?`
+		args = append(args, batch.Action+".start", batch.Action)
+	case "refresh_facts":
+		query += ` AND a.action = ? AND COALESCE(json_extract(a.meta_json, '$.job_id'), '') = ''
+		  AND (a.status = 'success' OR (a.status = 'failure' AND json_extract(a.meta_json, '$.collection_attempted') = 1))`
+		args = append(args, serverFactsRefreshAction)
+	case "approve_all", "approve_security", "approve_security_kept_back", "cancel":
+		if host.approval.JobID == "" || host.approval.Generation == 0 {
+			return false
 		}
-		host.Message = ""
-		host.JobID = jobID
-		host.JobStatus = jobStatus
-		host.State = "accepted"
-		if jobID == "" && status == "success" {
-			host.State = "completed"
+		query += ` AND a.action = ? AND a.status = 'success' AND j.kind = 'update'
+		  AND j.id = ? AND json_extract(a.meta_json, '$.approval_generation') = ?`
+		action := "update.approve"
+		if batch.Action == "cancel" {
+			action = "update.cancel"
+		}
+		args = append(args, action, host.approval.JobID, host.approval.Generation)
+		if batch.Action != "cancel" {
+			query += ` AND json_extract(a.meta_json, '$.scope') = ?
+			  AND COALESCE(json_extract(a.meta_json, '$.deferral_revision'), '') = ?`
+			scopes := map[string]string{
+				"approve_all": updatespkg.ApprovalScopeAll, "approve_security": updatespkg.ApprovalScopeSecurity,
+				"approve_security_kept_back": updatespkg.ApprovalScopeSecurityKeptBack,
+			}
+			args = append(args, scopes[batch.Action], host.approval.DeferralRevision)
+		}
+	default:
+		return false
+	}
+	query += ` LIMIT 2) SELECT status, job_id, job_status, message FROM proof WHERE (SELECT COUNT(*) FROM proof) = 1`
+	var status, jobID, jobStatus, message string
+	if err := db.QueryRowContext(ctx, query, args...).Scan(&status, &jobID, &jobStatus, &message); err == nil {
+		state := "accepted"
+		if status == "failure" {
+			state = "failed"
+		} else {
+			message = ""
+			if jobID == "" {
+				state = "completed"
+			}
+		}
+		target := statusBatchTarget{Name: host.Name, ServerIdentity: host.ServerIdentity}
+		if err := recordStatusBatchOutcome(ctx, db, batch.ID, target, host.State, state, message, jobID); err == nil {
+			host.State, host.Message, host.JobID, host.JobStatus = state, message, jobID, jobStatus
+			return true
 		}
 	}
+	// Another read may have persisted the result after we loaded the batch,
+	// including when audit retention removed the proof in the meantime.
+	var state string
+	err := db.QueryRowContext(ctx, `SELECT h.state, h.message, h.job_id, COALESCE(j.status, '')
+		FROM status_action_batch_hosts h JOIN status_action_batches b ON b.id = h.batch_id
+		LEFT JOIN jobs j ON j.id = h.job_id
+		WHERE b.account_id = ? AND h.batch_id = ? AND h.name = ? AND h.server_identity = ?
+		  AND h.state IN ('accepted', 'completed', 'failed')`, account, batch.ID, host.Name, host.ServerIdentity).
+		Scan(&state, &message, &jobID, &jobStatus)
+	if err != nil {
+		return false
+	}
+	host.State, host.Message, host.JobID, host.JobStatus = state, message, jobID, jobStatus
+	return true
 }

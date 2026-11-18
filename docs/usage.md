@@ -436,6 +436,11 @@ admission. For an approval or cancellation, the original plan must still match.
 If the application cannot determine whether a command started, or an older
 batch already has competing retry attempts, check the job and audit history
 before taking another action.
+Job admission, approval decisions, and successful facts refreshes record their
+batch result in the same transaction. A restart preserves the recorded result
+and its link to the job when one exists.
+For earlier batches, an exact match found in the audit is recorded in the batch
+history and remains visible after audit retention removes the original event.
 
 ### Passwordless apt toggle
 

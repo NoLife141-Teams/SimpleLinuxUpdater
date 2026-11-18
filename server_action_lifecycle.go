@@ -7,11 +7,13 @@ import (
 	"strings"
 	"time"
 
+	jobspkg "debian-updater/internal/jobs"
 	runtimepkg "debian-updater/internal/runtime"
 	serverpkg "debian-updater/internal/servers"
 )
 
 type serverActionLifecycle struct {
+	admissionReceipt       jobspkg.AdmissionReceipt
 	expectedServerIdentity string
 	validateRemediation    func(*ServerStatus, Server, string, bool) error
 	serverState            *serverpkg.State
@@ -307,7 +309,7 @@ func (l *serverActionLifecycle) startAction(name, actor, clientIP, sudoPassword 
 	}
 	preStartStatus = admittedSnapshot
 	admittedGeneration := admittedSnapshot.ActionGeneration + 1
-	job, err := createServerActionJobWithStateAndManager(l.currentJobManager(), l.serverState, spec.jobKind, name, actor, clientIP, policy)
+	job, err := createServerActionJobWithAdmission(l.currentJobManager(), l.serverState, spec.jobKind, name, actor, clientIP, policy, l.admissionReceipt)
 	if err != nil {
 		l.serverState.RestoreAdmittedAction(name, admittedGeneration, preStartStatus)
 		retryMeta["error"] = err.Error()

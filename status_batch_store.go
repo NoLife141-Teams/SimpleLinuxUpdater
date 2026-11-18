@@ -164,6 +164,27 @@ type statusBatchQuerier interface {
 	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
 }
 
+type statusBatchWriter interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+}
+
+func recordStatusBatchOutcome(ctx context.Context, db statusBatchWriter, batchID string, host statusBatchTarget, from, state, message, jobID string) error {
+	result, err := db.ExecContext(ctx, `UPDATE status_action_batch_hosts SET state = ?, message = ?, job_id = ?
+		WHERE batch_id = ? AND name = ? AND server_identity = ? AND state = ?`,
+		state, message, jobID, batchID, host.Name, host.ServerIdentity, from)
+	if err != nil {
+		return err
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if changed != 1 {
+		return fmt.Errorf("batch host is no longer in state %s", from)
+	}
+	return nil
+}
+
 func readStatusBatch(ctx context.Context, db statusBatchQuerier, id string, account int64) (statusBatch, error) {
 	batch := statusBatch{Hosts: []statusBatchHost{}}
 	query := `SELECT id, actor, action, created_at, skipped_count, retry_of FROM status_action_batches WHERE account_id = ?`
@@ -214,20 +235,4 @@ func readStatusBatch(ctx context.Context, db statusBatchQuerier, id string, acco
 		batch.Hosts = append(batch.Hosts, host)
 	}
 	return batch, rows.Err()
-}
-
-func setStatusBatchHost(db *sql.DB, batchID, name, from, state, message, jobID string) error {
-	result, err := db.Exec(`UPDATE status_action_batch_hosts SET state = ?, message = ?, job_id = ?
-		WHERE batch_id = ? AND name = ? AND state = ?`, state, message, jobID, batchID, name, from)
-	if err != nil {
-		return err
-	}
-	changed, err := result.RowsAffected()
-	if err != nil {
-		return err
-	}
-	if changed != 1 {
-		return fmt.Errorf("batch host is no longer in state %s", from)
-	}
-	return nil
 }

@@ -2182,6 +2182,7 @@ func registerServerAndActionRoutes(r *gin.Engine, deps AppDeps) {
 	registerServerInventoryBulkRoutes(r, deps, inventoryCommands)
 	registerServerAvailabilityRoutes(r, deps, inventoryCommands)
 	registerStatusBatchRoutes(r, deps)
+	r.GET("/api/status/changed-hosts", func(c *gin.Context) { handleStatusChangedHosts(c, deps) })
 	registerServerOnboardingRoutes(r, deps)
 	serverState := func() *serverpkg.State {
 		return deps.ServerState

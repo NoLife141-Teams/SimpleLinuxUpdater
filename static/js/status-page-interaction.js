@@ -80,6 +80,15 @@
             .map(item => cloneValue(item));
     }
 
+    function dashboardRowsMatchVersion(rows, version) {
+        let combined = 0n;
+        for (const row of rows) {
+            if (typeof row.version !== "string" || !/^[a-f0-9]{1,16}$/.test(row.version)) return false;
+            combined ^= BigInt(`0x${row.version}`);
+        }
+        return combined.toString(16) === version;
+    }
+
     function normalizeCanonicalAction(action) {
         if (!action || typeof action !== "object" || Array.isArray(action) || typeof action.enabled !== "boolean") {
             return null;
@@ -254,6 +263,7 @@
         let streams = {
             servers: createStreamState(),
             dashboard: createStreamState(),
+            hosts: createStreamState(),
             commandHistory: createStreamState(),
             audit: createStreamState(),
             observability: createStreamState(),
@@ -699,6 +709,21 @@
             return { ...server, ...detail.snapshot };
         }
 
+        function refreshFleet(priority, reason) {
+            streams.hosts.inFlight = null;
+            return startRefreshes(["servers", "dashboard"], priority, reason);
+        }
+
+        function startRefreshes(requestedStreams, priority, reason) {
+            const names = new Set(requestedStreams.map(stream => String(stream || "")));
+            if (streams.hosts.inFlight && (names.has("servers") || names.has("dashboard"))) {
+                streams.hosts.inFlight = null;
+                names.add("servers");
+                names.add("dashboard");
+            }
+            return [...names].flatMap(stream => startRefresh(stream, priority, reason));
+        }
+
         function startRefresh(streamName, priority, reason, context = {}) {
             const stream = streams[streamName];
             if (!stream) return [];
@@ -922,7 +947,45 @@
             if (interaction.releasePending && ["filtersChanged", "sortChanged", "pageChanged", "selectionChanged", "pageSelectionChanged", "primaryServerSelected"].includes(event.type)) {
                 interaction.actionContext = null;
             }
-            if (event.type === "serversSnapshotReceived") {
+            if (event.type === "targetedRefreshRequested") {
+                const { names, revision } = event;
+                const canPatch = !streams.hosts.inFlight
+                    && typeof dashboardSnapshot.rows_version === "string"
+                    && [streams.servers, streams.dashboard].every(stream => stream.lastAcceptedRequestId && !stream.inFlight && !stream.lastError)
+                    && names.every(name => serversByName.has(name) && dashboardByName.has(name));
+                return canPatch
+                    ? startRefresh("hosts", "immediate", "sse", { names, revision })
+                    : refreshFleet("immediate", "host snapshot unavailable");
+            } else if (event.type === "hostsSnapshotReceived") {
+                const request = streams.hosts.inFlight;
+                if (!request || request.requestId !== event.requestId) return [];
+                const { snapshot, receivedAt } = event;
+                const hostRows = new Map(normalizeNamedItems(snapshot?.servers).map(row => [row.name, row]));
+                const dashboardRows = new Map(normalizeNamedItems(snapshot?.dashboard?.servers).map(row => [row.name, row]));
+                if (!snapshot?.dashboard?.fleet || hostRows.size !== request.names.length || dashboardRows.size !== request.names.length
+                    || request.names.some(name => !hostRows.has(name) || !dashboardRows.has(name)
+                        || !hostRows.get(name).server_identity || hostRows.get(name).server_identity !== serversByName.get(name)?.server_identity)) {
+                    return refreshFleet(request.priority, "host snapshot changed");
+                }
+                const mergedDashboardRows = dashboardServers.map(row => dashboardRows.get(row.name) ?? row);
+                if (!dashboardRowsMatchVersion(mergedDashboardRows, snapshot.dashboard.rows_version)) {
+                    return refreshFleet(request.priority, "dashboard rows changed outside the host refresh");
+                }
+                finishRefresh("hosts", request.requestId, receivedAt);
+                for (const stream of [streams.servers, streams.dashboard]) {
+                    stream.lastSuccessfulAt = receivedAt;
+                    stream.lastError = "";
+                }
+                replaceDashboard({
+                    ...snapshot.dashboard,
+                    servers: mergedDashboardRows
+                });
+                return dispatch({
+                    type: "serversSnapshotReceived",
+                    priority: request.priority,
+                    servers: servers.map(row => hostRows.get(row.name) ?? row)
+                });
+            } else if (event.type === "serversSnapshotReceived") {
                 const requestId = Number(event.requestId || 0);
                 const stream = streams.servers;
                 if (requestId && (!stream.inFlight || stream.inFlight.requestId !== requestId || requestId < stream.lastAcceptedRequestId)) return [];
@@ -995,7 +1058,7 @@
                     // The resulting snapshot can distinguish replacement from expiry or removal.
                     if (linkedApproval.recheckedDetailKey !== current.key) {
                         linkedApproval.recheckedDetailKey = current.key;
-                        effects.push(...startRefresh("servers", "immediate", "linked approval detail changed"));
+                        effects.push(...startRefreshes(["servers"], "immediate", "linked approval detail changed"));
                     }
                     return effects;
                 }
@@ -1051,6 +1114,10 @@
                     ...finishRefresh(streamName, requestId, event.receivedAt)
                 ];
             } else if (event.type === "snapshotFailed") {
+                if (event.stream === "hosts") {
+                    const request = streams.hosts.inFlight;
+                    return request?.requestId === event.requestId ? refreshFleet(request.priority, "host snapshot failed") : [];
+                }
                 return failRefresh(String(event.stream || ""), Number(event.requestId || 0), event.error);
             } else if (event.type === "jobLogReceived") {
                 return receiveJobLogEvent(event.event || event);
@@ -1082,7 +1149,7 @@
                 return recoverKnownJobLogs();
             } else if (event.type === "refreshRequested") {
                 const requestedStreams = Array.isArray(event.streams) ? event.streams : [event.stream];
-                return requestedStreams.flatMap(stream => startRefresh(String(stream || ""), event.priority, event.reason));
+                return startRefreshes(requestedStreams, event.priority, event.reason);
             } else if (event.type === "interactionStarted") {
                 if (interaction.depth === 0 && (!interaction.actionContext || !interaction.releasePending || !interaction.deferredRender)) {
                     const projection = projectView();
@@ -1462,7 +1529,7 @@
         function actionLifecycleEffects(event, status) {
             const effects = [{ type: "render", scope: "serverState", priority: "immediate" }];
             const refreshStreams = Array.isArray(event.refreshStreams) ? event.refreshStreams : ["servers"];
-            refreshStreams.forEach(stream => effects.push(...startRefresh(stream, "immediate", `action-${status}`)));
+            effects.push(...startRefreshes(refreshStreams, "immediate", `action-${status}`));
             if (event.message) effects.push({ type: "announceResult", status, message: String(event.message) });
             return effects;
         }

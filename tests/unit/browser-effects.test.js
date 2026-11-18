@@ -187,6 +187,43 @@ test("Status transport starts once, closes each stream, clears polling and rejec
     assert.equal(sources[1].closed, 1);
 });
 
+test("Status resynchronizes audits without replaying every active log on a contiguous stream", () => {
+    const timers = clock();
+    const refreshes = [];
+    let recoveries = 0;
+    let source;
+    class Source extends EventTarget {
+        constructor() {
+            super();
+            source = this;
+        }
+        close() {}
+    }
+    const controller = createController({
+        timers, EventSourceType: Source,
+        onDashboardRefresh: streams => refreshes.push(streams),
+        onReconnect: () => recoveries++
+    });
+    controller.start();
+    source.dispatchEvent(new Event("open"));
+    const send = payload => {
+        source.dispatchEvent(new MessageEvent("dashboard", { data: JSON.stringify(payload) }));
+        const [id, flush] = [...timers.pending.entries()].at(-1);
+        timers.pending.delete(id);
+        flush();
+    };
+    send({ reason: "server.update", revision: 1, audit: true });
+    assert.equal(refreshes.length, 2);
+    assert.ok(refreshes[1].includes("servers") && refreshes[1].includes("dashboard"));
+    assert.equal(recoveries, 1);
+
+    send({ reason: "server.update", revision: 3, audit: true });
+    assert.equal(recoveries, 2, "a skipped revision still recovers followed logs");
+    send({ reason: "unexpected.change", revision: 4 });
+    assert.equal(recoveries, 3, "an unrecognized event still recovers followed logs");
+    controller.destroy();
+});
+
 test("timer ownership handles equal animation and timeout identifiers independently", () => {
     const cleared = [];
     const lifecycle = create({

@@ -24,7 +24,7 @@ const quantiles = values => {
 async function settledPaint(page) { await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))); }
 async function timed(page, run) { const at = performance.now(); await run(); await settledPaint(page); return performance.now() - at; }
 const fleetPaths = ['/api/servers', '/api/dashboard/summary'];
-const refreshPaths = new Set([...fleetPaths, '/api/keys/global', '/api/audit-events', '/api/observability/summary', '/api/update-policies']);
+const refreshPaths = new Set([...fleetPaths, '/api/status/changed-hosts', '/api/keys/global', '/api/audit-events', '/api/observability/summary', '/api/update-policies']);
 function fleetResponses(page) {
   return fleetPaths.map(path => page.waitForResponse(response => new URL(response.url()).pathname === path));
 }
@@ -51,11 +51,80 @@ async function measureRequests(requests) {
   return paths;
 }
 
+async function measureHostRefresh(browser, fixture) {
+  const results = {};
+  const snapshotsIdle = () => Object.values(window.statusPageInteraction.getView().sync.streams).every(stream => !stream.inFlight);
+  for (const tabCount of [1, 3]) {
+    const trials = [];
+    for (let iteration = -1; iteration < 5; iteration++) {
+      const context = await browser.newContext({ viewport: { width: 1440, height: 1000 }, reducedMotion: 'reduce' });
+      try {
+        await context.addCookies([{ name: fixture.cookie.Name, value: fixture.cookie.Value, url: fixture.url }]);
+        const pages = await Promise.all(Array.from({ length: tabCount }, () => context.newPage()));
+        const errors = [];
+        let measured = null;
+        await Promise.all(pages.map(async page => {
+          page.on('pageerror', error => errors.push(String(error)));
+          page.on('request', request => {
+            if (measured && refreshPaths.has(new URL(request.url()).pathname)) measured.push(request);
+          });
+          await page.clock.setFixedTime(new Date(fixture.manifest.clock));
+          const connected = page.waitForResponse(response => new URL(response.url()).pathname === '/api/dashboard/events');
+          await page.goto(fixture.url, { waitUntil: 'domcontentloaded' });
+          await connected;
+          await page.locator('#servers-table tr[data-name="synthetic-0003"]').waitFor();
+        }));
+        const sample = {};
+        for (const scenario of ['single', 'burst']) {
+          await Promise.all(pages.map(page => page.waitForFunction(snapshotsIdle, null, { polling: 50 })));
+          measured = [];
+          const at = performance.now();
+          const change = await context.request.post(fixture.url + '/__scaling/hosts?burst=' + Number(scenario === 'burst'));
+          assert.ok(change.ok());
+          const states = await change.json();
+          const latency = await Promise.all(pages.map(async page => {
+            await page.waitForFunction(changed => Object.entries(changed).every(([name, state]) =>
+              document.querySelector(`#servers-table tr[data-name="${name}"] .status-pill`)?.textContent.trim().toLowerCase() === state
+            ), states, { polling: 20 });
+            return performance.now() - at;
+          }));
+          await Promise.all(pages.map(page => page.waitForFunction(snapshotsIdle, null, { polling: 50 })));
+          await sleep(200);
+          const byPath = await measureRequests(measured);
+          measured = null;
+          sample[scenario] = {
+            latency_ms: latency,
+            requests: Object.values(byPath).reduce((sum, item) => sum + item.requests, 0),
+            encoded_bytes: Object.values(byPath).reduce((sum, item) => sum + item.encoded, 0),
+            by_path: byPath,
+          };
+        }
+        if (iteration === 4) {
+          const reconnected = pages.map(page => Promise.all([
+            page.waitForResponse(response => new URL(response.url()).pathname === '/api/dashboard/events', { timeout: 15000 }),
+            ...fleetResponses(page),
+          ]));
+          assert.ok((await context.request.get(fixture.url + '/__scaling/disconnect')).ok());
+          await Promise.all(reconnected);
+          sample.reconnected_tabs = pages.length;
+        }
+        if (iteration >= 0) trials.push(sample);
+        assert.deepEqual(errors, []);
+      } finally {
+        await context.close();
+      }
+    }
+    results[tabCount] = trials;
+  }
+  return results;
+}
+
 (async () => {
   await fs.mkdir(output, { recursive: true });
   const browser = await chromium.launch({ headless: true });
   try {
-    for (const size of [10, 100, 1000]) {
+    const targeted = process.env.SLU_SCALING_TARGETED === '1';
+    for (const size of targeted ? [100, 1000] : [10, 100, 1000]) {
       const fixtureDir = await fs.mkdtemp(path.join(output, `fixture-${size}-`));
       const log = await fs.open(path.join(output, `browser-server-${size}.log`), 'w');
       const child = spawn(path.resolve(binary), ['-test.run=^TestDashboardScalingServe$', '-test.timeout=5m'], {
@@ -66,6 +135,13 @@ async function measureRequests(requests) {
       const samples = [], errors = [];
       try {
         fixture = await ready(path.join(fixtureDir, 'server.json'), child);
+        if (targeted) {
+          const samples = await measureHostRefresh(browser, fixture);
+          await fs.writeFile(path.join(output, `host-refresh-${size}.json`), JSON.stringify({
+            manifest: fixture.manifest, browser: browser.version(), samples,
+          }, null, 2) + '\n');
+          continue;
+        }
         for (let iteration = -1; iteration < 5; iteration++) {
           const context = await browser.newContext({ viewport: { width: 1440, height: 1000 }, reducedMotion: 'reduce' });
           await context.addCookies([{ name: fixture.cookie.Name, value: fixture.cookie.Value, url: fixture.url }]);

@@ -254,7 +254,11 @@ func (s *Service) SaveOrRollbackLocked(prevServers []Server, prevStatusMap map[s
 }
 
 func (s *Service) ListStatuses() []ServerStatus {
-	statuses := s.state().ListStatuses()
+	return s.ListStatusesFor(nil)
+}
+
+func (s *Service) ListStatusesFor(names map[string]struct{}) []ServerStatus {
+	statuses := s.state().ListStatusesFor(names)
 	if len(statuses) == 0 {
 		return statuses
 	}

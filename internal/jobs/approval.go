@@ -36,7 +36,7 @@ func (m *Manager) ResolvePendingApproval(id string, expectedRevision int64, canc
 	if !updated {
 		return Record{}, ErrTransitionConflict
 	}
-	m.notify("job.update")
+	m.notifyJobUpdate(next)
 	return next, nil
 }
 
@@ -96,6 +96,6 @@ func (m *Manager) commitPendingApproval(id, appendLog string, replacementLogs *s
 		return Record{}, ErrTransitionConflict
 	}
 	m.notifyLogResult(id, logResult)
-	m.notify("job.update")
+	m.notifyJobUpdate(next)
 	return next, nil
 }

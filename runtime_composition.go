@@ -210,11 +210,26 @@ func (c *runtimeComposition) Compose() AppDeps {
 	if deps.DashboardEventBroker == nil {
 		deps.DashboardEventBroker = events.NewBroker()
 	}
+	notifyAudit := deps.NotifyDashboardEvent
 	if deps.NotifyDashboardEvent == nil {
 		broker := deps.DashboardEventBroker
 		deps.NotifyDashboardEvent = func(reason string) {
 			if broker != nil {
 				broker.Publish(reason)
+			}
+		}
+		notifyAudit = func(reason string) {
+			broker.PublishEvent(events.Event{Reason: reason, Audit: true})
+		}
+		if deps.NotifyDashboardJob == nil {
+			deps.NotifyDashboardJob = func(reason string, job JobRecord) {
+				// A scheduled transition can also release or stop another rollout
+				// stage. Only standalone, operator-initiated updates are local.
+				if job.Kind != jobKindUpdate || job.Actor == "system" || job.ParentJobID != "" || job.ServerName == "" {
+					broker.Publish(reason)
+					return
+				}
+				broker.PublishEvent(events.Event{Reason: reason, ServerName: job.ServerName})
 			}
 		}
 	}
@@ -251,7 +266,7 @@ func (c *runtimeComposition) Compose() AppDeps {
 		})
 	}
 	if deps.AuditService == nil {
-		deps.AuditService = newAuditServiceWithHealthObservation(deps.DB, deps.NotifyDashboardEvent, func() (*time.Location, string) {
+		deps.AuditService = newAuditServiceWithHealthObservation(deps.DB, notifyAudit, func() (*time.Location, string) {
 			value := deps.ApplicationTime.Current()
 			return value.Location, value.DisplayName
 		}, deps.NotificationService, deps.Now, deps.HostHealthObservation, deps.MaintenanceCoordinator)
@@ -294,8 +309,9 @@ func (c *runtimeComposition) Compose() AppDeps {
 	if deps.NewJobManager == nil {
 		notify := deps.NotifyDashboardEvent
 		notifyLog := deps.NotifyDashboardLogEvent
+		notifyJob := deps.NotifyDashboardJob
 		deps.NewJobManager = func(db *sql.DB) *JobManager {
-			return newJobManagerWithRuntimeLogConfig(db, notify, notifyLog, deps.ServerState, loadJobLogConfigFromEnv(), deps.Now)
+			return newJobManagerWithRuntimeLogConfig(db, notify, notifyLog, notifyJob, deps.ServerState, loadJobLogConfigFromEnv(), deps.Now)
 		}
 	}
 	if deps.CurrentJobManager == nil {

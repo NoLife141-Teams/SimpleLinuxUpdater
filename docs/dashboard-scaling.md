@@ -157,3 +157,61 @@ The recorded browser comparison is pinned to its measured source revisions.
 Later reconnect race corrections are qualified with separate unit/browser
 regressions in that report; the historical latency samples are not measurements
 of those subsequent changes.
+
+## Per-host Status refresh (#587)
+
+Standalone manual update transitions include a host name and a dashboard
+revision. Status groups up to 16 distinct names per burst and requests their
+compact inventory and dashboard rows together. The same response carries the
+authoritative global counters. The server still computes those counters from the
+full Dashboard Projection. A fingerprint of the compact rows lets the browser
+reject a partial update if other rows changed, including when host facts or CVE
+evidence expire independently. The measured gain is in browser transfer and fewer
+requests. Scheduled transitions, inventory changes, unrecognized events and
+reconnects retain full snapshots. A missed revision, missing host, changed
+inventory identity, overlapping read or rejected patch also triggers a fleet read.
+Job logs keep their independent sequence and bounded recovery. Contiguous
+persisted audit events refresh snapshots without requesting all active logs again.
+
+Run the standalone scenario with the same fixture on the reference
+`4088ea51e776d65477141101e867dd843609d6a7` and the measured candidate
+`ec83f6219111ec5b6786215d5942404bcc897141`. To instrument the reference, apply
+only the candidate diff for `dashboard_scaling_test.go` and
+`tools/performance/dashboard-browser.cjs` to a separate reference checkout.
+With the Go and Playwright dependencies installed, run in each checkout:
+
+```sh
+out=$(mktemp -d)
+go test -c -o "$out/scaling.test" .
+SLU_SCALING_TARGETED=1 node tools/performance/dashboard-browser.cjs "$out/scaling.test" "$out"
+```
+
+The two `host-refresh-*.json` files record five trials after one warmup at each
+size and tab count. A trial changes one host, then three hosts within one burst.
+Each tab records when the changed row or rows reach their expected status.
+Requests and encoded response body bytes are medians of each trial's total
+across the tabs, including the selected host's command-history read. Latencies
+use nearest-rank percentiles across the five or fifteen tab observations. The
+last trial forces a disconnect and checks that all tabs reopen SSE and request
+both fleet snapshots. The original scenario above separately exercises bounded
+log recovery.
+
+| Hosts | Tabs | Change | Requests before → after | Encoded bytes before → after | Render p50 before → after | Render p95 before → after |
+| ---: | ---: | --- | ---: | ---: | ---: | ---: |
+| 100 | 1 | One host | 3 → 2 | 96,420 → 3,989 | 161 → 172 ms | 167 → 182 ms |
+| 100 | 1 | Three hosts | 3 → 2 | 96,326 → 4,733 | 154 → 164 ms | 158 → 172 ms |
+| 100 | 3 | One host | 9 → 6 | 289,260 → 11,967 | 208 → 213 ms | 251 → 252 ms |
+| 100 | 3 | Three hosts | 9 → 6 | 288,978 → 14,199 | 171 → 193 ms | 215 → 217 ms |
+| 1,000 | 1 | One host | 3 → 2 | 932,989 → 3,984 | 351 → 471 ms | 388 → 523 ms |
+| 1,000 | 1 | Three hosts | 3 → 2 | 933,713 → 4,733 | 318 → 427 ms | 393 → 505 ms |
+| 1,000 | 3 | One host | 9 → 6 | 2,798,967 → 11,952 | 617 → 726 ms | 843 → 861 ms |
+| 1,000 | 3 | Three hosts | 9 → 6 | 2,801,139 → 14,199 | 553 → 578 ms | 609 → 770 ms |
+
+Chromium 159.0.8154.6 used the same fixture manifest before and after on one
+machine with the scenarios run sequentially. All targeted trials avoided both
+fleet reads. In this loopback run, render p50 and p95 increased in every
+scenario. The targeted update is retained for the transfer reduction, which
+exceeds 99% at 1,000 hosts. CI compares the partial rows and fleet counters
+to full reads for admin and reader. It caps the uncompressed response for
+three hosts at 16 KiB and 5% of the two full responses, and checks one request
+for a scoped update in Chromium. Latency has no CI threshold.

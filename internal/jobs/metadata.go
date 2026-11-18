@@ -48,7 +48,7 @@ func (m *Manager) MergeActiveMetadata(id string, patch map[string]any) error {
 			continue
 		}
 		m.syncRuntime(id)
-		m.notify("job.update")
+		m.notifyJobUpdate(next)
 		return nil
 	}
 	return ErrTransitionConflict

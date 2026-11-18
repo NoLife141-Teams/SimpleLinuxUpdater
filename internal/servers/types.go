@@ -329,12 +329,23 @@ func (s *State) InventoryIdentities() map[string]struct{} {
 }
 
 func (s *State) ListStatuses() []ServerStatus {
+	return s.ListStatusesFor(nil)
+}
+
+func (s *State) ListStatusesFor(names map[string]struct{}) []ServerStatus {
 	s.Lock()
 	defer s.Unlock()
 	servers := *s.servers
 	statusMap := *s.statusMap
-	statuses := make([]ServerStatus, 0, len(servers))
+	capacity := len(servers)
+	if names != nil {
+		capacity = len(names)
+	}
+	statuses := make([]ServerStatus, 0, capacity)
 	for _, server := range servers {
+		if _, selected := names[server.Name]; names != nil && !selected {
+			continue
+		}
 		status := statusMap[server.Name]
 		if status == nil {
 			continue

@@ -97,10 +97,10 @@ func newJobManagerWithRuntime(db *sql.DB, notify func(string), state *serverpkg.
 }
 
 func newJobManagerWithRuntimeConfig(db *sql.DB, notify func(string), state *serverpkg.State, config internaljobs.LogConfig, now func() time.Time) *JobManager {
-	return newJobManagerWithRuntimeLogConfig(db, notify, notifyDashboardLogEvent, state, config, now)
+	return newJobManagerWithRuntimeLogConfig(db, notify, notifyDashboardLogEvent, nil, state, config, now)
 }
 
-func newJobManagerWithRuntimeLogConfig(db *sql.DB, notify func(string), notifyLog func(internaljobs.LogEvent), state *serverpkg.State, config internaljobs.LogConfig, now func() time.Time) *JobManager {
+func newJobManagerWithRuntimeLogConfig(db *sql.DB, notify func(string), notifyLog func(internaljobs.LogEvent), notifyJob func(string, JobRecord), state *serverpkg.State, config internaljobs.LogConfig, now func() time.Time) *JobManager {
 	if notify == nil {
 		notify = notifyDashboardEvent
 	}
@@ -113,6 +113,7 @@ func newJobManagerWithRuntimeLogConfig(db *sql.DB, notify func(string), notifyLo
 	return internaljobs.NewManager(internaljobs.NewSQLiteRepositoryWithLogConfig(db, config), internaljobs.ManagerOptions{
 		Notify:    notify,
 		NotifyLog: notifyLog,
+		NotifyJob: notifyJob,
 		SyncRuntime: func(record JobRecord) {
 			syncServerStateFromJobRecord(state, record)
 		},

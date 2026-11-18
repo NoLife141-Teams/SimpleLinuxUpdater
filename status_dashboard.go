@@ -1,6 +1,9 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/binary"
+	"encoding/json"
 	"net/http"
 	"strconv"
 
@@ -156,6 +159,7 @@ type statusDashboardRisk struct {
 
 type statusDashboardRow struct {
 	Name              string                                          `json:"name"`
+	Version           string                                          `json:"version"`
 	LastUpdate        *observabilitypkg.DashboardUpdateHistory        `json:"last_update,omitempty"`
 	LastFailedUpdate  *observabilitypkg.DashboardUpdateHistory        `json:"last_failed_update,omitempty"`
 	AvgDurationMS     float64                                         `json:"avg_duration_ms,omitempty"`
@@ -172,20 +176,99 @@ type statusDashboardRow struct {
 
 type statusDashboardSummary struct {
 	dashboardSummaryResponse
-	Servers []statusDashboardRow `json:"servers"`
+	Servers     []statusDashboardRow `json:"servers"`
+	RowsVersion string               `json:"rows_version"`
+}
+
+type statusChangedHosts struct {
+	Servers   []statusServerRow      `json:"servers"`
+	Dashboard statusDashboardSummary `json:"dashboard"`
+}
+
+const statusChangedHostLimit = 16
+
+func handleStatusChangedHosts(c *gin.Context, deps AppDeps) {
+	c.Header("Cache-Control", "no-store")
+	revision, err := strconv.ParseUint(c.Query("revision"), 10, 64)
+	requested := c.QueryArray("server")
+	if err != nil || revision == 0 || len(requested) == 0 || len(requested) > statusChangedHostLimit {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid Status host refresh"})
+		return
+	}
+	names := make(map[string]struct{}, len(requested))
+	for _, name := range requested {
+		if name == "" || len(name) > 255 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid Status host name"})
+			return
+		}
+		names[name] = struct{}{}
+	}
+	stale := func() {
+		c.JSON(http.StatusConflict, gin.H{"error": "Status changed during the host refresh"})
+	}
+	broker := deps.DashboardEventBroker
+	if broker.Revision() != revision {
+		stale()
+		return
+	}
+	statuses := deps.ServerInventoryService.ListStatusesFor(names)
+	if len(statuses) != len(names) {
+		stale()
+		return
+	}
+	ctx := c.Request.Context()
+	summary, err := deps.ObservabilityService.BuildDashboardSummaryContextWithOptions(ctx, "7d", deps.Now(), observabilitypkg.DashboardSummaryOptions{
+		OmitCommandHistory: true, OmitVulnerabilityFindings: true,
+	})
+	if err != nil {
+		if ctx.Err() == nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "could not refresh Status hosts"})
+		}
+		return
+	}
+	dashboard := projectStatusDashboard(summary)
+	selected := make([]statusDashboardRow, 0, len(names))
+	for _, row := range dashboard.Servers {
+		if _, ok := names[row.Name]; ok {
+			selected = append(selected, row)
+		}
+	}
+	// Apply inventory, dashboard rows, and fleet totals together or read a
+	// fresh full snapshot when another dashboard invalidation raced this read.
+	if len(selected) != len(names) || broker.Revision() != revision {
+		stale()
+		return
+	}
+	dashboard.Servers = selected
+	writeDashboardSummaryResponse(c, statusChangedHosts{
+		Servers:   projectStatusRows(statuses, contextAllows(c, "logs:read")),
+		Dashboard: dashboard,
+	})
 }
 
 func projectStatusDashboard(summary dashboardSummaryResponse) statusDashboardSummary {
 	rows := make([]statusDashboardRow, 0, len(summary.Servers))
+	var rowsVersion uint64
 	for _, server := range summary.Servers {
-		rows = append(rows, statusDashboardRow{
+		row := statusDashboardRow{
 			Name: server.Name, LastUpdate: server.LastUpdate, LastFailedUpdate: server.LastFailedUpdate,
 			AvgDurationMS: server.AvgDurationMS, DurationSamples: server.DurationSamples,
 			NextRun: server.NextRun, NoRun: server.NoRun, Health: server.Health,
 			Risk:     statusDashboardRisk{UpdateCVEs: server.Risk.UpdateCVEs},
 			Timeline: server.Timeline, Actions: server.Actions,
 			RecommendedAction: server.RecommendedAction, ApprovalTriage: server.ApprovalTriage,
-		})
+		}
+		// Fingerprint the compact row without its version or any summary
+		// timestamps. Stale facts, CVE evidence and policy windows can change
+		// on an untouched host even when no dashboard event is published.
+		encoded, err := json.Marshal(row)
+		if err == nil {
+			digest := sha256.Sum256(encoded)
+			version := binary.BigEndian.Uint64(digest[:8])
+			row.Version = strconv.FormatUint(version, 16)
+			rowsVersion ^= version
+		}
+		rows = append(rows, row)
 	}
-	return statusDashboardSummary{dashboardSummaryResponse: summary, Servers: rows}
+	return statusDashboardSummary{dashboardSummaryResponse: summary, Servers: rows, RowsVersion: strconv.FormatUint(rowsVersion, 16)}
 }

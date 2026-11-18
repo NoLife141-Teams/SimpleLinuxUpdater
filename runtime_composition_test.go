@@ -346,6 +346,53 @@ func TestRuntimeCompositionMapsJobLogResetToBroker(t *testing.T) {
 	}
 }
 
+func TestRuntimeCompositionScopesOnlyStandaloneUpdateTransitions(t *testing.T) {
+	app := newIsolatedTestApp(t)
+	broker := app.Deps.DashboardEventBroker
+	manager := app.Deps.CurrentJobManager()
+	ch := broker.Subscribe()
+	defer broker.Unsubscribe(ch)
+
+	nextEvent := func() events.Event {
+		t.Helper()
+		select {
+		case got := <-ch:
+			return got
+		case <-time.After(time.Second):
+			t.Fatal("job didn't publish a dashboard invalidation")
+			return events.Event{}
+		}
+	}
+	for _, tc := range []struct {
+		job  internaljobs.CreateParams
+		host string
+	}{
+		{internaljobs.CreateParams{ServerName: "manual", Kind: jobKindUpdate, Actor: "operator"}, "manual"},
+		{internaljobs.CreateParams{ServerName: "scheduled", Kind: jobKindUpdate, Actor: "system"}, ""},
+		{internaljobs.CreateParams{ServerName: "dependent", Kind: jobKindUpdate, Actor: "operator", ParentJobID: "scheduled"}, ""},
+		{internaljobs.CreateParams{ServerName: "scan", Kind: jobKindScheduledScan, Actor: "operator"}, ""},
+	} {
+		job, err := manager.CreateJob(tc.job)
+		if err != nil {
+			t.Fatal(err)
+		}
+		created := nextEvent()
+		if err := manager.Transition(job.ID, internaljobs.Intent{Kind: internaljobs.IntentStart}); err != nil {
+			t.Fatal(err)
+		}
+		got := nextEvent()
+		if got.Reason != "job.update" || got.Revision != created.Revision+1 || got.ServerName != tc.host {
+			t.Fatalf("transition for %+v produced event %+v", tc.job, got)
+		}
+	}
+	if err := app.Deps.AuditService.Record("operator", "", "server.update", "server", "manual", "success", "Inventory edited", nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := nextEvent(); got.Reason != "server.update" || !got.Audit || got.ServerName != "" {
+		t.Fatalf("persisted inventory audit produced event %+v", got)
+	}
+}
+
 func TestRuntimeCompositionInjectsDBPathIntoRuntimeServices(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "runtime-services.db")
 	db, err := sql.Open("sqlite", dbPath)

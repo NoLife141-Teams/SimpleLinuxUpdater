@@ -1347,6 +1347,10 @@
             onJobLogEvent: (event) => {
                 dispatchStatusInteraction({ type: "jobLogReceived", event });
             },
+            onHostsRefresh: (names, revision) => {
+                statusBulk.refreshWaitingBatch();
+                dispatchStatusInteraction({ type: "targetedRefreshRequested", names, revision });
+            },
             onDashboardRefresh: (streams) => {
                 if (streams.includes("servers")) statusBulk.refreshWaitingBatch();
                 requestStatusRefresh(

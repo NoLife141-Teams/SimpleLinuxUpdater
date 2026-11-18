@@ -770,39 +770,37 @@ func (s *Service) processOutboxRow(ctx context.Context, row outboxRow) {
 		s.releaseClaim(row, err)
 		return
 	}
-	eligible, eligibilityErr := s.conditionDeliveryEligible(ctx, &row, settings)
+	eligibility, eligibilityErr := s.revalidateOutboxCondition(ctx, &row, settings)
 	if eligibilityErr != nil {
 		s.releaseClaim(row, eligibilityErr)
 		return
 	}
-	if !eligible || !destinationEnabled(settings, row.Destination) || !destinationConfigured(settings, row.Destination) {
+	var skipReason string
+	switch {
+	case eligibility == conditionIneligible:
+		skipReason = outboxSkipConditionIneligible
+	case !destinationEnabled(settings, row.Destination):
+		skipReason = outboxSkipDestinationDisabled
+	case !destinationConfigured(settings, row.Destination):
+		skipReason = outboxSkipDestinationUnconfigured
+	case row.DestinationFingerprint != "" && row.DestinationFingerprint != destinationConfigFingerprint(settings, row.Destination):
+		skipReason = outboxSkipDestinationChanged
+	case eligibility == reminderSuperseded:
+		skipReason = outboxSkipConditionIneligible
+	}
+	if skipReason != "" {
 		now := s.deps.Now().UTC().Format(time.RFC3339Nano)
 		persistCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
 		err := s.retrySQLiteContention(func() error {
 			return completeOutboxRow(persistCtx, s.database(), row.ID, outboxOutcome{
 				State: outboxStateSkipped, Attempts: row.Attempts, CompletedAt: now,
+				Error: skipReason,
 			}, now)
 		})
 		if err != nil {
 			s.health.Error(s.deps.Now())
 			s.deps.Logf("notification outbox skip persistence failed for %q: %v", row.ID, err)
-		}
-		return
-	}
-	if currentFingerprint := destinationConfigFingerprint(settings, row.Destination); row.DestinationFingerprint != "" && row.DestinationFingerprint != currentFingerprint {
-		now := s.deps.Now().UTC().Format(time.RFC3339Nano)
-		persistCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		err := s.retrySQLiteContention(func() error {
-			return completeOutboxRow(persistCtx, s.database(), row.ID, outboxOutcome{
-				State: outboxStateSkipped, Attempts: row.Attempts, CompletedAt: now,
-				Error: "destination configuration changed after notification admission",
-			}, now)
-		})
-		if err != nil {
-			s.health.Error(s.deps.Now())
-			s.deps.Logf("notification outbox destination-change persistence failed for %q: %v", row.ID, err)
 		}
 		return
 	}

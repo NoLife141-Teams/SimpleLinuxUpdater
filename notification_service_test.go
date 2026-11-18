@@ -67,7 +67,7 @@ func TestNotificationDeliveryHistoryIsScopedRedactedAndPaged(t *testing.T) {
 		t.Fatalf("unexpected result for the job: %+v", byJob)
 	}
 	skipped, delivered, retrying := byJob.Items[0], byJob.Items[1], byJob.Items[2]
-	if skipped.State != "skipped" || skipped.Reason != "Destination configuration changed after admission." ||
+	if skipped.State != "skipped" || skipped.ReasonCode != "destination_configuration_changed" || skipped.Reason != "Destination configuration changed after admission." ||
 		delivered.State != "succeeded" || delivered.Destination != "discord" || delivered.ApprovalGeneration != 7 ||
 		retrying.State != "retrying" || retrying.Reason != "Destination returned HTTP 503." || retrying.NextAttemptAt == "" {
 		t.Fatalf("delivery states or evidence were lost: %+v", byJob.Items)
@@ -92,6 +92,17 @@ func TestNotificationDeliveryHistoryIsScopedRedactedAndPaged(t *testing.T) {
 	var retained int
 	if err := db.QueryRow(`SELECT COUNT(*) FROM notification_outbox`).Scan(&retained); err != nil || retained != 26 {
 		t.Fatalf("read history changed the outbox: rows=%d err=%v", retained, err)
+	}
+	seed(27, "discord", "skipped", "", "")
+	seed(28, "discord", "skipped", "", "legacy error https://secret.example/?token=secret-value")
+	legacy := query(url.Values{"destination": {"discord"}, "state": {"skipped"}})
+	if len(legacy.Items) != 2 {
+		t.Fatalf("missing legacy skips: %+v", legacy)
+	}
+	for _, item := range legacy.Items {
+		if item.ReasonCode != "" || item.Reason != "Delivery was no longer eligible." {
+			t.Fatalf("unexpected legacy skip reason: %+v", item)
+		}
 	}
 	for _, generation := range []string{`"7unknown"`, "7.9", "true", "9223372036854775808"} {
 		metadata := fmt.Sprintf(`{"job_id":%q,"approval_generation":%s}`, job, generation)

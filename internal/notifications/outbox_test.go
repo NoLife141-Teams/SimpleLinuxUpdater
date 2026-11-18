@@ -461,50 +461,69 @@ func TestNotificationOutboxKeepsPollingAfterWakeSchedulingFailure(t *testing.T) 
 	}
 }
 
-func TestNotificationOutboxSkipsDestinationDisabledBeforeReplay(t *testing.T) {
-	db := openOutboxTestDB(t, "disabled.db")
-	server, requests := newOutboxHTTPServer(t)
-	prepareOutboxSettings(t, db, server.URL, false)
-	now := time.Now().UTC()
-	insertPendingOutboxIntent(t, db, DeliveryIntent{ID: "disabled-1", Action: EventUpdateComplete, TargetName: "srv-disabled", MetaJSON: `{}`}, now)
-	svc := NewService(outboxTestDeps(db, 5*time.Millisecond))
-	t.Cleanup(func() { closeOutboxService(t, svc) })
-	waitForLatestOutboxState(t, db, outboxStateSkipped)
-	if got := atomic.LoadInt32(requests); got != 0 {
-		t.Fatalf("requests=%d, want disabled destination skipped", got)
+func TestNotificationOutboxRetainsDestinationSkipReasons(t *testing.T) {
+	for _, tc := range []struct {
+		name, code, label            string
+		enabled, configured, changed bool
+	}{
+		{"disabled with unchanged URL", "destination_disabled", "Destination was disabled before delivery.", false, true, false},
+		{"disabled and cleared", "destination_disabled", "Destination was disabled before delivery.", false, false, false},
+		{"unconfigured", "destination_unconfigured", "Destination was not configured before delivery.", true, false, false},
+		{"changed URL", "destination_configuration_changed", "Destination configuration changed after admission.", true, true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			db := openOutboxTestDB(t, "destination-skip.db")
+			server, requests := newOutboxHTTPServer(t)
+			endpoint := ""
+			if tc.configured {
+				endpoint = server.URL
+			}
+			prepareOutboxSettings(t, db, endpoint, tc.enabled)
+			now := time.Now().UTC()
+			rows, err := buildOutboxRows(DeliveryIntent{
+				ID: "previously-configured", Action: EventUpdateComplete, TargetName: "fixture-server", MetaJSON: `{}`,
+			}, EventUpdateComplete, []string{DestinationWebhook}, now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			admittedURL := server.URL
+			if tc.changed {
+				admittedURL = "https://old.example.test/hook"
+			}
+			rows[0].DestinationFingerprint = destinationConfigFingerprint(Settings{WebhookURL: admittedURL}, DestinationWebhook)
+			if err := insertOutboxRows(t.Context(), db, rows, now.Format(time.RFC3339Nano)); err != nil {
+				t.Fatal(err)
+			}
+			svc := NewService(outboxTestDeps(db, 5*time.Millisecond))
+			t.Cleanup(func() { closeOutboxService(t, svc) })
+			waitForLatestOutboxState(t, db, outboxStateSkipped)
+			if got := atomic.LoadInt32(requests); got != 0 {
+				t.Fatalf("requests=%d, want delivery skipped", got)
+			}
+			assertPersistedSkipReason(t, db, tc.code, tc.label)
+		})
 	}
 }
 
-func TestNotificationOutboxSkipsDestinationChangedAfterAdmission(t *testing.T) {
-	db := openOutboxTestDB(t, "changed-destination.db")
-	server, requests := newOutboxHTTPServer(t)
-	prepareOutboxSettings(t, db, server.URL, true)
-	now := time.Now().UTC()
-	rows, err := buildOutboxRows(DeliveryIntent{
-		ID: "changed-destination", Action: EventUpdateComplete, TargetName: "srv-changed", MetaJSON: `{}`,
-	}, EventUpdateComplete, []string{DestinationWebhook}, now)
+func assertPersistedSkipReason(t *testing.T, db *sql.DB, code, label string) {
+	t.Helper()
+	var path string
+	if err := db.QueryRow("SELECT file FROM pragma_database_list WHERE name = 'main'").Scan(&path); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := sql.Open("sqlite", path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	rows[0].DestinationFingerprint = destinationConfigFingerprint(Settings{
-		Enabled: true, WebhookURL: "https://old.example.test/hook",
-	}, DestinationWebhook)
-	if err := insertOutboxRows(context.Background(), db, rows, now.Format(time.RFC3339Nano)); err != nil {
-		t.Fatal(err)
+	defer reopened.Close()
+	reader := &Service{deps: outboxTestDeps(reopened, time.Hour)}
+	page, err := reader.DeliveryHistory(t.Context(), DeliveryHistoryQuery{State: outboxStateSkipped})
+	if err != nil || len(page.Items) != 1 {
+		t.Fatalf("read persisted skipped delivery: %+v, %v", page, err)
 	}
-
-	svc := NewService(outboxTestDeps(db, 5*time.Millisecond))
-	t.Cleanup(func() { closeOutboxService(t, svc) })
-	waitForLatestOutboxState(t, db, outboxStateSkipped)
-	if got := atomic.LoadInt32(requests); got != 0 {
-		t.Fatalf("requests=%d, want changed destination skipped", got)
-	}
-	var persistedError string
-	if err := db.QueryRow("SELECT error FROM notification_outbox").Scan(&persistedError); err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(persistedError, "destination configuration changed") {
-		t.Fatalf("persisted error=%q, want destination-change explanation", persistedError)
+	item := page.Items[0]
+	if item.ReasonCode != code || item.Reason != label || item.Attempts != 0 || item.CompletedAt == "" {
+		t.Fatalf("wrong persisted skip reason: %+v", item)
 	}
 }
 

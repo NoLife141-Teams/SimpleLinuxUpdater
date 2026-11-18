@@ -2010,6 +2010,12 @@ test("delivery history opens on demand, filters by job and navigates retained re
     const requests = [];
     let failOnce = true;
     let olderDeliveryState = "pending";
+    const skippedReasons = {
+        destination_disabled: "Destination was disabled before delivery.",
+        destination_unconfigured: "Destination was not configured before delivery.",
+        destination_configuration_changed: "Destination configuration changed after admission.",
+        condition_ineligible: "The notification condition was no longer eligible.",
+    };
     await page.route("**/api/notifications/delivery-history*", route => {
         expect(route.request().method()).toBe("GET");
         const params = Object.fromEntries(new URL(route.request().url()).searchParams);
@@ -2020,6 +2026,9 @@ test("delivery history opens on demand, filters by job and navigates retained re
         }
         if (params.before) return fulfillJson(route, { retention_seconds: 2592000, items: [
             { ...item, destination: "telegram", state: "skipped", next_attempt_at: "", reason: "Delivery was no longer eligible." },
+            ...Object.entries(skippedReasons).map(([reason_code, reason]) => ({
+                ...item, state: "skipped", attempts: 0, next_attempt_at: "", reason_code, reason,
+            })),
             { ...item, destination: "webhook", state: olderDeliveryState, next_attempt_at: "", reason: "" },
         ] });
         if (params.job_id) return fulfillJson(route, { retention_seconds: 2592000, items: [] });
@@ -2046,6 +2055,9 @@ test("delivery history opens on demand, filters by job and navigates retained re
     expect(await history.evaluate(panel => panel.scrollWidth <= panel.clientWidth)).toBe(true);
     await history.getByRole("button", { name: "Older" }).click();
     await expect(history.getByText("Delivery was no longer eligible.", { exact: true })).toBeVisible();
+    for (const reason of Object.values(skippedReasons)) {
+        await expect(results.getByText(reason, { exact: true })).toBeVisible();
+    }
     await expect(results.getByText("Pending", { exact: true })).toBeVisible();
     expect(requests.at(-1)).toEqual({ before: "older-cursor" });
     await disclosure.click();

@@ -368,6 +368,7 @@ func TestConditionDeliveryRevalidatesEachDestinationAndUnavailableFacts(t *testi
 	if h.client.calls != 1 {
 		t.Fatalf("second destination sent stale alert: %d", h.client.calls)
 	}
+	assertPersistedSkipReason(t, h.db, "condition_ineligible", "The notification condition was no longer eligible.")
 	h.client.onCall = nil
 	h.facts = []ConditionFact{rebootFact(true)}
 	h.reconcile(t)
@@ -383,6 +384,42 @@ func TestConditionDeliveryRevalidatesEachDestinationAndUnavailableFacts(t *testi
 	state, err := loadConditionState(context.Background(), h.db)
 	if err != nil || !state.Conditions["reboot/test"].Fact.Active {
 		t.Fatal("unavailable observation healed condition", err)
+	}
+}
+
+func TestGroupedReminderDistinguishesDestinationRotationFromResolution(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		active       bool
+		code, reason string
+	}{
+		{"unresolved", true, "destination_configuration_changed", "Destination configuration changed after admission."},
+		{"resolved", false, "condition_ineligible", "The notification condition was no longer eligible."},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newConditionHarness(t)
+			settings := SettingsUpdate{Enabled: true, EventTypes: []string{EventRebootRequired}, RemindersEnabled: true, ReminderIntervalMinutes: 5}
+			if _, err := h.service.SaveSettings(settings); err != nil {
+				t.Fatal(err)
+			}
+			h.facts = []ConditionFact{rebootFact(true)}
+			h.reconcile(t)
+			h.drain(t)
+			h.now = h.now.Add(5 * time.Minute)
+			h.reconcile(t)
+			if h.count(t, EventReminder) != 1 {
+				t.Fatal("expected a queued reminder for the original destination")
+			}
+
+			settings.WebhookURLIntent = WebhookURLReplace
+			settings.WebhookURL = "https://hooks.example.test/replacement"
+			if _, err := h.service.SaveSettings(settings); err != nil {
+				t.Fatal(err)
+			}
+			h.facts = []ConditionFact{rebootFact(tc.active)}
+			h.drain(t)
+			assertPersistedSkipReason(t, h.db, tc.code, tc.reason)
+		})
 	}
 }
 

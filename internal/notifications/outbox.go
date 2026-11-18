@@ -21,6 +21,11 @@ const (
 	outboxStateFailed    = "failed"
 	outboxStateSkipped   = "skipped"
 
+	outboxSkipConditionIneligible     = "condition_ineligible"
+	outboxSkipDestinationDisabled     = "destination_disabled"
+	outboxSkipDestinationUnconfigured = "destination_unconfigured"
+	outboxSkipDestinationChanged      = "destination_configuration_changed"
+
 	defaultOutboxClaimTTL  = 2 * time.Minute
 	defaultOutboxRetention = 30 * 24 * time.Hour
 )

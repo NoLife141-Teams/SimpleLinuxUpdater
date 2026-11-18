@@ -43,7 +43,7 @@ test("Status opens an older batch after paging and restores its link after sign-
     }
 });
 
-test("Status links an interrupted APT job to the same host after rename and preserves permissions", async ({ page, baseURL }) => {
+test("Status links an interrupted APT job to the same host after rename and preserves permissions", async ({ browser, page, baseURL }) => {
     await ensureAuthenticatedSession(page);
     await page.goto("/?maintenance_batch=" + (2).toString(16).padStart(32, "0"));
     const batch = page.locator("#status-batch-panel");
@@ -72,12 +72,20 @@ test("Status links an interrupted APT job to the same host after rename and pres
     const reader = { username: "recovery-reader", password };
     const created = await page.request.post("/api/auth/accounts", { headers, data: { ...reader, role: "reader" } });
     expect(created.status()).toBe(201);
-    await page.context().clearCookies();
-    const login = await page.request.post("/api/auth/login", { headers, data: reader });
-    expect(login.ok()).toBe(true);
-    await page.goto(diagnosticURL);
-    await expect(page.locator("#selected-host-title")).toHaveText("renamed-host");
-    await expect(repair).toHaveCount(0);
-    const denied = await page.request.post("/api/repair/renamed-host", { headers, data: { confirm: true } });
-    expect(denied.status()).toBe(403);
+    const readerContext = await browser.newContext({ baseURL });
+    try {
+        const login = await readerContext.request.post("/api/auth/login", { headers, data: reader });
+        expect(login.ok()).toBe(true);
+        const readerPage = await readerContext.newPage();
+        await readerPage.goto(diagnosticURL);
+        await expect(readerPage.locator("#selected-host-title")).toHaveText("renamed-host");
+        await expect(readerPage.locator("#selected-host-panel").getByRole("button", { name: "Repair APT" })).toHaveCount(0);
+        const denied = await readerContext.request.post("/api/repair/renamed-host", {
+            headers,
+            data: { confirm: true, job_id: "recovery-job-before-rename" },
+        });
+        expect(denied.status()).toBe(403);
+    } finally {
+        await readerContext.close();
+    }
 });

@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"unicode"
 
 	serverpkg "debian-updater/internal/servers"
 )
@@ -13,6 +14,7 @@ import (
 const applicationURLEnv = "DEBIAN_UPDATER_PUBLIC_URL"
 
 var approvalLinkID = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,128}$`)
+var dottedIPv4Origin = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+\.?$`)
 
 type approvalLink struct {
 	ServerIdentity string
@@ -27,7 +29,7 @@ func parseApplicationOrigin(raw string) (*url.URL, error) {
 	}
 	origin, err := url.Parse(raw)
 	if err != nil || (origin.Scheme != "https" && origin.Scheme != "http") ||
-		origin.Hostname() == "" || strings.ContainsRune(origin.Hostname(), '%') || origin.User != nil || origin.Opaque != "" ||
+		!validApplicationOriginHost(origin.Hostname()) || origin.User != nil || origin.Opaque != "" ||
 		(origin.EscapedPath() != "" && origin.EscapedPath() != "/") || strings.ContainsAny(raw, "?#") {
 		return nil, errors.New("use an absolute HTTP(S) origin without credentials, a path, a query, or a fragment")
 	}
@@ -39,6 +41,22 @@ func parseApplicationOrigin(raw string) (*url.URL, error) {
 	}
 	origin.Path = "/"
 	return origin, nil
+}
+
+func validApplicationOriginHost(host string) bool {
+	if host == "" || strings.ContainsRune(host, '%') || strings.ContainsFunc(host, unicode.IsSpace) {
+		return false
+	}
+	if dottedIPv4Origin.MatchString(host) {
+		// net/url accepts an out-of-range dotted IPv4 token as a DNS name.
+		// The browser treats it as an address and rejects invalid octets.
+		for _, octet := range strings.Split(strings.TrimSuffix(host, "."), ".") {
+			if _, err := strconv.ParseUint(octet, 0, 8); err != nil {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func (link approvalLink) valid() bool {

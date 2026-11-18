@@ -38,11 +38,14 @@ class OperationalQualificationTest(unittest.TestCase):
         self.assertEqual(report["controlled_reboot_vm"]["status"], "not_executed")
 
     def test_batch_gate_failure_keeps_archive_result_and_marks_later_checks_unexecuted(self):
+        upgraded = ("upgraded-container", object(), {"username": "qualification-admin"})
+
         def run_upgrade(qualification):
             qualification.report["docker_upgrade"]["separate_volume_restore"] = "passed"
-            qualification.step("maintenance_batches", qualification.qualify_maintenance_batches)
+            return upgraded
 
-        def fail_batch(qualification):
+        def fail_batch(qualification, *args):
+            self.assertEqual(args, upgraded)
             qualification.report["maintenance_batches"]["history_after_restart"] = "passed"
             raise AssertionError("retry admission was not unique")
 
@@ -57,10 +60,12 @@ class OperationalQualificationTest(unittest.TestCase):
             code, report = self.invoke(Path(directory))
         self.assertEqual(code, 1)
         self.assertEqual(report["reason"], "retry admission was not unique")
+        self.assertEqual(report["docker_upgrade"]["status"], "passed")
         self.assertEqual(report["docker_upgrade"]["separate_volume_restore"], "passed")
         self.assertEqual(report["maintenance_batches"]["status"], "failed")
         self.assertEqual(report["maintenance_batches"]["history_after_restart"], "passed")
         self.assertEqual(report["maintenance_batches"]["interrupted_job_recovery"], "not_executed")
+        self.assertEqual(report["controlled_reboot_vm"]["status"], "not_executed")
         reboot.assert_not_called()
 
     def test_failed_upgrade_reports_vm_not_executed_and_cleans_up(self):

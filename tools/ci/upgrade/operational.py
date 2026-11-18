@@ -99,11 +99,12 @@ class Qualification:
         started = time.monotonic()
         self.report[name]["status"] = "failed"
         try:
-            action()
+            result = action()
         finally:
             self.report[name]["seconds"] = round(time.monotonic() - started, 3)
         self.report[name]["status"] = "passed"
         print(f"{name} passed", flush=True)
+        return result
 
     def build_candidate(self):
         require(command("git", "-C", self.source, "rev-parse", "HEAD") == self.sha,
@@ -209,7 +210,7 @@ class Qualification:
         recovered.request("POST", "/api/auth/login", credentials)
         self.verify_inventory(recovered)
         self.report["docker_upgrade"]["separate_volume_restore"] = "passed"
-        self.step("maintenance_batches", lambda: self.qualify_maintenance_batches(new_name, new, credentials))
+        return new_name, new, credentials
 
     def start_batch_probe(self, name):
         # The isolated peer only accepts and holds TCP connections. It does
@@ -291,15 +292,24 @@ class Qualification:
             return host.get("job_id") if host.get("job_status") == "running" else None
 
         job_id = until(running_job, "retry did not start a real job")
+
         def contacts():
             return int(docker("exec", name, "/bin/sh", "-c",
                               f"if test -f {PROBE_CONTACTS}; then wc -l < {PROBE_CONTACTS}; else printf '0'; fi"))
 
-        until(contacts, "retry job did not reach the isolated peer")
         audit_path = f"/api/audit-events?action=update.start&status=started&target_type=server&target_name={BATCH_SERVER}"
-        admissions = api.request("GET", audit_path)
-        require(admissions["total"] == 1 and json.loads(admissions["items"][0]["meta_json"])["job_id"] == job_id and contacts() == 1,
-                "a concurrent or replayed retry produced more than one job admission")
+
+        def recorded_admissions():
+            result = api.request("GET", audit_path, timeout=4)
+            return result if result["total"] else None
+
+        # The runner may reach the probe before the admission audit is written.
+        admissions = until(recorded_admissions, "retry job admission did not appear in the audit")
+        require(admissions["total"] == 1 and json.loads(admissions["items"][0]["meta_json"])["job_id"] == job_id,
+                "concurrent and replayed retries must record exactly one admission for the running job")
+        until(contacts, "retry job did not reach the isolated peer")
+        require(contacts() == 1,
+                "the isolated peer received more than one connection before interruption")
         evidence["single_retry_admission"] = "passed"
 
         require(read_host(winner_id).get("job_status") == "running", "retry completed before the interruption checkpoint")
@@ -404,7 +414,8 @@ class Qualification:
         self.report["status"] = "failed"
         try:
             self.step("candidate_build", self.build_candidate)
-            self.step("docker_upgrade", self.docker_upgrade)
+            upgraded = self.step("docker_upgrade", self.docker_upgrade)
+            self.step("maintenance_batches", lambda: self.qualify_maintenance_batches(*upgraded))
             self.step("controlled_reboot_vm", self.controlled_reboot)
             self.report["status"] = "passed"
         except (Exception, KeyboardInterrupt) as error:

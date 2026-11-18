@@ -17,14 +17,17 @@ test("a skipped run link follows live renames and cannot select a replacement", 
     snapshot(renamed);
     assert.equal(store.getView().primaryServerName, "renamed");
     assert.equal(store.getView().filters.search, "renamed");
+    store.dispatch({ type: "drawerOpened", name: "renamed" });
+    assert.equal(store.getView().drawer.open, true);
     const effects = snapshot(replacement);
     assert.equal(store.getView().primaryServerName, "");
     assert.deepEqual(store.getView().visibleServers, []);
+    assert.equal(store.getView().drawer.open, false);
     assert.ok(effects.some(effect => effect.type === "revealLinkedServer" && !effect.found));
 
     store.dispatch({ type: "filtersChanged", patch: { search: "" } });
     assert.equal(store.getView().primaryServerName, "renamed");
-    assert.equal(store.planAction("renamed", "update").serverIdentity, "replacement");
+    assert.equal(store.planAction("renamed", "update").payloadFacts.serverIdentity, "replacement");
 });
 
 test("bulk preview budgets evaluate package facts only for selected hosts", () => {

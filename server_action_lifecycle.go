@@ -271,7 +271,7 @@ func (l *serverActionLifecycle) startAction(name, actor, clientIP, sudoPassword 
 	if err != nil {
 		if errors.Is(err, serverpkg.ErrIdentityChanged) {
 			message := "The server has changed. Review the current server before starting an update check."
-			retryMeta["reason_code"] = "server_identity_changed"
+			retryMeta["reason_code"] = serverpkg.MaintenanceReadinessIdentityChanged
 			l.recordAudit(spec.auditAction, name, "ignored", message, retryMeta)
 			return jsonResult(http.StatusConflict, message)
 		}

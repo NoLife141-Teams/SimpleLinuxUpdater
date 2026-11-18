@@ -219,7 +219,7 @@
         let linkedServerIdentity = normalizedString(options.linkedServerIdentity, "", 200);
         let pendingLinkedServerReveal = Boolean(linkedServerIdentity);
         let selectedServerNames = new Set();
-        let drawer = { open: false, serverName: "", tab: "logs", logFollow: true };
+        let drawer = { open: false, serverName: "", serverIdentity: "", tab: "logs", logFollow: true };
         const pendingUpdatesInteraction = pendingUpdates.createStore();
         function createStreamState() {
             return {
@@ -548,10 +548,13 @@
             }
             const totalPages = Math.max(1, Math.ceil(visible.length / pageSize));
             page = Math.max(1, Math.min(page, totalPages));
-            if (drawer.open && !loadedNames.has(drawer.serverName)) {
-                drawer = { open: false, serverName: "", tab: "logs", logFollow: true };
-            } else if (drawer.open && drawer.tab === "pending" && !hasPendingUpdates(serversByName.get(drawer.serverName))) {
-                drawer = { ...drawer, tab: "logs" };
+            if (drawer.open) {
+                const server = serversByName.get(drawer.serverName);
+                if (!loadedNames.has(drawer.serverName) || (drawer.serverIdentity && drawer.serverIdentity !== server?.server_identity)) {
+                    drawer = { open: false, serverName: "", serverIdentity: "", tab: "logs", logFollow: true };
+                } else if (drawer.tab === "pending" && !hasPendingUpdates(server)) {
+                    drawer = { ...drawer, tab: "logs" };
+                }
             }
             return previousPrimaryServerName !== primaryServerName;
         }
@@ -1081,11 +1084,13 @@
                 ];
             } else if (event.type === "drawerOpened") {
                 const name = String(event.name || "");
-                if (serversByName.has(name) && matchesAvailability(serversByName.get(name))) {
+                const server = serversByName.get(name);
+                if (server && matchesAvailability(server)) {
                     drawer = {
                         open: true,
                         serverName: name,
-                        tab: event.tab === "pending" && hasPendingUpdates(serversByName.get(name)) ? "pending" : "logs",
+                        serverIdentity: String(server.server_identity || ""),
+                        tab: event.tab === "pending" && hasPendingUpdates(server) ? "pending" : "logs",
                         logFollow: drawer.serverName === name ? drawer.logFollow : true
                     };
                 }
@@ -1170,8 +1175,9 @@
             return id;
         }
 
-        function approvalPayloadFacts(server) {
+        function actionPayloadFacts(server) {
             return {
+                serverIdentity: String(server?.server_identity || ""),
                 counts: canonicalApprovalCounts(server),
                 approvalIdentity: {
                     job_id: String(server?.job_id || ""),
@@ -1198,13 +1204,12 @@
                 actionKey: String(actionKey || ""),
                 actionLabel: String(options.actionLabel || actionKey || "action"),
                 serverName: normalizedName,
-                serverIdentity: String(server?.server_identity || ""),
                 serverNames: normalizedName ? [normalizedName] : [],
                 enabled: !!action.enabled,
                 reason: defaultActionReason(actionKey, server, action, canonicalApprovalCounts),
                 readiness: String(action.readiness || (action.enabled ? "ready" : "blocked")),
                 blockingStatus: String(action.blocking_status || ""),
-                payloadFacts: approvalPayloadFacts(server)
+                payloadFacts: actionPayloadFacts(server)
             };
         }
 
@@ -1244,7 +1249,7 @@
                 eligibleHosts,
                 ineligible,
                 skippedHosts: [...hiddenHosts, ...ineligible],
-                payloadFacts: Object.fromEntries(eligibleNames.map(name => [name, approvalPayloadFacts(actionServer(name))]))
+                payloadFacts: Object.fromEntries(eligibleNames.map(name => [name, actionPayloadFacts(actionServer(name))]))
             };
         }
 

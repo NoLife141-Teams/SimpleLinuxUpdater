@@ -2843,8 +2843,8 @@
                 postServerAction(
                     `/api/update/${encodeURIComponent(name)}`,
                     "Failed to start update.",
-                    plan.serverIdentity
-                        ? { headers: { "X-SLU-Server-Identity": plan.serverIdentity } }
+                    plan.payloadFacts.serverIdentity
+                        ? { headers: { "X-SLU-Server-Identity": plan.payloadFacts.serverIdentity } }
                         : {},
                 ),
             );

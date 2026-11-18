@@ -81,6 +81,7 @@ const (
 const (
 	MaintenanceReadinessReady                    = "ready"
 	MaintenanceReadinessDisabled                 = "server_disabled"
+	MaintenanceReadinessIdentityChanged          = "server_identity_changed"
 	MaintenanceReadinessMissingAuthentication    = "missing_authentication"
 	MaintenanceReadinessAuthenticationUnknown    = "authentication_unavailable"
 	MaintenanceReadinessHostKeyNotTrusted        = "host_key_not_trusted"

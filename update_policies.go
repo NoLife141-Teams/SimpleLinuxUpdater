@@ -12,6 +12,7 @@ import (
 	"time"
 
 	apptimepkg "debian-updater/internal/apptime"
+	maintenancepkg "debian-updater/internal/maintenance"
 	policypkg "debian-updater/internal/policies"
 	serverpkg "debian-updater/internal/servers"
 
@@ -478,9 +479,36 @@ func handleUpdatePolicyRunsWithDeps(c *gin.Context, deps AppDeps) {
 		return
 	}
 	identities := deps.ServerState.InventoryIdentities()
+	var jm *JobManager
+	if contextAllows(c, "logs:read") {
+		jm = deps.CurrentJobManager()
+	}
+	blockingJobKinds := make(map[string]string)
 	for i := range result.Items {
 		run := &result.Items[i]
 		enrichPolicyRunHistoryItem(run, interpretation)
+		if run.Status == updatePolicyRunSkipped && run.Reason == updatePolicyRunReasonMaintenance {
+			switch run.MaintenanceCause {
+			case maintenancepkg.BlockBackupExport, maintenancepkg.BlockBackupRestore, maintenancepkg.BlockRecoveryRequired:
+				if jm != nil && run.BlockingJobID != "" {
+					kind, checked := blockingJobKinds[run.BlockingJobID]
+					if !checked {
+						if job, err := jm.GetJob(run.BlockingJobID); err == nil {
+							kind = job.Kind
+						}
+						blockingJobKinds[run.BlockingJobID] = kind
+					}
+					if (kind == jobKindBackupExport || kind == jobKindBackupRestore) &&
+						(run.MaintenanceCause == maintenancepkg.BlockRecoveryRequired || kind == string(run.MaintenanceCause)) {
+						run.MaintenanceJobID = run.BlockingJobID
+					}
+				}
+			default:
+				run.MaintenanceCause = ""
+			}
+		} else {
+			run.MaintenanceCause = ""
+		}
 		if run.Status != updatePolicyRunSkipped || run.ServerName == "" {
 			continue
 		}

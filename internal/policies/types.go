@@ -3,6 +3,7 @@ package policies
 import (
 	"time"
 
+	"debian-updater/internal/maintenance"
 	"debian-updater/internal/servers"
 )
 
@@ -227,6 +228,10 @@ type Run struct {
 	JobDetailURL         string `json:"job_detail_url,omitempty"`
 	ReportURL            string `json:"report_url,omitempty"`
 	AuditURL             string `json:"audit_url,omitempty"`
+
+	MaintenanceCause maintenance.BlockCause `json:"maintenance_cause,omitempty"`
+	BlockingJobID    string                 `json:"-"`
+	MaintenanceJobID string                 `json:"maintenance_job_id,omitempty"`
 }
 
 type RunQuery struct {
@@ -364,6 +369,8 @@ type RunUpdate struct {
 	ResultJSON *string
 	StartedAt  *string
 	FinishedAt *string
+
+	MaintenanceBlocker *maintenance.Blocker
 }
 
 // RolloutOriginRange bounds prior occurrences by an inclusive lower bound and

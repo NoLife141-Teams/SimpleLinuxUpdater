@@ -48,7 +48,21 @@ type Snapshot struct {
 type Decision struct {
 	Allowed bool
 	State   Snapshot
+	Blocker Blocker
 }
+
+type Blocker struct {
+	Cause BlockCause
+	JobID string
+}
+
+type BlockCause string
+
+const (
+	BlockBackupExport     BlockCause = "backup_export"
+	BlockBackupRestore    BlockCause = "backup_restore"
+	BlockRecoveryRequired BlockCause = "recovery_required"
+)
 
 type OperationFacts struct {
 	JobID   string
@@ -118,15 +132,38 @@ func (c *Coordinator) Snapshot() Snapshot {
 }
 
 func (c *Coordinator) TryShared(_ WorkClass) (*SharedLease, Decision) {
-	if c == nil || !c.gate.TryRLock() {
-		return nil, Decision{State: c.Snapshot()}
+	if c == nil {
+		return nil, Decision{}
+	}
+	c.stateMu.RLock()
+	locked, state := c.gate.TryRLock(), c.state
+	c.stateMu.RUnlock()
+	if !locked {
+		return nil, sharedDenial(state)
 	}
 	c.recoverPendingRelease()
-	if state := c.Snapshot(); state.Active {
+	if state := c.currentState(); state.Active {
 		c.gate.RUnlock()
-		return nil, Decision{State: state}
+		return nil, sharedDenial(state)
 	}
 	return &SharedLease{coordinator: c}, Decision{Allowed: true}
+}
+
+func sharedDenial(state State) Decision {
+	decision := Decision{State: snapshot(state)}
+	if !state.Active {
+		return decision
+	}
+	switch OperationClass(state.Kind) {
+	case OperationBackupExport:
+		decision.Blocker = Blocker{Cause: BlockBackupExport, JobID: state.JobID}
+	case OperationBackupRestore:
+		decision.Blocker = Blocker{Cause: BlockBackupRestore, JobID: state.JobID}
+	}
+	if state.RecoveryRequired {
+		decision.Blocker.Cause = BlockRecoveryRequired
+	}
+	return decision
 }
 
 func (c *Coordinator) TryExclusive(operation OperationClass) (*ExclusiveLease, Decision) {

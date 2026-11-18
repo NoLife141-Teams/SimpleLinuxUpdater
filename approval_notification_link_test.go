@@ -34,17 +34,21 @@ func TestApprovalApplicationOrigin(t *testing.T) {
 	}
 }
 
-func TestApprovalReturnOnlyAllowsExactInternalStatusLink(t *testing.T) {
+func TestStatusReturnOnlyAllowsExactInternalStatusLink(t *testing.T) {
 	valid := (approvalLink{ServerIdentity: "stable", JobID: "job-1", Generation: 3}).url(url.URL{})
-	if result := approvalReturnDestination(valid); result != valid {
-		t.Fatalf("valid return changed to %q", result)
+	const batchLink = "/?maintenance_batch=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	for _, target := range []string{valid, batchLink} {
+		if result := statusReturnDestination(target); result != target {
+			t.Fatalf("valid return %q changed to %q", target, result)
+		}
 	}
 	for _, target := range []string{
 		"https://somewhere.example" + valid, "//somewhere.example" + valid, "/%2f" + valid,
 		"/\\somewhere.example" + valid, "/manage", "/api/approve/srv", "/?server_identity=stable",
 		valid + "&job_id=other", valid + "&next=https://somewhere.example", valid + "%0A", valid + "#fragment",
+		"https://somewhere.example" + batchLink, batchLink + "&maintenance_batch=other", batchLink + "&other=1", "/?maintenance_batch=short",
 	} {
-		if result := approvalReturnDestination(target); result != "/" {
+		if result := statusReturnDestination(target); result != "/" {
 			t.Errorf("unsafe return %q accepted as %q", target, result)
 		}
 	}

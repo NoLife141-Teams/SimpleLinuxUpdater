@@ -748,6 +748,29 @@ func seedBrowserApprovalLink(t *testing.T, deps AppDeps) {
 	state.StatusMap()[server.Name] = status
 }
 
+func seedBrowserBatchHistory(t *testing.T, deps AppDeps) {
+	t.Helper()
+	db := deps.DB()
+	oldID := fmt.Sprintf("%032x", 1)
+	for i := 1; i <= 21; i++ {
+		id := fmt.Sprintf("%032x", i)
+		seedStatusBatchRetryHistory(t, db, id, "", "update", "completed", statusBatchTarget{
+			Name: fmt.Sprintf("batch-host-%02d", i), ServerIdentity: fmt.Sprintf("inventory-%02d", i),
+		})
+	}
+	if err := deps.CurrentJobManager().ImportJobRecord(JobRecord{
+		ID: "history-waiting-job", Kind: jobKindUpdate, ServerName: "approval-host", Status: jobStatusWaitingApproval,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO status_action_batch_hosts
+		(batch_id, name, server_identity, approval_job_id, approval_generation, deferral_revision, remediation_digest, state, job_id)
+		VALUES (?, 'approval-host', 'inventory-approval', '', 0, '', '', 'accepted', 'history-waiting-job'),
+		(?, 'interrupted-host', 'inventory-interrupted', '', 0, '', '', 'admitting', '')`, oldID, oldID); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // Run the browser suite against the real router with owned persistence, normal
 // setup/auth and no process startup workers or SSH transport.
 func TestDashboardScalingE2EServe(t *testing.T) {
@@ -762,6 +785,9 @@ func TestDashboardScalingE2EServe(t *testing.T) {
 	a := newScalingRuntime(t, 0, false, false)
 	if os.Getenv("SLU_E2E_APPROVAL_LINK") == "1" {
 		seedBrowserApprovalLink(t, a.deps)
+	}
+	if os.Getenv("SLU_E2E_BATCH_HISTORY") == "1" {
+		seedBrowserBatchHistory(t, a.deps)
 	}
 	if os.Getenv("SLU_E2E_BACKUP_CATALOG") == "1" {
 		automation := a.deps.BackupAutomation

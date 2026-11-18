@@ -86,18 +86,23 @@ func parseApprovalLink(query url.Values) (approvalLink, bool) {
 		len(query["server_identity"]) == 1 && len(query["job_id"]) == 1 && len(query["approval_generation"]) == 1
 }
 
-func approvalReturnDestination(raw string) string {
-	// Rebuild the destination from the only three supported parameters.
+func statusReturnDestination(raw string) string {
+	// Rebuild only the supported deep links. Never redirect to the raw input.
 	target, err := url.ParseRequestURI(raw)
 	if err != nil || target.IsAbs() || target.Host != "" || target.EscapedPath() != "/" {
 		return "/"
 	}
 	query, err := url.ParseQuery(target.RawQuery)
-	link, valid := parseApprovalLink(query)
-	if err != nil || !valid {
+	if err != nil {
 		return "/"
 	}
-	return link.url(url.URL{})
+	if len(query) == 1 && len(query["maintenance_batch"]) == 1 && validBatchID(query.Get("maintenance_batch")) {
+		return (&url.URL{Path: "/", RawQuery: query.Encode()}).String()
+	}
+	if link, valid := parseApprovalLink(query); valid {
+		return link.url(url.URL{})
+	}
+	return "/"
 }
 
 func authPageDestination(path, returnTo string) string {
@@ -107,16 +112,16 @@ func authPageDestination(path, returnTo string) string {
 	return path + "?" + url.Values{"return_to": {returnTo}}.Encode()
 }
 
-type approvalAuthView struct {
+type statusAuthView struct {
 	ReturnTo  string
 	LoginURL  string
 	SetupURL  string
 	SubmitURL string
 }
 
-func newApprovalAuthView(raw, submitPath string) approvalAuthView {
-	returnTo := approvalReturnDestination(raw)
-	return approvalAuthView{
+func newStatusAuthView(raw, submitPath string) statusAuthView {
+	returnTo := statusReturnDestination(raw)
+	return statusAuthView{
 		ReturnTo:  returnTo,
 		LoginURL:  authPageDestination("/login", returnTo),
 		SetupURL:  authPageDestination("/setup", returnTo),

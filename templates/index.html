@@ -7,12 +7,12 @@
     <link rel="icon" type="image/png" href="/static/logo.png">
     <link rel="stylesheet" href="/static/css/base.css?v=select-spacing-global-20261104">
     <link rel="stylesheet" href="/static/css/pending-updates.css?v=top-pagination-20261103">
-    <link rel="stylesheet" href="/static/css/index.css?v=durable-status-batches-578">
+    <link rel="stylesheet" href="/static/css/index.css?v=batch-history-586">
     <link rel="stylesheet" href="/static/css/status-polish.css?v=select-spacing-global-20261104">
 <link rel="stylesheet" href="/static/css/package-deferrals.css?v=ui-components-515-20261029">
     <link rel="stylesheet" href="/static/css/operator-workspace.css?v=admin-horizontal-20261104">
 </head>
-<body class="status-page" data-account-role="{{.Role}}" data-linked-server-identity="{{.LinkedServerIdentity}}"{{with .ApprovalReturnTo}} data-approval-return-to="{{.}}"{{end}}{{with .LinkedApproval}} data-linked-approval-job="{{.JobID}}" data-linked-approval-generation="{{.Generation}}"{{end}}>
+<body class="status-page" data-account-role="{{.Role}}" data-linked-server-identity="{{.LinkedServerIdentity}}"{{with .StatusReturnTo}} data-status-return-to="{{.}}"{{end}}{{with .LinkedApproval}} data-linked-approval-job="{{.JobID}}" data-linked-approval-generation="{{.Generation}}"{{end}}>
     <div class="dashboard-shell">
         {{template "operator-application-shell" .}}
 
@@ -271,8 +271,24 @@
                     <details class="supporting-details" id="status-batch-panel" hidden>
                         <summary>Maintenance batch <strong id="status-batch-label"></strong></summary>
                         <div class="supporting-details-body">
+                            <p id="status-batch-unavailable" class="muted" role="status" hidden>This maintenance batch is unavailable.</p>
                             <a id="status-batch-link" href="/">Link to this batch</a>
                             <ul id="status-batch-rows" aria-label="Batch results by host"></ul>
+                        </div>
+                    </details>
+                    <details class="supporting-details" id="status-batch-history" hidden>
+                        <summary>
+                            <span class="supporting-summary-copy"><strong>Maintenance batch history</strong></span>
+                            <span class="supporting-summary-action" aria-hidden="true"></span>
+                        </summary>
+                        <div class="supporting-details-body">
+                            <p id="status-batch-history-state" class="muted" role="status" hidden></p>
+                            <ul id="status-batch-history-list" aria-label="Maintenance batches"></ul>
+                            <nav class="status-batch-history-nav" aria-label="Batch history pages">
+                                <button type="button" class="inline-btn btn-ghost" id="status-batch-history-newer" disabled>Newer</button>
+                                <button type="button" class="inline-btn btn-ghost" id="status-batch-history-older" disabled>Older</button>
+                                <button type="button" class="inline-btn btn-ghost" id="status-batch-history-retry" hidden>Retry history</button>
+                            </nav>
                         </div>
                     </details>
                     <details class="supporting-details fade-in" id="status-supporting-details">
@@ -426,7 +442,7 @@
             </div>
         </form>
     </div>
-    <script src="/static/auth.js?v=approval-link-579"></script>
+    <script src="/static/auth.js?v=batch-history-586"></script>
     <script src="/static/js/browser-effects.js?v=frontend-isolation-20261027"></script>
     <script src="/static/js/common.js?v=quality-pass-20260711a"></script>
     <div class="phase-tooltip hidden" id="phase-tooltip" role="tooltip"></div>
@@ -440,7 +456,7 @@
     <script src="/static/js/status-drawer-adapter.js?v=quality-pass-20260711b"></script>
     <script src="/static/js/status-table-adapter.js?v=quality-pass-20260711b"></script>
     <script src="/static/js/status-action-adapter.js?v=bulk-removal-review-576"></script>
-    <script src="/static/js/index-bulk-actions.js?v=safe-batch-retries-584"></script>
+    <script src="/static/js/index-bulk-actions.js?v=batch-history-586"></script>
     <script src="/static/js/package-deferrals.js?v=frontend-isolation-20261027"></script>
 <script src="/static/js/status-snapshot-adapter.js?v=approval-link-pending-579"></script>
 <script src="/static/js/index.js?v=approval-link-579"></script>

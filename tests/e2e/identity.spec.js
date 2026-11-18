@@ -279,4 +279,32 @@ test.describe("named identities on isolated installations", () => {
             .click();
         await expect(page).toHaveURL(`${baseURL}/`);
     });
+
+    test.describe("maintenance batch links", () => {
+        test.use({ batchHistoryFixture: true });
+
+        test("MFA returns to the exact historical batch", async ({ page, baseURL }) => {
+            await page.goto(`${baseURL}/account`);
+            await page.getByRole("button", { name: "Set up authenticator" }).click();
+            const secretField = page.locator("#mfa-secret");
+            await expect(secretField).toHaveText(/^[A-Z2-7]+$/);
+            await page.locator("#mfa-confirm-code").fill(totp(await secretField.textContent()));
+            await page.getByRole("button", { name: "Enable MFA", exact: true }).click();
+            await expect(page.locator("#recovery-codes")).not.toBeEmpty();
+            const [code] = (await page.locator("#recovery-codes").textContent()).trim().split("\n");
+            await page.locator("#recovery-dismiss").click();
+            await expect(page).toHaveURL(`${baseURL}/login`);
+            const target = "/?maintenance_batch=00000000000000000000000000000001";
+            await page.goto(`${baseURL}${target}`);
+            await expect(page).toHaveURL(url => url.pathname === "/login" && url.searchParams.get("return_to") === target);
+            await page.locator("#username").fill("admin");
+            await page.locator("#password").fill(password);
+            await page.getByRole("button", { name: "Sign in", exact: true }).click();
+            await expect(page.locator("#mfa-login-form")).toBeVisible();
+            await page.locator("#mfa-login-code").fill(code);
+            await page.getByRole("button", { name: "Verify and sign in" }).click();
+            await expect(page).toHaveURL(`${baseURL}${target}`);
+            await expect(page.locator("#status-batch-panel")).toContainText("batch-host-01");
+        });
+    });
 });

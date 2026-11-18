@@ -2025,11 +2025,13 @@ body.status-page .head-meta {
     gap: 8px;
 }
 
-#status-batch-panel .supporting-details-body {
+#status-batch-panel .supporting-details-body,
+#status-batch-history .supporting-details-body {
     padding: 0 10px 10px;
 }
 
-#status-batch-rows {
+#status-batch-rows,
+#status-batch-history-list {
     list-style: none;
     display: grid;
     gap: 6px;
@@ -2037,7 +2039,8 @@ body.status-page .head-meta {
     padding: 0;
 }
 
-#status-batch-rows li {
+#status-batch-rows li,
+#status-batch-history-list li {
     display: flex;
     flex-wrap: wrap;
     align-items: center;
@@ -2046,6 +2049,17 @@ body.status-page .head-meta {
     border: 1px solid var(--border);
     border-radius: var(--radius);
     overflow-wrap: anywhere;
+}
+
+.status-batch-history-summary {
+    flex-basis: 100%;
+    color: var(--muted);
+}
+
+.status-batch-history-nav {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
 }
 
 #status-batch-rows li p {

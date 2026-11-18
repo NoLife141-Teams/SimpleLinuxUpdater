@@ -16,7 +16,6 @@ import (
 	"log"
 	"mime/multipart"
 	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -1898,9 +1897,12 @@ func registerProtectedPageRoutes(r *gin.Engine, deps AppDeps) {
 			LinkedServerIdentity string
 			LinkedServerError    string
 			LinkedApproval       *approvalLink
-			ApprovalReturnTo     string
+			StatusReturnTo       string
 		}{
 			operatorApplicationShellView: operatorShellForContext(c, "status", "Status"),
+		}
+		if destination := statusReturnDestination(c.Request.URL.RequestURI()); destination != "/" {
+			view.StatusReturnTo = destination
 		}
 		query := c.Request.URL.Query()
 		if query.Has("job_id") || query.Has("approval_generation") {
@@ -1908,7 +1910,6 @@ func registerProtectedPageRoutes(r *gin.Engine, deps AppDeps) {
 			if !valid {
 				view.LinkedServerError = "This approval link is incomplete or invalid."
 			} else {
-				view.ApprovalReturnTo = link.url(url.URL{})
 				if problem := approvalLinkProblem(deps.ServerState, link); problem != "" {
 					view.LinkedServerError = problem
 				} else {

@@ -423,9 +423,11 @@ Status records bulk update, standard approval, security approval, kept-back
 security approval, cancel, autoremove and facts-refresh commands in a
 **Maintenance batch** before admitting eligible hosts on the current page.
 The batch survives reloading or closing the page. The panel shows the latest
-batch for your account and provides a link to reopen that batch later. Each host
-has an admission status and, when available, a job outcome and report. For
-kept-back security plans with package removals, use the individual review button
+batch for your account. Open **Maintenance batch history** to find earlier
+batches and view their pending, finished and verification counts. Each batch has a link
+that opens it after signing in, including when multifactor authentication is
+enabled. Each host has an admission status and, when available, a job outcome
+and report. For kept-back security plans with package removals, use the individual review button
 to see and confirm the displayed plan. Ineligible selections are skipped.
 Retrying a command refused or interrupted before admission requires an eligible
 host and plan on the current Status page. Each target links to its recorded retry

@@ -794,6 +794,7 @@ func TestScheduledRunHistoryKeepsObservedBackupAfterRestart(t *testing.T) {
 	if !t.Run("record while exporting", func(t *testing.T) {
 		useDefaultAppLocation(t, time.UTC)
 		app := newTestAppWithDeps(t, dbFile, AppDeps{
+			Now: func() time.Time { return slot },
 			StartJobRunner: func(string, func(), ...func()) {
 				t.Error("blocked slot launched a scheduled job")
 			},

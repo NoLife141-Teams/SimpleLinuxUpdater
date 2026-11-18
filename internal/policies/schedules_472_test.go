@@ -1,6 +1,7 @@
 package policies
 
 import (
+	"context"
 	"database/sql"
 	"reflect"
 	"strings"
@@ -598,13 +599,32 @@ func TestMaintenanceReplayAttributesOnlyWavesReadyAtDenial(t *testing.T) {
 			}
 
 			blocker := maintenance.Blocker{Cause: maintenance.BlockBackupExport, JobID: "observed-export"}
-			blockedTick := origin.Add(5*time.Minute + 20*time.Second)
-			h.service.RememberMissedTick(blockedTick, blocker)
+			blockedTick := origin.Add(5 * time.Minute)
+			h.now = blockedTick.Add(20 * time.Second)
+			coord := maintenance.NewCoordinator(maintenance.Deps{
+				Store: maintenance.NewMemoryStore(),
+				Now:   func() time.Time { return h.now },
+			})
+			h.service.deps.Maintenance = coord
 			store := SchedulerWatermarkStore{
 				Load: func() (time.Time, bool, error) { return origin.Add(4 * time.Minute), true, nil },
 				Save: func(time.Time) error { return nil },
 			}
-			h.now = blockedTick.Add(30 * time.Second)
+			lease, decision := coord.TryExclusive(maintenance.OperationBackupExport)
+			if !decision.Allowed || lease == nil {
+				t.Fatalf("export admission failed: %+v", decision)
+			}
+			defer lease.Close()
+			if err := lease.Activate(context.Background(), maintenance.OperationFacts{JobID: blocker.JobID}); err != nil {
+				t.Fatal(err)
+			}
+			if err := h.service.ProcessDueWithRecovery(blockedTick, store); err != nil {
+				t.Fatal(err)
+			}
+			if err := lease.Close(); err != nil {
+				t.Fatal(err)
+			}
+			h.now = blockedTick.Add(50 * time.Second)
 			if err := h.service.ProcessDueWithRecovery(h.now, store); err != nil {
 				t.Fatal(err)
 			}

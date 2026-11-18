@@ -113,7 +113,7 @@ func (s *Service) ProcessDueWithRecovery(now time.Time, store SchedulerWatermark
 	if deps.Maintenance != nil {
 		lease, decision := deps.Maintenance.TryShared(maintenancepkg.WorkScheduled)
 		if !decision.Allowed {
-			s.RememberMissedTick(now, decision.Blocker)
+			s.rememberMaintenanceDenial(now, decision.Blocker)
 			return nil
 		}
 		defer lease.Close()

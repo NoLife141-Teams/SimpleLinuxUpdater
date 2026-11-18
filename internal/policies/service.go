@@ -900,6 +900,20 @@ func MissedTickKey(t time.Time, layout string) string {
 	return t.UTC().Truncate(time.Minute).Format(layout)
 }
 
+func (s *Service) rememberMaintenanceDenial(tick time.Time, blocker maintenancepkg.Blocker) {
+	if blocker.Cause != "" {
+		deniedAt := s.EnsureDeps().Now()
+		// A buffered ticker event can arrive after its minute has passed.
+		// Preserve that skip without assigning it the operation observed later.
+		if deniedAt.UTC().Truncate(time.Minute).Equal(tick.UTC().Truncate(time.Minute)) {
+			s.RememberMissedTick(deniedAt, blocker)
+			return
+		}
+		blocker = maintenancepkg.Blocker{}
+	}
+	s.RememberMissedTick(tick, blocker)
+}
+
 func (s *Service) RememberMissedTick(now time.Time, blocker maintenancepkg.Blocker) {
 	deps := s.EnsureDeps()
 	slotUTC := now.UTC().Truncate(time.Minute)
@@ -1221,7 +1235,7 @@ func (s *Service) ProcessDue(now time.Time) (resultErr error) {
 	if deps.Maintenance != nil {
 		lease, decision := deps.Maintenance.TryShared(maintenancepkg.WorkScheduled)
 		if !decision.Allowed {
-			s.RememberMissedTick(now, decision.Blocker)
+			s.rememberMaintenanceDenial(now, decision.Blocker)
 			return nil
 		}
 		defer lease.Close()

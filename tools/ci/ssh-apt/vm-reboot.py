@@ -21,9 +21,13 @@ def main():
     parser.add_argument("--image", type=Path, help="local official Debian/Ubuntu amd64 cloud qcow2 image")
     parser.add_argument("--sha256", help="verified immutable SHA256 of the input cloud image")
     parser.add_argument("--output", type=Path, default=REPO / ".tmp-ssh-apt/vm")
+    parser.add_argument("--isolated-app-directory", type=Path,
+                        help="candidate app directory in a loopback-only VM runner container")
     parser.add_argument("--check-prerequisites", action="store_true")
     args = parser.parse_args()
-    tools = ("qemu-system-x86_64", "qemu-img", "cloud-localds", "ssh", "ssh-keygen", "go", "docker")
+    tools = ("qemu-system-x86_64", "qemu-img", "cloud-localds", "ssh", "ssh-keygen")
+    if not args.isolated_app_directory:
+        tools += ("go", "docker")
     missing = [name for name in tools if not shutil.which(name)]
     args.output.mkdir(parents=True, exist_ok=True)
     report = {"schema_version": 1, "scenario": "controlled-reboot-vm", "status": "not_executed"}
@@ -37,6 +41,11 @@ def main():
         (args.output / "report.json").write_text(json.dumps(report, indent=2) + "\n")
         return 2
     try:
+        if args.isolated_app_directory:
+            require(set(os.listdir("/sys/class/net")) == {"lo"}, "isolated application requires a loopback-only runner")
+            app_directory = args.isolated_app_directory.resolve(strict=True)
+            require((app_directory / "webserver").is_file() and (app_directory / "templates").is_dir()
+                    and (app_directory / "static").is_dir(), "isolated application assets are incomplete")
         require(args.image and args.sha256 and len(args.sha256) == 64, "provide a verified cloud image and SHA256")
         image = args.image.resolve(strict=True)
         with image.open("rb") as source:
@@ -49,6 +58,7 @@ def main():
     owner = uuid.uuid4().hex
     work = Path(tempfile.mkdtemp(prefix="slu-reboot-vm-"))
     vm = None
+    app = None
     app_name = "slu-reboot-app-" + owner
     vm_log = app_log = None
     password = secrets.token_urlsafe(24) + "Aa7!"
@@ -94,22 +104,27 @@ def main():
         while float(ssh("cut -d' ' -f1 /proc/uptime").strip()) < 60:
             require(time.monotonic() < end, "VM uptime did not progress")
             time.sleep(2)
-        binary = work / "webserver"
-        architecture = command([*DOCKER, "version", "--format", "{{.Server.Arch}}"]).strip()
-        require(architecture in ("amd64", "arm64"), "unsupported local Docker architecture")
-        command(["go", "build", "-o", str(binary), "."], timeout=240,
-                env={**os.environ, "CGO_ENABLED": "0", "GOOS": "linux", "GOARCH": architecture}, cwd=REPO)
         port = loopback_port(); api = API(port)
         (work / "known_hosts").touch(mode=0o600)
-        copy_assets(work)
-        env_args = []
-        for key, value in app_environment(Path("/work"), port).items():
-            env_args.extend(["--env", key + "=" + value])
-        # Only the fresh VM's forwarded loopback socket is targeted. Host networking
-        # lets the isolated app reach QEMU SLIRP without mounting host credentials.
-        command([*DOCKER, "run", "-d", "--name", app_name, "--network", "host", "--label", LABEL + "=" + owner,
-            "--user", f"{os.getuid()}:{os.getgid()}", "--mount", f"type=bind,src={work},dst=/work",
-            "--workdir", "/work", "--entrypoint", "/work/webserver", *env_args, IMAGES["debian13"]])
+        if args.isolated_app_directory:
+            app_log = (work / "app.log").open("wb")
+            app = subprocess.Popen([str(app_directory / "webserver")], cwd=app_directory,
+                                   env=app_environment(work, port), stdout=app_log, stderr=subprocess.STDOUT)
+        else:
+            binary = work / "webserver"
+            architecture = command([*DOCKER, "version", "--format", "{{.Server.Arch}}"]).strip()
+            require(architecture in ("amd64", "arm64"), "unsupported local Docker architecture")
+            command(["go", "build", "-o", str(binary), "."], timeout=240,
+                    env={**os.environ, "CGO_ENABLED": "0", "GOOS": "linux", "GOARCH": architecture}, cwd=REPO)
+            copy_assets(work)
+            env_args = []
+            for key, value in app_environment(Path("/work"), port).items():
+                env_args.extend(["--env", key + "=" + value])
+            # Host networking lets the app reach only the fresh VM's forwarded
+            # loopback socket without mounting host credentials.
+            command([*DOCKER, "run", "-d", "--name", app_name, "--network", "host", "--label", LABEL + "=" + owner,
+                "--user", f"{os.getuid()}:{os.getgid()}", "--mount", f"type=bind,src={work},dst=/work",
+                "--workdir", "/work", "--entrypoint", "/work/webserver", *env_args, IMAGES["debian13"]])
         wait_for_app(api)
         api.request("POST", "/api/auth/setup", {"username": "fixture-admin", "password": password})
         endpoint = {"host": "127.0.0.1", "port": ssh_port}
@@ -126,6 +141,7 @@ def main():
         job_id = api.request("POST", "/api/reboot/reboot-vm", {"confirm": True})["job_id"]
         job, states = api.wait_job(job_id, lambda j: j["status"] in {"succeeded", "failed", "interrupted", "cancelled"}, seconds=240)
         require(job["status"] == "succeeded", "controlled reboot job failed")
+        require(ssh("systemctl is-active ssh.service").strip() == "active", "VM SSH unit inactive after reboot")
         after = ssh("cat /proc/sys/kernel/random/boot_id; cut -d' ' -f1 /proc/uptime").splitlines()
         require(before[0] != after[0] and float(after[1]) < float(before[1]), "reboot did not change boot identity and reset uptime")
         end = time.monotonic() + 5
@@ -140,20 +156,21 @@ def main():
         report.update(status="failed", error=str(error).replace(password, "[REDACTED]"))
     finally:
         cleanup_errors = []
-        for process in (vm,):
+        for process in (app, vm):
             if process is not None and process.poll() is None:
                 try:
                     process.terminate()
                     try: process.wait(timeout=10)
                     except subprocess.TimeoutExpired: process.kill(); process.wait(timeout=5)
                 except Exception as error: cleanup_errors.append(str(error))
-        try:
-            label = command([*DOCKER, "container", "inspect", "--format", '{{index .Config.Labels "' + LABEL + '"}}', app_name]).strip()
-            require(label == owner, "refusing cleanup of unowned application container")
-            command([*DOCKER, "rm", "-f", app_name])
-        except RuntimeError as error:
-            if "no such" not in str(error).lower(): cleanup_errors.append(str(error))
-        except Exception as error: cleanup_errors.append(str(error))
+        if not args.isolated_app_directory:
+            try:
+                label = command([*DOCKER, "container", "inspect", "--format", '{{index .Config.Labels "' + LABEL + '"}}', app_name]).strip()
+                require(label == owner, "refusing cleanup of unowned application container")
+                command([*DOCKER, "rm", "-f", app_name])
+            except RuntimeError as error:
+                if "no such" not in str(error).lower(): cleanup_errors.append(str(error))
+            except Exception as error: cleanup_errors.append(str(error))
         for handle in (app_log, vm_log):
             try:
                 if handle: handle.close()

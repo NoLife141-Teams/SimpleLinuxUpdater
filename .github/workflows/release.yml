@@ -23,7 +23,7 @@ jobs:
       github.event.workflow_run.event == 'push' &&
       startsWith(github.event.workflow_run.head_branch, 'v')
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     permissions:
       contents: read
     env:
@@ -114,6 +114,9 @@ jobs:
       - name: Qualify published v0.4.16 to release candidate
         timeout-minutes: 8
         run: python3 "$RUNNER_TEMP/trusted-tools/ci/upgrade/run.py" --candidate "$PWD/webserver" --candidate-sha "$RELEASE_SHA" --output upgrade-evidence/positive
+      - name: Qualify release Docker volume upgrade and controlled VM reboot
+        timeout-minutes: 15
+        run: python3 "$RUNNER_TEMP/trusted-tools/ci/upgrade/operational.py" --candidate-source "$PWD" --candidate-sha "$RELEASE_SHA" --output upgrade-evidence/operational
 
       - name: Retain only redacted upgrade qualification reports
         if: always()
@@ -123,6 +126,8 @@ jobs:
           path: |
             upgrade-evidence/negative/report.json
             upgrade-evidence/positive/report.json
+            upgrade-evidence/operational/report.json
+            upgrade-evidence/operational/vm-report.json
           retention-days: 1
 
       - name: Retain Playwright diagnostics

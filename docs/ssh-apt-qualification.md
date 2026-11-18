@@ -72,6 +72,12 @@ python3 tools/ci/ssh-apt/vm-reboot.py \
 
 Retain `report.json` from the VM run. The VM is terminated and its overlay, seed, private keys and temporary app data are deleted on exit; the downloaded backing image remains available for another fresh run. New cloud images require an explicitly reviewed URL/checksum update. No VM execution is implied by the presence of this command or its prerequisite tests.
 
+The operational qualification also runs this proof on the binary and assets
+from the candidate container. It installs QEMU in a disposable runner image.
+The runner shares only loopback with the fresh guest’s forwarded SSH socket and
+has no host Docker socket. The post-reboot proof checks `ssh.service` again
+after SSH returns. See [reproducing the Docker and VM qualification](upgrading.md#qualify-a-docker-volume-upgrade-and-vm-reboot).
+
 Application startup waits at most 30 seconds, including connection failures and
 HTTP 503 responses while startup maintenance is active. Each API call uses the
 remaining startup budget. Other HTTP failures remain fatal, and exhaustion of

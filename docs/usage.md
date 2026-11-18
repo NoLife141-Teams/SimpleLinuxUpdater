@@ -625,6 +625,10 @@ results by destination, delivery state or exact job ID. Approval alerts show
 the generation when recorded, and scheduled retries show their next attempt.
 The panel shows the active retention for completed results and exposes only
 diagnostic fields and safe failure reasons.
+Use **Job report** to download the report for a retained job. If the report is
+unavailable, the delivery result remains in the history. A published approval
+also shows **Review approval plan** while the exact pending job and generation
+still match the original Server. Status checks the link again when you open it.
 Skipped results distinguish disabled, unconfigured or changed destinations
 from notification conditions that were no longer eligible. Older results
 without a recorded cause show a general eligibility message.

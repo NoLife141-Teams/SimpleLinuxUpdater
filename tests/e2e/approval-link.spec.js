@@ -1,15 +1,48 @@
-const { test, expect, password, ensureAuthenticatedSession } = require("./support/fixtures");
+const { readFile } = require("node:fs/promises");
+const { test, expect, password, ensureAuthenticatedSession, navigateSection } = require("./support/fixtures");
 
 test.use({ approvalLinkFixture: true });
+
+const linkedJob = "6383ba6587c34f1190c2d906396a1d3e";
 
 function approvalLink(overrides = {}) {
     return "/?" + new URLSearchParams({
         approval_generation: "4",
-        job_id: "notification-job",
+        job_id: linkedJob,
         server_identity: "stable-notification-host",
         ...overrides,
     });
 }
+
+test("delivery history opens the report and exact pending approval by keyboard on mobile", async ({ page }) => {
+    await ensureAuthenticatedSession(page);
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto("/admin#admin-section-notifications");
+    await navigateSection(page, "admin", "notifications");
+    const history = page.locator("#notification-history");
+    await history.getByText("Delivery history", { exact: true }).click();
+    const missing = history.getByRole("listitem").filter({ hasText: "Job report unavailable" });
+    await expect(missing).toContainText("Delivered");
+    await expect(missing.getByRole("link")).toHaveCount(0);
+    expect(await history.evaluate(panel => panel.scrollWidth <= panel.clientWidth)).toBe(true);
+
+    const report = history.getByRole("link", { name: "Job report", exact: true });
+    const plan = history.getByRole("link", { name: "Review approval plan", exact: true });
+    await expect(report).toHaveAttribute("href", "/api/reports/jobs/" + linkedJob);
+    await expect(plan).toHaveAttribute("href", approvalLink());
+    await report.focus();
+    const [download] = await Promise.all([page.waitForEvent("download"), page.keyboard.press("Enter")]);
+    expect(download.suggestedFilename()).toBe("job-" + linkedJob + ".md");
+    expect(await readFile(await download.path(), "utf8")).toContain(linkedJob);
+
+    await expect(report).toBeFocused();
+    await page.keyboard.press("Tab");
+    await expect(plan).toBeFocused();
+    await page.keyboard.press("Enter");
+    await expect(page).toHaveURL(url => url.pathname + url.search === approvalLink());
+    await expect(page.locator("#status-drawer-title")).toHaveText("renamed-edge");
+    await expect(page.locator("#status-drawer")).toContainText("Linked plan · Generation 4");
+});
 
 async function signInThroughLink(page, baseURL, role) {
     await page.context().clearCookies();

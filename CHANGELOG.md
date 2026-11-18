@@ -11,6 +11,7 @@ The format is inspired by Keep a Changelog, and this project uses Semantic Versi
 - Record Maintenance batches with per-Server outcomes, retry links and account-scoped history in Status. After sign-in, direct links open the recorded batch or the exact approval plan.
 - Show retained notification deliveries by destination, delivery state and job in Admin.
 - Explain skipped notification deliveries with the recorded destination or eligibility reason.
+- Open the source job report and still-pending exact approval plan from Admin delivery history.
 - Warn about automatic backup overlaps in scheduled policy previews. Qualify Docker volume upgrades, encrypted archive restoration and rollback, batch recovery after interruption and controlled VM reboot in CI.
 - Show the observed backup export, restore, or recovery cause for skipped Scheduled Runs, with the blocking job when available.
 

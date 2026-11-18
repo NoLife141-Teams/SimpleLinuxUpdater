@@ -1935,7 +1935,7 @@ func registerProtectedPageRoutes(r *gin.Engine, deps AppDeps) {
 			if !valid {
 				view.LinkedServerError = "This approval link is incomplete or invalid."
 			} else {
-				if problem := approvalLinkProblem(deps.ServerState, link); problem != "" {
+				if problem := approvalLinkProblemAtOpen(deps, link); problem != "" {
 					view.LinkedServerError = problem
 				} else {
 					view.LinkedServerIdentity = link.ServerIdentity
@@ -2024,7 +2024,7 @@ func registerProtectedAuthAndSettingsRoutes(r *gin.Engine, deps AppDeps) {
 		handleNotificationDeliveryDiagnostics(c, deps.NotificationService)
 	})
 	r.GET("/api/notifications/delivery-history", func(c *gin.Context) {
-		handleNotificationDeliveryHistory(c, deps.NotificationService)
+		handleNotificationDeliveryHistory(c, deps)
 	})
 	r.POST("/api/notifications/test", func(c *gin.Context) {
 		handleNotificationTest(c, deps.NotificationService)

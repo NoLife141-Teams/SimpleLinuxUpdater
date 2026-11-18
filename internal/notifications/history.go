@@ -40,6 +40,8 @@ type DeliveryHistoryItem struct {
 	NextAttemptAt      string `json:"next_attempt_at,omitempty"`
 	ReasonCode         string `json:"reason_code,omitempty"`
 	Reason             string `json:"reason,omitempty"`
+	JobReportURL       string `json:"job_report_url,omitempty"`
+	ApprovalPlanURL    string `json:"approval_plan_url,omitempty"`
 }
 
 type DeliveryHistoryPage struct {

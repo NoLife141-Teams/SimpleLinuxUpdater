@@ -258,7 +258,10 @@
             policies: createStreamState(),
             globalKey: createStreamState()
         };
-        let interaction = { depth: 0, releasePending: false, deferredRender: false, actionContext: null };
+        let interaction = {
+            depth: 0, releasePending: false, deferredRender: false,
+            renderedHeldActions: false, actionContext: null
+        };
         let nextActionPlanId = 1;
         let inFlightActions = new Map();
         let bulkAction = null;
@@ -606,11 +609,22 @@
 
         function renderEffects(options = {}) {
             const priority = normalizedRefreshPriority(options.priority);
-            if (options.scope === "serverState" && priority !== "immediate" && (interaction.depth > 0 || interaction.releasePending)) {
-                interaction.deferredRender = true;
-                return [];
+            if (options.scope === "serverState" && (interaction.depth > 0 || interaction.releasePending)) {
+                if (priority !== "immediate") {
+                    interaction.deferredRender = true;
+                    return [];
+                }
+                // Immediate renders can still project the held bulk action controls.
+                if (interaction.actionContext) interaction.renderedHeldActions = true;
             }
             return [{ type: "render", scope: options.scope || "navigation", priority }];
+        }
+
+        function settleActionControls() {
+            if (interaction.depth > 0 || (!interaction.deferredRender && !interaction.renderedHeldActions)) return [];
+            interaction.deferredRender = false;
+            interaction.renderedHeldActions = false;
+            return [{ type: "render", scope: "serverState", priority: "deferable" }];
         }
 
         function stateEffects(options = {}) {
@@ -1047,19 +1061,12 @@
             } else if (event.type === "interactionReleased") {
                 interaction.releasePending = false;
                 interaction.actionContext = null;
-                if (!interaction.deferredRender || interaction.depth > 0) return [];
-                interaction.deferredRender = false;
-                return [{ type: "render", scope: "serverState", priority: "deferable" }];
+                return settleActionControls();
             } else if (event.type === "interactionReset") {
                 interaction.depth = 0;
                 interaction.releasePending = false;
                 interaction.actionContext = null;
-                const effects = [{ type: "cancelInteractionRelease" }];
-                if (interaction.deferredRender) {
-                    interaction.deferredRender = false;
-                    effects.push({ type: "render", scope: "serverState", priority: "deferable" });
-                }
-                return effects;
+                return [{ type: "cancelInteractionRelease" }, ...settleActionControls()];
             } else if (event.type === "actionStarted") {
                 const plan = event.plan && typeof event.plan === "object" ? event.plan : {};
                 const names = Array.isArray(plan.serverNames) ? plan.serverNames.filter(name => !!actionServer(name)) : [];

@@ -1232,6 +1232,14 @@ test("bulk kept-back approval requires individual consent for packages that will
     await expect.poll(() => requests[2]?.body).toEqual({
         job_id: `job-${removalHost}`, approval_generation: 2, deferral_revision: revision, confirm_removals: true,
     });
+
+    // An immediate network update can replace a host while a review control is pressed.
+    await review.dispatchEvent("pointerdown");
+    servers[1] = { ...servers[1], server_identity: "replacement" };
+    await page.evaluate(() => fetchServers(true, "removal-host-replacement"));
+    await expect(row(removalHost)).not.toBeChecked();
+    await page.locator("body").dispatchEvent("pointerup");
+    await expect(review).toBeHidden({ timeout: 3000 });
 });
 
 test("a late removal review cannot replace the confirmation for another host", async ({ page }) => {

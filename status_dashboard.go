@@ -1,11 +1,15 @@
 package main
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/json"
+	"fmt"
+	"log"
 	"net/http"
 	"strconv"
+	"time"
 
 	jobsPkg "debian-updater/internal/jobs"
 	observabilitypkg "debian-updater/internal/observability"
@@ -217,8 +221,9 @@ func handleStatusChangedHosts(c *gin.Context, deps AppDeps) {
 		return
 	}
 	ctx := c.Request.Context()
+	var timings observabilitypkg.DashboardSummaryTimings
 	summary, err := deps.ObservabilityService.BuildDashboardSummaryContextWithOptions(ctx, "7d", deps.Now(), observabilitypkg.DashboardSummaryOptions{
-		OmitCommandHistory: true, OmitVulnerabilityFindings: true,
+		OmitCommandHistory: true, OmitVulnerabilityFindings: true, Timings: &timings,
 	})
 	if err != nil {
 		if ctx.Err() == nil {
@@ -226,6 +231,7 @@ func handleStatusChangedHosts(c *gin.Context, deps AppDeps) {
 		}
 		return
 	}
+	compactStarted := time.Now()
 	dashboard := projectStatusDashboard(summary)
 	selected := make([]statusDashboardRow, 0, len(names))
 	for _, row := range dashboard.Servers {
@@ -240,10 +246,35 @@ func handleStatusChangedHosts(c *gin.Context, deps AppDeps) {
 		return
 	}
 	dashboard.Servers = selected
-	writeDashboardSummaryResponse(c, statusChangedHosts{
+	writeStatusChangedHosts(c, statusChangedHosts{
 		Servers:   projectStatusRows(statuses, contextAllows(c, "logs:read")),
 		Dashboard: dashboard,
-	})
+	}, timings, time.Since(compactStarted))
+}
+
+func writeStatusChangedHosts(c *gin.Context, payload statusChangedHosts, timings observabilitypkg.DashboardSummaryTimings, compact time.Duration) {
+	started := time.Now()
+	var body bytes.Buffer
+	gzipAccepted := acceptsGzipEncoding(c.GetHeader("Accept-Encoding"))
+	var err error
+	if gzipAccepted {
+		err = encodeGzipDashboardSummary(&body, payload)
+	} else {
+		err = json.NewEncoder(&body).Encode(payload)
+	}
+	if err != nil {
+		log.Printf("encode Status host refresh: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not encode Status hosts"})
+		return
+	}
+	ms := func(d time.Duration) float64 { return float64(d) / float64(time.Millisecond) }
+	c.Header("Server-Timing", fmt.Sprintf("wait;dur=%.3f, collect;dur=%.3f, project;dur=%.3f, compact;dur=%.3f, encode;dur=%.3f",
+		ms(timings.Wait), ms(timings.Collection), ms(timings.Projection), ms(compact), ms(time.Since(started))))
+	c.Writer.Header().Add("Vary", "Accept-Encoding")
+	if gzipAccepted {
+		c.Header("Content-Encoding", "gzip")
+	}
+	c.Data(http.StatusOK, "application/json; charset=utf-8", body.Bytes())
 }
 
 func projectStatusDashboard(summary dashboardSummaryResponse) statusDashboardSummary {

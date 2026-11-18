@@ -1150,6 +1150,7 @@ func (s *Service) BuildDashboardSummaryContextWithOptions(ctx context.Context, r
 	if err := ctx.Err(); err != nil {
 		return DashboardSummaryResponse{}, err
 	}
+	started := time.Now()
 	if s != nil {
 		if err := s.acquireDashboardProjection(ctx); err != nil {
 			return DashboardSummaryResponse{}, err
@@ -1158,6 +1159,7 @@ func (s *Service) BuildDashboardSummaryContextWithOptions(ctx context.Context, r
 	}
 	deps := s.EnsureDeps()
 	collector := newDashboardProjectionCollector(deps)
+	collectStarted := time.Now()
 	projectionInput, err := collector.CollectContextWithOptions(ctx, rawWindow, now, options)
 	if err != nil {
 		return DashboardSummaryResponse{}, err
@@ -1165,6 +1167,7 @@ func (s *Service) BuildDashboardSummaryContextWithOptions(ctx context.Context, r
 	if err := ctx.Err(); err != nil {
 		return DashboardSummaryResponse{}, err
 	}
+	projectStarted := time.Now()
 	projection := newDashboardProjection()
 	result := projection.Project(projectionInput)
 	if options.OmitVulnerabilityFindings {
@@ -1172,6 +1175,11 @@ func (s *Service) BuildDashboardSummaryContextWithOptions(ctx context.Context, r
 			result.Servers[i].Risk.Vulnerability.Findings = nil
 			result.Servers[i].Risk.Vulnerability.ResolvedFindings = nil
 		}
+	}
+	if timings := options.Timings; timings != nil {
+		timings.Wait = collectStarted.Sub(started)
+		timings.Collection = projectStarted.Sub(collectStarted)
+		timings.Projection = time.Since(projectStarted)
 	}
 	return result, nil
 }

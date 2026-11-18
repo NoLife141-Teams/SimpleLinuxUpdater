@@ -1231,17 +1231,17 @@ func writeDashboardSummaryResponse(c *gin.Context, summary any) {
 	c.Header("Content-Encoding", "gzip")
 	c.Header("Content-Type", "application/json; charset=utf-8")
 	c.Status(http.StatusOK)
-	compressed, err := gzip.NewWriterLevel(c.Writer, gzip.BestSpeed)
+	if err := encodeGzipDashboardSummary(c.Writer, summary); err != nil {
+		log.Printf("writeDashboardSummaryResponse: %v", err)
+	}
+}
+
+func encodeGzipDashboardSummary(writer io.Writer, summary any) error {
+	compressed, err := gzip.NewWriterLevel(writer, gzip.BestSpeed)
 	if err != nil {
-		log.Printf("writeDashboardSummaryResponse: create gzip writer: %v", err)
-		return
+		return err
 	}
-	if err := json.NewEncoder(compressed).Encode(summary); err != nil {
-		log.Printf("writeDashboardSummaryResponse: encode summary: %v", err)
-	}
-	if err := compressed.Close(); err != nil {
-		log.Printf("writeDashboardSummaryResponse: close gzip writer: %v", err)
-	}
+	return errors.Join(json.NewEncoder(compressed).Encode(summary), compressed.Close())
 }
 
 func acceptsGzipEncoding(raw string) bool {

@@ -488,11 +488,12 @@
             return effects;
         }
 
-        function replaceDashboard(snapshot) {
-            dashboardSnapshot = snapshot && typeof snapshot === "object" && !Array.isArray(snapshot) ? cloneValue(snapshot) : {};
-            const items = normalizeNamedItems(snapshot && snapshot.servers);
-            dashboardServers = items;
-            dashboardByName = new Map(items.map(server => [server.name, server]));
+        function replaceDashboard(snapshot, rows = normalizeNamedItems(snapshot?.servers)) {
+            const envelope = snapshot && typeof snapshot === "object" && !Array.isArray(snapshot) ? { ...snapshot } : {};
+            delete envelope.servers;
+            dashboardServers = rows;
+            dashboardSnapshot = { ...cloneValue(envelope), servers: rows };
+            dashboardByName = new Map(rows.map(server => [server.name, server]));
             commandHistoryLoadedNames = new Set();
         }
 
@@ -976,10 +977,7 @@
                     stream.lastSuccessfulAt = receivedAt;
                     stream.lastError = "";
                 }
-                replaceDashboard({
-                    ...snapshot.dashboard,
-                    servers: mergedDashboardRows
-                });
+                replaceDashboard(snapshot.dashboard, mergedDashboardRows);
                 return dispatch({
                     type: "serversSnapshotReceived",
                     priority: request.priority,
@@ -1089,10 +1087,6 @@
                 const history = Array.isArray(event.history) ? cloneValue(event.history) : [];
                 const dashboardServer = dashboardByName.get(serverName);
                 if (dashboardServer) dashboardServer.command_history = history;
-                const snapshotServer = Array.isArray(dashboardSnapshot.servers)
-                    ? dashboardSnapshot.servers.find(server => server && server.name === serverName)
-                    : null;
-                if (snapshotServer) snapshotServer.command_history = cloneValue(history);
                 commandHistoryLoadedNames.add(serverName);
                 return [
                     ...stateEffects({ scope: "serverState", priority: stream.inFlight.priority }),
@@ -1568,11 +1562,12 @@
             const groups = filters.groupBy
                 ? Array.from(grouped.entries()).map(([key, items]) => ({ key, items: cloneValue(items) }))
                 : [{ key: "", items: cloneValue(pageServers) }];
+            const dashboard = cloneValue(dashboardSnapshot);
             return {
                 servers: cloneValue(servers),
                 availabilityServers: cloneValue(servers.filter(matchesAvailability)),
-                dashboardSnapshot: cloneValue(dashboardSnapshot),
-                dashboardServers: cloneValue(dashboardServers),
+                dashboardSnapshot: dashboard,
+                dashboardServers: dashboard.servers || [],
                 globalKeyAvailable,
                 extras: cloneValue(secondarySnapshots),
                 actionViews: Object.fromEntries(servers.map(server => [
@@ -1610,13 +1605,7 @@
                     truncated: state.truncated,
                     recovering: state.recovering
                 }])),
-                sync: {
-                    streams: cloneValue(streams),
-                    interactionDepth: interaction.depth,
-                    interactionReleasePending: interaction.releasePending,
-                    interactionActive: interaction.depth > 0 || interaction.releasePending,
-                    deferredRender: interaction.deferredRender
-                },
+                sync: getSyncState(),
                 actions: {
                     inFlightServerNames: Array.from(inFlightActions.keys()),
                     inFlight: Array.from(inFlightActions.entries()).map(([serverName, action]) => ({ serverName, ...cloneValue(action) })),
@@ -1630,6 +1619,16 @@
         function getView() {
             reconcileNavigation();
             return projectView();
+        }
+
+        function getSyncState() {
+            return {
+                streams: cloneValue(streams),
+                interactionDepth: interaction.depth,
+                interactionReleasePending: interaction.releasePending,
+                interactionActive: interaction.depth > 0 || interaction.releasePending,
+                deferredRender: interaction.deferredRender
+            };
         }
 
         function pendingUpdatesView() {
@@ -1651,6 +1650,7 @@
             getHostDetail,
             getPersistence,
             getServer,
+            getSyncState,
             getView,
             isCurrentJobLog,
             isOpenJobLog,

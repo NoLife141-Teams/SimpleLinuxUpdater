@@ -24,7 +24,9 @@ const quantiles = values => {
 async function settledPaint(page) { await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))); }
 async function timed(page, run) { const at = performance.now(); await run(); await settledPaint(page); return performance.now() - at; }
 const fleetPaths = ['/api/servers', '/api/dashboard/summary'];
-const refreshPaths = new Set([...fleetPaths, '/api/status/changed-hosts', '/api/keys/global', '/api/audit-events', '/api/observability/summary', '/api/update-policies']);
+const scopedStatusPath = '/api/status/changed-hosts';
+const refreshPaths = new Set([...fleetPaths, scopedStatusPath, '/api/keys/global', '/api/audit-events', '/api/observability/summary', '/api/update-policies']);
+const statusTimingPhases = ['wait', 'collect', 'project', 'compact', 'encode'];
 function fleetResponses(page) {
   return fleetPaths.map(path => page.waitForResponse(response => new URL(response.url()).pathname === path));
 }
@@ -64,6 +66,24 @@ async function measureHostRefresh(browser, fixture) {
         const errors = [];
         let measured = null;
         await Promise.all(pages.map(async page => {
+          await page.addInitScript(scopedPath => {
+            const fetch = window.fetch.bind(window);
+            window.fetch = async (...args) => {
+              const response = await fetch(...args);
+              if (new URL(response.url).pathname === scopedPath) {
+                const json = response.json.bind(response);
+                response.json = async () => {
+                  const payload = await json();
+                  window.scalingStatusReceipt = {
+                    parsedAt: performance.now(),
+                    serverTiming: response.headers.get('Server-Timing'),
+                  };
+                  return payload;
+                };
+              }
+              return response;
+            };
+          }, scopedStatusPath);
           page.on('pageerror', error => errors.push(String(error)));
           page.on('request', request => {
             if (measured && refreshPaths.has(new URL(request.url()).pathname)) measured.push(request);
@@ -77,23 +97,49 @@ async function measureHostRefresh(browser, fixture) {
         const sample = {};
         for (const scenario of ['single', 'burst']) {
           await Promise.all(pages.map(page => page.waitForFunction(snapshotsIdle, null, { polling: 50 })));
+          await Promise.all(pages.map(page => page.evaluate(() => { window.scalingStatusReceipt = null; })));
           measured = [];
           const at = performance.now();
           const change = await context.request.post(fixture.url + '/__scaling/hosts?burst=' + Number(scenario === 'burst'));
           assert.ok(change.ok());
           const states = await change.json();
-          const latency = await Promise.all(pages.map(async page => {
-            await page.waitForFunction(changed => Object.entries(changed).every(([name, state]) =>
-              document.querySelector(`#servers-table tr[data-name="${name}"] .status-pill`)?.textContent.trim().toLowerCase() === state
-            ), states, { polling: 20 });
-            return performance.now() - at;
+          const rendered = await Promise.all(pages.map(async page => {
+            const observed = await page.waitForFunction(changed => {
+              if (!Object.entries(changed).every(([name, state]) =>
+                document.querySelector(`#servers-table tr[data-name="${name}"] .status-pill`)?.textContent.trim().toLowerCase() === state
+              )) return false;
+              const receipt = window.scalingStatusReceipt;
+              if (!receipt) return { latencyAfterResponseMs: null, serverTiming: null };
+              return {
+                latencyAfterResponseMs: performance.now() - receipt.parsedAt,
+                serverTiming: receipt.serverTiming,
+              };
+            }, states, { polling: 20 });
+            const latencyMs = performance.now() - at;
+            const timing = await observed.jsonValue();
+            await observed.dispose();
+            assert.ok(Number.isFinite(timing.latencyAfterResponseMs) && timing.latencyAfterResponseMs >= 0,
+              `${scenario} across ${tabCount} tab(s) rendered without a scoped response timing`);
+            const serverMs = Object.fromEntries(
+              Array.from(timing.serverTiming?.matchAll(/(\w+);dur=([\d.]+)/g) ?? [], ([, name, value]) => [name, Number(value)]),
+            );
+            for (const phase of statusTimingPhases) {
+              assert.ok(Number.isFinite(serverMs[phase]), `scoped response missing Server-Timing phase ${phase}`);
+            }
+            return { latencyMs, afterResponseMs: timing.latencyAfterResponseMs, serverMs };
           }));
           await Promise.all(pages.map(page => page.waitForFunction(snapshotsIdle, null, { polling: 50 })));
           await sleep(200);
           const byPath = await measureRequests(measured);
           measured = null;
+          assert.equal(byPath[scopedStatusPath]?.requests, tabCount, 'expected one scoped response per tab');
+          for (const path of fleetPaths) {
+            assert.equal(byPath[path], undefined, `successful scoped refresh reread ${path}`);
+          }
           sample[scenario] = {
-            latency_ms: latency,
+            latency_ms: rendered.map(sample => sample.latencyMs),
+            after_response_ms: rendered.map(sample => sample.afterResponseMs),
+            server_ms: rendered.map(sample => sample.serverMs),
             requests: Object.values(byPath).reduce((sum, item) => sum + item.requests, 0),
             encoded_bytes: Object.values(byPath).reduce((sum, item) => sum + item.encoded, 0),
             by_path: byPath,
@@ -105,7 +151,9 @@ async function measureHostRefresh(browser, fixture) {
             ...fleetResponses(page),
           ]));
           assert.ok((await context.request.get(fixture.url + '/__scaling/disconnect')).ok());
-          await Promise.all(reconnected);
+          for (const responses of await Promise.all(reconnected)) {
+            assert.ok(responses.every(response => response.ok()), 'reconnect failed to reopen SSE or refresh the full fleet');
+          }
           sample.reconnected_tabs = pages.length;
         }
         if (iteration >= 0) trials.push(sample);

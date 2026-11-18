@@ -208,6 +208,13 @@ type DashboardSummaryResponse struct {
 type DashboardSummaryOptions struct {
 	OmitVulnerabilityFindings bool
 	OmitCommandHistory        bool
+	Timings                   *DashboardSummaryTimings
+}
+
+type DashboardSummaryTimings struct {
+	Wait       time.Duration
+	Collection time.Duration
+	Projection time.Duration
 }
 
 type HealthTrendPoint struct {

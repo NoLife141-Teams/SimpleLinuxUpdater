@@ -100,10 +100,6 @@ func (s *statusBatchService) submit(c *gin.Context) {
 		return
 	}
 	ctx := c.Request.Context()
-	if request.RetryOf != "" && !s.canRetry(ctx, db, request, principal.Account.ID) {
-		c.JSON(http.StatusConflict, gin.H{"error": "Only refused or interrupted hosts from the original batch can be retried"})
-		return
-	}
 	serialized, err := json.Marshal(request)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid maintenance batch"})
@@ -112,15 +108,27 @@ func (s *statusBatchService) submit(c *gin.Context) {
 	fingerprint := sha256.Sum256(serialized)
 	actor, clientIP := actorFromContext(c), clientIPFromContext(c)
 	s.activeMu.Lock()
-	created, err := storeStatusBatch(ctx, db, request, hex.EncodeToString(fingerprint[:]), principal.Account.ID, actor, s.deps.Now().UTC().Format("2006-01-02T15:04:05.000000000Z"))
+	_, sourceActive := s.active[request.RetryOf]
+	created, err := storeStatusBatch(ctx, db, request, hex.EncodeToString(fingerprint[:]), principal.Account.ID, actor,
+		s.deps.Now().UTC().Format("2006-01-02T15:04:05.000000000Z"), sourceActive)
 	if created && err == nil {
 		s.active[request.ID] = struct{}{}
 	}
 	s.activeMu.Unlock()
 	if err != nil {
-		if errors.Is(err, errBatchKeyConflict) {
+		var retryConflict *statusBatchRetryConflict
+		switch {
+		case errors.Is(err, errBatchKeyConflict):
 			c.JSON(http.StatusConflict, gin.H{"error": "This batch identifier already belongs to a different request"})
-		} else {
+		case errors.Is(err, errBatchRetryPlanChanged):
+			c.JSON(http.StatusConflict, gin.H{"error": staleApprovalMessage})
+		case errors.As(err, &retryConflict):
+			if retryConflict.batchID != "" {
+				c.JSON(http.StatusConflict, gin.H{"error": "This host already has a retry attempt. Open it from the original batch.", "retry_batch_id": retryConflict.batchID})
+			} else {
+				c.JSON(http.StatusConflict, gin.H{"error": "Only hosts refused or interrupted before admission and clear for retry can be retried"})
+			}
+		default:
 			log.Printf("persist maintenance batch %s: %v", request.ID, err)
 			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Could not record the maintenance batch"})
 		}
@@ -137,25 +145,6 @@ func (s *statusBatchService) submit(c *gin.Context) {
 		})
 	}
 	c.JSON(http.StatusAccepted, gin.H{"id": request.ID})
-}
-
-func (s *statusBatchService) canRetry(ctx context.Context, db *sql.DB, request statusBatchRequest, account int64) bool {
-	original, err := s.readBatch(ctx, db, request.RetryOf, account)
-	if err != nil || original.Action != request.Action {
-		return false
-	}
-	retryable := make(map[string]string, len(original.Hosts))
-	for _, host := range original.Hosts {
-		if host.Retryable {
-			retryable[host.Name] = host.ServerIdentity
-		}
-	}
-	for _, target := range request.Targets {
-		if retryable[target.Name] != target.ServerIdentity {
-			return false
-		}
-	}
-	return true
 }
 
 func (s *statusBatchService) process(ctx context.Context, db *sql.DB, request statusBatchRequest, account int64, actor, clientIP string) {
@@ -193,6 +182,9 @@ func (s *statusBatchService) processHost(ctx context.Context, db *sql.DB, reques
 		meta = auditpkg.CloneMeta(meta)
 		meta["account_id"] = account
 		meta["maintenance_batch_id"] = request.ID
+		if request.RetryOf != "" {
+			meta["maintenance_batch_retry_of"] = request.RetryOf
+		}
 		if err := s.deps.AuditService.Record(actor, clientIP, action, targetType, targetName, status, message, meta); err != nil {
 			log.Printf("record maintenance batch %s audit: %v", request.ID, err)
 		}
@@ -330,11 +322,11 @@ func (s *statusBatchService) readBatch(ctx context.Context, db *sql.DB, id strin
 func (s *statusBatchService) projectBatch(db *sql.DB, batch *statusBatch, active bool) {
 	for i := range batch.Hosts {
 		host := &batch.Hosts[i]
+		host.Retryable = host.canRetry(active, batch.Action)
 		switch host.State {
 		case "queued":
 			if !active {
 				host.State, host.Message = "interrupted", "The server stopped before admitting this command."
-				host.Retryable = true
 			}
 		case "admitting":
 			if !active {
@@ -343,8 +335,6 @@ func (s *statusBatchService) projectBatch(db *sql.DB, batch *statusBatch, active
 			}
 		case "uncertain":
 			s.reconcileHostFromAudit(db, batch, host)
-		case "refused":
-			host.Retryable = true
 		}
 		if host.JobID == "" || host.State != "accepted" {
 			continue

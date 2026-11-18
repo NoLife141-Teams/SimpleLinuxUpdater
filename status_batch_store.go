@@ -14,6 +14,7 @@ CREATE TABLE IF NOT EXISTS status_action_batches (
 	skipped_count INTEGER NOT NULL, retry_of TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS status_action_batches_owner ON status_action_batches(account_id, created_at DESC, id);
+CREATE INDEX IF NOT EXISTS status_action_batches_attempts ON status_action_batches(account_id, retry_of);
 CREATE TABLE IF NOT EXISTS status_action_batch_hosts (
 	batch_id TEXT NOT NULL REFERENCES status_action_batches(id) ON DELETE CASCADE,
 	name TEXT NOT NULL, server_identity TEXT NOT NULL,
@@ -38,13 +39,16 @@ type statusBatchRequest struct {
 }
 
 type statusBatchHost struct {
-	Name           string `json:"name"`
-	ServerIdentity string `json:"server_identity"`
-	State          string `json:"state"`
-	Message        string `json:"message,omitempty"`
-	JobID          string `json:"job_id,omitempty"`
-	JobStatus      string `json:"job_status,omitempty"`
-	Retryable      bool   `json:"retryable,omitempty"`
+	Name                   string `json:"name"`
+	ServerIdentity         string `json:"server_identity"`
+	State                  string `json:"state"`
+	Message                string `json:"message,omitempty"`
+	JobID                  string `json:"job_id,omitempty"`
+	JobStatus              string `json:"job_status,omitempty"`
+	Retryable              bool   `json:"retryable,omitempty"`
+	RetryBatchID           string `json:"retry_batch_id,omitempty"`
+	RetryNeedsVerification bool   `json:"retry_needs_verification,omitempty"`
+	approval               serverActionApprovalIdentity
 }
 
 type statusBatch struct {
@@ -58,8 +62,25 @@ type statusBatch struct {
 }
 
 var errBatchKeyConflict = errors.New("batch identifier conflict")
+var errBatchRetryPlanChanged = errors.New("maintenance batch retry plan changed")
 
-func storeStatusBatch(ctx context.Context, db *sql.DB, request statusBatchRequest, fingerprint string, account int64, actor, created string) (bool, error) {
+type statusBatchRetryConflict struct {
+	batchID string
+}
+
+func (*statusBatchRetryConflict) Error() string {
+	return "maintenance batch target is no longer eligible for retry"
+}
+
+func (host statusBatchHost) canRetry(active bool, action string) bool {
+	if batchActionScope(action) == "approvals:write" && (host.approval.JobID == "" || host.approval.Generation == 0) {
+		return false
+	}
+	return (host.State == "refused" || (host.State == "queued" && !active)) &&
+		host.RetryBatchID == "" && !host.RetryNeedsVerification
+}
+
+func storeStatusBatch(ctx context.Context, db *sql.DB, request statusBatchRequest, fingerprint string, account int64, actor, created string, sourceActive bool) (bool, error) {
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return false, err
@@ -84,6 +105,14 @@ func storeStatusBatch(ctx context.Context, db *sql.DB, request statusBatchReques
 		}
 		return false, err
 	}
+	if request.RetryOf != "" {
+		// The header insert obtains the SQLite write lock before checking for
+		// previous attempts. The new child rows are the reservation and become
+		// visible atomically with the header at commit.
+		if err := checkStatusBatchRetry(ctx, tx, request, account, sourceActive); err != nil {
+			return false, err
+		}
+	}
 	stmt, err := tx.PrepareContext(ctx, `INSERT INTO status_action_batch_hosts
 		(batch_id, name, server_identity, approval_job_id, approval_generation, deferral_revision, remediation_digest, state)
 		VALUES (?, ?, ?, ?, ?, ?, ?, 'queued')`)
@@ -100,7 +129,42 @@ func storeStatusBatch(ctx context.Context, db *sql.DB, request statusBatchReques
 	return true, tx.Commit()
 }
 
-func readStatusBatch(ctx context.Context, db *sql.DB, id string, account int64) (statusBatch, error) {
+func checkStatusBatchRetry(ctx context.Context, tx *sql.Tx, req statusBatchRequest, account int64, active bool) error {
+	source, err := readStatusBatch(ctx, tx, req.RetryOf, account)
+	if errors.Is(err, sql.ErrNoRows) {
+		return &statusBatchRetryConflict{}
+	}
+	if err != nil {
+		return err
+	}
+	if source.Action != req.Action {
+		return &statusBatchRetryConflict{}
+	}
+	hosts := make(map[string]statusBatchHost, len(source.Hosts))
+	for _, host := range source.Hosts {
+		hosts[host.Name] = host
+	}
+	for _, target := range req.Targets {
+		host := hosts[target.Name]
+		if host.ServerIdentity != target.ServerIdentity {
+			return &statusBatchRetryConflict{}
+		}
+		if !host.canRetry(active, source.Action) {
+			return &statusBatchRetryConflict{batchID: host.RetryBatchID}
+		}
+		if batchActionScope(source.Action) == "approvals:write" && host.approval != target.Approval {
+			return errBatchRetryPlanChanged
+		}
+	}
+	return nil
+}
+
+type statusBatchQuerier interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+}
+
+func readStatusBatch(ctx context.Context, db statusBatchQuerier, id string, account int64) (statusBatch, error) {
 	batch := statusBatch{Hosts: []statusBatchHost{}}
 	query := `SELECT id, actor, action, created_at, skipped_count, retry_of FROM status_action_batches WHERE account_id = ?`
 	var row *sql.Row
@@ -112,16 +176,39 @@ func readStatusBatch(ctx context.Context, db *sql.DB, id string, account int64) 
 	if err := row.Scan(&batch.ID, &batch.Actor, &batch.Action, &batch.CreatedAt, &batch.SkippedCount, &batch.RetryOf); err != nil {
 		return statusBatch{}, err
 	}
-	rows, err := db.QueryContext(ctx, `SELECT h.name, h.server_identity, h.state, h.message, h.job_id, COALESCE(j.status, '')
+	// A pre-upgrade batch could already have competing children. A child in
+	// such a lineage cannot prove that its sibling never reached admission.
+	rows, err := db.QueryContext(ctx, `
+		WITH RECURSIVE lineage(id, retry_of) AS (
+			SELECT id, retry_of FROM status_action_batches WHERE id = ?
+			UNION
+			SELECT p.id, p.retry_of FROM status_action_batches p JOIN lineage l ON p.id = l.retry_of
+			WHERE p.account_id = ? AND p.action = ?
+		)
+		SELECT h.name, h.server_identity, h.state, h.message, h.job_id, COALESCE(j.status, ''),
+			h.approval_job_id, h.approval_generation, h.deferral_revision, h.remediation_digest,
+			COALESCE((
+				SELECT a.id FROM status_action_batches a JOIN status_action_batch_hosts ah ON ah.batch_id = a.id
+				WHERE a.account_id = ? AND a.retry_of = h.batch_id AND a.action = ? AND ah.server_identity = h.server_identity
+				ORDER BY (ah.state NOT IN ('refused', 'queued')) DESC, a.rowid DESC LIMIT 1
+			), ''),
+			EXISTS (
+				SELECT 1 FROM lineage l
+				JOIN status_action_batches a ON a.account_id = ? AND a.retry_of = l.retry_of
+				JOIN status_action_batch_hosts ah ON ah.batch_id = a.id
+				WHERE l.retry_of <> '' AND a.id <> l.id AND a.action = ? AND ah.server_identity = h.server_identity
+			)
 		FROM status_action_batch_hosts h LEFT JOIN jobs j ON j.id = h.job_id
-		WHERE h.batch_id = ? ORDER BY h.name`, batch.ID)
+		WHERE h.batch_id = ? ORDER BY h.name`, batch.ID, account, batch.Action, account, batch.Action, account, batch.Action, batch.ID)
 	if err != nil {
 		return statusBatch{}, err
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var host statusBatchHost
-		if err := rows.Scan(&host.Name, &host.ServerIdentity, &host.State, &host.Message, &host.JobID, &host.JobStatus); err != nil {
+		if err := rows.Scan(&host.Name, &host.ServerIdentity, &host.State, &host.Message, &host.JobID, &host.JobStatus,
+			&host.approval.JobID, &host.approval.Generation, &host.approval.DeferralRevision, &host.approval.RemediationDigest,
+			&host.RetryBatchID, &host.RetryNeedsVerification); err != nil {
 			return statusBatch{}, err
 		}
 		batch.Hosts = append(batch.Hosts, host)

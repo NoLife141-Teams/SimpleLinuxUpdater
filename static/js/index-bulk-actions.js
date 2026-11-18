@@ -220,6 +220,7 @@
         let batchTimer = null;
         let batchRead = 0;
         let pendingPlan = null;
+        let unconfirmedSubmission = null;
         let submitting = false;
 
         function newBatchKey() {
@@ -263,6 +264,8 @@
                     ${outcome ? badge(outcome) : ""}
                     ${host.message ? `<p>${escapeHtml(host.message)}</p>` : ""}
                     ${host.job_id ? `<a href="/api/reports/jobs/${encodeURIComponent(host.job_id)}">Job report</a>` : ""}
+                    ${host.retry_batch_id ? `<a href="?maintenance_batch=${encodeURIComponent(host.retry_batch_id)}" aria-label="Open retry attempt for ${escapeHtml(host.name)}">Open retry attempt</a>` : ""}
+                    ${host.retry_needs_verification ? "<p>Review the earlier retry attempts before taking another action.</p>" : ""}
                     ${host.retryable ? `<button type="button" class="inline-btn btn-ghost" data-action="retry-batch-host"
                         ${admissionsPending ? 'disabled title="Wait for the remaining hosts to be admitted"' : ""}
                         data-name="${escapeHtml(host.name)}">Retry ${escapeHtml(host.name)}</button>` : ""}
@@ -302,7 +305,9 @@
                 if (!response.ok) {
                     lifecycle.discardResponse(response);
                     if ([401, 403, 404].includes(response.status)) {
-                        const message = "This maintenance batch is unavailable.";
+                        const missingSubmission = response.status === 404 ? unconfirmedSubmission : null;
+                        unconfirmedSubmission = null;
+                        const message = missingSubmission?.error || "This maintenance batch is unavailable.";
                         const plan = pendingPlan;
                         pendingPlan = null;
                         void dispatchStatusInteraction({ type: "bulkAdmissionsObserved", pendingHosts: [] });
@@ -311,11 +316,16 @@
                             bulkResult: { executedCount: 0 },
                         });
                         else if (batchID) window.notifyApp(message);
+                        if (missingSubmission?.retryOf) {
+                            batchID = missingSubmission.retryOf;
+                            await readBatch();
+                        }
                     } else scheduleBatchRead();
                     return;
                 }
                 const data = await response.json();
                 if (!lifecycle.isCurrent(lifetime) || sequence !== batchRead) return;
+                unconfirmedSubmission = null;
                 batch = data.batch;
                 const pendingHosts = (batch?.hosts || []).filter(admissionPending);
                 const admissionsPending = pendingHosts.length > 0;
@@ -384,26 +394,35 @@
                     return "";
                 };
                 let errorMessage;
+                let lostResponse = false;
                 try {
                     errorMessage = await send();
                 } catch (error) {
                     if (!lifecycle.isCurrent(lifetime) || error?.name === "AbortError") return;
+                    lostResponse = true;
                     // A server or gateway error can hide a durable submission.
                     // Repeat the same key and check the exact batch below.
-                    await send().catch(() => {});
+                    errorMessage = await send().catch(() => "");
                 }
                 if (!lifecycle.isCurrent(lifetime)) return;
-                if (errorMessage) {
+                if (errorMessage && !lostResponse) {
                     if (plan) await dispatchStatusInteraction({
                         type: "actionFailed", operationId: plan.id, refreshStreams: [],
                         message: errorMessage, bulkResult: { executedCount: 0, failedCount: plan.eligibleNames.length },
                     });
-                    else window.notifyApp(errorMessage);
+                    else {
+                        window.notifyApp(errorMessage);
+                        if (request.retry_of) {
+                            batchID = request.retry_of;
+                            await readBatch();
+                        }
+                    }
                     return;
                 }
                 batchID = request.id;
                 batch = null;
                 pendingPlan = plan;
+                unconfirmedSubmission = lostResponse ? { error: errorMessage, retryOf: request.retry_of } : null;
                 clearBatchRead();
                 renderBatch();
                 document.getElementById("status-batch-panel").open = true;
@@ -441,6 +460,7 @@
         function init() {
             if (lifecycle.active) return;
             lifecycle.init();
+            unconfirmedSubmission = null;
             if (window.canUseScope("logs:read")) {
                 batchID = new URLSearchParams(window.location.search).get("maintenance_batch") || "";
                 document.getElementById("status-batch-panel").open = Boolean(batchID);

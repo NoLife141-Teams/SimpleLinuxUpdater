@@ -11,6 +11,8 @@ func TestApprovalApplicationOrigin(t *testing.T) {
 		"https://updates.example/path", "https://updates.example:99999", "https://updates.example/?", "https://updates.example/#fragment",
 		"https://[updates.example]/", "http://::1/", "https://%25.example/",
 		"https://999.999.0.1/", "https://updates\u00a0example.test/",
+		"https://updates.example.123/", "https://4294967296/", "https://updates.example.0x1234/",
+		"http://010.0.0.1/", "https://xn--.example/",
 	} {
 		if _, err := parseApplicationOrigin(input); err == nil {
 			t.Errorf("accepted invalid application origin %q", input)
@@ -19,10 +21,16 @@ func TestApprovalApplicationOrigin(t *testing.T) {
 	if origin, err := parseApplicationOrigin(""); origin != nil || err != nil {
 		t.Fatalf("unset origin should disable links: %v %v", origin, err)
 	}
-	for _, input := range []string{"https://updates.example/", "http://127.0.0.1:8080/", "http://[::1]:8080/"} {
+	for _, input := range []string{
+		"https://updates.example/", "https://updates.localhost/", "http://localhost:8080/",
+		"http://updates_host.internal:8080/", "https://xn--caf-dma.example/", "http://127.0.0.1:8080/", "http://[::1]:8080/",
+	} {
 		if origin, err := parseApplicationOrigin(input); err != nil || origin.String() != input {
 			t.Errorf("valid application origin %q: %v %v", input, origin, err)
 		}
+	}
+	if origin, err := parseApplicationOrigin("https://café.example/"); err != nil || origin.Hostname() != "café.example" {
+		t.Errorf("valid internationalized application origin: %v %v", origin, err)
 	}
 }
 

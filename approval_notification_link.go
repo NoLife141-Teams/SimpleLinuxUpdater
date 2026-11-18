@@ -2,19 +2,22 @@ package main
 
 import (
 	"errors"
+	"net/netip"
 	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
-	"unicode"
 
 	serverpkg "debian-updater/internal/servers"
+	"golang.org/x/net/idna"
 )
 
 const applicationURLEnv = "DEBIAN_UPDATER_PUBLIC_URL"
 
 var approvalLinkID = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,128}$`)
-var dottedIPv4Origin = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+\.?$`)
+var applicationOriginIDNA = idna.New(idna.MapForLookup(), idna.StrictDomainName(false), idna.CheckHyphens(false), idna.BidiRule(), idna.VerifyDNSLength(true))
+var applicationOriginDNSName = regexp.MustCompile(`^[a-z0-9_-]+(\.[a-z0-9_-]+)*$`)
+var browserIPv4Label = regexp.MustCompile(`^([0-9]+|0x[0-9a-f]*)$`)
 
 type approvalLink struct {
 	ServerIdentity string
@@ -44,17 +47,20 @@ func parseApplicationOrigin(raw string) (*url.URL, error) {
 }
 
 func validApplicationOriginHost(host string) bool {
-	if host == "" || strings.ContainsRune(host, '%') || strings.ContainsFunc(host, unicode.IsSpace) {
+	if strings.ContainsRune(host, ':') {
+		addr, err := netip.ParseAddr(host)
+		return err == nil && addr.Is6() && addr.Zone() == ""
+	}
+	ascii, err := applicationOriginIDNA.ToASCII(host)
+	name := strings.TrimSuffix(ascii, ".")
+	if err != nil || !applicationOriginDNSName.MatchString(name) {
 		return false
 	}
-	if dottedIPv4Origin.MatchString(host) {
-		// net/url accepts an out-of-range dotted IPv4 token as a DNS name.
-		// The browser treats it as an address and rejects invalid octets.
-		for _, octet := range strings.Split(strings.TrimSuffix(host, "."), ".") {
-			if _, err := strconv.ParseUint(octet, 0, 8); err != nil {
-				return false
-			}
-		}
+	// Browsers interpret a hostname ending in a number as IPv4. Use canonical
+	// dotted decimal so a shorthand or octal address can't change the destination.
+	if browserIPv4Label.MatchString(name[strings.LastIndexByte(name, '.')+1:]) {
+		addr, err := netip.ParseAddr(name)
+		return err == nil && addr.Is4()
 	}
 	return true
 }

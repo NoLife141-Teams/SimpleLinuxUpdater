@@ -1,7 +1,9 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -149,5 +151,57 @@ func TestStatusBatchSurvivesLostResponseAndTracksRunnerOutcome(t *testing.T) {
 	other := identityLogin(t, app, "batch-operator")
 	if rec := identityRequest(app, "GET", "/api/status/batches/"+id, other, "", nil); rec.Code != http.StatusNotFound {
 		t.Fatalf("operator accessed another account's batch: %d", rec.Code)
+	}
+}
+
+func TestStatusBatchShowsFailedHostFactsCollection(t *testing.T) {
+	state := newServerState()
+	updateDeps := testUpdateServiceDeps(t)
+	updateDeps.ServerState = state
+	updateDeps.HostMaintenanceSessions = HostMaintenanceSessionFactoryFunc(func(context.Context, HostMaintenanceSessionRequest) (HostMaintenanceSession, error) {
+		return nil, errors.New("SSH connection refused")
+	})
+	app := newTestAppWithDeps(t, filepath.Join(t.TempDir(), "failed-facts-batch.db"), AppDeps{
+		ServerState:   state,
+		UpdateService: NewUpdateService(updateDeps),
+	})
+	cookie := app.authenticate(t)
+	const name = "synthetic-facts"
+	if rec := identityRequest(app, "POST", "/api/servers", cookie, "", gin.H{
+		"name": name, "host": name + ".invalid", "user": "root", "pass": "synthetic",
+	}); rec.Code != http.StatusCreated {
+		t.Fatalf("create host: %d %s", rec.Code, rec.Body.String())
+	}
+	server, ok := state.FindByName(name)
+	if !ok || server.Identity == "" {
+		t.Fatal("missing stable Server identity")
+	}
+	id := strings.Repeat("c", 32)
+	rec := identityRequest(app, "POST", "/api/status/batches", cookie, "", statusBatchRequest{
+		ID: id, Action: "refresh_facts",
+		Targets: []statusBatchTarget{{Name: name, ServerIdentity: server.Identity}},
+	})
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("submit: %d %s", rec.Code, rec.Body.String())
+	}
+	waitForUpdateRunners()
+	readHost := func() statusBatchHost {
+		t.Helper()
+		rec := identityRequest(app, "GET", "/api/status/batches/"+id, cookie, "", nil)
+		var response struct{ Batch statusBatch }
+		if rec.Code != http.StatusOK || json.Unmarshal(rec.Body.Bytes(), &response) != nil || len(response.Batch.Hosts) != 1 {
+			t.Fatalf("read failed collection: %d %s", rec.Code, rec.Body.String())
+		}
+		return response.Batch.Hosts[0]
+	}
+	if host := readHost(); host.State != "failed" || !strings.Contains(host.Message, "SSH connection refused") || host.Retryable {
+		t.Fatalf("failed collection was treated as unconfirmed admission: %+v", host)
+	}
+	// Model a worker stopping after it wrote the audit outcome.
+	if _, err := app.Deps.DB().Exec(`UPDATE status_action_batch_hosts SET state = 'admitting', message = '' WHERE batch_id = ?`, id); err != nil {
+		t.Fatal(err)
+	}
+	if host := readHost(); host.State != "failed" || host.Message != "Facts refresh failed" || host.Retryable {
+		t.Fatalf("failed collection was not recovered from its audit: %+v", host)
 	}
 }

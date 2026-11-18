@@ -427,9 +427,9 @@ batch for your account and provides a link to reopen that batch later. Each host
 has an admission status and, when available, a job outcome and report. For
 kept-back security plans with package removals, use the individual review button
 to see and confirm the displayed plan. Ineligible selections are skipped.
-Retrying a refused or interrupted command requires the current host and plan to
-be eligible. If the application cannot determine whether a command started,
-check the job and audit history before taking another action.
+Retrying a refused or interrupted command requires an eligible host and plan
+on the current Status page. If the application cannot determine whether a command
+started, check the job and audit history before taking another action.
 
 ### Passwordless apt toggle
 

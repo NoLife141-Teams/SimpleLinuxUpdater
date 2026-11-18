@@ -251,7 +251,7 @@
             };
             const badge = state => `<span class="status-pill status-${statusClass[state] || "idle"}">${escapeHtml(labels[state] || state)}</span>`;
             renderHTML(document.getElementById("status-batch-rows"), batch.hosts.map(host => {
-                const admitted = host.job_id || ["accepted", "running", "waiting_approval", "completed"].includes(host.state);
+                const admitted = host.job_id || ["accepted", "running", "waiting_approval", "completed", "failed"].includes(host.state);
                 const admission = admitted ? "accepted" : host.state;
                 const outcome = host.job_status || (admitted && host.state !== admission ? host.state : "");
                 return `
@@ -319,7 +319,7 @@
                 if (pendingPlan && !admissionsPending) {
                     const plan = pendingPlan;
                     pendingPlan = null;
-                    const failures = batch.hosts.filter(host => ["refused", "uncertain", "interrupted"].includes(host.state));
+                    const failures = batch.hosts.filter(host => ["refused", "uncertain", "interrupted", "failed"].includes(host.state));
                     await dispatchStatusInteraction({
                         type: failures.length ? "actionFailed" : "actionCompleted",
                         operationId: plan.id,
@@ -411,7 +411,7 @@
             if (!host) return;
             const facts = statusInteraction.planBatchRetry(batch.action, host.name, host.server_identity);
             if (!facts) {
-                window.notifyApp("The host or plan is no longer eligible. Review the current Status row first.");
+                window.notifyApp("Show the host on the current Status page and check that the action is available before retrying.");
                 return;
             }
             await submitBatch({ id: newBatchKey(), action: batch.action, retry_of: batch.id, targets: [batchTarget(name, facts)] }, null);

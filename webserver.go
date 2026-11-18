@@ -1138,7 +1138,7 @@ func runServerFactsRefresh(ctx context.Context, deps AppDeps, state *serverpkg.S
 
 	record, err := refreshServerFactsWithUpdateDeps(ctx, server, updateServiceEnsureDeps(deps.UpdateService))
 	if err != nil {
-		recordAudit("failure", "Facts refresh failed", map[string]any{"error": err.Error()})
+		recordAudit("failure", "Facts refresh failed", map[string]any{"error": err.Error(), "collection_attempted": true})
 		return serverFactsRecord{}, jsonResult(http.StatusBadGateway, fmt.Sprintf("failed to refresh host facts: %v", err))
 	}
 	recordAudit("success", "Host facts refreshed", map[string]any{

@@ -1379,7 +1379,7 @@
         }
 
         function planBatchRetry(actionKey, name, expectedIdentity) {
-            const server = serversByName.get(name);
+            const server = projectNavigation().pageServers.find(item => item.name === name);
             if (!server || !expectedIdentity || server.server_identity !== expectedIdentity
                 || (actionKey === "approve_security_kept_back" && keptBackApprovalHasRemovals(server))) {
                 return null;

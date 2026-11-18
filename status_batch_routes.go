@@ -211,11 +211,13 @@ func (s *statusBatchService) processHost(ctx context.Context, db *sql.DB, reques
 	if result.statusCode != http.StatusOK {
 		state := "refused"
 		message, _ := result.body["error"].(string)
-		if result.statusCode >= http.StatusInternalServerError {
+		if request.Action == "refresh_facts" && result.statusCode == http.StatusBadGateway {
+			state = "failed"
+		} else if result.statusCode >= http.StatusInternalServerError {
 			state, message = "uncertain", "Check the job and audit history before attempting this command again."
 		}
 		if err := setStatusBatchHost(db, request.ID, target.Name, "admitting", state, message, ""); err != nil {
-			log.Printf("record refused maintenance batch %s host: %v", request.ID, err)
+			log.Printf("record maintenance batch %s host %s: %v", request.ID, state, err)
 		}
 		return
 	}
@@ -377,12 +379,17 @@ func (s *statusBatchService) projectBatch(db *sql.DB, batch *statusBatch, active
 }
 
 func (s *statusBatchService) reconcileHostFromAudit(db *sql.DB, batch *statusBatch, host *statusBatchHost) {
-	var status, jobID string
-	err := db.QueryRow(`SELECT status, COALESCE(json_extract(meta_json, '$.job_id'), '') FROM audit_events
+	var status, jobID, message string
+	err := db.QueryRow(`SELECT status, COALESCE(json_extract(meta_json, '$.job_id'), ''), message FROM audit_events
 		WHERE actor = ? AND target_type = 'server' AND target_name = ? AND json_valid(meta_json)
-		  AND json_extract(meta_json, '$.maintenance_batch_id') = ? AND status IN ('started', 'success')
-		ORDER BY id DESC LIMIT 1`, batch.Actor, host.Name, batch.ID).Scan(&status, &jobID)
+		  AND json_extract(meta_json, '$.maintenance_batch_id') = ?
+		  AND (status IN ('started', 'success') OR (action = ? AND status = 'failure' AND json_extract(meta_json, '$.collection_attempted') = 1))
+		ORDER BY id DESC LIMIT 1`, batch.Actor, host.Name, batch.ID, serverFactsRefreshAction).Scan(&status, &jobID, &message)
 	if err == nil {
+		if status == "failure" {
+			host.State, host.Message = "failed", message
+			return
+		}
 		host.Message = ""
 		host.JobID = jobID
 		host.State = "accepted"

@@ -57,6 +57,7 @@ type approvalAdmission struct {
 	ServerIdentity string `json:",omitempty"`
 	Generation     string
 	Fingerprint    string
+	OutboxID       string `json:",omitempty"`
 }
 
 func (admission approvalAdmission) intentID(conditionID string) string {
@@ -68,16 +69,16 @@ func (fact ConditionFact) approvalAdmission(fingerprint string) approvalAdmissio
 	return approvalAdmission{ServerIdentity: fact.ServerIdentity, Generation: fact.Generation, Fingerprint: fingerprint}
 }
 
-func (state *conditionState) hasApprovalAdmission(conditionID string, admission approvalAdmission) bool {
+func (state *conditionState) findApprovalAdmission(conditionID string, admission approvalAdmission) (approvalAdmission, bool) {
 	for _, previous := range state.ApprovalAdmissions[conditionID] {
 		// Older jobs can establish the plan's job and generation without an
 		// inventory identity. Preserve their admission when that data is absent.
 		if previous.Generation == admission.Generation && previous.Fingerprint == admission.Fingerprint &&
 			(previous.ServerIdentity == admission.ServerIdentity || previous.ServerIdentity == "" || admission.ServerIdentity == "") {
-			return true
+			return previous, true
 		}
 	}
-	return false
+	return approvalAdmission{}, false
 }
 
 func (state *conditionState) recordApprovalAdmission(conditionID string, admission approvalAdmission) {
@@ -91,29 +92,51 @@ func episodeAdmissionID(condition Condition, fingerprint string) string {
 	return fmt.Sprintf("condition/%s/%d/%s", condition.Fact.ID, condition.Episode, fingerprint)
 }
 
-func conditionFingerprints(settings Settings) map[string]bool {
-	fingerprints := map[string]bool{}
+func conditionFingerprints(settings Settings) map[string]string {
+	fingerprints := map[string]string{}
 	for _, destination := range []string{DestinationWebhook, DestinationDiscord, DestinationTelegram} {
 		if fingerprint := destinationConfigFingerprint(settings, destination); fingerprint != "" {
-			fingerprints[fingerprint] = true
+			fingerprints[fingerprint] = destination
 		}
 	}
 	return fingerprints
 }
 
-func migrateEpisodeApprovalAdmissions(state *conditionState, fingerprints map[string]bool) {
+func migrateEpisodeApprovalAdmissions(ctx context.Context, db *sql.DB, state *conditionState, fingerprints map[string]string) error {
 	for _, condition := range state.Conditions {
 		fact := condition.Fact
 		if fact.EventType != EventApprovalPublished || fact.Generation == "" {
 			continue
 		}
-		for fingerprint := range fingerprints {
-			admission := fact.approvalAdmission(fingerprint)
-			if state.Admissions[episodeAdmissionID(condition, fingerprint)] && !state.hasApprovalAdmission(fact.ID, admission) {
-				state.recordApprovalAdmission(fact.ID, admission)
+		for fingerprint, destination := range fingerprints {
+			legacyID := episodeAdmissionID(condition, fingerprint)
+			if !state.Admissions[legacyID] {
+				continue
 			}
+			admission := fact.approvalAdmission(fingerprint)
+			if _, exists := state.findApprovalAdmission(fact.ID, admission); exists {
+				continue
+			}
+			// A previous release could enqueue a second episode for the same
+			// plan. Prefer a completed delivery or the earliest viable row.
+			err := db.QueryRowContext(ctx, `
+				SELECT id FROM notification_outbox
+				WHERE event_type = ? AND destination_fingerprint = ? AND state <> ?
+					AND (id = ? OR CASE WHEN json_valid(meta_json) THEN
+						json_extract(meta_json, '$.condition_id') = ? AND
+						CAST(json_extract(meta_json, '$.approval_generation') AS TEXT) = ?
+					END)
+				ORDER BY CASE state WHEN 'succeeded' THEN 0 WHEN 'failed' THEN 1 ELSE 2 END, rowid
+				LIMIT 1
+			`, EventApprovalPublished, fingerprint, outboxStateSkipped,
+				outboxDeliveryID(legacyID, destination), fact.ID, fact.Generation).Scan(&admission.OutboxID)
+			if err != nil && !errors.Is(err, sql.ErrNoRows) {
+				return err
+			}
+			state.recordApprovalAdmission(fact.ID, admission)
 		}
 	}
+	return nil
 }
 
 func ensureConditionSchema(db *sql.DB) error {
@@ -168,7 +191,9 @@ func (s *Service) reconcileConditions(ctx context.Context) error {
 	}
 	now := s.deps.Now().UTC()
 	fingerprints := conditionFingerprints(settings)
-	migrateEpisodeApprovalAdmissions(&state, fingerprints)
+	if err := migrateEpisodeApprovalAdmissions(ctx, s.database(), &state, fingerprints); err != nil {
+		return err
+	}
 	rows := []outboxRow{}
 	freshOneShots := map[string]bool{}
 	for _, fact := range batch.Facts {
@@ -224,7 +249,7 @@ func (s *Service) reconcileConditions(ctx context.Context) error {
 			exactApproval := fact.EventType == EventApprovalPublished && fact.Generation != ""
 			admission := fact.approvalAdmission(fingerprint)
 			if exactApproval {
-				if state.hasApprovalAdmission(fact.ID, admission) {
+				if _, exists := state.findApprovalAdmission(fact.ID, admission); exists {
 					continue
 				}
 				identity = admission.intentID(fact.ID)
@@ -240,6 +265,7 @@ func (s *Service) reconcileConditions(ctx context.Context) error {
 			admitted[0].DestinationFingerprint = fingerprint
 			rows = append(rows, admitted...)
 			if exactApproval {
+				admission.OutboxID = admitted[0].ID
 				state.recordApprovalAdmission(fact.ID, admission)
 			} else {
 				state.Admissions[identity] = true
@@ -386,10 +412,8 @@ func (s *Service) conditionDeliveryEligible(ctx context.Context, row *outboxRow,
 	}
 	fact := condition.Fact
 	if row.EventType == EventApprovalPublished && fact.Generation != "" {
-		exactID := fact.approvalAdmission(row.DestinationFingerprint).intentID(fact.ID)
-		legacyID := episodeAdmissionID(condition, row.DestinationFingerprint)
-		legacyMatch := condition.Episode == meta.Episode && row.ID == outboxDeliveryID(legacyID, row.Destination)
-		if row.ID != outboxDeliveryID(exactID, row.Destination) && !legacyMatch {
+		admission, exists := state.findApprovalAdmission(fact.ID, fact.approvalAdmission(row.DestinationFingerprint))
+		if !exists || row.ID != admission.OutboxID {
 			return false, nil
 		}
 	} else if condition.Episode != meta.Episode {
@@ -427,7 +451,7 @@ func isConditionEvent(event string) bool {
 
 // Keep per-target episode counters, but discard consumed terminal job facts and
 // obsolete admission fingerprints. Audit cursors prevent historical replay.
-func pruneConditionState(state *conditionState, fingerprints map[string]bool, now time.Time) {
+func pruneConditionState(state *conditionState, fingerprints map[string]string, now time.Time) {
 	for id, condition := range state.Conditions {
 		updated, _ := time.Parse(time.RFC3339Nano, condition.UpdatedAt)
 		if (condition.Fact.OneShot || (!condition.Fact.Active && condition.Fact.EventType == EventApprovalPublished)) && !updated.IsZero() && now.Sub(updated) > defaultOutboxRetention {
@@ -454,7 +478,7 @@ func pruneConditionState(state *conditionState, fingerprints map[string]bool, no
 		}
 		retained := admitted[:0]
 		for _, admission := range admitted {
-			if fingerprints[admission.Fingerprint] {
+			if fingerprints[admission.Fingerprint] != "" {
 				retained = append(retained, admission)
 			}
 		}
@@ -465,7 +489,7 @@ func pruneConditionState(state *conditionState, fingerprints map[string]bool, no
 		}
 	}
 	for fingerprint := range state.Reminders {
-		if !fingerprints[fingerprint] {
+		if fingerprints[fingerprint] == "" {
 			delete(state.Reminders, fingerprint)
 		}
 	}

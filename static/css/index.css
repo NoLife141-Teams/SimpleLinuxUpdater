@@ -2018,6 +2018,12 @@ body.status-page .head-meta {
     padding: 0;
 }
 
+#bulk-removal-review .inline-btn {
+    height: auto;
+    overflow-wrap: anywhere;
+    white-space: normal;
+}
+
 .fleet-rail .bulk-actions .inline-btn:disabled {
     cursor: not-allowed;
     border-color: rgba(var(--border-rgb), 0.52);

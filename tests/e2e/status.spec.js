@@ -1151,6 +1151,7 @@ test("bulk actions execute immediately, skip ineligible hosts, and report partia
 
 test("bulk kept-back approval requires individual consent for packages that will be removed", async ({ page }) => {
     const revision = "a".repeat(64);
+    const removalHost = `removal-${"x".repeat(48)}`;
     const plan = {
         standard_package_count: 2,
         kept_back_package_count: 1,
@@ -1164,7 +1165,7 @@ test("bulk kept-back approval requires individual consent for packages that will
             has_password: true,
             upgrade_plan: plan,
         }),
-        makeServer("removal-host", "pending_approval", makePendingUpdates(3), {
+        makeServer(removalHost, "pending_approval", makePendingUpdates(3), {
             has_password: true,
             upgrade_plan: {
                 ...plan,
@@ -1179,7 +1180,7 @@ test("bulk kept-back approval requires individual consent for packages that will
         const name = new URL(route.request().url()).pathname.split("/").at(-1);
         const body = route.request().postDataJSON();
         requests.push({ name, body });
-        if (name === "removal-host" && body.approval_generation !== servers[1].approval_generation) {
+        if (name === removalHost && body.approval_generation !== servers[1].approval_generation) {
             return fulfillJson(route, { error: "The pending update changed. Refresh the package plan and confirm again." }, 409);
         }
         return fulfillJson(route, { ok: true });
@@ -1188,10 +1189,14 @@ test("bulk kept-back approval requires individual consent for packages that will
     await ensureAuthenticatedSession(page);
     const row = (name) => page.locator(`#servers-table tr[data-name="${name}"] .row-select`);
     const bulk = page.locator("#bulk-approve-kept-security");
-    const review = page.getByRole("button", { name: "Review removal-host", exact: true });
-    await row("removal-host").check();
+    const review = page.getByRole("button", { name: `Review ${removalHost}`, exact: true });
+    await row(removalHost).check();
     await expect(bulk).toBeDisabled();
     await expect(review).toBeVisible();
+    expect(await review.evaluate((button) => {
+        const rail = button.closest(".fleet-rail");
+        return button.scrollWidth <= button.clientWidth && button.getBoundingClientRect().right <= rail.getBoundingClientRect().right;
+    })).toBe(true);
     await row("safe-host").check();
     await expect(bulk).toHaveText("Approve kept-back security (1)");
     await bulk.click();
@@ -1208,15 +1213,70 @@ test("bulk kept-back approval requires individual consent for packages that will
     await page.locator("#action-confirm-submit").click();
     await expect(page.locator(".app-feedback")).toContainText("pending update changed");
     expect(requests[1]).toEqual({
-        name: "removal-host",
-        body: { job_id: "job-removal-host", approval_generation: 1, deferral_revision: revision, confirm_removals: true },
+        name: removalHost,
+        body: { job_id: `job-${removalHost}`, approval_generation: 1, deferral_revision: revision, confirm_removals: true },
     });
     await review.click();
     await expect(dialog).toContainText("old-sec-lib");
     await page.locator("#action-confirm-submit").click();
     await expect.poll(() => requests[2]?.body).toEqual({
-        job_id: "job-removal-host", approval_generation: 2, deferral_revision: revision, confirm_removals: true,
+        job_id: `job-${removalHost}`, approval_generation: 2, deferral_revision: revision, confirm_removals: true,
     });
+});
+
+test("a late removal review cannot replace the confirmation for another host", async ({ page }) => {
+    const hosts = ["slow-host", "fast-host"];
+    const servers = hosts.map((name) => makeServer(name, "pending_approval", [
+        { package: "security-package", security: true, kept_back: true },
+    ], {
+        has_password: true,
+        upgrade_plan: {
+            standard_package_count: 0,
+            kept_back_package_count: 1,
+            standard_security_count: 0,
+            total_security_count: 1,
+            kept_back_security_plan_available: true,
+            kept_back_security_removed_packages: [`old-${name}`],
+        },
+    }));
+    await stubCompactStatus(page, () => servers);
+    let releaseSlowDetail;
+    const slowDetail = new Promise((resolve) => { releaseSlowDetail = resolve; });
+    const isSlowDetail = (url) => url.pathname === "/api/servers/status-detail" && url.searchParams.get("server_name") === "slow-host";
+    let slowDetailRequested = false;
+    await page.route("**/api/servers/status-detail?*", async (route) => {
+        if (isSlowDetail(new URL(route.request().url()))) {
+            slowDetailRequested = true;
+            await slowDetail;
+        }
+        await route.fallback();
+    });
+    const approvedHosts = [];
+    await page.route("**/api/approve-security-kept-back/*", (route) => {
+        approvedHosts.push(new URL(route.request().url()).pathname.split("/").at(-1));
+        return fulfillJson(route, { ok: true });
+    });
+
+    await ensureAuthenticatedSession(page);
+    for (const name of hosts) {
+        await page.getByRole("checkbox", { name: `Select ${name}`, exact: true }).check();
+    }
+    try {
+        await page.getByRole("button", { name: "Review slow-host", exact: true }).click();
+        await expect.poll(() => slowDetailRequested).toBe(true);
+        await page.getByRole("button", { name: "Review fast-host", exact: true }).click();
+        const message = page.locator("#action-confirm-message");
+        await expect(message).toContainText("old-fast-host");
+        const lateResponse = page.waitForResponse((response) => isSlowDetail(new URL(response.url())));
+        releaseSlowDetail();
+        await (await lateResponse).finished();
+        await expect(page.locator('#servers-table tr[data-name="slow-host"] [data-action="approve-security-kept-back"]')).toBeVisible();
+        await expect(message).toContainText("old-fast-host");
+        await page.locator("#action-confirm-submit").click();
+        await expect.poll(() => approvedHosts).toEqual(["fast-host"]);
+    } finally {
+        releaseSlowDetail();
+    }
 });
 
 test("auto refresh defers table replacement while an update action is being clicked", async ({

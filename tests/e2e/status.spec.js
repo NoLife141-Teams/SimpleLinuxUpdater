@@ -1188,6 +1188,47 @@ test("bulk actions execute immediately, skip ineligible hosts, and report partia
     await expect(batchPanel).not.toContainText("no-sec-host");
 });
 
+test("a stale batch links to the recorded retry after another tab claims the host", async ({ page }) => {
+    const server = makeServer("retry-host", "idle", [], { has_key: true, server_identity: "stable-retry-host" });
+    const originalID = "a".repeat(32);
+    const retryID = "b".repeat(32);
+    let conflict = false;
+    await stubCompactStatus(page, () => [server]);
+    await page.route(`**/api/status/batches/${originalID}`, route => fulfillJson(route, {
+        batch: {
+            id: originalID, action: "update", hosts: [{
+                name: server.name, server_identity: server.server_identity, state: "refused", message: "Host was busy",
+                ...(conflict ? { retry_batch_id: retryID } : { retryable: true }),
+            }],
+        },
+    }));
+    await page.route(`**/api/status/batches/${retryID}`, route => fulfillJson(route, {
+        batch: {
+            id: retryID, retry_of: originalID, action: "update",
+            hosts: [{ name: server.name, server_identity: server.server_identity, state: "completed", job_id: "retry-job", job_status: "succeeded" }],
+        },
+    }));
+    await page.route("**/api/status/batches", route => {
+        expect(route.request().postDataJSON().retry_of).toBe(originalID);
+        conflict = true;
+        return fulfillJson(route, { error: "This host already has a retry attempt.", retry_batch_id: retryID }, 409);
+    });
+    await ensureAuthenticatedSession(page);
+    await page.goto(`/?maintenance_batch=${originalID}`);
+    const panel = page.locator("#status-batch-panel");
+    const retry = panel.getByRole("button", { name: "Retry retry-host" });
+    await expect(retry).toBeVisible();
+    await expect(page.locator('#servers-table tr[data-name="retry-host"]').getByRole("button", { name: "Update", exact: true })).toBeEnabled();
+    await retry.click();
+    const attempt = panel.getByRole("link", { name: "Open retry attempt for retry-host" });
+    await expect(attempt).toBeVisible();
+    await expect(retry).toHaveCount(0);
+    await attempt.click();
+    await expect(page).toHaveURL(url => url.searchParams.get("maintenance_batch") === retryID);
+    await expect(panel).toContainText("Succeeded");
+    await expect(panel.getByRole("link", { name: "Job report" })).toHaveAttribute("href", "/api/reports/jobs/retry-job");
+});
+
 test("a host awaiting approval can be handled while a maintenance batch is still queued", async ({ page }) => {
     const first = makeServer("ready-host", "idle", [], { has_key: true });
     const second = makeServer("queued-host", "idle", [], { has_key: true });

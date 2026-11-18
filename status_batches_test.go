@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -14,6 +15,158 @@ import (
 	"github.com/gin-gonic/gin"
 	"golang.org/x/crypto/ssh"
 )
+
+func TestStatusBatchRetryAdmitsOnlyOneRunner(t *testing.T) {
+	t.Setenv(retryMaxAttemptsEnv, "1")
+	app, cookie := newActionAPITestApp(t, filepath.Join(t.TempDir(), "retry-batch.db"))
+	const name = "retry-host"
+	if rec := identityRequest(app, "POST", "/api/servers", cookie, "", gin.H{
+		"name": name, "host": name + ".invalid", "user": "root", "pass": "synthetic",
+	}); rec.Code != http.StatusCreated {
+		t.Fatalf("create host: %d %s", rec.Code, rec.Body.String())
+	}
+	server, _ := app.Deps.ServerState.FindByName(name)
+	target := statusBatchTarget{Name: name, ServerIdentity: server.Identity}
+	db := app.Deps.DB()
+	sourceID := strings.Repeat("a", 32)
+	seedStatusBatchRetryHistory(t, db, sourceID, "", "update", "queued", target)
+
+	conn := &scriptedSSHConnection{responses: map[string]scriptedResponse{
+		precheckDiskSpaceCmd: {stdout: "2048000\n2097152\n"},
+		precheckLocksCmd:     {err: fakeExitStatusError{code: 1, msg: "no process found"}},
+		precheckDpkgAuditCmd: {}, precheckAptCheckCmd: {}, aptUpdateCmd: {}, aptListUpgradableCmd: {},
+	}}
+	oldDial := getDialSSHConnection()
+	setDialSSHConnection(func(Server, *ssh.ClientConfig) (sshConnection, error) { return conn, nil })
+	t.Cleanup(func() {
+		waitForUpdateRunners()
+		setDialSSHConnection(oldDial)
+	})
+
+	requests := []statusBatchRequest{
+		{ID: strings.Repeat("b", 32), Action: "update", RetryOf: sourceID, Targets: []statusBatchTarget{target}},
+		{ID: strings.Repeat("c", 32), Action: "update", RetryOf: sourceID, Targets: []statusBatchTarget{target}},
+	}
+	post := func(req statusBatchRequest) *httptest.ResponseRecorder {
+		return identityRequest(app, "POST", "/api/status/batches", cookie, "", req)
+	}
+	start := make(chan struct{})
+	type submitResult struct {
+		request  statusBatchRequest
+		response *httptest.ResponseRecorder
+	}
+	results := make(chan submitResult, len(requests))
+	for _, request := range requests {
+		go func() {
+			<-start
+			results <- submitResult{request, post(request)}
+		}()
+	}
+	close(start)
+	winner, other := <-results, <-results
+	if winner.response.Code != http.StatusAccepted {
+		winner, other = other, winner
+	}
+	winnerID := winner.request.ID
+	assertConflict := func(rec *httptest.ResponseRecorder) {
+		t.Helper()
+		var reply struct {
+			RetryBatchID string `json:"retry_batch_id"`
+		}
+		if rec.Code != http.StatusConflict || json.Unmarshal(rec.Body.Bytes(), &reply) != nil || reply.RetryBatchID != winnerID {
+			t.Fatalf("expected conflict identifying %s: %d %s", winnerID, rec.Code, rec.Body.String())
+		}
+	}
+	if winner.response.Code != http.StatusAccepted {
+		t.Fatalf("neither request admitted: %d %s", winner.response.Code, winner.response.Body.String())
+	}
+	assertConflict(other.response)
+	waitForUpdateRunners()
+	assertConflict(post(other.request))
+	if replay := post(winner.request); replay.Code != http.StatusAccepted || !strings.Contains(replay.Body.String(), winnerID) {
+		t.Fatalf("lost response did not recover exact committed retry: %d %s", replay.Code, replay.Body.String())
+	}
+
+	// An empty worker registry models the same durable records after restart.
+	reopened := &statusBatchService{}
+	source, err := reopened.readBatch(t.Context(), db, sourceID, 1)
+	if err != nil || len(source.Hosts) != 1 || source.Hosts[0].Retryable || source.Hosts[0].RetryBatchID != winnerID {
+		t.Fatalf("reopened source did not link to admitted attempt: %+v %v", source, err)
+	}
+	retry, err := reopened.readBatch(t.Context(), db, winnerID, 1)
+	if err != nil || len(retry.Hosts) != 1 || retry.Hosts[0].JobStatus != jobStatusSucceeded || retry.Hosts[0].JobID == "" {
+		t.Fatalf("retry did not retain its successful job: %+v %v", retry, err)
+	}
+	var jobs, audited int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM jobs WHERE kind = ? AND server_name = ?`, jobKindUpdate, name).Scan(&jobs); err != nil || jobs != 1 {
+		t.Fatalf("expected one update job, got %d: %v", jobs, err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM audit_events WHERE action = 'update.start' AND target_name = ?
+		AND json_extract(meta_json, '$.maintenance_batch_id') = ?
+		AND json_extract(meta_json, '$.maintenance_batch_retry_of') = ?
+		AND json_extract(meta_json, '$.job_id') = ?`, name, winnerID, sourceID, retry.Hosts[0].JobID).Scan(&audited); err != nil || audited != 1 {
+		t.Fatalf("expected an admission audit linking both lots and the job, got %d: %v", audited, err)
+	}
+}
+
+func TestStatusBatchRetryChecksPersistedHistoryAndApproval(t *testing.T) {
+	db := conditionSourceDB(t)
+	approve := statusBatchTarget{
+		Name: "approval-host", ServerIdentity: "inventory-original",
+		Approval: serverActionApprovalIdentity{JobID: "job", Generation: 2, DeferralRevision: "revision", RemediationDigest: "digest"},
+	}
+	seedStatusBatchRetryHistory(t, db, "source", "", "approve_all", "refused", approve)
+	seedStatusBatchRetryHistory(t, db, "first", "source", "approve_all", "refused", approve)
+	seedStatusBatchRetryHistory(t, db, "uncertain", "", "approve_all", "admitting", approve)
+	seedStatusBatchRetryHistory(t, db, "fork", "", "approve_all", "refused", approve)
+	seedStatusBatchRetryHistory(t, db, "fork-a", "fork", "approve_all", "accepted", approve)
+	seedStatusBatchRetryHistory(t, db, "fork-b", "fork", "approve_all", "refused", approve)
+	changed := approve
+	changed.Approval.Generation++
+	recreated := approve
+	recreated.ServerIdentity = "inventory-replacement"
+	for _, tc := range []struct {
+		name, source string
+		account      int64
+		target       statusBatchTarget
+		wantError    error
+	}{
+		{"original redirects to its existing attempt", "source", 1, approve, &statusBatchRetryConflict{batchID: "first"}},
+		{"another account cannot follow the attempt", "source", 2, approve, &statusBatchRetryConflict{}},
+		{"uncertain outcome requires verification", "uncertain", 1, approve, &statusBatchRetryConflict{}},
+		{"old competing attempts require verification", "fork-b", 1, approve, &statusBatchRetryConflict{}},
+		{"a replaced plan requires new review", "first", 1, changed, errBatchRetryPlanChanged},
+		{"a recreated inventory entry is rejected", "first", 1, recreated, &statusBatchRetryConflict{}},
+		{"refused attempt may be retried", "first", 1, approve, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			request := statusBatchRequest{ID: "next-" + tc.name, Action: "approve_all", RetryOf: tc.source, Targets: []statusBatchTarget{tc.target}}
+			created, err := storeStatusBatch(t.Context(), db, request, "fingerprint", tc.account, "actor", "2026-11-18T12:00:01Z", false)
+			if expected, ok := tc.wantError.(*statusBatchRetryConflict); ok {
+				var actual *statusBatchRetryConflict
+				if created || !errors.As(err, &actual) || *actual != *expected {
+					t.Fatalf("created=%t, conflict=%+v, err=%v", created, actual, err)
+				}
+			} else if !errors.Is(err, tc.wantError) || created != (tc.wantError == nil) {
+				t.Fatalf("created=%t, err=%v, expected %v", created, err, tc.wantError)
+			}
+		})
+	}
+}
+
+func seedStatusBatchRetryHistory(t *testing.T, db *sql.DB, id, retryOf, action, state string, target statusBatchTarget) {
+	t.Helper()
+	if _, err := db.Exec(`INSERT INTO status_action_batches (id, account_id, actor, action, created_at, fingerprint, skipped_count, retry_of)
+		VALUES (?, 1, 'account:1', ?, '2026-11-18T12:00:00Z', 'fixture', 0, ?)`, id, action, retryOf); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO status_action_batch_hosts
+		(batch_id, name, server_identity, approval_job_id, approval_generation, deferral_revision, remediation_digest, state)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, id, target.Name, target.ServerIdentity, target.Approval.JobID,
+		target.Approval.Generation, target.Approval.DeferralRevision, target.Approval.RemediationDigest, state); err != nil {
+		t.Fatal(err)
+	}
+}
 
 func TestStatusBatchSurvivesLostResponseAndTracksRunnerOutcome(t *testing.T) {
 	t.Setenv(retryMaxAttemptsEnv, "1")
@@ -113,7 +266,7 @@ func TestStatusBatchSurvivesLostResponseAndTracksRunnerOutcome(t *testing.T) {
 	if len(approvalBatch.Hosts) != 2 {
 		t.Fatalf("expected two independent approval outcomes: %+v", approvalBatch.Hosts)
 	}
-	if host := approvalBatch.Hosts[0]; host.State != "refused" || host.Message == "" || host.JobID != "" || !host.Retryable {
+	if host := approvalBatch.Hosts[0]; host.State != "refused" || host.Message == "" || host.JobID != "" || host.Retryable {
 		t.Fatalf("expected a refusal for the host without an approval identity: %+v", host)
 	}
 	if host := approvalBatch.Hosts[1]; host.State != "completed" || host.JobStatus != jobStatusSucceeded || host.JobID != approval.JobID {

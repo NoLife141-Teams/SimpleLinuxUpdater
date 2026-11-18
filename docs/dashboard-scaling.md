@@ -244,10 +244,11 @@ projection, so the shipped change keeps the existing server calculation path.
 The runs used Chromium 159.0.8154.6 on the same installation and fixture
 manifest. Each cell uses five trials after a warmup, with the 5 or 15 tab
 observations ranked together for latency. Reference is `4bd324b` with the
-instrumentation applied in `ceea02846772aa8fb060084f90c1cfedc81219f3`.
-Run the standalone commands above on that instrumentation commit and the
-candidate. The JSON reports include `server_ms` and `after_response_ms` for
-each tab. “Sync only” applies the small synchronization
+instrumentation applied in `ceea02846772aa8fb060084f90c1cfedc81219f3`. Copy
+the candidate's `tools/performance/dashboard-browser.cjs` into that reference
+checkout and run the standalone commands above in both checkouts. The JSON
+reports include `server_ms` and `after_response_ms` for each tab. “Sync only”
+applies the small synchronization
 snapshot. “Server experiment” adds the pending-group change to sync only.
 “Accepted” applies both browser changes with the reference server.
 

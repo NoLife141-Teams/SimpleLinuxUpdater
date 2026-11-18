@@ -820,6 +820,35 @@ test("refresh requests coalesce per stream and retain the highest queued priorit
     assert.equal(queuedFetch.priority, "immediate");
 });
 
+test("one fleet refresh supersedes an overlapping host read", () => {
+    const store = createStore();
+    const fetches = effects => effects.filter(effect => effect.type === "fetchSnapshot" && effect.stream !== "commandHistory");
+    const fleet = () => fetches(store.dispatch({ type: "refreshRequested", streams: ["servers", "dashboard"] }));
+    const server = { name: "alpha", server_identity: "inventory-alpha", status: "idle" };
+    const snapshot = { rows_version: "1", fleet: {}, servers: [{ name: "alpha", version: "1" }] };
+    const receive = ([serverRequest, dashboardRequest]) => [
+        ...store.dispatch({ type: "serversSnapshotReceived", requestId: serverRequest.requestId, servers: [server] }),
+        ...store.dispatch({ type: "dashboardSnapshotReceived", requestId: dashboardRequest.requestId, snapshot })
+    ];
+    receive(fleet());
+    const [pending] = fetches(store.dispatch({ type: "targetedRefreshRequested", names: ["alpha"], revision: 1 }));
+    assert.equal(pending.stream, "hosts");
+    const resync = fleet();
+    assert.deepEqual(resync.map(request => request.stream), ["servers", "dashboard"]);
+    assert.deepEqual(fetches(receive(resync)), [], "the resync must not queue another full response");
+
+    store.dispatch({
+        type: "hostsSnapshotReceived", requestId: pending.requestId,
+        snapshot: { dashboard: snapshot, servers: [{ ...server, status: "updating" }] }
+    });
+    assert.equal(store.getServer("alpha").status, "idle");
+
+    const [failedInventory] = fetches(store.dispatch({ type: "refreshRequested", stream: "servers" }));
+    store.dispatch({ type: "snapshotFailed", stream: "servers", requestId: failedInventory.requestId });
+    const afterError = fetches(store.dispatch({ type: "targetedRefreshRequested", names: ["alpha"], revision: 2 }));
+    assert.deepEqual(afterError.map(request => request.stream), ["servers", "dashboard"], "a host patch cannot repair a failed inventory refresh");
+});
+
 test("out-of-order responses are discarded independently per stream", () => {
     const store = createStore();
     store.dispatch({ type: "refreshRequested", stream: "servers" });

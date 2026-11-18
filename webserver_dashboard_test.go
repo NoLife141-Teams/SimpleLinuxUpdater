@@ -11,8 +11,8 @@ import (
 	"net/url"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strconv"
-	"strings"
 	"testing"
 	"time"
 
@@ -780,15 +780,22 @@ func TestStatusChangedHostsMatchesFleetProjectionWithinByteBudget(t *testing.T) 
 				changed.Body.Len()*20 >= inventory.Body.Len()+dashboard.Body.Len() {
 				t.Fatalf("targeted body %d bytes, fleet bodies %d and %d bytes", changed.Body.Len(), inventory.Body.Len(), dashboard.Body.Len())
 			}
-			if len(patch.Servers) != len(names) || len(patch.Dashboard.Servers) != len(names) || !reflect.DeepEqual(patch.Dashboard.Fleet, fullDashboard.Fleet) {
-				t.Fatal("patch must contain exactly the requested rows and the global fleet totals")
+			if len(patch.Servers) != len(names) || len(patch.Dashboard.Servers) != len(names) ||
+				!reflect.DeepEqual(patch.Dashboard.Fleet, fullDashboard.Fleet) || patch.Dashboard.RowsVersion != fullDashboard.RowsVersion {
+				t.Fatal("patch must contain exactly the requested rows and the global fleet projection metadata")
 			}
-			for i, name := range names {
-				index, err := strconv.Atoi(strings.TrimPrefix(name, "synthetic-"))
-				if err != nil {
-					t.Fatal(err)
+			for _, name := range names {
+				matchServer := func(row statusServerRow) bool { return row.Name == name }
+				matchDashboard := func(row statusDashboardRow) bool { return row.Name == name }
+				serverIndex := slices.IndexFunc(patch.Servers, matchServer)
+				fullServerIndex := slices.IndexFunc(fullRows, matchServer)
+				dashboardIndex := slices.IndexFunc(patch.Dashboard.Servers, matchDashboard)
+				fullDashboardIndex := slices.IndexFunc(fullDashboard.Servers, matchDashboard)
+				if serverIndex < 0 || fullServerIndex < 0 || dashboardIndex < 0 || fullDashboardIndex < 0 {
+					t.Fatalf("projection for %s omitted %s", credential, name)
 				}
-				if !reflect.DeepEqual(patch.Servers[i], fullRows[index]) || !reflect.DeepEqual(patch.Dashboard.Servers[i], fullDashboard.Servers[index]) {
+				if !reflect.DeepEqual(patch.Servers[serverIndex], fullRows[fullServerIndex]) ||
+					!reflect.DeepEqual(patch.Dashboard.Servers[dashboardIndex], fullDashboard.Servers[fullDashboardIndex]) {
 					t.Fatalf("targeted %s for %s differs from its fleet projections", name, credential)
 				}
 			}

@@ -1,6 +1,9 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/binary"
+	"encoding/json"
 	"net/http"
 	"strconv"
 
@@ -156,6 +159,7 @@ type statusDashboardRisk struct {
 
 type statusDashboardRow struct {
 	Name              string                                          `json:"name"`
+	Version           string                                          `json:"version"`
 	LastUpdate        *observabilitypkg.DashboardUpdateHistory        `json:"last_update,omitempty"`
 	LastFailedUpdate  *observabilitypkg.DashboardUpdateHistory        `json:"last_failed_update,omitempty"`
 	AvgDurationMS     float64                                         `json:"avg_duration_ms,omitempty"`
@@ -172,7 +176,8 @@ type statusDashboardRow struct {
 
 type statusDashboardSummary struct {
 	dashboardSummaryResponse
-	Servers []statusDashboardRow `json:"servers"`
+	Servers     []statusDashboardRow `json:"servers"`
+	RowsVersion string               `json:"rows_version"`
 }
 
 type statusChangedHosts struct {
@@ -221,10 +226,11 @@ func handleStatusChangedHosts(c *gin.Context, deps AppDeps) {
 		}
 		return
 	}
-	selected := make([]observabilitypkg.DashboardServerSummary, 0, len(names))
-	for _, server := range summary.Servers {
-		if _, ok := names[server.Name]; ok {
-			selected = append(selected, server)
+	dashboard := projectStatusDashboard(summary)
+	selected := make([]statusDashboardRow, 0, len(names))
+	for _, row := range dashboard.Servers {
+		if _, ok := names[row.Name]; ok {
+			selected = append(selected, row)
 		}
 	}
 	// Apply inventory, dashboard rows, and fleet totals together or read a
@@ -233,24 +239,36 @@ func handleStatusChangedHosts(c *gin.Context, deps AppDeps) {
 		stale()
 		return
 	}
-	summary.Servers = selected
+	dashboard.Servers = selected
 	writeDashboardSummaryResponse(c, statusChangedHosts{
 		Servers:   projectStatusRows(statuses, contextAllows(c, "logs:read")),
-		Dashboard: projectStatusDashboard(summary),
+		Dashboard: dashboard,
 	})
 }
 
 func projectStatusDashboard(summary dashboardSummaryResponse) statusDashboardSummary {
 	rows := make([]statusDashboardRow, 0, len(summary.Servers))
+	var rowsVersion uint64
 	for _, server := range summary.Servers {
-		rows = append(rows, statusDashboardRow{
+		row := statusDashboardRow{
 			Name: server.Name, LastUpdate: server.LastUpdate, LastFailedUpdate: server.LastFailedUpdate,
 			AvgDurationMS: server.AvgDurationMS, DurationSamples: server.DurationSamples,
 			NextRun: server.NextRun, NoRun: server.NoRun, Health: server.Health,
 			Risk:     statusDashboardRisk{UpdateCVEs: server.Risk.UpdateCVEs},
 			Timeline: server.Timeline, Actions: server.Actions,
 			RecommendedAction: server.RecommendedAction, ApprovalTriage: server.ApprovalTriage,
-		})
+		}
+		// Fingerprint the compact row without its version or any summary
+		// timestamps. Stale facts, CVE evidence and policy windows can change
+		// on an untouched host even when no dashboard event is published.
+		encoded, err := json.Marshal(row)
+		if err == nil {
+			digest := sha256.Sum256(encoded)
+			version := binary.BigEndian.Uint64(digest[:8])
+			row.Version = strconv.FormatUint(version, 16)
+			rowsVersion ^= version
+		}
+		rows = append(rows, row)
 	}
-	return statusDashboardSummary{dashboardSummaryResponse: summary, Servers: rows}
+	return statusDashboardSummary{dashboardSummaryResponse: summary, Servers: rows, RowsVersion: strconv.FormatUint(rowsVersion, 16)}
 }

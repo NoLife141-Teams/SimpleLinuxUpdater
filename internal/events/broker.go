@@ -7,6 +7,7 @@ import (
 
 type Event struct {
 	Reason     string `json:"reason"`
+	Audit      bool   `json:"audit,omitempty"`
 	ServerName string `json:"server_name,omitempty"`
 	JobID      string `json:"job_id,omitempty"`
 	Sequence   int64  `json:"sequence,omitempty"`

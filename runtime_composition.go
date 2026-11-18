@@ -210,12 +210,16 @@ func (c *runtimeComposition) Compose() AppDeps {
 	if deps.DashboardEventBroker == nil {
 		deps.DashboardEventBroker = events.NewBroker()
 	}
+	notifyAudit := deps.NotifyDashboardEvent
 	if deps.NotifyDashboardEvent == nil {
 		broker := deps.DashboardEventBroker
 		deps.NotifyDashboardEvent = func(reason string) {
 			if broker != nil {
 				broker.Publish(reason)
 			}
+		}
+		notifyAudit = func(reason string) {
+			broker.PublishEvent(events.Event{Reason: reason, Audit: true})
 		}
 		if deps.NotifyDashboardJob == nil {
 			deps.NotifyDashboardJob = func(reason string, job JobRecord) {
@@ -262,7 +266,7 @@ func (c *runtimeComposition) Compose() AppDeps {
 		})
 	}
 	if deps.AuditService == nil {
-		deps.AuditService = newAuditServiceWithHealthObservation(deps.DB, deps.NotifyDashboardEvent, func() (*time.Location, string) {
+		deps.AuditService = newAuditServiceWithHealthObservation(deps.DB, notifyAudit, func() (*time.Location, string) {
 			value := deps.ApplicationTime.Current()
 			return value.Location, value.DisplayName
 		}, deps.NotificationService, deps.Now, deps.HostHealthObservation, deps.MaintenanceCoordinator)

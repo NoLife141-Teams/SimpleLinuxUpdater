@@ -164,11 +164,14 @@ Standalone manual update transitions include a host name and a dashboard
 revision. Status groups up to 16 distinct names per burst and requests their
 compact inventory and dashboard rows together. The same response carries the
 authoritative global counters. The server still computes those counters from the
-full Dashboard Projection. The measured gain is in browser transfer and fewer
+full Dashboard Projection. A fingerprint of the compact rows lets the browser
+reject a partial update if other rows changed, including when host facts or CVE
+evidence expire independently. The measured gain is in browser transfer and fewer
 requests. Scheduled transitions, inventory changes, unrecognized events and
 reconnects retain full snapshots. A missed revision, missing host, changed
 inventory identity, overlapping read or rejected patch also triggers a fleet read.
-Job logs keep their independent sequence and bounded recovery.
+Job logs keep their independent sequence and bounded recovery. Contiguous
+persisted audit events refresh snapshots without requesting all active logs again.
 
 Run the standalone scenario with the same fixture on the reference
 `4088ea51e776d65477141101e867dd843609d6a7` and the candidate. To instrument the

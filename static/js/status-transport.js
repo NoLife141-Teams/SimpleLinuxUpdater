@@ -177,7 +177,7 @@
                         }
                     }
                     const streams = refreshStreamsByReason.get(payload.reason);
-                    queueDashboardRefresh(streams ?? allRefreshStreams, { recoverLogs: !streams });
+                    queueDashboardRefresh(streams ?? allRefreshStreams, { recoverLogs: !streams && payload.audit !== true });
                 });
                 candidate.addEventListener("error", () => {
                     if (!current()) return;

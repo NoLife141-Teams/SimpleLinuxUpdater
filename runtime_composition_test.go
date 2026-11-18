@@ -347,31 +347,49 @@ func TestRuntimeCompositionMapsJobLogResetToBroker(t *testing.T) {
 }
 
 func TestRuntimeCompositionScopesOnlyStandaloneUpdateTransitions(t *testing.T) {
-	broker := events.NewBroker()
-	deps := composeRuntimeForTest(t, newRuntimeComposition(AppDeps{
-		DashboardEventBroker: broker,
-	}))
+	app := newIsolatedTestApp(t)
+	broker := app.Deps.DashboardEventBroker
+	manager := app.Deps.CurrentJobManager()
 	ch := broker.Subscribe()
 	defer broker.Unsubscribe(ch)
 
-	for i, tc := range []struct {
-		job  JobRecord
-		host string
-	}{
-		{JobRecord{ServerName: "alpha", Kind: jobKindUpdate, Actor: "operator"}, "alpha"},
-		{JobRecord{ServerName: "alpha", Kind: jobKindUpdate, Actor: "system"}, ""},
-		{JobRecord{ServerName: "alpha", Kind: jobKindUpdate, Actor: "operator", ParentJobID: "scheduled"}, ""},
-		{JobRecord{ServerName: "alpha", Kind: jobKindScheduledScan, Actor: "operator"}, ""},
-	} {
-		deps.NotifyDashboardJob("job.update", tc.job)
+	nextEvent := func() events.Event {
+		t.Helper()
 		select {
 		case got := <-ch:
-			if got.Reason != "job.update" || got.Revision != uint64(i+1) || got.ServerName != tc.host {
-				t.Fatalf("transition for %+v produced event %+v", tc.job, got)
-			}
+			return got
 		case <-time.After(time.Second):
-			t.Fatal("transition didn't publish a dashboard invalidation")
+			t.Fatal("job didn't publish a dashboard invalidation")
+			return events.Event{}
 		}
+	}
+	for _, tc := range []struct {
+		job  internaljobs.CreateParams
+		host string
+	}{
+		{internaljobs.CreateParams{ServerName: "manual", Kind: jobKindUpdate, Actor: "operator"}, "manual"},
+		{internaljobs.CreateParams{ServerName: "scheduled", Kind: jobKindUpdate, Actor: "system"}, ""},
+		{internaljobs.CreateParams{ServerName: "dependent", Kind: jobKindUpdate, Actor: "operator", ParentJobID: "scheduled"}, ""},
+		{internaljobs.CreateParams{ServerName: "scan", Kind: jobKindScheduledScan, Actor: "operator"}, ""},
+	} {
+		job, err := manager.CreateJob(tc.job)
+		if err != nil {
+			t.Fatal(err)
+		}
+		created := nextEvent()
+		if err := manager.Transition(job.ID, internaljobs.Intent{Kind: internaljobs.IntentStart}); err != nil {
+			t.Fatal(err)
+		}
+		got := nextEvent()
+		if got.Reason != "job.update" || got.Revision != created.Revision+1 || got.ServerName != tc.host {
+			t.Fatalf("transition for %+v produced event %+v", tc.job, got)
+		}
+	}
+	if err := app.Deps.AuditService.Record("operator", "", "server.update", "server", "manual", "success", "Inventory edited", nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := nextEvent(); got.Reason != "server.update" || !got.Audit || got.ServerName != "" {
+		t.Fatalf("persisted inventory audit produced event %+v", got)
 	}
 }
 

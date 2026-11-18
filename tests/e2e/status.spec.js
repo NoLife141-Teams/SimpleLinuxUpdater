@@ -639,7 +639,7 @@ test("APT upgrade log drawer renders carriage-return progress during refresh", a
         .toBeLessThanOrEqual(1);
 });
 
-test("scoped SSE refreshes only changed rows, then resynchronizes a gap or stale revision", async ({ page }) => {
+test("scoped SSE refreshes only changed rows and resynchronizes a gap or stale snapshot", async ({ page }) => {
     await page.addInitScript(() => {
         window.EventSource = class extends EventTarget {
             constructor() {
@@ -655,6 +655,19 @@ test("scoped SSE refreshes only changed rows, then resynchronizes a gap or stale
         makeServer("other-host", "done", [], { tags: ["stable"] }),
     ];
     await stubCompactStatus(page, () => servers);
+    const dashboardSnapshot = () => {
+        const summary = makeDashboardSummary(servers);
+        let version = 0;
+        summary.servers.forEach(row => {
+            const stamp = row.name === "scoped-host"
+                ? (summary.fleet.in_progress ? 3 : 1)
+                : (row.approval_triage.facts_state === "stale" ? 5 : 2);
+            row.version = stamp.toString(16);
+            version ^= stamp;
+        });
+        return { ...summary, rows_version: version.toString(16) };
+    };
+    await page.route("**/api/dashboard/summary?*", route => fulfillJson(route, dashboardSnapshot()));
     const waitForFleet = () => Promise.all(["/api/servers", "/api/dashboard/summary"].map(path =>
         page.waitForResponse(response => new URL(response.url()).pathname === path),
     ));
@@ -662,9 +675,7 @@ test("scoped SSE refreshes only changed rows, then resynchronizes a gap or stale
     await ensureAuthenticatedSession(page);
     const [inventoryResponse] = await initialFleet;
     const [scopedRow] = await inventoryResponse.json();
-    await expect.poll(() => page.evaluate(() => ["servers", "dashboard"].every(key =>
-        window.statusPageInteraction.getView().sync.streams[key].lastAcceptedRequestId > 0,
-    ))).toBe(true);
+    await expect(page.locator("#metric-done-hosts")).toHaveText("1");
     await page.locator("#search").fill("-host");
     await page.locator('#servers-table button[data-select-host="scoped-host"]').click();
     const update = page.locator('#selected-host-panel button[data-action="update-server"]');
@@ -681,10 +692,9 @@ test("scoped SSE refreshes only changed rows, then resynchronizes a gap or stale
         const query = new URL(route.request().url()).searchParams;
         expect(query.getAll("server")).toEqual(["scoped-host"]);
         if (query.get("revision") === "5") return fulfillJson(route, { error: "stale" }, 409);
-        expect(query.get("revision")).toBe("1");
-        const summary = makeDashboardSummary(servers);
+        const summary = dashboardSnapshot();
         return fulfillJson(route, {
-            servers: [{ ...scopedRow, status: "updating" }],
+            servers: [{ ...scopedRow, status: servers[0].status }],
             dashboard: { ...summary, servers: summary.servers.filter(row => row.name === "scoped-host") },
         });
     });
@@ -700,10 +710,21 @@ test("scoped SSE refreshes only changed rows, then resynchronizes a gap or stale
     await expect(status("scoped-host")).toHaveText("updating");
     await expect(status("other-host")).toHaveText("done");
     expect(reads.splice(0)).toEqual(["/api/status/changed-hosts"]);
-    expect(await page.evaluate(() => window.statusPageInteraction.getView().dashboardSnapshot.fleet.in_progress)).toBe(1);
+    await expect(page.locator("#metric-active-runs")).toHaveText("1");
     await expect(page.locator("#search")).toHaveValue("-host");
     await expect(update).toHaveCount(0);
     await expect(logs).toBeFocused();
+
+    // Facts on a different host can expire without a dashboard event.
+    servers[0] = { ...servers[0], status: "idle" };
+    servers[1] = { ...servers[1], facts_state: "stale" };
+    const driftRecovery = waitForFleet();
+    await send(2);
+    await driftRecovery;
+    await expect(status("scoped-host")).toHaveText("idle");
+    await expect(page.locator("#metric-active-runs")).toHaveText("0");
+    await expect(page.locator("#metric-stale-facts")).toHaveText("1");
+    expect(reads.splice(0).sort()).toEqual(["/api/dashboard/summary", "/api/servers", "/api/status/changed-hosts"]);
 
     // A skipped revision may have renamed a different host.
     servers[1] = makeServer("renamed-host", "idle");
@@ -714,14 +735,14 @@ test("scoped SSE refreshes only changed rows, then resynchronizes a gap or stale
     await expect(status("renamed-host")).toHaveText("idle");
     expect(reads.splice(0).sort()).toEqual(["/api/dashboard/summary", "/api/servers"]);
 
-    servers[0] = { ...servers[0], status: "idle" };
+    servers[0] = { ...servers[0], status: "updating" };
     const staleRecovery = waitForFleet();
     await send(5);
     await staleRecovery;
-    await expect(status("scoped-host")).toHaveText("idle");
+    await expect(status("scoped-host")).toHaveText("updating");
     expect(reads.splice(0).sort()).toEqual(["/api/dashboard/summary", "/api/servers", "/api/status/changed-hosts"]);
-    await expect(update).toBeVisible();
-    expect(await page.evaluate(() => window.statusPageInteraction.getView().dashboardSnapshot.fleet.in_progress)).toBe(0);
+    await expect(update).toHaveCount(0);
+    await expect(page.locator("#metric-active-runs")).toHaveText("1");
 
     servers.pop();
     const removal = waitForFleet();

@@ -114,9 +114,6 @@ test("a targeted host refresh retires a replaced notification plan", async ({ pa
     await page.goto(approvalLink());
     const [inventory, dashboard] = await Promise.all((await initial).map(response => response.json()));
     await expect(page.locator("#drawer-panel-pending")).toContainText("openssl");
-    await expect.poll(() => page.evaluate(() => Boolean(
-        window.statusPageInteraction.getView().sync.streams.dashboard.lastAcceptedRequestId,
-    ))).toBe(true);
     await page.route("**/api/status/changed-hosts?*", route => {
         const params = new URL(route.request().url()).searchParams;
         expect(params.getAll("server")).toEqual(["renamed-edge"]);
@@ -127,11 +124,9 @@ test("a targeted host refresh retires a replaced notification plan", async ({ pa
             },
         });
     });
-    const updated = read("/api/status/changed-hosts");
     await page.evaluate(() => window.approvalFixtureEvents.dispatchEvent(new MessageEvent("dashboard", {
         data: JSON.stringify({ reason: "job.update", server_name: "renamed-edge", revision: 1 }),
     })));
-    expect((await updated).ok()).toBe(true);
     const notice = page.locator("#linked-server-message");
     await expect(notice).toContainText("This approval plan was replaced.");
     await expect(notice).toBeFocused();

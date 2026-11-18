@@ -206,10 +206,7 @@ func (a *backupAutomation) next(c backupScheduleConfig, after time.Time) string 
 	return backupStamp(nextBackupOccurrence(c, after, a.deps.ApplicationTime.Current()))
 }
 
-func (a *backupAutomation) projectedNextAt(s backupAutomationState, now time.Time) string {
-	if s.PendingAt != "" {
-		return s.RetryAt
-	}
+func (a *backupAutomation) projectedRegularNextAt(s backupAutomationState, now time.Time) string {
 	interpretation := a.deps.ApplicationTime.Current()
 	if s.Timezone != interpretation.DisplayName {
 		return backupStamp(nextBackupOccurrence(s.Config, now, interpretation))
@@ -221,15 +218,22 @@ func (a *backupAutomation) projectedNextAt(s backupAutomationState, now time.Tim
 // the archive catalog, consuming an occurrence or acquiring maintenance.
 func (a *backupAutomation) nextScheduledOccurrence(ctx context.Context) (time.Time, error) {
 	s, err := a.readState(ctx)
-	if err != nil || !s.Config.Enabled || s.Approval == "" || s.PendingManual {
+	if err != nil || !s.Config.Enabled || s.Approval == "" {
 		return time.Time{}, err
 	}
 	now := a.now()
-	next := parseBackupStamp(a.projectedNextAt(s, now))
-	if next.Before(now.Truncate(time.Minute)) {
-		return time.Time{}, nil
+	next := parseBackupStamp(a.projectedRegularNextAt(s, now))
+	if s.PendingAt != "" {
+		retry := parseBackupStamp(s.RetryAt)
+		deadline := parseBackupStamp(s.PendingAt).Add(backupDeferralWindow)
+		if !s.PendingManual && !retry.IsZero() && retry.Before(deadline) && now.Before(deadline) {
+			next = retry
+		} else if !next.After(retry) || !next.After(deadline) {
+			// Pending work can still consume the tick for this regular occurrence.
+			return time.Time{}, nil
+		}
 	}
-	if s.PendingAt != "" && !next.Before(parseBackupStamp(s.PendingAt).Add(backupDeferralWindow)) {
+	if next.Before(now.Truncate(time.Minute)) {
 		return time.Time{}, nil
 	}
 	root, _, _, binding, validationErr := a.destination(false)
@@ -435,8 +439,10 @@ func (a *backupAutomation) statusLocked(ctx context.Context) (backupAutomationSt
 		if validationErr != nil {
 			status.Message = validationErr.Error()
 		}
+	} else if s.PendingAt != "" {
+		status.NextAt = s.RetryAt
 	} else {
-		status.NextAt = a.projectedNextAt(s, a.now())
+		status.NextAt = a.projectedRegularNextAt(s, a.now())
 	}
 	return status, nil
 }

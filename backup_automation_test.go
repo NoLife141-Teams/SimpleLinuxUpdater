@@ -167,6 +167,31 @@ func TestPolicyPreviewWarnsAboutEffectiveAutomaticBackup(t *testing.T) {
 		check(t, "02:30", true, "2026-10-25 02:30 CEST (Europe/Paris, UTC+02:00)")
 		check(t, "03:00", true, "")
 	})
+	for _, tt := range []struct {
+		name, pendingAt string
+		manual          bool
+	}{
+		{name: "retry beyond deferral window", pendingAt: "2026-10-24T23:30:00Z"},
+		{name: "manual retry", pendingAt: "2026-10-25T00:00:00Z", manual: true},
+	} {
+		t.Run(tt.name+" leaves next automatic occurrence visible", func(t *testing.T) {
+			state := backupAutomationStateForTest(t, automation)
+			pending := state
+			pending.PendingAt = tt.pendingAt
+			pending.PendingManual = tt.manual
+			pending.RetryAt = "2026-10-25T00:30:45Z"
+			if err := automation.save(ctx, pending); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				if err := automation.save(ctx, state); err != nil {
+					t.Fatal(err)
+				}
+			})
+			check(t, "02:30", true, "")
+			check(t, "03:00", true, "2026-10-25 03:00 CET (Europe/Paris, UTC+01:00)")
+		})
+	}
 	t.Run("suspended and disabled backups are silent", func(t *testing.T) {
 		if err := automation.SuspendAfterRestore(ctx); err != nil {
 			t.Fatal(err)

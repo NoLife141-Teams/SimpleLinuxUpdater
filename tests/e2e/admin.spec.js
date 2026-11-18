@@ -828,6 +828,11 @@ test("admin policy preview explains canonical DST, no-run, and empty-target outc
                     message:
                         "One or more enabled policies target shared servers during the same projected occurrence.",
                 },
+                {
+                    code: "automatic_backup_overlap",
+                    message:
+                        "An automatic backup is due at 2026-11-02 01:30 EST (America/Toronto, UTC-05:00). If both operations start in this minute, the backup may be deferred or the scheduled maintenance may be skipped.",
+                },
             ],
             informational_facts: [
                 {
@@ -862,6 +867,15 @@ test("admin policy preview explains canonical DST, no-run, and empty-target outc
                         },
                     ],
                     admission_outcome: "blocked_no_run",
+                },
+                {
+                    local_civil_time: "2026-11-02 01:30",
+                    timezone: "America/Toronto",
+                    offset: "-05:00",
+                    abbreviation: "EST",
+                    scheduled_for_utc: "2026-11-02T06:30:00.000000000Z",
+                    matched_server_count: 1,
+                    admission_outcome: "admitted",
                 },
             ],
             schedule_conflicts: [
@@ -920,6 +934,9 @@ test("admin policy preview explains canonical DST, no-run, and empty-target outc
     );
     await expect(page.locator("#policy-preview-warnings")).toContainText(
         "blocked by an applicable no-run window",
+    );
+    await expect(page.locator("#policy-preview-warnings")).toContainText(
+        "An automatic backup is due at 2026-11-02 01:30 EST (America/Toronto, UTC-05:00)",
     );
     await expect(page.locator("#policy-preview-conflicts")).toContainText(
         "Nightly production",
@@ -1008,6 +1025,9 @@ test("admin policy preview explains canonical DST, no-run, and empty-target outc
     );
     await expect(page.locator("#policy-preview-warnings")).toContainText(
         "No current server would be targeted",
+    );
+    await expect(page.locator("#policy-preview-warnings")).not.toContainText(
+        "An automatic backup is due",
     );
     await expect(page.locator("#policy-preview-conflicts")).toContainText(
         "No enabled policy overlap",

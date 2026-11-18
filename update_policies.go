@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -350,6 +351,14 @@ func handleUpdatePolicyPreviewWithDeps(c *gin.Context, deps AppDeps) {
 	if len(preview.ValidationErrors) > 0 {
 		c.JSON(http.StatusUnprocessableEntity, preview)
 		return
+	}
+	if a := deps.BackupAutomation; a != nil && len(preview.UpcomingOccurrences) > 0 {
+		next, err := a.nextScheduledOccurrence(c.Request.Context())
+		if err != nil {
+			log.Print("automatic backup schedule unavailable for policy preview")
+		} else {
+			preview.WarnAutomaticBackupOverlap(next)
+		}
 	}
 	c.JSON(http.StatusOK, preview)
 }

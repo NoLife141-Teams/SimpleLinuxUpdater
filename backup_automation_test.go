@@ -22,6 +22,7 @@ import (
 	auditpkg "debian-updater/internal/audit"
 	internalbackup "debian-updater/internal/backup"
 	maintenancepkg "debian-updater/internal/maintenance"
+	policypkg "debian-updater/internal/policies"
 )
 
 func newBackupAutomationTest(t *testing.T) (*testApp, *backupAutomation, *time.Time) {
@@ -83,6 +84,100 @@ func TestBackupAutomationCivilScheduleDST(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestPolicyPreviewWarnsAboutEffectiveAutomaticBackup(t *testing.T) {
+	app, automation, _ := newBackupAutomationTest(t)
+	ctx := context.Background()
+	config := defaultBackupSchedule()
+	config.Enabled, config.Time = true, "02:30"
+	if _, err := automation.Configure(ctx, config); err != nil {
+		t.Fatal(err)
+	}
+	// The saved schedule is still in UTC until the next automation tick. Preview
+	// must project both occurrences in the new zone without rebasing persistence.
+	if _, err := app.Deps.ApplicationTime.Configure(ctx, "Europe/Paris"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.Deps.ServerInventoryService.Create(Server{
+		Name: "backup-preview", Host: "preview.example.test", User: "root",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	cookie := app.authenticate(t)
+	check := func(t *testing.T, at string, enabled bool, want string) {
+		t.Helper()
+		policy := UpdatePolicy{Name: "Preview backup overlap", Enabled: enabled, TargetServers: []string{"backup-preview"},
+			CadenceKind: "daily", TimeLocal: at, ExecutionMode: updatePolicyExecutionScanOnly, PackageScope: updatePolicyPackageScopeFull}
+		payload, err := json.Marshal(policy)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rec := performContractRequest(app.Handler, http.MethodPost, "/api/update-policies/preview", bytes.NewBuffer(payload), cookie, true)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("preview status %d: %s", rec.Code, rec.Body.String())
+		}
+		var preview policypkg.PreviewResponse
+		if err := json.Unmarshal(rec.Body.Bytes(), &preview); err != nil {
+			t.Fatal(err)
+		}
+		var message string
+		for _, diagnostic := range preview.OperationalWarnings {
+			if diagnostic.Code == "automatic_backup_overlap" {
+				message = diagnostic.Message
+			}
+		}
+		if (want == "" && message != "") || (want != "" && !strings.Contains(message, want)) {
+			t.Fatalf("backup warning = %q, want %q", message, want)
+		}
+	}
+
+	t.Run("first occurrence of repeated local time", func(t *testing.T) {
+		check(t, "02:30", true, "2026-10-25 02:30 CEST (Europe/Paris, UTC+02:00)")
+		state := backupAutomationStateForTest(t, automation)
+		if state.Timezone != "UTC" || state.NextAt != "2026-10-25T02:30:00Z" {
+			t.Fatalf("preview modified the persisted backup schedule: %+v", state)
+		}
+	})
+	t.Run("different minute and disabled policy are silent", func(t *testing.T) {
+		check(t, "02:31", true, "")
+		check(t, "02:30", false, "")
+	})
+	t.Run("configuration change moves the warning", func(t *testing.T) {
+		config.Time = "03:00"
+		if _, err := automation.Configure(ctx, config); err != nil {
+			t.Fatal(err)
+		}
+		check(t, "02:30", true, "")
+		check(t, "03:00", true, "2026-10-25 03:00 CET (Europe/Paris, UTC+01:00)")
+	})
+	t.Run("automatic retry uses its projected minute", func(t *testing.T) {
+		state := backupAutomationStateForTest(t, automation)
+		pending := state
+		pending.PendingAt = "2026-10-25T00:00:00Z"
+		pending.RetryAt = "2026-10-25T00:30:45Z"
+		if err := automation.save(ctx, pending); err != nil {
+			t.Fatal(err)
+		}
+		defer func() {
+			if err := automation.save(ctx, state); err != nil {
+				t.Fatal(err)
+			}
+		}()
+		check(t, "02:30", true, "2026-10-25 02:30 CEST (Europe/Paris, UTC+02:00)")
+		check(t, "03:00", true, "")
+	})
+	t.Run("suspended and disabled backups are silent", func(t *testing.T) {
+		if err := automation.SuspendAfterRestore(ctx); err != nil {
+			t.Fatal(err)
+		}
+		check(t, "03:00", true, "")
+		config.Enabled = false
+		if _, err := automation.Configure(ctx, config); err != nil {
+			t.Fatal(err)
+		}
+		check(t, "03:00", true, "")
+	})
 }
 
 func TestBackupAutomationVerifiedPublicationRetentionAndHealth(t *testing.T) {

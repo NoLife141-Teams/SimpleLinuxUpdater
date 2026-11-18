@@ -566,16 +566,22 @@
             if (lifecycle.active) return;
             lifecycle.init();
             unconfirmedSubmission = null;
-            batchID = new URLSearchParams(window.location.search).get("maintenance_batch") || "";
+            const linkedBatch = new URLSearchParams(window.location.search).has("maintenance_batch");
+            const returnTo = document.body?.dataset.statusReturnTo || "";
+            batchID = new URLSearchParams(returnTo.slice(1)).get("maintenance_batch") || "";
             if (window.canUseScope("logs:read")) {
                 mountBatchHistory();
-                document.getElementById("status-batch-panel").open = Boolean(batchID);
-                void readBatch();
+                if (linkedBatch && !batchID) {
+                    showUnavailableBatch();
+                } else {
+                    document.getElementById("status-batch-panel").open = Boolean(batchID);
+                    void readBatch();
+                }
                 lifecycle.listen(document.getElementById("status-batch-rows"), "click", (event) => {
                     const button = event.target.closest("button[data-action='retry-batch-host']");
                     if (button) retryBatchHost(button.dataset.name);
                 });
-            } else if (batchID) showUnavailableBatch();
+            } else if (linkedBatch) showUnavailableBatch();
             lifecycle.listen(document.getElementById("bulk-removal-review"), "click", (event) => {
                 const button = event.target.closest("button[data-action='review-kept-back-removals']");
                 if (button) reviewKeptBackApproval(button.dataset.name, button.dataset.serverIdentity);

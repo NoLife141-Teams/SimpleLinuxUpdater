@@ -374,4 +374,12 @@ func TestStatusBatchShowsFailedHostFactsCollection(t *testing.T) {
 	if host := readHost(); host.State != "failed" || host.Message != "Facts refresh failed" || host.Retryable {
 		t.Fatalf("failed collection was not recovered from its audit: %+v", host)
 	}
+	historyRec := identityRequest(app, "GET", "/api/status/batches", cookie, "", nil)
+	var history statusBatchHistoryPage
+	if historyRec.Code != http.StatusOK || json.Unmarshal(historyRec.Body.Bytes(), &history) != nil || len(history.Batches) != 1 {
+		t.Fatalf("read batch history: %d %s", historyRec.Code, historyRec.Body.String())
+	}
+	if batch := history.Batches[0]; batch.Terminal != 1 || batch.NeedsVerification != 0 {
+		t.Fatalf("history did not count the audit-recovered failure as finished: %+v", batch)
+	}
 }

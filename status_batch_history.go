@@ -26,6 +26,11 @@ type statusBatchHistoryPage struct {
 	NextCursor string               `json:"next_cursor,omitempty"`
 }
 
+type statusBatchHistoryRecord struct {
+	batch  statusBatch
+	active bool
+}
+
 func (s *statusBatchService) history(c *gin.Context) {
 	setNoStoreHeaders(c)
 	principal, ok := principalForContext(c)
@@ -43,9 +48,8 @@ func (s *statusBatchService) history(c *gin.Context) {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Maintenance batch storage is unavailable"})
 		return
 	}
-	s.activeMu.RLock()
-	page, err := readStatusBatchHistory(c.Request.Context(), db, principal.Account.ID, before, s.active)
-	s.activeMu.RUnlock()
+	ctx := c.Request.Context()
+	records, err := s.readBatchHistory(ctx, db, principal.Account.ID, before)
 	if errors.Is(err, sql.ErrNoRows) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Maintenance batch history cursor not found"})
 		return
@@ -54,23 +58,45 @@ func (s *statusBatchService) history(c *gin.Context) {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Could not read maintenance batch history"})
 		return
 	}
+	page := statusBatchHistoryPage{Batches: make([]statusBatchSummary, 0, min(len(records), statusBatchHistorySize))}
+	if len(records) > statusBatchHistorySize {
+		records = records[:statusBatchHistorySize]
+		page.NextCursor = records[len(records)-1].batch.ID
+	}
 	interpretation := s.deps.ApplicationTime.Current()
-	for i := range page.Batches {
-		batch := &page.Batches[i]
-		batch.CreatedAtDisplay, _ = interpretation.Format(batch.CreatedAt, "")
+	for _, record := range records {
+		batch := &record.batch
+		s.projectBatch(ctx, db, batch, record.active)
+		display, _ := interpretation.Format(batch.CreatedAt, "")
+		summary := statusBatchSummary{ID: batch.ID, Action: batch.Action, CreatedAt: batch.CreatedAt, CreatedAtDisplay: display}
+		for _, host := range batch.Hosts {
+			switch host.State {
+			case "queued", "admitting", "accepted", "running", "waiting_approval":
+				summary.Pending++
+			case "completed", "failed", "refused", "interrupted":
+				summary.Terminal++
+			default:
+				summary.NeedsVerification++
+			}
+		}
+		page.Batches = append(page.Batches, summary)
 	}
 	c.JSON(http.StatusOK, page)
 }
 
-func readStatusBatchHistory(ctx context.Context, db *sql.DB, account int64, before string, active map[string]struct{}) (statusBatchHistoryPage, error) {
-	page := statusBatchHistoryPage{Batches: make([]statusBatchSummary, 0, statusBatchHistorySize+1)}
-	pageQuery := `SELECT id, action, created_at FROM status_action_batches WHERE account_id = ?`
+func (s *statusBatchService) readBatchHistory(ctx context.Context, db *sql.DB, account int64, before string) ([]statusBatchHistoryRecord, error) {
+	// Read the current page and its active markers together. Project after
+	// closing the rows so audit reconciliation can use the database connection.
+	s.activeMu.RLock()
+	defer s.activeMu.RUnlock()
+	var records []statusBatchHistoryRecord
+	pageQuery := `SELECT id, action, created_at, actor FROM status_action_batches WHERE account_id = ?`
 	args := []any{account}
 	if before != "" {
 		var created string
 		err := db.QueryRowContext(ctx, `SELECT created_at FROM status_action_batches WHERE account_id = ? AND id = ?`, account, before).Scan(&created)
 		if err != nil {
-			return page, err
+			return nil, err
 		}
 		pageQuery += ` AND (created_at, id) < (?, ?)`
 		args = append(args, created, before)
@@ -78,41 +104,31 @@ func readStatusBatchHistory(ctx context.Context, db *sql.DB, account int64, befo
 	pageQuery += ` ORDER BY created_at DESC, id DESC LIMIT ?`
 	args = append(args, statusBatchHistorySize+1)
 	rows, err := db.QueryContext(ctx, `WITH page AS (`+pageQuery+`)
-		SELECT p.id, p.action, p.created_at, COUNT(h.name),
-			COUNT(*) FILTER (WHERE h.state = 'queued'),
-			COUNT(*) FILTER (WHERE h.state = 'admitting'),
-			COUNT(*) FILTER (WHERE h.state = 'accepted' AND j.status IN ('queued', 'running', 'waiting_approval')),
-			COUNT(*) FILTER (WHERE h.state = 'uncertain' OR (h.state = 'accepted' AND j.id IS NULL))
+		SELECT p.id, p.action, p.created_at, p.actor, COALESCE(h.name, ''), COALESCE(h.state, ''),
+			COALESCE(h.job_id, ''), COALESCE(j.status, '')
 		FROM page p
 		LEFT JOIN status_action_batch_hosts h ON h.batch_id = p.id
 		LEFT JOIN jobs j ON j.id = h.job_id
-		GROUP BY p.id, p.action, p.created_at
 		ORDER BY p.created_at DESC, p.id DESC`, args...)
 	if err != nil {
-		return page, err
+		return nil, err
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var batch statusBatchSummary
-		var total, queued, admitting int
-		if err := rows.Scan(&batch.ID, &batch.Action, &batch.CreatedAt, &total, &queued, &admitting,
-			&batch.Pending, &batch.NeedsVerification); err != nil {
-			return page, err
+		var batch statusBatch
+		var host statusBatchHost
+		if err := rows.Scan(&batch.ID, &batch.Action, &batch.CreatedAt, &batch.Actor,
+			&host.Name, &host.State, &host.JobID, &host.JobStatus); err != nil {
+			return nil, err
 		}
-		if _, running := active[batch.ID]; running {
-			batch.Pending += queued + admitting
-		} else {
-			batch.NeedsVerification += admitting
+		if len(records) == 0 || records[len(records)-1].batch.ID != batch.ID {
+			_, active := s.active[batch.ID]
+			records = append(records, statusBatchHistoryRecord{batch: batch, active: active})
 		}
-		batch.Terminal = total - batch.Pending - batch.NeedsVerification
-		page.Batches = append(page.Batches, batch)
+		if host.Name != "" {
+			current := &records[len(records)-1].batch
+			current.Hosts = append(current.Hosts, host)
+		}
 	}
-	if err := rows.Err(); err != nil {
-		return page, err
-	}
-	if len(page.Batches) > statusBatchHistorySize {
-		page.Batches = page.Batches[:statusBatchHistorySize]
-		page.NextCursor = page.Batches[len(page.Batches)-1].ID
-	}
-	return page, nil
+	return records, rows.Err()
 }

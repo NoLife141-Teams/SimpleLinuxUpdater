@@ -315,12 +315,12 @@ func (s *statusBatchService) readBatch(ctx context.Context, db *sql.DB, id strin
 	_, active := s.active[batch.ID]
 	s.activeMu.RUnlock()
 	if err == nil {
-		s.projectBatch(db, &batch, active)
+		s.projectBatch(ctx, db, &batch, active)
 	}
 	return batch, err
 }
 
-func (s *statusBatchService) projectBatch(db *sql.DB, batch *statusBatch, active bool) {
+func (s *statusBatchService) projectBatch(ctx context.Context, db *sql.DB, batch *statusBatch, active bool) {
 	for i := range batch.Hosts {
 		host := &batch.Hosts[i]
 		host.Retryable = host.canRetry(active, batch.Action)
@@ -332,10 +332,10 @@ func (s *statusBatchService) projectBatch(db *sql.DB, batch *statusBatch, active
 		case "admitting":
 			if !active {
 				host.State, host.Message = "uncertain", "Check the job and audit history before attempting this command again."
-				s.reconcileHostFromAudit(db, batch, host)
+				s.reconcileHostFromAudit(ctx, db, batch, host)
 			}
 		case "uncertain":
-			s.reconcileHostFromAudit(db, batch, host)
+			s.reconcileHostFromAudit(ctx, db, batch, host)
 		}
 		if host.JobID == "" || host.State != "accepted" {
 			continue
@@ -353,9 +353,9 @@ func (s *statusBatchService) projectBatch(db *sql.DB, batch *statusBatch, active
 	}
 }
 
-func (s *statusBatchService) reconcileHostFromAudit(db *sql.DB, batch *statusBatch, host *statusBatchHost) {
+func (s *statusBatchService) reconcileHostFromAudit(ctx context.Context, db *sql.DB, batch *statusBatch, host *statusBatchHost) {
 	var status, jobID, jobStatus, message string
-	err := db.QueryRow(`SELECT a.status, COALESCE(json_extract(a.meta_json, '$.job_id'), ''), COALESCE(j.status, ''), a.message
+	err := db.QueryRowContext(ctx, `SELECT a.status, COALESCE(json_extract(a.meta_json, '$.job_id'), ''), COALESCE(j.status, ''), a.message
 		FROM audit_events a LEFT JOIN jobs j ON j.id = json_extract(a.meta_json, '$.job_id')
 		WHERE a.actor = ? AND a.target_type = 'server' AND a.target_name = ? AND json_valid(a.meta_json)
 		  AND json_extract(a.meta_json, '$.maintenance_batch_id') = ?

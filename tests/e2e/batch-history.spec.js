@@ -36,7 +36,9 @@ test("Status opens an older batch after paging and restores its link after sign-
     await expect(page).toHaveURL(baseURL + target);
     await expect(batch).toContainText("batch-host-01");
 
-    await page.goto(`/?maintenance_batch=${"f".repeat(32)}`);
-    await expect(batch.locator("#status-batch-unavailable")).toBeVisible();
-    await expect(batch.getByRole("link", { name: "Link to this batch" })).toBeHidden();
+    for (const invalid of ["f".repeat(32), "latest", "", `${batchID}&maintenance_batch=${batchID}`]) {
+        await page.goto(`/?maintenance_batch=${invalid}`);
+        await expect(batch.locator("#status-batch-unavailable")).toBeVisible();
+        await expect(batch.getByRole("link", { name: "Link to this batch" })).toBeHidden();
+    }
 });

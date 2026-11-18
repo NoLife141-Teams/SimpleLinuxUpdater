@@ -161,6 +161,9 @@
                     renderServerState();
                 } else if (effect.type === "revealLinkedServer") {
                     revealLinkedServer(effect);
+                } else if (effect.type === "dismissLinkedServer") {
+                    document.getElementById("linked-server-message").hidden = true;
+                    syncDashboardFilterInputs();
                 } else if (effect.type === "render" && effect.scope === "pendingUpdates") {
                     statusViewScope.run(renderDrawer);
                 } else if (effect.type === "renderDrawerLogs") {
@@ -1720,11 +1723,11 @@
         function revealLinkedServer({ found }) {
             const message = document.getElementById("linked-server-message");
             const heading = document.getElementById("selected-host-title");
+            message.hidden = found;
             if (found) {
                 syncDashboardFilterInputs();
             } else {
                 message.textContent = "The linked server is no longer in the inventory.";
-                message.hidden = false;
             }
             lifecycle.requestAnimationFrame(() => (found ? heading : message).focus());
         }
@@ -2836,10 +2839,13 @@
         async function updateServer(name) {
             const lifetime = lifecycle.capture();
 
-            await runSingleHostAction(name, "update", "update", () =>
+            await runSingleHostAction(name, "update", "update", (plan) =>
                 postServerAction(
                     `/api/update/${encodeURIComponent(name)}`,
                     "Failed to start update.",
+                    plan.serverIdentity
+                        ? { headers: { "X-SLU-Server-Identity": plan.serverIdentity } }
+                        : {},
                 ),
             );
             if (!lifecycle.isCurrent(lifetime)) return;

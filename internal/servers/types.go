@@ -22,6 +22,7 @@ var (
 	ErrNotFound            = errors.New("server not found")
 	ErrActionInProgress    = errors.New("action already in progress")
 	ErrDisabled            = errors.New("server is disabled; enable it in Manage Servers before starting maintenance")
+	ErrIdentityChanged     = errors.New("server identity changed")
 	ErrActionNotAllowed    = errors.New("action is not available for the current server status")
 	ErrFingerprintMismatch = errors.New("host key fingerprint mismatch")
 )
@@ -427,8 +428,9 @@ func (s *State) BeginPackageMutation(name, newStatus string) (Server, error) {
 }
 
 type ActionAdmissionOptions struct {
-	PackageMutation bool
-	AllowedStatuses map[string]bool
+	PackageMutation        bool
+	AllowedStatuses        map[string]bool
+	ExpectedServerIdentity string
 }
 
 func (s *State) beginAction(name, newStatus string, packageMutation bool) (Server, error) {
@@ -454,6 +456,9 @@ func (s *State) BeginActionWithOptions(name, newStatus string, opts ActionAdmiss
 	server, found := s.FindByNameLocked(name)
 	if !found {
 		return Server{}, nil, sql.ErrNoRows
+	}
+	if opts.ExpectedServerIdentity != "" && server.Identity != opts.ExpectedServerIdentity {
+		return Server{}, nil, ErrIdentityChanged
 	}
 	if server.Disabled {
 		return Server{}, nil, ErrDisabled

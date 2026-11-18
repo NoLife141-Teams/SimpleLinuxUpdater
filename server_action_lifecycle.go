@@ -28,6 +28,7 @@ type serverActionLifecycleResult struct {
 }
 
 type serverActionStartSpec struct {
+	expectedServerIdentity string
 	status                 string
 	jobKind                string
 	auditAction            string
@@ -73,15 +74,16 @@ func newServerActionLifecycle(deps AppDeps, audit func(action, targetType, targe
 	}
 }
 
-func (l *serverActionLifecycle) StartUpdate(name, actor, clientIP string) serverActionLifecycleResult {
+func (l *serverActionLifecycle) StartUpdate(name, actor, clientIP, expectedServerIdentity string) serverActionLifecycleResult {
 	return l.startAction(name, actor, clientIP, "", serverActionStartSpec{
-		status:          "updating",
-		packageMutation: true,
-		jobKind:         jobKindUpdate,
-		auditAction:     "update.start",
-		startFailure:    "Failed to start update",
-		createFailure:   "Failed to create update job",
-		successMessage:  "Update started",
+		expectedServerIdentity: expectedServerIdentity,
+		status:                 "updating",
+		packageMutation:        true,
+		jobKind:                jobKindUpdate,
+		auditAction:            "update.start",
+		startFailure:           "Failed to start update",
+		createFailure:          "Failed to create update job",
+		successMessage:         "Update started",
 		runWithJob: func(service *UpdateService, server Server, actor, clientIP string, policy RetryPolicy, jobID, _ string) {
 			service.RunUpdateJob(UpdateRunRequest{
 				Server:   server,
@@ -264,8 +266,15 @@ func (l *serverActionLifecycle) startAction(name, actor, clientIP, sudoPassword 
 	}
 	server, admittedSnapshot, err := l.serverState.BeginActionWithOptions(name, spec.status, serverpkg.ActionAdmissionOptions{
 		PackageMutation: spec.packageMutation, AllowedStatuses: spec.allowedStatuses,
+		ExpectedServerIdentity: spec.expectedServerIdentity,
 	})
 	if err != nil {
+		if errors.Is(err, serverpkg.ErrIdentityChanged) {
+			message := "The server has changed. Review the current server before starting an update check."
+			retryMeta["reason_code"] = "server_identity_changed"
+			l.recordAudit(spec.auditAction, name, "ignored", message, retryMeta)
+			return jsonResult(http.StatusConflict, message)
+		}
 		if errors.Is(err, serverpkg.ErrDisabled) {
 			retryMeta["reason_code"] = serverpkg.MaintenanceReadinessDisabled
 			l.recordAudit(spec.auditAction, name, "ignored", err.Error(), retryMeta)

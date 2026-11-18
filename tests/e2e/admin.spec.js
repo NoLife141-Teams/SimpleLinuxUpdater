@@ -673,7 +673,10 @@ test("a skipped Scheduled Run opens a fresh update check for the current host", 
         }),
     );
     await page.route("**/api/update/*", (route) => {
-        updates.push(decodeURIComponent(new URL(route.request().url()).pathname.split("/").at(-1)));
+        updates.push({
+            name: decodeURIComponent(new URL(route.request().url()).pathname.split("/").at(-1)),
+            identity: route.request().headers()["x-slu-server-identity"],
+        });
         return fulfillJson(route, { job_id: "fresh-update-check" });
     });
     await page.evaluate((name) => {
@@ -697,7 +700,7 @@ test("a skipped Scheduled Run opens a fresh update check for the current host", 
     const update = page.locator("#selected-host-panel").getByRole("button", { name: "Update", exact: true });
     await expect(update).toBeEnabled();
     await update.click();
-    await expect.poll(() => updates).toEqual([target]);
+    await expect.poll(() => updates).toEqual([{ name: target, identity: identities[target] }]);
 
     await page.goto(link(disabled));
     await expect(heading).toHaveText(disabled);
@@ -706,7 +709,7 @@ test("a skipped Scheduled Run opens a fresh update check for the current host", 
 
     await page.goto("/?server_identity=deleted-server");
     await expect(page.getByText("The linked server is no longer in the inventory.")).toBeFocused();
-    expect(updates).toEqual([target]);
+    expect(updates).toEqual([{ name: target, identity: identities[target] }]);
 });
 
 test("admin scheduled run history filters, paginates, and exposes existing investigation details", async ({

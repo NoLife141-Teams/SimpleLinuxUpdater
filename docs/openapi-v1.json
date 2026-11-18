@@ -1591,6 +1591,14 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "X-SLU-Server-Identity",
+            "in": "header",
+            "description": "Optional inventory identity from ServerStatus. A mismatch returns a conflict before the server is reserved for an update.",
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -4568,6 +4576,10 @@
           "upgrade_plan"
         ],
         "properties": {
+          "server_identity": {
+            "type": "string",
+            "description": "Stable inventory identity that survives a rename and changes when a deleted server is recreated."
+          },
           "name": {
             "type": "string"
           },

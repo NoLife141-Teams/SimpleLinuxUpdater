@@ -1878,9 +1878,8 @@ func registerProtectedPageRoutes(r *gin.Engine, deps AppDeps) {
 		setNoStoreHeaders(c)
 		view := operatorShellForContext(c, "status", "Status")
 		if identity := c.Query("server_identity"); identity != "" {
-			if _, exists := deps.ServerState.InventoryIdentities()[identity]; exists {
-				view.LinkedServerIdentity = identity
-			} else {
+			view.LinkedServerIdentity = identity
+			if _, exists := deps.ServerState.InventoryIdentities()[identity]; !exists {
 				view.LinkedServerError = "The linked server is no longer in the inventory."
 			}
 		} else if c.Query("server") != "" {
@@ -2356,7 +2355,7 @@ func registerServerAndActionRoutes(r *gin.Engine, deps AppDeps) {
 		lifecycle := newServerActionLifecycle(deps, func(action, targetType, targetName, status, message string, meta map[string]any) {
 			audit(c, action, targetType, targetName, status, message, meta)
 		})
-		writeServerActionLifecycleResult(c, lifecycle.StartUpdate(c.Param("name"), actorFromContext(c), clientIPFromContext(c)))
+		writeServerActionLifecycleResult(c, lifecycle.StartUpdate(c.Param("name"), actorFromContext(c), clientIPFromContext(c), c.GetHeader("X-SLU-Server-Identity")))
 	})
 
 	r.POST("/api/autoremove/:name", func(c *gin.Context) {

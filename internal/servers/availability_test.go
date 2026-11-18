@@ -98,6 +98,9 @@ func TestServerAvailabilityMigrationAndPersistence(t *testing.T) {
 	if err != nil || len(loaded) != 1 || loaded[0].Disabled {
 		t.Fatalf("legacy availability = %+v, %v", loaded, err)
 	}
+	if loaded[0].Identity == "" {
+		t.Fatal("schema migration did not allocate an identity for the existing server")
+	}
 	loaded[0].Disabled = true
 	if err := repo.Save(loaded, nil); err != nil {
 		t.Fatal(err)

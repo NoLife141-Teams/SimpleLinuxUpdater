@@ -513,7 +513,8 @@ a linked server, **Prepare a new update check** opens that host in Status.
 The link follows server renames. Deleted servers and historical entries with
 unknown identity show an explanation in the run history. Review the host’s
 current eligibility and select **Update** to check for packages. Any resulting
-package plan goes through the normal manual approval workflow.
+package plan goes through the normal manual approval workflow. Status checks the
+inventory identity again when reserving the server for an update.
 
 The existing missed-tick policy remains conservative: only the current minute
 can start a new occurrence. With an unchanged persisted scheduling state, the

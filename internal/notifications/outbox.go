@@ -297,6 +297,11 @@ func destinationConfigFingerprint(settings Settings, destination string) string 
 	return hex.EncodeToString(digest[:])
 }
 
+func outboxDeliveryID(intentID, destination string) string {
+	digest := sha256.Sum256([]byte(intentID + "\x00" + destination))
+	return hex.EncodeToString(digest[:])
+}
+
 func buildOutboxRows(intent DeliveryIntent, eventType string, destinations []string, now time.Time) ([]outboxRow, error) {
 	if strings.TrimSpace(intent.ID) == "" {
 		return nil, errors.New("notification delivery identity is required")
@@ -316,9 +321,8 @@ func buildOutboxRows(intent DeliveryIntent, eventType string, destinations []str
 	rows := make([]outboxRow, 0, len(destinations))
 	for _, destination := range destinations {
 		destination = strings.TrimSpace(destination)
-		digest := sha256.Sum256([]byte(intent.ID + "\x00" + destination))
 		rows = append(rows, outboxRow{
-			ID:          hex.EncodeToString(digest[:]),
+			ID:          outboxDeliveryID(intent.ID, destination),
 			Destination: destination,
 			EventType:   eventType,
 			Intent:      intent,

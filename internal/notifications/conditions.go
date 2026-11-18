@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"sort"
 	"strings"
 	"time"
@@ -15,16 +16,17 @@ import (
 // ConditionFact contains accepted domain facts only. Unknown observations must
 // be omitted, never translated into Active=false.
 type ConditionFact struct {
-	ID         string
-	EventType  string
-	TargetType string
-	TargetName string
-	Generation string
-	Active     bool
-	OneShot    bool
-	Message    string
-	MetaJSON   string
-	CreatedAt  string
+	ID             string
+	EventType      string
+	TargetType     string
+	TargetName     string
+	ServerIdentity string `json:",omitempty"`
+	Generation     string
+	Active         bool
+	OneShot        bool
+	Message        string
+	MetaJSON       string
+	CreatedAt      string
 }
 
 type Condition struct {
@@ -44,10 +46,74 @@ type ConditionBatch struct {
 type ConditionSource func(context.Context, string, []Condition) (ConditionBatch, error)
 
 type conditionState struct {
-	Cursor     string
-	Conditions map[string]Condition
-	Admissions map[string]bool
-	Reminders  map[string]string
+	Cursor             string
+	Conditions         map[string]Condition
+	Admissions         map[string]bool
+	Reminders          map[string]string
+	ApprovalAdmissions map[string][]approvalAdmission `json:",omitempty"`
+}
+
+type approvalAdmission struct {
+	ServerIdentity string `json:",omitempty"`
+	Generation     string
+	Fingerprint    string
+}
+
+func (admission approvalAdmission) intentID(conditionID string) string {
+	return "condition/approval-plan/" + url.PathEscape(conditionID) + "/" +
+		url.PathEscape(admission.ServerIdentity) + "/" + url.PathEscape(admission.Generation) + "/" + admission.Fingerprint
+}
+
+func (fact ConditionFact) approvalAdmission(fingerprint string) approvalAdmission {
+	return approvalAdmission{ServerIdentity: fact.ServerIdentity, Generation: fact.Generation, Fingerprint: fingerprint}
+}
+
+func (state *conditionState) hasApprovalAdmission(conditionID string, admission approvalAdmission) bool {
+	for _, previous := range state.ApprovalAdmissions[conditionID] {
+		// Older jobs can establish the plan's job and generation without an
+		// inventory identity. Preserve their admission when that data is absent.
+		if previous.Generation == admission.Generation && previous.Fingerprint == admission.Fingerprint &&
+			(previous.ServerIdentity == admission.ServerIdentity || previous.ServerIdentity == "" || admission.ServerIdentity == "") {
+			return true
+		}
+	}
+	return false
+}
+
+func (state *conditionState) recordApprovalAdmission(conditionID string, admission approvalAdmission) {
+	if state.ApprovalAdmissions == nil {
+		state.ApprovalAdmissions = make(map[string][]approvalAdmission)
+	}
+	state.ApprovalAdmissions[conditionID] = append(state.ApprovalAdmissions[conditionID], admission)
+}
+
+func episodeAdmissionID(condition Condition, fingerprint string) string {
+	return fmt.Sprintf("condition/%s/%d/%s", condition.Fact.ID, condition.Episode, fingerprint)
+}
+
+func conditionFingerprints(settings Settings) map[string]bool {
+	fingerprints := map[string]bool{}
+	for _, destination := range []string{DestinationWebhook, DestinationDiscord, DestinationTelegram} {
+		if fingerprint := destinationConfigFingerprint(settings, destination); fingerprint != "" {
+			fingerprints[fingerprint] = true
+		}
+	}
+	return fingerprints
+}
+
+func migrateEpisodeApprovalAdmissions(state *conditionState, fingerprints map[string]bool) {
+	for _, condition := range state.Conditions {
+		fact := condition.Fact
+		if fact.EventType != EventApprovalPublished || fact.Generation == "" {
+			continue
+		}
+		for fingerprint := range fingerprints {
+			admission := fact.approvalAdmission(fingerprint)
+			if state.Admissions[episodeAdmissionID(condition, fingerprint)] && !state.hasApprovalAdmission(fact.ID, admission) {
+				state.recordApprovalAdmission(fact.ID, admission)
+			}
+		}
+	}
 }
 
 func ensureConditionSchema(db *sql.DB) error {
@@ -101,6 +167,8 @@ func (s *Service) reconcileConditions(ctx context.Context) error {
 		return err
 	}
 	now := s.deps.Now().UTC()
+	fingerprints := conditionFingerprints(settings)
+	migrateEpisodeApprovalAdmissions(&state, fingerprints)
 	rows := []outboxRow{}
 	freshOneShots := map[string]bool{}
 	for _, fact := range batch.Facts {
@@ -151,8 +219,16 @@ func (s *Service) reconcileConditions(ctx context.Context) error {
 			if !destinationConfigured(settings, destination) {
 				continue
 			}
-			identity := fmt.Sprintf("condition/%s/%d/%s", fact.ID, condition.Episode, destinationConfigFingerprint(settings, destination))
-			if state.Admissions[identity] {
+			fingerprint := destinationConfigFingerprint(settings, destination)
+			identity := episodeAdmissionID(condition, fingerprint)
+			exactApproval := fact.EventType == EventApprovalPublished && fact.Generation != ""
+			admission := fact.approvalAdmission(fingerprint)
+			if exactApproval {
+				if state.hasApprovalAdmission(fact.ID, admission) {
+					continue
+				}
+				identity = admission.intentID(fact.ID)
+			} else if state.Admissions[identity] {
 				continue
 			}
 			intent := conditionIntent(condition)
@@ -161,9 +237,13 @@ func (s *Service) reconcileConditions(ctx context.Context) error {
 			if err != nil {
 				return err
 			}
-			admitted[0].DestinationFingerprint = destinationConfigFingerprint(settings, destination)
+			admitted[0].DestinationFingerprint = fingerprint
 			rows = append(rows, admitted...)
-			state.Admissions[identity] = true
+			if exactApproval {
+				state.recordApprovalAdmission(fact.ID, admission)
+			} else {
+				state.Admissions[identity] = true
+			}
 		}
 	}
 	for _, destination := range enabledDestinations(settings) {
@@ -197,7 +277,7 @@ func (s *Service) reconcileConditions(ctx context.Context) error {
 		rows = append(rows, admitted...)
 		state.Reminders[fingerprint] = now.Format(time.RFC3339Nano)
 	}
-	pruneConditionState(&state, settings, now)
+	pruneConditionState(&state, fingerprints, now)
 	raw, err := json.Marshal(state)
 	if err != nil {
 		return err
@@ -301,7 +381,18 @@ func (s *Service) conditionDeliveryEligible(ctx context.Context, row *outboxRow,
 		return false, err
 	}
 	condition, ok := state.Conditions[meta.ID]
-	if !ok || !condition.Fact.Active || condition.Episode != meta.Episode || !eventEnabled(settings.EventTypes, row.EventType) {
+	if !ok || !condition.Fact.Active || condition.Fact.EventType != row.EventType || !eventEnabled(settings.EventTypes, row.EventType) {
+		return false, nil
+	}
+	fact := condition.Fact
+	if row.EventType == EventApprovalPublished && fact.Generation != "" {
+		exactID := fact.approvalAdmission(row.DestinationFingerprint).intentID(fact.ID)
+		legacyID := episodeAdmissionID(condition, row.DestinationFingerprint)
+		legacyMatch := condition.Episode == meta.Episode && row.ID == outboxDeliveryID(legacyID, row.Destination)
+		if row.ID != outboxDeliveryID(exactID, row.Destination) && !legacyMatch {
+			return false, nil
+		}
+	} else if condition.Episode != meta.Episode {
 		return false, nil
 	}
 	row.Intent = conditionIntent(condition)
@@ -336,7 +427,7 @@ func isConditionEvent(event string) bool {
 
 // Keep per-target episode counters, but discard consumed terminal job facts and
 // obsolete admission fingerprints. Audit cursors prevent historical replay.
-func pruneConditionState(state *conditionState, settings Settings, now time.Time) {
+func pruneConditionState(state *conditionState, fingerprints map[string]bool, now time.Time) {
 	for id, condition := range state.Conditions {
 		updated, _ := time.Parse(time.RFC3339Nano, condition.UpdatedAt)
 		if (condition.Fact.OneShot || (!condition.Fact.Active && condition.Fact.EventType == EventApprovalPublished)) && !updated.IsZero() && now.Sub(updated) > defaultOutboxRetention {
@@ -344,21 +435,35 @@ func pruneConditionState(state *conditionState, settings Settings, now time.Time
 		}
 	}
 	keep := map[string]bool{}
-	fingerprints := map[string]bool{}
-	for _, destination := range []string{DestinationWebhook, DestinationDiscord, DestinationTelegram} {
-		if fingerprint := destinationConfigFingerprint(settings, destination); fingerprint != "" {
-			fingerprints[fingerprint] = true
-		}
-	}
 	for _, condition := range state.Conditions {
+		if condition.Fact.EventType == EventApprovalPublished && condition.Fact.Generation != "" {
+			continue
+		}
 		for fingerprint := range fingerprints {
-			key := fmt.Sprintf("condition/%s/%d/%s", condition.Fact.ID, condition.Episode, fingerprint)
+			key := episodeAdmissionID(condition, fingerprint)
 			if state.Admissions[key] {
 				keep[key] = true
 			}
 		}
 	}
 	state.Admissions = keep
+	for id, admitted := range state.ApprovalAdmissions {
+		if _, exists := state.Conditions[id]; !exists {
+			delete(state.ApprovalAdmissions, id)
+			continue
+		}
+		retained := admitted[:0]
+		for _, admission := range admitted {
+			if fingerprints[admission.Fingerprint] {
+				retained = append(retained, admission)
+			}
+		}
+		if len(retained) == 0 {
+			delete(state.ApprovalAdmissions, id)
+		} else {
+			state.ApprovalAdmissions[id] = retained
+		}
+	}
 	for fingerprint := range state.Reminders {
 		if !fingerprints[fingerprint] {
 			delete(state.Reminders, fingerprint)

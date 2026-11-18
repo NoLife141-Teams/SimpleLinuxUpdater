@@ -133,14 +133,22 @@ func TestNotificationSourceKeepsApprovalGenerationAndAuditCursorConsistent(t *te
 	if !interleaved || lastConditionFact(batch.Facts, "approval/job").Generation != "2" || cursor.Audit != 2 {
 		t.Fatalf("job generation advanced beyond consumed audits: cursor=%+v facts=%+v", cursor, batch.Facts)
 	}
+	appendConditionAudit(t, writer, "2026-10-25T12:00:02Z", "approval.published", "success", `{"job_id":"job","approval_generation":1}`)
 	next, err := source(context.Background(), batch.Cursor, conditionPrevious(batch.Facts))
 	if err != nil {
 		t.Fatal(err)
 	}
+	var observed int
 	for _, fact := range next.Facts {
-		if fact.ID == "approval/job" && fact.Generation != "2" {
-			t.Fatalf("replayed an obsolete generation: %+v", fact)
+		if fact.ID == "approval/job" {
+			observed++
+			if !fact.Active || fact.Generation != "2" {
+				t.Fatalf("replayed an obsolete generation: %+v", fact)
+			}
 		}
+	}
+	if observed != 1 {
+		t.Fatalf("expected exactly one current fact, got %d", observed)
 	}
 }
 

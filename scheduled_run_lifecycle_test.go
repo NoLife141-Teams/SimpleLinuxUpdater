@@ -187,21 +187,48 @@ func TestScheduledRunLifecycleHandleScheduledRunRecordsSkippedCandidate(t *testi
 
 func TestScheduledRunLifecycleExclusiveMaintenanceSkip(t *testing.T) {
 	server := Server{Name: "srv-maintenance-barrier", Host: "example.org", Port: 22, User: "root", Pass: "pw", Tags: []string{"prod"}}
-	deps, policy, run, _ := newScheduledRunLifecycleTestDeps(t, "scheduled-run-maintenance.db", server, "idle")
-	exclusive, decision := deps.MaintenanceCoordinator.TryExclusive(maintenancepkg.OperationBackupRestore)
-	if !decision.Allowed {
-		t.Fatalf("TryExclusive() decision = %+v", decision)
+	tests := []struct {
+		name     string
+		activate bool
+		recover  bool
+		blocker  maintenancepkg.Blocker
+	}{
+		{name: "unpublished lease has no proof"},
+		{
+			name: "active restore with job", activate: true,
+			blocker: maintenancepkg.Blocker{Cause: maintenancepkg.BlockBackupRestore, JobID: "restore-job"},
+		},
+		{
+			name: "recovery without job", activate: true, recover: true,
+			blocker: maintenancepkg.Blocker{Cause: maintenancepkg.BlockRecoveryRequired},
+		},
 	}
-	defer exclusive.Close()
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			deps, policy, run, _ := newScheduledRunLifecycleTestDeps(t, "scheduled-run-maintenance.db", server, "idle")
+			exclusive, decision := deps.MaintenanceCoordinator.TryExclusive(maintenancepkg.OperationBackupRestore)
+			if !decision.Allowed {
+				t.Fatalf("TryExclusive() decision = %+v", decision)
+			}
+			defer exclusive.Close()
+			if tt.activate {
+				if err := exclusive.Activate(context.Background(), maintenancepkg.OperationFacts{JobID: tt.blocker.JobID}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tt.recover {
+				if err := exclusive.RetainForRecovery(context.Background()); err != nil {
+					t.Fatal(err)
+				}
+			}
 
-	scheduledrunspkg.New(deps).ExecuteRun(run, policy, server)
-
-	current := getScheduledLifecycleRun(t, deps, run.ID)
-	if current.Status != updatePolicyRunSkipped || current.Reason != updatePolicyRunReasonMaintenance {
-		t.Fatalf("run = status %q reason %q, want skipped/maintenance", current.Status, current.Reason)
-	}
-	if current.Summary != "Maintenance mode active; scheduled run skipped" {
-		t.Fatalf("summary = %q, want maintenance run skip", current.Summary)
+			scheduledrunspkg.New(deps).ExecuteRun(run, policy, server)
+			current := getScheduledLifecycleRun(t, deps, run.ID)
+			if current.Status != updatePolicyRunSkipped || current.Reason != updatePolicyRunReasonMaintenance || current.JobID != "" ||
+				current.MaintenanceCause != tt.blocker.Cause || current.BlockingJobID != tt.blocker.JobID {
+				t.Fatalf("run = %+v, want skipped/maintenance with blocker %+v and no scheduled job", current, tt.blocker)
+			}
+		})
 	}
 }
 

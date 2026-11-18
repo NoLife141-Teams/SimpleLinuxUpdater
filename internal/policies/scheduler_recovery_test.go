@@ -127,6 +127,9 @@ func TestProcessDueWithRecoveryPreservesMaintenanceSkipReason(t *testing.T) {
 	if !decision.Allowed {
 		t.Fatalf("TryExclusive() decision = %+v", decision)
 	}
+	if err := exclusive.Activate(context.Background(), maintenancepkg.OperationFacts{JobID: "restore-observed"}); err != nil {
+		t.Fatal(err)
+	}
 	blockedSlot := time.Date(2026, 1, 5, 3, 0, 0, 0, time.UTC)
 	if err := service.ProcessDueWithRecovery(blockedSlot, store); err != nil {
 		t.Fatalf("blocked ProcessDueWithRecovery() error = %v", err)
@@ -142,6 +145,9 @@ func TestProcessDueWithRecoveryPreservesMaintenanceSkipReason(t *testing.T) {
 	}
 	if len(handled) != 1 || handled[0].Outcome != RunReasonMaintenance {
 		t.Fatalf("handled = %+v, want one maintenance skip", handled)
+	}
+	if want := (maintenancepkg.Blocker{Cause: maintenancepkg.BlockBackupRestore, JobID: "restore-observed"}); handled[0].MaintenanceBlocker != want {
+		t.Fatalf("maintenance blocker = %+v, want %+v", handled[0].MaintenanceBlocker, want)
 	}
 	if got := service.PendingMissedTicks(); len(got) != 0 {
 		t.Fatalf("pending missed ticks after recovery = %v, want none", got)

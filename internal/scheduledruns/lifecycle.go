@@ -86,7 +86,7 @@ func (l *Lifecycle) HandleScheduledRun(req policies.ScheduledRunRequest) policie
 		return policies.ScheduledRunResult{Err: errors.New("scheduled run lifecycle is unavailable")}
 	}
 	if strings.TrimSpace(req.Outcome) != "" {
-		return l.recordSkippedCandidate(req.Policy, req.Server, req.ScheduledForUTC, req.Outcome)
+		return l.recordSkippedCandidate(req)
 	}
 	stage, wave := policies.RunRolloutPosition(req.Policy, req.Server.Name)
 	run, inserted, err := l.deps.PolicyRepository.CreateRun(policies.Run{
@@ -141,8 +141,7 @@ func (l *Lifecycle) executeRun(run policies.Run, policy policies.Policy, server 
 	if l.deps.MaintenanceCoordinator != nil {
 		lease, decision := l.deps.MaintenanceCoordinator.TryShared(maintenance.WorkScheduled)
 		if !decision.Allowed {
-			l.markMaintenanceSkipped(run, policy, server, "Maintenance mode active; scheduled run skipped")
-			return policies.RunSkipped, "", nil
+			return policies.RunSkipped, "", l.markMaintenanceSkipped(run, policy, server, decision.Blocker)
 		}
 		defer lease.Close()
 	}
@@ -218,7 +217,12 @@ func (l *Lifecycle) buildScheduledJobMeta(policy policies.Policy, scheduledForUT
 	return updates.BuildScheduledJobMeta(policy, scheduledForUTC)
 }
 
-func (l *Lifecycle) recordSkippedCandidate(policy policies.Policy, server servers.Server, scheduledForUTC, reason string) policies.ScheduledRunResult {
+func (l *Lifecycle) recordSkippedCandidate(req policies.ScheduledRunRequest) policies.ScheduledRunResult {
+	policy, server, scheduledForUTC, reason := req.Policy, req.Server, req.ScheduledForUTC, req.Outcome
+	var blocker maintenance.Blocker
+	if reason == policies.RunReasonMaintenance {
+		blocker = req.MaintenanceBlocker
+	}
 	summary := scheduledRunSkippedSummary(reason)
 	finishedAt := l.deps.JobTimestampNow()
 	stage, wave := policies.RunRolloutPosition(policy, server.Name)
@@ -237,6 +241,9 @@ func (l *Lifecycle) recordSkippedCandidate(policy policies.Policy, server server
 		Summary:         summary,
 		ResultJSON:      "{}",
 		FinishedAt:      finishedAt,
+
+		MaintenanceCause: blocker.Cause,
+		BlockingJobID:    blocker.JobID,
 	})
 	if err != nil {
 		return policies.ScheduledRunResult{Handled: false, Err: err}
@@ -287,22 +294,28 @@ func scheduledRunSkippedSummary(reason string) string {
 	}
 }
 
-func (l *Lifecycle) markMaintenanceSkipped(run policies.Run, policy policies.Policy, server servers.Server, summary string) {
+func (l *Lifecycle) markMaintenanceSkipped(run policies.Run, policy policies.Policy, server servers.Server, blocker maintenance.Blocker) error {
 	status := policies.RunSkipped
 	reason := policies.RunReasonMaintenance
+	summary := scheduledRunSkippedSummary(reason)
 	finishedAt := l.deps.JobTimestampNow()
-	_ = l.deps.PolicyRepository.UpdateRun(run.ID, policies.RunUpdate{
+	if err := l.deps.PolicyRepository.UpdateRun(run.ID, policies.RunUpdate{
 		Status:     &status,
 		Reason:     &reason,
 		Summary:    &summary,
 		FinishedAt: &finishedAt,
-	})
+
+		MaintenanceBlocker: &blocker,
+	}); err != nil {
+		return err
+	}
 	_ = l.deps.AuditService.Record("system", "", "schedule.run.skipped", "server", server.Name, "skipped", summary, map[string]any{
 		"policy_revision":   policy.Revision,
 		"policy_id":         policy.ID,
 		"policy_name":       policy.Name,
 		"scheduled_for_utc": run.ScheduledForUTC,
 	})
+	return nil
 }
 
 func (l *Lifecycle) runPackageMutation(run policies.Run, policy policies.Policy, server servers.Server) (string, string, error) {

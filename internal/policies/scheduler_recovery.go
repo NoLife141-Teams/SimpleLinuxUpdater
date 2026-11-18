@@ -113,7 +113,7 @@ func (s *Service) ProcessDueWithRecovery(now time.Time, store SchedulerWatermark
 	if deps.Maintenance != nil {
 		lease, decision := deps.Maintenance.TryShared(maintenancepkg.WorkScheduled)
 		if !decision.Allowed {
-			s.RememberMissedTick(now)
+			s.RememberMissedTick(now, decision.Blocker)
 			return nil
 		}
 		defer lease.Close()
@@ -199,11 +199,11 @@ func (s *Service) ProcessDueWithRecovery(now time.Time, store SchedulerWatermark
 		// otherwise their per-server historical outcome cannot be reconstructed
 		// safely from the current inventory/overrides/blackouts/timezone.
 		for _, tick := range pending {
-			tickUTC := tick.UTC().Truncate(time.Minute)
+			tickUTC := tick.Now
 			if tickUTC.After(currentUTC) {
 				continue
 			}
-			if err := recoveryService.ProcessDueSlot(ScheduleRequest{Now: tick, MaintenanceActive: true, Admitted: true}); err != nil {
+			if err := recoveryService.ProcessDueSlot(tick); err != nil {
 				return err
 			}
 			processedPending[MissedTickKey(tickUTC, deps.TimestampLayout)] = struct{}{}
@@ -242,10 +242,10 @@ func (s *Service) ProcessDueWithRecovery(now time.Time, store SchedulerWatermark
 		}
 	}
 	for _, tick := range pending {
-		key := MissedTickKey(tick, deps.TimestampLayout)
+		key := MissedTickKey(tick.Now, deps.TimestampLayout)
 		_, processed := processedPending[key]
-		if processed || (!historicalStateKnown && !tick.UTC().Truncate(time.Minute).After(currentUTC)) {
-			s.ForgetMissedTick(tick)
+		if processed || (!historicalStateKnown && !tick.Now.After(currentUTC)) {
+			s.ForgetMissedTick(tick.Now)
 		}
 	}
 	return nil
@@ -330,10 +330,10 @@ func (s *Service) schedulerRecoveryStateFingerprint() (string, error) {
 
 func (s *Service) processDueWithoutDurableRecovery(now time.Time) error {
 	for _, missedTick := range s.PendingMissedTicks() {
-		if err := s.ProcessDueSlot(ScheduleRequest{Now: missedTick, MaintenanceActive: true, Admitted: true}); err != nil {
+		if err := s.ProcessDueSlot(missedTick); err != nil {
 			return err
 		}
-		s.ForgetMissedTick(missedTick)
+		s.ForgetMissedTick(missedTick.Now)
 	}
 	return s.ProcessDueSlot(ScheduleRequest{Now: now, Admitted: true})
 }
@@ -508,7 +508,9 @@ func (s *Service) processMissedDueSlotWithStore(slot time.Time, missedReason str
 
 	var queueErrs []error
 	recordSkipped := func(policy Policy, server servers.Server, scheduledForUTC, reason string) {
-		result := s.handleScheduledRun(policy, server, scheduledForUTC, reason, true)
+		result := s.handleScheduledRun(ScheduledRunRequest{
+			Policy: policy, Server: server, ScheduledForUTC: scheduledForUTC, Outcome: reason, Admitted: true,
+		})
 		if result.Err == nil {
 			return
 		}

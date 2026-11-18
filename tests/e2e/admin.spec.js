@@ -712,6 +712,46 @@ test("a skipped Scheduled Run opens a fresh update check for the current host", 
     expect(updates).toEqual([{ name: target, identity: identities[target] }]);
 });
 
+test("admin scheduled runs show the observed maintenance cause and open the exact blocking job", async ({ page }) => {
+    await ensureAuthenticatedSession(page);
+    await stubAdminApi(page);
+    const runs = [
+        { policy_name: "Export overlap", maintenance_cause: "backup_export", maintenance_job_id: "blocking-backup" },
+        { policy_name: "Restore overlap", maintenance_cause: "backup_restore" },
+        { policy_name: "Recovery latch", maintenance_cause: "recovery_required" },
+        { policy_name: "Historical skip" },
+    ].map((run, id) => ({
+        id: id + 1,
+        server_name: "srv-web-01",
+        status: "skipped",
+        exact_skip_reason: "maintenance",
+        ...run,
+    }));
+    await page.route("**/api/update-policies/runs?*", (route) =>
+        fulfillJson(route, { items: runs, page: 1, total: runs.length, total_pages: 1 }),
+    );
+    await page.route("**/api/jobs/blocking-backup", (route) =>
+        fulfillJson(route, { job: { id: "blocking-backup", kind: "backup_export", status: "succeeded", summary: "Backup export completed" } }),
+    );
+    await page.goto("/admin");
+    await navigateSection(page, "admin", "scheduled-runs");
+    const table = page.locator("#scheduled-runs-table");
+    for (const [policy, reason] of [
+        ["Export overlap", "Backup export in progress"],
+        ["Restore overlap", "Backup restore in progress"],
+        ["Recovery latch", "Backup recovery required"],
+        ["Historical skip", "maintenance"],
+    ]) {
+        await expect(table.getByRole("row", { name: new RegExp(policy) })).toContainText("Reason: " + reason);
+    }
+    const blockingJob = table.getByRole("button", { name: "Blocking job details" });
+    await expect(blockingJob).toHaveCount(1);
+    await blockingJob.click();
+    await expect(page.locator("#job-detail-modal")).toBeVisible();
+    await expect(page.locator("#job-detail-summary")).toHaveText("Backup export completed");
+    await expect(page.locator("#job-detail-report")).toHaveAttribute("href", "/api/reports/jobs/blocking-backup");
+});
+
 test("admin scheduled run history filters, paginates, and exposes existing investigation details", async ({
     baseURL,
     page,

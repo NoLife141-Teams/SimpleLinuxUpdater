@@ -1185,6 +1185,28 @@ test("auto refresh resumes when an action press loses page focus", async ({
     await page.mouse.up();
 });
 
+test("compact host detail respects a deferred drawer approval refresh", async ({ page }) => {
+    let servers = [makeServer("demo-host", "pending_approval", makePendingUpdates(2), { has_key: true })];
+    await stubCompactStatus(page, () => servers);
+    await ensureAuthenticatedSession(page);
+    await page.locator('#servers-table button[data-tab="pending"][data-name="demo-host"]').click();
+    await expect(page.getByRole("searchbox", { name: "Filter packages", exact: true })).toBeVisible();
+
+    const approve = page.locator("#drawer-approve-all");
+    await expect(approve).toBeEnabled();
+    await approve.dispatchEvent("pointerdown");
+    try {
+        servers = [makeServer("demo-host", "done", [], { has_key: true })];
+        await page.evaluate(() => window.fetchServers(false, "approval-press"));
+        await expect(approve).toBeVisible();
+        await expect(page.getByRole("searchbox", { name: "Filter packages", exact: true })).toBeVisible();
+    } finally {
+        await page.dispatchEvent("body", "pointercancel");
+    }
+    await expect(approve).toBeHidden();
+    await expect(page.locator("#status-drawer-status .status-pill")).toHaveText("done");
+});
+
 test("status metrics stay compact without secondary descriptions", async ({
     baseURL,
     page,

@@ -35,6 +35,7 @@ func registerStatusBatchRoutes(r *gin.Engine, deps AppDeps) {
 		deps: deps, slots: make(chan struct{}, statusBatchWorkers), active: make(map[string]struct{}),
 	}
 	r.POST("/api/status/batches", service.submit)
+	r.GET("/api/status/batches", service.history)
 	r.GET("/api/status/batches/latest", service.get)
 	r.GET("/api/status/batches/:id", service.get)
 }

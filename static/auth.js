@@ -4,9 +4,9 @@
     }
     window.__authHelpersReady = true;
     const role = document.body.dataset.accountRole || 'admin';
-    const approvalReturnTo = document.body.dataset.approvalReturnTo;
-    const authDestination = path => approvalReturnTo
-        ? `${path}?${new URLSearchParams({ return_to: approvalReturnTo })}` : path;
+    const statusReturnTo = document.body.dataset.statusReturnTo;
+    const authDestination = path => statusReturnTo
+        ? `${path}?${new URLSearchParams({ return_to: statusReturnTo })}` : path;
     window.canUseScope = scope => role === 'admin' || scope === 'operational:read'
         || (role === 'operator' && ['maintenance:write', 'approvals:write', 'logs:read'].includes(scope));
 

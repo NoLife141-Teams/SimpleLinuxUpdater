@@ -216,6 +216,7 @@
             refresh_facts: "Refresh host facts",
         };
         let batch = null;
+        let batchUnavailable = false;
         let batchID = "";
         let batchTimer = null;
         let batchRead = 0;
@@ -234,13 +235,21 @@
 
         const admissionPending = host => host.state === "queued" || host.state === "admitting";
 
+        function batchLink(id) {
+            return `?maintenance_batch=${encodeURIComponent(id)}`;
+        }
+
         function renderBatch(admissionsPending = false) {
             const panel = document.getElementById("status-batch-panel");
             if (!panel) return;
-            panel.hidden = !batch;
+            panel.hidden = !batch && !batchUnavailable;
+            document.getElementById("status-batch-unavailable").hidden = !batchUnavailable;
+            const link = document.getElementById("status-batch-link");
+            const rows = document.getElementById("status-batch-rows");
+            link.hidden = rows.hidden = !batch;
+            document.getElementById("status-batch-label").textContent = batch ? batchLabels[batch.action] : "";
             if (!batch) return;
-            document.getElementById("status-batch-label").textContent = batchLabels[batch.action];
-            document.getElementById("status-batch-link").href = `?maintenance_batch=${encodeURIComponent(batch.id)}`;
+            link.href = batchLink(batch.id);
             const labels = {
                 queued: "Queued", admitting: "Checking eligibility", accepted: "Accepted",
                 running: "In progress", waiting_approval: "Waiting for approval",
@@ -253,7 +262,7 @@
                 interrupted: "error", uncertain: "error", succeeded: "done", failed: "error", cancelled: "idle",
             };
             const badge = state => `<span class="status-pill status-${statusClass[state] || "idle"}">${escapeHtml(labels[state] || state)}</span>`;
-            renderHTML(document.getElementById("status-batch-rows"), batch.hosts.map(host => {
+            renderHTML(rows, batch.hosts.map(host => {
                 const admitted = host.job_id || ["accepted", "running", "waiting_approval", "completed", "failed"].includes(host.state);
                 const admission = admitted ? "accepted" : host.state;
                 const outcome = host.job_status || (admitted && host.state !== admission ? host.state : "");
@@ -264,13 +273,106 @@
                     ${outcome ? badge(outcome) : ""}
                     ${host.message ? `<p>${escapeHtml(host.message)}</p>` : ""}
                     ${host.job_id ? `<a href="/api/reports/jobs/${encodeURIComponent(host.job_id)}">Job report</a>` : ""}
-                    ${host.retry_batch_id ? `<a href="?maintenance_batch=${encodeURIComponent(host.retry_batch_id)}" aria-label="Open retry attempt for ${escapeHtml(host.name)}">Open retry attempt</a>` : ""}
+                    ${host.retry_batch_id ? `<a href="${batchLink(host.retry_batch_id)}" aria-label="Open retry attempt for ${escapeHtml(host.name)}">Open retry attempt</a>` : ""}
                     ${host.retry_needs_verification ? "<p>Review the earlier retry attempts before taking another action.</p>" : ""}
                     ${host.retryable ? `<button type="button" class="inline-btn btn-ghost" data-action="retry-batch-host"
                         ${admissionsPending ? 'disabled title="Wait for the remaining hosts to be admitted"' : ""}
                         data-name="${escapeHtml(host.name)}">Retry ${escapeHtml(host.name)}</button>` : ""}
                 </li>`;
             }).join(""));
+        }
+
+        function showUnavailableBatch() {
+            batch = null;
+            batchUnavailable = true;
+            renderBatch();
+            document.getElementById("status-batch-panel").open = true;
+        }
+
+        function mountBatchHistory() {
+            const history = document.getElementById("status-batch-history");
+            if (!history) return;
+            const list = document.getElementById("status-batch-history-list");
+            const state = document.getElementById("status-batch-history-state");
+            const newer = document.getElementById("status-batch-history-newer");
+            const older = document.getElementById("status-batch-history-older");
+            const retry = document.getElementById("status-batch-history-retry");
+            let cursors = [""];
+            let nextCursor = "";
+            let retryCursors = null;
+            let loading = false;
+
+            function setHistoryState(message) {
+                state.textContent = message;
+                state.hidden = !message;
+            }
+
+            async function loadHistory(pageCursors, focus = false) {
+                if (loading) return;
+                loading = true;
+                const lifetime = lifecycle.capture();
+                newer.disabled = older.disabled = true;
+                retry.hidden = true;
+                setHistoryState("Loading maintenance batches…");
+                const before = pageCursors.at(-1);
+                try {
+                    const url = before ? `/api/status/batches?before=${encodeURIComponent(before)}` : "/api/status/batches";
+                    const response = await fetch(url);
+                    if (!response.ok) {
+                        lifecycle.discardResponse(response);
+                        retryCursors = response.status === 404 ? [""] : pageCursors;
+                        throw new Error("Could not read maintenance batches");
+                    }
+                    const data = await response.json();
+                    if (!lifecycle.isCurrent(lifetime)) return;
+                    if (!Array.isArray(data.batches)) throw new Error("Invalid maintenance batch history");
+                    cursors = pageCursors;
+                    nextCursor = data.next_cursor || "";
+                    retryCursors = null;
+                    renderHTML(list, data.batches.map(entry => {
+                        const action = batchLabels[entry.action] || "Maintenance batch";
+                        const date = entry.created_at_display || entry.created_at;
+                        const outcomes = [
+                            entry.pending ? `${entry.pending} pending` : "",
+                            entry.terminal ? `${entry.terminal} finished` : "",
+                            entry.needs_verification ? `${entry.needs_verification} need verification` : "",
+                        ].filter(Boolean).join(" · ");
+                        return `<li data-render-key="${escapeHtml(entry.id)}">
+                            <a href="${batchLink(entry.id)}">${escapeHtml(action)}</a>
+                            <time datetime="${escapeHtml(entry.created_at)}">${escapeHtml(date)}</time>
+                            <span class="status-batch-history-summary">${escapeHtml(outcomes || "No hosts")}</span>
+                        </li>`;
+                    }).join(""));
+                    setHistoryState(data.batches.length ? "" : "No maintenance batches for this account.");
+                    if (focus) list.querySelector("a")?.focus();
+                } catch (error) {
+                    if (!lifecycle.isCurrent(lifetime) || error?.name === "AbortError") return;
+                    retryCursors ||= pageCursors;
+                    retry.hidden = false;
+                    setHistoryState("Could not load maintenance batch history.");
+                } finally {
+                    if (lifecycle.isCurrent(lifetime)) {
+                        loading = false;
+                        newer.disabled = cursors.length < 2;
+                        older.disabled = !nextCursor;
+                    }
+                }
+            }
+
+            history.hidden = false;
+            lifecycle.listen(history, "toggle", () => {
+                if (history.open) void loadHistory(cursors);
+            });
+            lifecycle.listen(newer, "click", () => {
+                if (cursors.length > 1) void loadHistory(cursors.slice(0, -1), true);
+            });
+            lifecycle.listen(older, "click", () => {
+                if (nextCursor) void loadHistory([...cursors, nextCursor], true);
+            });
+            lifecycle.listen(retry, "click", () => {
+                if (retryCursors) void loadHistory(retryCursors, true);
+            });
+            if (history.open) void loadHistory(cursors);
         }
 
         function clearBatchRead() {
@@ -315,6 +417,7 @@
                             type: "actionFailed", operationId: plan.id, refreshStreams: [], message,
                             bulkResult: { executedCount: 0 },
                         });
+                        else if (batchID && !missingSubmission?.retryOf) showUnavailableBatch();
                         else if (batchID) window.notifyApp(message);
                         if (missingSubmission?.retryOf) {
                             batchID = missingSubmission.retryOf;
@@ -327,6 +430,7 @@
                 if (!lifecycle.isCurrent(lifetime) || sequence !== batchRead) return;
                 unconfirmedSubmission = null;
                 batch = data.batch;
+                batchUnavailable = false;
                 const pendingHosts = (batch?.hosts || []).filter(admissionPending);
                 const admissionsPending = pendingHosts.length > 0;
                 renderBatch(admissionsPending);
@@ -421,6 +525,7 @@
                 }
                 batchID = request.id;
                 batch = null;
+                batchUnavailable = false;
                 pendingPlan = plan;
                 unconfirmedSubmission = lostResponse ? { error: errorMessage, retryOf: request.retry_of } : null;
                 clearBatchRead();
@@ -461,15 +566,16 @@
             if (lifecycle.active) return;
             lifecycle.init();
             unconfirmedSubmission = null;
+            batchID = new URLSearchParams(window.location.search).get("maintenance_batch") || "";
             if (window.canUseScope("logs:read")) {
-                batchID = new URLSearchParams(window.location.search).get("maintenance_batch") || "";
+                mountBatchHistory();
                 document.getElementById("status-batch-panel").open = Boolean(batchID);
                 void readBatch();
                 lifecycle.listen(document.getElementById("status-batch-rows"), "click", (event) => {
                     const button = event.target.closest("button[data-action='retry-batch-host']");
                     if (button) retryBatchHost(button.dataset.name);
                 });
-            }
+            } else if (batchID) showUnavailableBatch();
             lifecycle.listen(document.getElementById("bulk-removal-review"), "click", (event) => {
                 const button = event.target.closest("button[data-action='review-kept-back-removals']");
                 if (button) reviewKeptBackApproval(button.dataset.name, button.dataset.serverIdentity);

@@ -599,7 +599,7 @@ func authGateMiddleware() gin.HandlerFunc {
 			target = "/setup"
 		}
 		if c.Request.Method == http.MethodGet && c.FullPath() == "/" {
-			target = authPageDestination(target, approvalReturnDestination(c.Request.URL.RequestURI()))
+			target = authPageDestination(target, statusReturnDestination(c.Request.URL.RequestURI()))
 		}
 		c.Redirect(http.StatusFound, target)
 		c.Abort()
@@ -608,7 +608,7 @@ func authGateMiddleware() gin.HandlerFunc {
 
 func handleSetupPage(c *gin.Context) {
 	setNoStoreHeaders(c)
-	view := newApprovalAuthView(c.Query("return_to"), "/api/auth/setup")
+	view := newStatusAuthView(c.Query("return_to"), "/api/auth/setup")
 	required, err := setupRequiredForContext(c)
 	if err != nil {
 		c.String(http.StatusInternalServerError, "failed to evaluate setup state")
@@ -627,7 +627,7 @@ func handleSetupPage(c *gin.Context) {
 
 func handleLoginPage(c *gin.Context) {
 	setNoStoreHeaders(c)
-	view := newApprovalAuthView(c.Query("return_to"), "/api/auth/login")
+	view := newStatusAuthView(c.Query("return_to"), "/api/auth/login")
 	required, err := setupRequiredForContext(c)
 	if err != nil {
 		c.String(http.StatusInternalServerError, "failed to evaluate setup state")
@@ -929,7 +929,7 @@ func handleAuthSetup(c *gin.Context) {
 		return
 	}
 	if formPost {
-		c.Redirect(http.StatusSeeOther, approvalReturnDestination(c.Query("return_to")))
+		c.Redirect(http.StatusSeeOther, statusReturnDestination(c.Query("return_to")))
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"message": "setup complete"})
@@ -1008,7 +1008,7 @@ func handleAuthLogin(c *gin.Context) {
 		return
 	}
 	if formPost {
-		c.Redirect(http.StatusSeeOther, approvalReturnDestination(c.Query("return_to")))
+		c.Redirect(http.StatusSeeOther, statusReturnDestination(c.Query("return_to")))
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"message": "login successful"})

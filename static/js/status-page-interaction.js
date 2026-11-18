@@ -216,7 +216,7 @@
         let page = 1;
         let pageSize = 25;
         let primaryServerName = "";
-        let linkedServerName = normalizedString(options.linkedServerName, "", 200);
+        let linkedServerIdentity = normalizedString(options.linkedServerIdentity, "", 200);
         let selectedServerNames = new Set();
         let drawer = { open: false, serverName: "", tab: "logs", logFollow: true };
         const pendingUpdatesInteraction = pendingUpdates.createStore();
@@ -801,9 +801,9 @@
                 if (requestId && (!stream.inFlight || stream.inFlight.requestId !== requestId || requestId < stream.lastAcceptedRequestId)) return [];
                 const priority = requestId && stream.inFlight ? stream.inFlight.priority : normalizedRefreshPriority(event.priority);
                 const logEffects = replaceServers(event.servers);
-                const linkedName = linkedServerName;
-                linkedServerName = "";
-                const linkedServer = linkedName ? serversByName.get(linkedName) : undefined;
+                const identity = linkedServerIdentity;
+                linkedServerIdentity = "";
+                const linkedServer = identity ? servers.find(server => server.server_identity === identity) : undefined;
                 if (linkedServer) {
                     filters = {
                         ...filters,
@@ -820,8 +820,8 @@
                 }
                 const persistenceChanged = reconcileNavigation();
                 return [
-                    ...stateEffects({ persist: !linkedName && persistenceChanged, scope: "serverState", priority: linkedName ? "immediate" : priority }),
-                    ...(linkedName ? [{ type: "revealLinkedServer", name: linkedName, found: Boolean(linkedServer) }] : []),
+                    ...stateEffects({ persist: !identity && persistenceChanged, scope: "serverState", priority: identity ? "immediate" : priority }),
+                    ...(identity ? [{ type: "revealLinkedServer", found: Boolean(linkedServer) }] : []),
                     { type: "renderSyncState" },
                     ...(requestId ? finishRefresh("servers", requestId, event.receivedAt) : []),
                     ...logEffects,

@@ -39,6 +39,7 @@ func (e EndpointConflictError) Unwrap() error {
 }
 
 type Server struct {
+	Identity string   `json:"-"`
 	Disabled bool     `json:"disabled"`
 	Name     string   `json:"name"`
 	Host     string   `json:"host"`
@@ -109,6 +110,7 @@ func EvaluateMaintenanceReadiness(hasPassword, hasServerKey, hasGlobalKey, globa
 }
 
 type ServerStatus struct {
+	ServerIdentity              string                     `json:"server_identity,omitempty"`
 	RemediationPlanID           string                     `json:"remediation_plan_id,omitempty"`
 	RemediationDigest           string                     `json:"remediation_digest,omitempty"`
 	APTMetadata                 vulnerabilities.APTContext `json:"apt_metadata,omitzero"`
@@ -312,6 +314,18 @@ func (s *State) CloneStatusMap() map[string]*ServerStatus {
 	return CloneStatusMap(*s.statusMap)
 }
 
+func (s *State) InventoryIdentities() map[string]struct{} {
+	s.Lock()
+	defer s.Unlock()
+	identities := make(map[string]struct{}, len(s.Servers()))
+	for _, server := range s.Servers() {
+		if server.Identity != "" {
+			identities[server.Identity] = struct{}{}
+		}
+	}
+	return identities
+}
+
 func (s *State) ListStatuses() []ServerStatus {
 	s.Lock()
 	defer s.Unlock()
@@ -331,6 +345,7 @@ func (s *State) ListStatuses() []ServerStatus {
 		status.HasKey = server.Key != ""
 		status.Tags = server.Tags
 		copyStatus := CloneServerStatus(status)
+		copyStatus.ServerIdentity = server.Identity
 		statuses = append(statuses, *copyStatus)
 	}
 	return statuses

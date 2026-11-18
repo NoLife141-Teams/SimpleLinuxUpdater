@@ -29,7 +29,7 @@
         const statusActionAdapter = window.StatusActionAdapter.create(window);
         const statusInteraction = window.StatusPageInteraction.createStore({
             presentationFacts: dashboardConsumption.presentationFacts,
-            linkedServerName: new URLSearchParams(window.location.search).get("server"),
+            linkedServerIdentity: document.body.dataset.linkedServerIdentity,
         });
         window.statusPageInteraction = statusInteraction;
         const statusViewScope = window.StatusRendering.createSnapshotScope(() =>
@@ -1717,13 +1717,13 @@
             document.getElementById("page-size").value = String(view.pageSize);
         }
 
-        function revealLinkedServer({ name, found }) {
+        function revealLinkedServer({ found }) {
             const message = document.getElementById("linked-server-message");
             const heading = document.getElementById("selected-host-title");
             if (found) {
                 syncDashboardFilterInputs();
             } else {
-                message.textContent = `Server “${name}” is no longer in the inventory.`;
+                message.textContent = "The linked server is no longer in the inventory.";
                 message.hidden = false;
             }
             lifecycle.requestAnimationFrame(() => (found ? heading : message).focus());
@@ -3761,6 +3761,10 @@
             window.logout(),
         );
         loadDashboardFilters();
+        const linkedServerMessage = document.getElementById("linked-server-message");
+        if (!linkedServerMessage.hidden) {
+            lifecycle.requestAnimationFrame(() => linkedServerMessage.focus());
+        }
         initColumnResizing();
         lifecycle.setInterval(renderSyncState, 5000);
         statusTransport.start();

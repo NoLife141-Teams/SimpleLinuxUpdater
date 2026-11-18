@@ -3,9 +3,11 @@ package main
 import "github.com/gin-gonic/gin"
 
 type operatorApplicationShellView struct {
-	Role          string
-	ActiveSection string
-	PageLabel     string
+	Role                 string
+	ActiveSection        string
+	PageLabel            string
+	LinkedServerIdentity string
+	LinkedServerError    string
 }
 
 func newOperatorApplicationShellView(activeSection, pageLabel string) operatorApplicationShellView {

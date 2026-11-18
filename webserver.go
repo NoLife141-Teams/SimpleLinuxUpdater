@@ -1849,7 +1849,7 @@ func registerRoutes(r *gin.Engine, deps AppDeps) error {
 	r.Use(sameOriginWriteMiddleware())
 	r.Use(requestBodyBudgetMiddleware())
 	r.Use(packageDeferralPolicyGate(deps))
-	registerProtectedPageRoutes(r)
+	registerProtectedPageRoutes(r, deps)
 	registerProtectedAuthAndSettingsRoutes(r, deps)
 	registerIdentityRoutes(r)
 	registerPolicyAuditObservabilityRoutes(r, deps)
@@ -1873,10 +1873,20 @@ func registerPublicRoutes(r *gin.Engine, deps AppDeps) {
 
 }
 
-func registerProtectedPageRoutes(r *gin.Engine) {
+func registerProtectedPageRoutes(r *gin.Engine, deps AppDeps) {
 	r.GET("/", func(c *gin.Context) {
 		setNoStoreHeaders(c)
-		c.HTML(http.StatusOK, "index.html", operatorShellForContext(c, "status", "Status"))
+		view := operatorShellForContext(c, "status", "Status")
+		if identity := c.Query("server_identity"); identity != "" {
+			if _, exists := deps.ServerState.InventoryIdentities()[identity]; exists {
+				view.LinkedServerIdentity = identity
+			} else {
+				view.LinkedServerError = "The linked server is no longer in the inventory."
+			}
+		} else if c.Query("server") != "" {
+			view.LinkedServerError = "This link does not identify a server. Open Scheduled Runs to review the original run."
+		}
+		c.HTML(http.StatusOK, "index.html", view)
 	})
 
 	r.GET("/manage", func(c *gin.Context) {

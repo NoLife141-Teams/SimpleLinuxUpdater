@@ -118,14 +118,15 @@ type statusHostDetail struct {
 func handleStatusHostDetail(c *gin.Context, state *serverpkg.State) {
 	c.Header("Cache-Control", "no-store")
 	generation, err := strconv.ParseUint(c.Query("approval_generation"), 10, 64)
+	name := c.Query("server_name")
 	identity := c.Query("server_identity")
 	view := c.Query("view")
-	if err != nil || identity == "" || (view != "packages" && view != "logs" && view != "overview") {
+	if err != nil || name == "" || identity == "" || (view != "packages" && view != "logs" && view != "overview") {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid status detail request"})
 		return
 	}
 
-	status := state.InventoryStatusSnapshot(c.Param("name"))
+	status := state.InventoryStatusSnapshot(name)
 	if status == nil || status.ServerIdentity != identity ||
 		status.JobID != c.Query("job_id") || status.ApprovalGeneration != generation ||
 		status.UpgradePlan.PackageDeferrals.Revision != c.Query("deferral_revision") ||

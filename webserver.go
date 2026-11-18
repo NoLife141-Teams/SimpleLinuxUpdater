@@ -2175,7 +2175,7 @@ func registerServerAndActionRoutes(r *gin.Engine, deps AppDeps) {
 		}
 		c.JSON(http.StatusOK, statuses)
 	})
-	r.GET("/api/servers/:name/status-detail", func(c *gin.Context) {
+	r.GET("/api/servers/status-detail", func(c *gin.Context) {
 		handleStatusHostDetail(c, serverState())
 	})
 

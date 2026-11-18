@@ -16,9 +16,9 @@
         async function fetchHostDetail(name, serverIdentity, approvalIdentity, view) {
             const lifetime = lifecycle.capture();
             const query = new URLSearchParams({
-                ...approvalIdentity, server_identity: serverIdentity, view,
+                ...approvalIdentity, server_name: name, server_identity: serverIdentity, view,
             });
-            const response = await fetch(`/api/servers/${encodeURIComponent(name)}/status-detail?${query}`);
+            const response = await fetch(`/api/servers/status-detail?${query}`);
             if (!lifecycle.isCurrent(lifetime)) return;
             if (!response.ok) {
                 lifecycle.discardResponse(response);

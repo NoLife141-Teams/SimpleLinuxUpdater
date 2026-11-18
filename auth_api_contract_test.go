@@ -273,11 +273,11 @@ func TestPersonalAPIRealDiscoveryPlanApprovalRunnerAndAudit(t *testing.T) {
 		t.Fatal("compact and public inventory disagree on the pending decision")
 	}
 	query := url.Values{
-		"view": {"packages"}, "server_identity": {row.ServerIdentity},
+		"view": {"packages"}, "server_name": {row.Name}, "server_identity": {row.ServerIdentity},
 		"job_id": {row.JobID}, "approval_generation": {strconv.FormatUint(row.ApprovalGeneration, 10)},
 		"deferral_revision": {revision}, "remediation_digest": {row.RemediationDigest},
 	}
-	detailResponse := identityRequest(app, "GET", "/api/servers/synthetic/status-detail?"+query.Encode(), cookie, "", nil)
+	detailResponse := identityRequest(app, "GET", "/api/servers/status-detail?"+query.Encode(), cookie, "", nil)
 	var detail statusHostDetail
 	if err := json.Unmarshal(detailResponse.Body.Bytes(), &detail); err != nil || detailResponse.Code != http.StatusOK ||
 		len(detail.PendingUpdates) != 1 || detail.PendingUpdates[0].Package != plan.PendingUpdates[0].Package {

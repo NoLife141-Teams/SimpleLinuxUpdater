@@ -392,12 +392,12 @@ func TestStatusHostDetailBindsSnapshotAndRedactsByRole(t *testing.T) {
 	a.deps.ServerState.RestoreStatusSnapshot(name, status)
 
 	query := url.Values{
-		"view": {"packages"}, "server_identity": {status.ServerIdentity},
+		"view": {"packages"}, "server_name": {name}, "server_identity": {status.ServerIdentity},
 		"job_id": {status.JobID}, "approval_generation": {"1"},
 		"deferral_revision": {"test-revision"}, "remediation_digest": {"test-digest"},
 	}
 	request := func(credential string) *httptest.ResponseRecorder {
-		return a.request("/api/servers/"+name+"/status-detail?"+query.Encode(), credential, false)
+		return a.request("/api/servers/status-detail?"+query.Encode(), credential, false)
 	}
 	read := func(credential string) statusHostDetail {
 		t.Helper()
@@ -427,7 +427,7 @@ func TestStatusHostDetailBindsSnapshotAndRedactsByRole(t *testing.T) {
 	if rec := request("pat"); rec.Code != http.StatusUnauthorized {
 		t.Fatalf("browser-only detail with a PAT: got HTTP %d, want a cookie login", rec.Code)
 	}
-	for _, key := range []string{"server_identity", "job_id", "approval_generation", "deferral_revision", "remediation_digest"} {
+	for _, key := range []string{"server_name", "server_identity", "job_id", "approval_generation", "deferral_revision", "remediation_digest"} {
 		current := query.Get(key)
 		query.Set(key, "2")
 		if rec := request("admin"); rec.Code != http.StatusConflict {

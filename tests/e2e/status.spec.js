@@ -68,11 +68,9 @@ async function stubCompactStatus(page, getServers) {
             };
         }));
     });
-    await page.route("**/api/servers/*/status-detail?*", (route) => {
-        const url = new URL(route.request().url());
-        const name = decodeURIComponent(url.pathname.split("/")[3]);
-        const server = getServers().find((item) => item.name === name);
-        const query = Object.fromEntries(url.searchParams);
+    await page.route("**/api/servers/status-detail?*", (route) => {
+        const query = Object.fromEntries(new URL(route.request().url()).searchParams);
+        const server = getServers().find((item) => item.name === query.server_name);
         details.push(query);
         const expected = {
             ...(server && identity(server)),
@@ -2440,8 +2438,9 @@ test("pending package controls and search selection survive enrichment and plan 
 
     let releasePlan;
     const nextPlan = new Promise(resolve => { releasePlan = resolve; });
-    await page.route("**/api/servers/demo-host/status-detail?*", async route => {
-        if (new URL(route.request().url()).searchParams.get("approval_generation") === "2") await nextPlan;
+    await page.route("**/api/servers/status-detail?*", async route => {
+        const query = new URL(route.request().url()).searchParams;
+        if (query.get("server_name") === "demo-host" && query.get("approval_generation") === "2") await nextPlan;
         await route.fallback();
     });
     try {
@@ -2469,17 +2468,17 @@ test("compact rows expose application checks and keep the inspector bound to the
             name: "App", kind: "systemd_active", unit: `${name}.service`, mode: "blocking", timeout_seconds: 15,
         }] },
     });
-    const previous = pendingHost("previous-host", "Previous expectations");
+    const previous = pendingHost("..", "Previous expectations");
     const replacement = pendingHost("replacement-host", "Replacement expectations");
     let servers = [idle, previous];
     await stubCompactStatus(page, () => servers);
     await ensureAuthenticatedSession(page);
 
-    const oldRow = page.locator('#servers-table tr[data-name="previous-host"]');
+    const oldRow = page.locator(`#servers-table tr[data-name="${previous.name}"]`);
     await oldRow.getByRole("button", { name: "Packages & checks", exact: true }).click();
     await expect(page.locator("#status-drawer-status")).toContainText("Previous expectations");
     await page.locator("#status-drawer-close").click();
-    await oldRow.getByRole("button", { name: "previous-host", exact: true }).click();
+    await oldRow.getByRole("button", { name: previous.name, exact: true }).click();
     const inspector = page.locator("#selected-host-panel");
     await expect(inspector).toContainText("Previous expectations");
 
@@ -2488,7 +2487,7 @@ test("compact rows expose application checks and keep the inspector bound to the
     try {
         servers = [replacement];
         await page.evaluate(() => window.fetchServers(false, "deferred-inspector-test"));
-        await expect(page.locator("#selected-host-title")).toHaveText("previous-host");
+        await expect(page.locator("#selected-host-title")).toHaveText(previous.name);
         await expect(inspector).toContainText("Previous expectations");
     } finally {
         await page.dispatchEvent("body", "pointercancel");

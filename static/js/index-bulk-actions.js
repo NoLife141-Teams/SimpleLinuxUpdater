@@ -255,23 +255,30 @@
                 running: "In progress", waiting_approval: "Waiting for approval",
                 completed: "Completed", refused: "Refused", interrupted: "Interrupted", uncertain: "Needs verification",
                 succeeded: "Succeeded", failed: "Failed", cancelled: "Cancelled",
+                reconciliation_required: "APT reconciliation required",
             };
             const statusClass = {
                 queued: "idle", admitting: "updating", accepted: "updating", running: "upgrading",
                 waiting_approval: "pending_approval", completed: "done", refused: "error",
                 interrupted: "error", uncertain: "error", succeeded: "done", failed: "error", cancelled: "idle",
+                reconciliation_required: "error",
             };
             const badge = state => `<span class="status-pill status-${statusClass[state] || "idle"}">${escapeHtml(labels[state] || state)}</span>`;
             renderHTML(rows, batch.hosts.map(host => {
                 const admitted = host.job_id || ["accepted", "running", "waiting_approval", "completed", "failed"].includes(host.state);
                 const admission = admitted ? "accepted" : host.state;
-                const outcome = host.job_status || (admitted && host.state !== admission ? host.state : "");
+                const outcome = host.reconciliation_required ? "reconciliation_required"
+                    : host.job_status || (admitted && host.state !== admission ? host.state : "");
                 return `
                 <li data-render-key="${escapeHtml(host.name)}">
                     <strong>${escapeHtml(host.name)}</strong>
                     ${badge(admission)}
                     ${outcome ? badge(outcome) : ""}
                     ${host.message ? `<p>${escapeHtml(host.message)}</p>` : ""}
+                    ${host.reconciliation_required ? (host.diagnostic_available
+                        ? `<p>Check the host’s APT status before starting other maintenance.</p>
+                           <a href="/?server_identity=${encodeURIComponent(host.server_identity)}">Open host diagnostics</a>`
+                        : "<p>This host is no longer in the inventory. Review its job report.</p>") : ""}
                     ${host.job_id ? `<a href="/api/reports/jobs/${encodeURIComponent(host.job_id)}">Job report</a>` : ""}
                     ${host.retry_batch_id ? `<a href="${batchLink(host.retry_batch_id)}" aria-label="Open retry attempt for ${escapeHtml(host.name)}">Open retry attempt</a>` : ""}
                     ${host.retry_needs_verification ? "<p>Review the earlier retry attempts before taking another action.</p>" : ""}

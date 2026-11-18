@@ -42,3 +42,24 @@ test("Status opens an older batch after paging and restores its link after sign-
         await expect(batch.getByRole("link", { name: "Link to this batch" })).toBeHidden();
     }
 });
+
+test("Status links an interrupted APT job to the same host after rename", async ({ page }) => {
+    await ensureAuthenticatedSession(page);
+    await page.goto("/?maintenance_batch=" + (2).toString(16).padStart(32, "0"));
+    const batch = page.locator("#status-batch-panel");
+    const renamed = batch.locator("li").filter({ hasText: "before-rename" });
+    await expect(renamed.getByText("APT reconciliation required", { exact: true })).toBeVisible();
+    await expect(renamed.getByRole("link", { name: "Job report" })).toHaveAttribute("href", "/api/reports/jobs/recovery-job-before-rename");
+    await expect(renamed.getByRole("button", { name: /Retry/ })).toHaveCount(0);
+
+    const replaced = batch.locator("li").filter({ hasText: "replaced-host" });
+    await expect(replaced.getByText("APT reconciliation required", { exact: true })).toBeVisible();
+    await expect(replaced.getByText("This host is no longer in the inventory.", { exact: false })).toBeVisible();
+    await expect(replaced.getByRole("link", { name: "Open host diagnostics" })).toHaveCount(0);
+    await expect(replaced.getByRole("link", { name: "Job report" })).toBeVisible();
+
+    await renamed.getByRole("link", { name: "Open host diagnostics" }).click();
+    await expect(page).toHaveURL(/\/?\?server_identity=previous-before-rename$/);
+    await expect(page.locator("#selected-host-title")).toHaveText("renamed-host");
+    await expect(page.locator("#selected-host-panel").getByRole("button", { name: "Repair APT" })).toBeEnabled();
+});

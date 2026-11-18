@@ -918,10 +918,9 @@
                     || current.key !== hostDetailRequest(event.surface)?.key) return [];
                 current.loading = false;
                 current.snapshot = event.stale ? null : (event.snapshot ?? current.snapshot);
-                // The drawer renders fleet facts as well as details. Let the
-                // deferred fleet render keep pressed actions stable.
-                if (event.surface === "drawer" && interaction.deferredRender
-                    && (interaction.depth > 0 || interaction.releasePending)) return [];
+                // Host detail renders include fleet facts. Apply them on the
+                // deferred fleet render to keep pressed actions stable.
+                if (interaction.deferredRender && (interaction.depth > 0 || interaction.releasePending)) return [];
                 return [{ type: "renderHostDetail", surface: event.surface }];
             } else if (event.type === "dashboardSnapshotReceived") {
                 const requestId = Number(event.requestId || 0);

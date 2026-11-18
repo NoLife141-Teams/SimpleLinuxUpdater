@@ -2482,14 +2482,30 @@ test("compact rows expose application checks and keep the inspector bound to the
     const inspector = page.locator("#selected-host-panel");
     await expect(inspector).toContainText("Previous expectations");
 
-    const update = page.locator('#servers-table tr[data-name="idle-host"] [data-action="update-server"]');
-    await update.dispatchEvent("pointerdown");
+    let arrive, release;
+    const replacementRequest = new Promise(resolve => { arrive = resolve; });
+    const releaseReplacement = new Promise(resolve => { release = resolve; });
+    await page.route("**/api/servers/status-detail?*", async route => {
+        if (new URL(route.request().url()).searchParams.get("server_name") === replacement.name) {
+            arrive();
+            await releaseReplacement;
+        }
+        await route.fallback();
+    });
+    const approval = inspector.getByRole("button", { name: "Approve (1)", exact: true });
+    await approval.dispatchEvent("pointerdown");
     try {
         servers = [replacement];
-        await page.evaluate(() => window.fetchServers(false, "deferred-inspector-test"));
+        const refreshed = page.evaluate(() => window.fetchServers(false, "deferred-inspector-test"));
+        await replacementRequest;
+        await page.evaluate(() => window.fetchDashboardExtras("deferred-inspector-secondary", false));
+        release();
+        await refreshed;
         await expect(page.locator("#selected-host-title")).toHaveText(previous.name);
         await expect(inspector).toContainText("Previous expectations");
+        await expect(approval).toBeEnabled();
     } finally {
+        release();
         await page.dispatchEvent("body", "pointercancel");
     }
     await expect(page.locator("#selected-host-title")).toHaveText("replacement-host");

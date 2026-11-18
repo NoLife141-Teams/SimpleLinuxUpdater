@@ -170,9 +170,7 @@ test("Status transport starts once, closes each stream, clears polling and rejec
     controller.start();
     controller.start();
     assert.equal(sources.length, 1);
-    assert.equal(timers.pending.size, 2);
     sources[0].listeners.get("error")();
-    assert.equal(timers.pending.size, 3);
     const reconnect = [...timers.pending.values()].at(-1);
     controller.destroy();
     assert.equal(timers.pending.size, 0);
@@ -277,6 +275,57 @@ test("discarded Status error responses do not accumulate across polling cycles",
     assert.equal(signals.filter((signal) => signal.aborted).length, 0,
         "completed error responses must be released before page destruction");
     assert.equal(cancelled, 40, "discarded bodies must stop consuming transport");
+});
+
+test("Status log recovery bounds reads, starts the open job first and drops superseded jobs", async () => {
+    const vm = require("node:vm"), fs = require("node:fs");
+    const pending = new Map();
+    const started = [];
+    let peak = 0;
+    let stale = false;
+    const context = {
+        BrowserEffects: {
+            create: () => create({
+                fetch: async (url) => {
+                    const job = url.split("/")[3];
+                    started.push(job);
+                    const response = deferred();
+                    pending.set(job, response);
+                    peak = Math.max(peak, pending.size);
+                    await response.promise;
+                    pending.delete(job);
+                    return new Response('{"fragments":[]}');
+                },
+            }),
+        },
+        window: { canUseScope: () => true },
+        console,
+        URLSearchParams,
+    };
+    vm.runInNewContext(fs.readFileSync(
+        require.resolve("../../static/js/status-snapshot-adapter.js"), "utf8",
+    ), context);
+    const adapter = context.StatusSnapshotAdapter.create({
+        dispatchStatusInteraction: () => [],
+        encodeURIComponent,
+        isOpenJobLog: (name) => name === "open-host",
+        isCurrentJobLog: (_name, job) => job !== "job-10" || !stale,
+    });
+    adapter.init();
+    const reads = Array.from({ length: 12 }, (_, index) =>
+        adapter.executeJobLogFetch({ jobId: `job-${index}`, serverName: index === 11 ? "open-host" : `host-${index}` }));
+    await new Promise(setImmediate);
+    assert.equal(started[0], "job-11");
+    assert.equal(started.length, 8);
+    stale = true;
+    for (const response of pending.values()) response.resolve();
+    await new Promise(setImmediate);
+    for (const response of pending.values()) response.resolve();
+    await Promise.all(reads);
+    assert.equal(peak, 8);
+    assert.equal(started.length, 11);
+    assert.equal(started.includes("job-10"), false);
+    adapter.destroy();
 });
 
 test("successful bulk commands release ignored response bodies before destruction", async () => {

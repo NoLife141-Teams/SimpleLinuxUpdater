@@ -31,7 +31,7 @@ test("Status transport falls back to polling without dashboard events", () => {
     assert.deepEqual(intervals.slice(-2).map(item => item.ms), [5000, 30000]);
 });
 
-test("Status transport routes live job logs without triggering full dashboard refreshes", () => {
+test("Status transport groups targeted invalidations and keeps log events separate", () => {
     const listeners = new Map();
     class EventSourceStub {
         constructor() {
@@ -42,22 +42,39 @@ test("Status transport routes live job logs without triggering full dashboard re
         }
         close() {}
     }
+    const timeouts = new Map();
+    let nextTimer = 1;
     const timers = {
         setInterval() { return 1; },
         clearInterval() {},
-        setTimeout() { return 1; },
-        clearTimeout() {}
+        setTimeout(callback) {
+            const id = nextTimer++;
+            timeouts.set(id, callback);
+            return id;
+        },
+        clearTimeout(id) { timeouts.delete(id); }
     };
+    const runTimeout = () => {
+        const [id, callback] = timeouts.entries().next().value;
+        timeouts.delete(id);
+        callback();
+    };
+    const allStreams = new Set(["servers", "dashboard", "globalKey", "audit", "observability", "policies"]);
     const logEvents = [];
-    const dashboardReasons = [];
+    const refreshes = [];
     const controller = StatusTransport.createController({
         timers,
         EventSourceType: EventSourceStub,
         onJobLogEvent: event => logEvents.push(event),
-        onDashboardEvent: reason => dashboardReasons.push(reason)
+        onDashboardRefresh: streams => refreshes.push(streams)
     });
     controller.start();
+    assert.deepEqual(refreshes, []);
+    listeners.get("open")();
+    assert.equal(refreshes.length, 1);
+    assert.deepEqual(new Set(refreshes.pop()), allStreams);
 
+    listeners.get("dashboard")({ data: '{"reason":"connected"}' });
     listeners.get("dashboard")({ data: JSON.stringify({
         reason: "job.log",
         server_name: "alpha",
@@ -66,7 +83,10 @@ test("Status transport routes live job logs without triggering full dashboard re
         stream: "stderr",
         data: "warning\n"
     }) });
-    listeners.get("dashboard")({ data: JSON.stringify({ reason: "job.update" }) });
+    assert.equal(timeouts.size, 0);
+    for (const reason of ["job.update", "job.update"]) {
+        listeners.get("dashboard")({ data: JSON.stringify({ reason }) });
+    }
 
     assert.deepEqual(logEvents, [{
         reason: "job.log",
@@ -76,7 +96,28 @@ test("Status transport routes live job logs without triggering full dashboard re
         stream: "stderr",
         data: "warning\n"
     }]);
-    assert.deepEqual(dashboardReasons, ["job.update"]);
+    assert.equal(timeouts.size, 1);
+    assert.deepEqual(refreshes, []);
+    runTimeout();
+    assert.equal(refreshes.length, 1);
+    assert.deepEqual(new Set(refreshes.at(-1)), new Set(["servers", "dashboard"]));
+
+    for (const reason of ["update_policy.update", "job.create"]) {
+        listeners.get("dashboard")({ data: JSON.stringify({ reason }) });
+    }
+    assert.equal(timeouts.size, 1);
+    runTimeout();
+    assert.deepEqual(new Set(refreshes.at(-1)), new Set(["dashboard", "policies", "audit", "servers"]));
+
+    listeners.get("dashboard")({ data: JSON.stringify({ reason: "unrecognized.event" }) });
+    runTimeout();
+    assert.deepEqual(new Set(refreshes.pop()), allStreams);
+
+    listeners.get("error")();
+    runTimeout();
+    listeners.get("open")();
+    runTimeout();
+    assert.deepEqual(new Set(refreshes.at(-1)), allStreams);
 });
 
 test("Status table and action adapters preserve operator preferences and decision facts", () => {

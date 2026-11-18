@@ -1,6 +1,8 @@
 // Browser effects for StatusSnapshotAdapter; accepted state and command plans stay in the injected interaction owner.
 (function (root) {
     "use strict";
+    const maxConcurrentJobLogReads = 8;
+
     function create(options) {
         const lifecycle = root.BrowserEffects.create();
         const fetch = lifecycle.fetch;
@@ -11,6 +13,9 @@
             ? lifecycle.observer(root.ResizeObserver)
             : undefined;
         const { dispatchStatusInteraction, encodeURIComponent } = options;
+        const jobLogQueue = [];
+        let activeJobLogReads = 0;
+        let jobLogDrainScheduled = false;
         const compactProjection = { headers: { "X-SLU-Status-Projection": "compact" } };
 
         async function fetchHostDetail(name, serverIdentity, approvalIdentity, view) {
@@ -289,10 +294,7 @@
             }
         }
 
-        async function executeJobLogFetch(effect) {
-            const lifetime = lifecycle.capture();
-
-            if (!window.canUseScope("logs:read")) return;
+        async function readJobLogPage(effect, lifetime) {
             const jobId = String(effect.jobId || "");
             const serverName = String(effect.serverName || "");
             const afterSequence = Math.max(
@@ -310,14 +312,13 @@
                 }
                 const page = await response.json();
                 if (!lifecycle.isCurrent(lifetime)) return;
-                await dispatchStatusInteraction({
+                return {
                     type: "jobLogRecoveryReceived",
                     serverName,
                     jobId,
                     afterSequence,
                     page,
-                });
-                if (!lifecycle.isCurrent(lifetime)) return;
+                };
             } catch (err) {
                 if (
                     !lifecycle.isCurrent(lifetime) ||
@@ -328,14 +329,56 @@
                     `Unable to recover job logs for ${serverName}:`,
                     err,
                 );
-                await dispatchStatusInteraction({
+                return {
                     type: "jobLogRecoveryFailed",
                     serverName,
                     jobId,
                     error: err?.message || String(err),
-                });
-                if (!lifecycle.isCurrent(lifetime)) return;
+                };
             }
+        }
+
+        function scheduleJobLogDrain() {
+            if (jobLogDrainScheduled) return;
+            jobLogDrainScheduled = true;
+            // Collect all effects of a reconnect before picking the first jobs.
+            Promise.resolve().then(() => {
+                jobLogDrainScheduled = false;
+                while (activeJobLogReads < maxConcurrentJobLogReads && jobLogQueue.length > 0) {
+                    const priority = jobLogQueue.findIndex(item => options.isOpenJobLog?.(item.effect.serverName));
+                    const [item] = jobLogQueue.splice(priority < 0 ? 0 : priority, 1);
+                    const { effect, lifetime, resolve } = item;
+                    if (!lifecycle.isCurrent(lifetime)
+                        || options.isCurrentJobLog?.(effect.serverName, effect.jobId) === false) {
+                        resolve();
+                        continue;
+                    }
+                    activeJobLogReads++;
+                    readJobLogPage(effect, lifetime).then(result => {
+                        // A response can schedule another page. Release the slot before dispatch.
+                        activeJobLogReads--;
+                        resolve(result);
+                        scheduleJobLogDrain();
+                    });
+                }
+            });
+        }
+
+        async function executeJobLogFetch(effect) {
+            if (!window.canUseScope("logs:read")) return;
+            const lifetime = lifecycle.capture();
+            const result = await new Promise(resolve => {
+                jobLogQueue.push({ effect, lifetime, resolve });
+                scheduleJobLogDrain();
+            });
+            if (result && lifecycle.isCurrent(lifetime)) {
+                await dispatchStatusInteraction(result);
+            }
+        }
+
+        function destroy() {
+            lifecycle.destroy();
+            for (const item of jobLogQueue.splice(0)) item.resolve();
         }
 
         async function executeGlobalKeyStatusFetch(effect) {
@@ -427,7 +470,7 @@
         }
         return Object.freeze({
             init: lifecycle.init,
-            destroy: lifecycle.destroy,
+            destroy,
             executeStatusSnapshotFetch: (...args) =>
                 lifecycle.active
                     ? executeStatusSnapshotFetch(...args)

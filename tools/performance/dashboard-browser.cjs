@@ -24,6 +24,7 @@ const quantiles = values => {
 async function settledPaint(page) { await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))); }
 async function timed(page, run) { const at = performance.now(); await run(); await settledPaint(page); return performance.now() - at; }
 const fleetPaths = ['/api/servers', '/api/dashboard/summary'];
+const refreshPaths = new Set([...fleetPaths, '/api/keys/global', '/api/audit-events', '/api/observability/summary', '/api/update-policies']);
 function fleetResponses(page) {
   return fleetPaths.map(path => page.waitForResponse(response => new URL(response.url()).pathname === path));
 }
@@ -34,6 +35,20 @@ async function fleetBytes(responses) {
     assert.ok(responseBodySize > 0 && body.length > 0, `missing body size for ${fleetPaths[index]}`);
     return [fleetPaths[index], { encoded: responseBodySize, decoded: body.length }];
   })));
+}
+
+async function measureRequests(requests) {
+  const paths = {};
+  for (const request of requests) {
+    const pathname = new URL(request.url()).pathname;
+    const response = await request.response();
+    assert.ok(response?.ok(), `refresh failed for ${pathname}`);
+    const { responseBodySize } = await request.sizes();
+    const item = paths[pathname] ??= { requests: 0, encoded: 0 };
+    item.requests++;
+    item.encoded += responseBodySize;
+  }
+  return paths;
 }
 
 (async () => {
@@ -69,9 +84,30 @@ async function fleetBytes(responses) {
           await cdp.send('Profiler.start');
           page.on('pageerror', error => errors.push(String(error)));
           const requests = [], active = new Map(), maxActive = new Map();
+          const refreshRequests = [];
+          let reconnectPeak = 0, logRequestsInFlight = 0, measureReconnect = false;
           let sseConnections = 0;
-          page.on('request', req => { const url = new URL(req.url()); if(url.pathname === '/api/dashboard/events') sseConnections++; if (url.pathname.startsWith('/api/') && !url.pathname.endsWith('/events')) { requests.push(url.pathname + url.search); const n = (active.get(url.pathname) || 0) + 1; active.set(url.pathname, n); maxActive.set(url.pathname, Math.max(maxActive.get(url.pathname) || 0, n)); } });
-          const finished = req => { const pathname = new URL(req.url()).pathname; if (active.has(pathname)) active.set(pathname, active.get(pathname) - 1); };
+          const jobLogs = path => path.startsWith('/api/jobs/') && path.endsWith('/logs');
+          page.on('request', req => {
+            const url = new URL(req.url());
+            if (url.pathname === '/api/dashboard/events') sseConnections++;
+            if (refreshPaths.has(url.pathname)) refreshRequests.push(req);
+            if (jobLogs(url.pathname)) {
+              logRequestsInFlight++;
+              if (measureReconnect) reconnectPeak = Math.max(reconnectPeak, logRequestsInFlight);
+            }
+            if (url.pathname.startsWith('/api/') && !url.pathname.endsWith('/events')) {
+              requests.push(url.pathname + url.search);
+              const n = (active.get(url.pathname) || 0) + 1;
+              active.set(url.pathname, n);
+              maxActive.set(url.pathname, Math.max(maxActive.get(url.pathname) || 0, n));
+            }
+          });
+          const finished = req => {
+            const pathname = new URL(req.url()).pathname;
+            if (jobLogs(pathname)) logRequestsInFlight--;
+            if (active.has(pathname)) active.set(pathname, active.get(pathname) - 1);
+          };
           page.on('requestfinished', finished); page.on('requestfailed', finished);
           page.on('response', res => { if (res.status() >= 400) errors.push(`HTTP ${res.status()} ${res.url()}`); });
           try {
@@ -110,25 +146,52 @@ async function fleetBytes(responses) {
               await Promise.all(changed.map(async response => (await response).finished()));
             });
             const refreshBytes = await fleetBytes(changed);
+            await page.locator('#search').fill('synthetic-0003');
+            const statusPill = page.locator('#servers-table tr[data-name="synthetic-0003"] .status-pill').first();
+            const target = (await statusPill.innerText()).toLowerCase() === 'idle' ? 'done' : 'idle';
+            const snapshotsIdle = () => Object.values(window.statusPageInteraction.getView().sync.streams).every(stream => !stream.inFlight);
+            await page.waitForFunction(snapshotsIdle, null, { polling: 100 });
+            const beforeBurst = refreshRequests.length;
+            const burstRender = await timed(page, async () => {
+              const emitted = context.request.get(fixture.url + '/__scaling/burst');
+              await statusPill.filter({ hasText: target }).waitFor();
+              assert.ok((await emitted).ok());
+            });
+            // Let the final event in the burst flush and include all its queued reads.
+            await sleep(200);
+            await page.waitForFunction(snapshotsIdle, null, { polling: 100 });
+            const burstRequests = await measureRequests(refreshRequests.slice(beforeBurst));
+            await page.locator('#search').fill('synthetic-0001');
             let reconnects = 0;
             const reconnectSamples = [];
             if (iteration === 4) {
               for (let cycle = 0; cycle < 3; cycle++) {
                 const before = requests.length;
+                reconnectPeak = 0;
+                measureReconnect = true;
                 const reopened = page.waitForResponse(res => new URL(res.url()).pathname === '/api/dashboard/events', { timeout: 15000 });
                 await context.request.get(fixture.url + '/__scaling/disconnect');
                 await reopened;
                 // Wait until the log burst has drained before another cycle.
                 await sleep(300);
-                for(let attempts=0; attempts<600 && [...active].some(([url,count]) => url.includes('/logs') && count>0); attempts++) await sleep(100);
-                assert.equal([...active].some(([url,count]) => url.includes('/logs') && count>0), false, 'reconnect log requests timed out');
-                reconnectSamples.push({ requests: requests.slice(before), targets: [...new Set(requests.slice(before).filter(url => url.includes('/logs?')).map(url => url.split('/logs?')[0]))] });
+                const expectedTargets = fixture.manifest.active + fixture.manifest.approvals;
+                let reconnectRequests, targets;
+                for (let attempts = 0; attempts < 600; attempts++) {
+                  reconnectRequests = requests.slice(before);
+                  targets = [...new Set(reconnectRequests.filter(url => url.includes('/logs?')).map(url => url.split('/logs?')[0]))];
+                  if (logRequestsInFlight === 0 && targets.length >= expectedTargets) break;
+                  await sleep(100);
+                }
+                assert.equal(logRequestsInFlight, 0, 'reconnect log requests timed out');
+                assert.ok(targets.length >= expectedTargets, 'reconnect missed active or approval log targets');
+                measureReconnect = false;
+                reconnectSamples.push({ requests: reconnectRequests, targets, peak_log_requests: reconnectPeak });
                 reconnects++;
               }
             }
             const metrics = Object.fromEntries((await cdp.send('Performance.getMetrics')).metrics.map(m => [m.name, m.value]));
             const browserFacts = await page.evaluate(() => ({ dom_nodes: document.getElementsByTagName('*').length, rows: document.querySelectorAll('#servers-table tbody tr[data-name]').length, long_tasks_ms: window.scalingLongTasks, resources: performance.getEntriesByType('resource').filter(r => r.name.includes('/api/')).map(r => ({ path: new URL(r.name).pathname, encoded_bytes: r.encodedBodySize, decoded_bytes: r.decodedBodySize, duration_ms: r.duration })) }));
-            if (iteration >= 0) samples.push({ initial, filter, select, detail, refresh, initial_bytes: initialBytes, refresh_bytes: refreshBytes, reconnects, sse_connections: sseConnections, reconnect_samples: reconnectSamples, requests, max_concurrent_by_path: Object.fromEntries(maxActive), hidden_selection_hint: hiddenSelectionHint, metrics, ...browserFacts });
+            if (iteration >= 0) samples.push({ initial, filter, select, detail, refresh, burstRender, burstRequests, initial_bytes: initialBytes, refresh_bytes: refreshBytes, reconnects, sse_connections: sseConnections, reconnect_samples: reconnectSamples, requests, max_concurrent_by_path: Object.fromEntries(maxActive), hidden_selection_hint: hiddenSelectionHint, metrics, ...browserFacts });
           } catch (error) {
             await page.screenshot({ path: path.join(output, `failure-${size}.png`) });
             throw error;
@@ -139,7 +202,7 @@ async function fleetBytes(responses) {
             await context.close();
           }
         }
-        const stats = Object.fromEntries(['initial', 'filter', 'select', 'detail', 'refresh'].map(name => [name, quantiles(samples.map(s => s[name]))]));
+        const stats = Object.fromEntries(['initial', 'filter', 'select', 'detail', 'refresh', 'burstRender'].map(name => [name, quantiles(samples.map(s => s[name]))]));
         await fs.writeFile(path.join(output, `browser-${size}.json`), JSON.stringify({ manifest: fixture.manifest, browser: browser.version(), viewport: '1440x1000', iterations: 5, warmup: 1, stats, errors, samples }, null, 2) + '\n');
         assert.deepEqual(errors, []);
       } finally {

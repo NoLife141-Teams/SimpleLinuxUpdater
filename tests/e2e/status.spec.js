@@ -870,6 +870,35 @@ test("structured SSE job logs preserve drawer scroll and avoid server refetches"
     expect(serverRequests).toBe(requestsBeforeLogs);
 });
 
+test("a late first SSE subscription reconciles changes missed by the initial fallback", async ({ page }) => {
+    let servers = [makeServer("initial-host", "idle")];
+    await stubDashboardApi(page, () => servers);
+    await page.addInitScript(() => {
+        window.EventSource = class extends EventTarget {
+            constructor() {
+                super();
+                window.__initialStatusStream = this;
+            }
+            close() {}
+        };
+    });
+    await ensureAuthenticatedSession(page);
+    const initial = page.locator('#servers-table tbody tr[data-name="initial-host"]');
+    await expect(initial).toBeVisible();
+
+    // The first snapshots returned before the server could subscribe this tab.
+    servers = [makeServer("updated-host", "idle")];
+    await page.evaluate(() => {
+        window.__initialStatusStream.dispatchEvent(new Event("open"));
+        window.__initialStatusStream.dispatchEvent(new MessageEvent("dashboard", {
+            data: '{"reason":"connected"}',
+        }));
+    });
+    await expect(page.locator('#servers-table tbody tr[data-name="updated-host"]'))
+        .toBeVisible({ timeout: 2000 });
+    await expect(initial).toHaveCount(0);
+});
+
 for (const responseTiming of ["offline", "reconnected"]) {
     test(`SSE reconnect recovers a completed unselected job after an ${responseTiming} log response`, async ({
         baseURL,

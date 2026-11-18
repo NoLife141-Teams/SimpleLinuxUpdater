@@ -562,6 +562,23 @@ func TestDashboardScalingServe(t *testing.T) {
 			w.WriteHeader(204)
 			return
 		}
+		if r.URL.Path == "/__scaling/burst" {
+			state := a.deps.ServerState
+			state.Lock()
+			host := state.StatusMap()["synthetic-0003"]
+			if host.Status == "idle" {
+				host.Status = "done"
+			} else {
+				host.Status = "idle"
+			}
+			state.Unlock()
+			for range 12 {
+				a.deps.DashboardEventBroker.Publish("job.update")
+				time.Sleep(8 * time.Millisecond)
+			}
+			w.WriteHeader(204)
+			return
+		}
 		if r.URL.Path == "/api/dashboard/events" {
 			ctx, cancel := context.WithCancel(r.Context())
 			defer cancel()

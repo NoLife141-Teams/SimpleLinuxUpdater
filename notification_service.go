@@ -112,6 +112,30 @@ func handleNotificationDeliveryDiagnostics(c *gin.Context, service NotificationD
 	c.JSON(http.StatusOK, diagnostics)
 }
 
+func handleNotificationDeliveryHistory(c *gin.Context, service NotificationDeliveryLifecycle) {
+	setNoStoreHeaders(c)
+	reader, ok := service.(notificationpkg.DeliveryHistoryReader)
+	if !ok {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "notification delivery history is unavailable"})
+		return
+	}
+	page, err := reader.DeliveryHistory(c.Request.Context(), notificationpkg.DeliveryHistoryQuery{
+		Destination: c.Query("destination"),
+		State:       c.Query("state"),
+		JobID:       c.Query("job_id"),
+		Before:      c.Query("before"),
+	})
+	if errors.Is(err, notificationpkg.ErrInvalidDeliveryHistoryQuery) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid destination, delivery state, job identifier or history cursor."})
+		return
+	}
+	if err != nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "notification delivery history is unavailable"})
+		return
+	}
+	c.JSON(http.StatusOK, page)
+}
+
 func handleNotificationTest(c *gin.Context, service NotificationDeliveryLifecycle) {
 	if service == nil {
 		service = defaultNotificationService()

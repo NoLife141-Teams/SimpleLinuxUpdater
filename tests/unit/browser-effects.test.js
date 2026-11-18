@@ -521,7 +521,8 @@ test("Admin notification adapter cannot render a previous request failure after 
         BrowserEffects: { create: () => create({ fetch: () => gate.promise }) },
         window: {},
         document: {
-            getElementById() {
+            getElementById(id) {
+                if (id === "notification-history") return null;
                 writes++;
                 return {};
             },

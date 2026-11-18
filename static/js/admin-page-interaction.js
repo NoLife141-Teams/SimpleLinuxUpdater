@@ -5,7 +5,7 @@
 }(typeof globalThis !== "undefined" ? globalThis : this, function adminPageInteractionFactory(navigation) {
     "use strict";
 
-    const streamNames = ["timezone", "notifications", "notificationDiagnostics", "account", "activity", "metrics", "backup", "postchecks", "installation"];
+    const streamNames = ["timezone", "notifications", "notificationDiagnostics", "notificationHistory", "account", "activity", "metrics", "backup", "postchecks", "installation"];
     const sectionDefinitions = [
  { id: "app-time", label: "App Time" },
         { id: "notifications", label: "Notifications" },
@@ -328,6 +328,7 @@
         let acceptedNotifications = normalizeNotifications();
         let notificationDraft = clone(acceptedNotifications);
         let notificationDiagnostics = normalizeDeliveryDiagnostics();
+        let notificationHistory = { items: [], nextCursor: "", retentionSeconds: 0 };
         let account = {
             sessionCount: 0,
             sessions: [],
@@ -867,6 +868,16 @@
                         return [effect("render", { area: "notificationDiagnostics" })];
                     }
                     return [];
+                case "notificationHistoryReceived":
+                    if (accept("notificationHistory", event.requestID, event.receivedAt)) {
+                        notificationHistory = {
+                            items: clone(event.data.items),
+                            nextCursor: String(event.data.next_cursor || ""),
+                            retentionSeconds: Number(event.data.retention_seconds) || 0
+                        };
+                        return [effect("render", { area: "notificationHistory" })];
+                    }
+                    return [];
                 case "notificationDraftChanged":
                     notificationDraft = {
                         ...notificationDraft,
@@ -1040,6 +1051,7 @@
                 postchecks: {...postchecks,dirty:!sameValue(postchecks.accepted,postchecks.draft)},
  notifications: { ...notificationDraft, dirty: notificationDirty, ...notificationValidation() },
                 notificationDiagnostics,
+                notificationHistory,
  installation,
                 account: projectAccount(),
                 activity,

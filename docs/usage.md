@@ -616,6 +616,12 @@ Supported operational events are:
 
 Notification delivery is best-effort and never changes the maintenance result. Admin shows masked destination state and delivery diagnostics without returning stored secrets. Use HTTPS for public webhook endpoints, and treat test delivery as a real outbound message.
 
+Open **Delivery history** in **Admin → Notifications** to inspect retained
+results by destination, delivery state or exact job ID. Approval alerts show
+the generation when recorded, and scheduled retries show their next attempt.
+The panel shows the active retention for completed results and exposes only
+diagnostic fields and safe failure reasons.
+
 The new condition events are opt-in: existing selections remain unchanged. Initial alerts are admitted promptly from persisted server facts, independently of open browser tabs. Automatic approvals do not request an operator decision. Approval acceptance, cancellation, expiration, interruption, or a newer plan stops delivery of the old actionable alert. Expiration is a separate historical event, sent only if selected when it is observed; enabling it later does not replay consumed expirations.
 
 The initial approval alert is recorded per exact plan and destination configuration. The active plan comes from the persisted waiting job. Older approval audit records cannot reopen its alert. Other conditions use persistent episodes. A confirmed healthy observation ends an episode, and a later recurrence starts another. Missing or failed observations preserve the previous condition. Manual and automatic backups share the export/verification failure conditions, including automatic scheduling/publication failures. Coverage requires both a successful export and restore-ready verification within the existing seven-day recovery threshold. These are recorded recovery facts, not a fresh scan of operator-managed archive files.

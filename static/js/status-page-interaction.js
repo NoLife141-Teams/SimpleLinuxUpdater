@@ -778,9 +778,17 @@
         }
 
         function drawerLogEffects(serverName) {
-            return drawer.open && drawer.tab === "logs" && drawer.serverName === serverName
+            return isOpenJobLog(serverName)
                 ? [{ type: "renderDrawerLogs", serverName }]
                 : [];
+        }
+
+        function isOpenJobLog(serverName) {
+            return drawer.open && drawer.tab === "logs" && drawer.serverName === serverName;
+        }
+
+        function isCurrentJobLog(serverName, jobId) {
+            return jobLogsByServer.get(serverName)?.jobId === jobId;
         }
 
         function receiveJobLogEvent(event) {
@@ -1495,6 +1503,8 @@
             getPersistence,
             getServer,
             getView,
+            isCurrentJobLog,
+            isOpenJobLog,
             planAction,
             planBulkAction
         });

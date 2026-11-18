@@ -113,6 +113,36 @@ the compact JSON at 760 bytes per inventory row and 4,300 bytes per dashboard ro
 each with 1 KiB for fixed overhead. The legacy API budget and redaction assertions
 continue to run alongside the compact assertions.
 
+## Targeted SSE refresh and bounded log recovery (#577)
+
+The browser fixture emits 12 `job.update` events at 8 ms intervals after
+changing one visible host. Status groups invalidations within a 125 ms window.
+Job changes invalidate inventory and Dashboard Projection. Policy changes can
+also invalidate the policy summary and recent audit. The first connection uses
+the initial page reads, and a reconnect or an unknown event refreshes the full
+snapshot set. Structured job log events continue to bypass snapshot refreshes.
+
+Reference `941f880` and candidate were measured on Chromium 159.0.8154.6 with
+five measured trials per size. Counts and transferred body bytes are medians.
+The aggregate median is calculated per trial. The audit path includes command
+history requested for the inspected host after Dashboard Projection changes.
+
+| Endpoint | 100 hosts requests before → after | 100 hosts bytes before → after | 1,000 hosts requests before → after | 1,000 hosts bytes before → after |
+| --- | ---: | ---: | ---: | ---: |
+| `/api/servers` | 3 → 1 | 198,165 → 66,055 | 2 → 1 | 1,320,830 → 660,415 |
+| `/api/dashboard/summary` | 3 → 1 | 83,397 → 27,910 | 2 → 1 | 541,874 → 270,937 |
+| `/api/keys/global` | 3 → 0 | 51 → 0 | 2 → 0 | 34 → 0 |
+| `/api/audit-events` | 5 → 1 | 12,520 → 2,369 | 4 → 2 | 9,944 → 4,738 |
+| `/api/observability/summary` | 3 → 0 | 6,588 → 0 | 2 → 0 | 35,008 → 0 |
+| `/api/update-policies` | 2 → 0 | 5,802 → 0 | 2 → 0 | 24,164 → 0 |
+| **Total** | **18 → 3** | **304,435 → 96,334** | **15 → 4** | **1,932,925 → 936,090** |
+
+The changed row rendered in 446 → 306 ms p50 at 100 hosts and 2,435 → 966 ms
+at 1,000. Three forced reconnects per size each requested 30 and 300 distinct log
+jobs respectively, as before. Peak concurrent log reads fell from 30 to 8 and
+from 300 to 8. Status puts the open log ahead of queued background jobs and
+continues recovery by sequence for jobs followed before the outage.
+
 Regular CI runs `TestDashboardScalingBudgets` at all three sizes. It bounds JSON
 bytes, actual executed SQL statements and allocations, checks global counts and
 action eligibility, validates role redaction, and rejects detailed log chunks in

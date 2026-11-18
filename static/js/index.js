@@ -102,6 +102,8 @@
             dispatchStatusInteraction: (...args) =>
                 dispatchStatusInteraction(...args),
             encodeURIComponent: (...args) => encodeURIComponent(...args),
+            isCurrentJobLog: statusInteraction.isCurrentJobLog,
+            isOpenJobLog: statusInteraction.isOpenJobLog,
         });
         const { executeStatusSnapshotFetch, executeJobLogFetch, executeHostDetailFetch, fetchHostDetail } =
             statusSnapshots;
@@ -1335,13 +1337,12 @@
             onJobLogEvent: (event) => {
                 dispatchStatusInteraction({ type: "jobLogReceived", event });
             },
-            onDashboardEvent: () => {
+            onDashboardRefresh: (streams) => {
                 requestStatusRefresh(
-                    ["servers", "dashboard"],
+                    streams,
                     "immediate",
                     "sse",
                 );
-                fetchDashboardExtras("sse", false);
             },
             onReconnect: () =>
                 dispatchStatusInteraction({ type: "jobLogReconnect" }),

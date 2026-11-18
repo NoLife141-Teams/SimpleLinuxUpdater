@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Qualify a candidate image on disposable Docker volumes and a real VM."""
 import argparse
+import base64
 import ipaddress
 import json
 import re
@@ -12,6 +13,7 @@ import tarfile
 import tempfile
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -23,6 +25,10 @@ DOCKER = ("docker", "--host=unix:///var/run/docker.sock")
 LABEL = "io.simplelinuxupdater.operational-qualification"
 PIN = json.loads((HERE / "operational-release.json").read_text())
 PLATFORM = "linux/amd64"
+BATCH_PATH = "/api/status/batches"
+BATCH_SERVER = "maintenance-batch-fixture"
+PROBE_PORT = 22922
+PROBE_CONTACTS = "/tmp/slu-qualification-batch-contacts"
 
 
 def command(*args, timeout=90, stdin=None, stdout=subprocess.PIPE):
@@ -36,6 +42,16 @@ def command(*args, timeout=90, stdin=None, stdout=subprocess.PIPE):
 
 def docker(*args, **kwargs):
     return command(*DOCKER, *args, **kwargs)
+
+
+def until(predicate, failure, seconds=10):
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        value = predicate()
+        if value:
+            return value
+        time.sleep(0.1)
+    raise AssertionError(failure)
 
 
 @contextmanager
@@ -68,6 +84,13 @@ class Qualification:
             "status": "not_executed",
             "candidate_build": {"status": "not_executed"},
             "docker_upgrade": {"status": "not_executed"},
+            "maintenance_batches": {
+                "status": "not_executed",
+                "history_after_restart": "not_executed",
+                "account_isolation": "not_executed",
+                "single_retry_admission": "not_executed",
+                "interrupted_job_recovery": "not_executed",
+            },
             "controlled_reboot_vm": {"status": "not_executed"},
             "cleanup": {"status": "not_executed"},
         }
@@ -186,6 +209,112 @@ class Qualification:
         recovered.request("POST", "/api/auth/login", credentials)
         self.verify_inventory(recovered)
         self.report["docker_upgrade"]["separate_volume_restore"] = "passed"
+        self.step("maintenance_batches", lambda: self.qualify_maintenance_batches(new_name, new, credentials))
+
+    def start_batch_probe(self, name):
+        # The isolated peer only accepts and holds TCP connections. It does
+        # not proceed with SSH or execute commands supplied over the connection.
+        key = base64.b64encode(b"\0\0\0\x0bssh-ed25519\0\0\0\x20" + secrets.token_bytes(32)).decode()
+        docker("exec", "--user", "app", name, "/bin/sh", "-ec",
+               'umask 077; printf "%s\n" "$1" >> /data/known_hosts; printf "%s\n" "$2" > /tmp/slu-qualification-batch-probe',
+               "probe", f"[127.0.0.1]:{PROBE_PORT} ssh-ed25519 {key}",
+               f'printf "connected\\n" >> {PROBE_CONTACTS}\nexec /bin/sleep 60')
+        docker("exec", "--detach", "--user", "app", name, "/bin/busybox", "nc", "-lk",
+               "-s", "127.0.0.1", "-p", str(PROBE_PORT), "-e", "/bin/sh", "/tmp/slu-qualification-batch-probe")
+        until(lambda: f"127.0.0.1:{PROBE_PORT} " in docker("exec", name, "/bin/busybox", "netstat", "-ltn"),
+              "qualification TCP probe did not start")
+
+    def qualify_maintenance_batches(self, name, api, credentials):
+        evidence = self.report["maintenance_batches"]
+        api.request("POST", "/api/servers", {
+            "name": BATCH_SERVER, "host": "127.0.0.1", "port": PROBE_PORT,
+            "user": "fixture", "pass": secrets.token_urlsafe(24), "disabled": True,
+        }, allowed=(201,))
+        server = next(item for item in api.request("GET", "/api/servers") if item["name"] == BATCH_SERVER)
+        identity = server["server_identity"]
+        require(bool(identity), "candidate did not assign the batch fixture a stable identity")
+        batch_id = uuid.uuid4().hex
+        source = {"id": batch_id, "action": "update", "targets": [{"name": BATCH_SERVER, "server_identity": identity}]}
+        require(api.request("POST", BATCH_PATH, source, allowed=(202,)) == {"id": batch_id},
+                "candidate did not accept the source batch")
+
+        def read_host(batch):
+            hosts = api.request("GET", f"{BATCH_PATH}/{batch}", timeout=4)["batch"]["hosts"]
+            require(len(hosts) == 1 and hosts[0]["server_identity"] == identity,
+                    "maintenance batch host identity changed")
+            return hosts[0]
+
+        def refused_host():
+            host = read_host(batch_id)
+            return host if host["state"] == "refused" and host.get("retryable") else None
+
+        expected = until(refused_host, "disabled fixture did not produce a retryable refusal")
+        docker("restart", "--timeout", "25", name)
+        self.connect(name, api)
+        api.request("POST", "/api/auth/login", credentials)
+        require(read_host(batch_id) == expected, "source batch result changed after restart")
+        history = api.request("GET", BATCH_PATH)["batches"]
+        require(any(row["id"] == batch_id and row["terminal"] == 1 and row["needs_verification"] == 0 for row in history),
+                "owner history lost the source batch after restart")
+        evidence["history_after_restart"] = "passed"
+
+        operator = {"username": "qualification-operator", "password": secrets.token_urlsafe(28) + "Aa1!"}
+        api.request("POST", "/api/auth/accounts", {**operator, "role": "operator"}, allowed=(201,))
+        stranger = self.connect(name)
+        stranger.request("POST", "/api/auth/login", operator)
+        require(stranger.request("GET", BATCH_PATH)["batches"] == [], "owner batch appeared in another operator's history")
+        require(stranger.request("GET", f"{BATCH_PATH}/{batch_id}", allowed=(404,)).get("batch") is None,
+                "another operator could access the source batch")
+        evidence["account_isolation"] = "passed"
+
+        self.start_batch_probe(name)
+        api.request("PUT", f"/api/servers/{BATCH_SERVER}/availability", {"disabled": False})
+        second_session = self.connect(name)
+        second_session.request("POST", "/api/auth/login", credentials)
+        retries = [{**source, "id": uuid.uuid4().hex, "retry_of": batch_id} for _ in range(2)]
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            futures = [pool.submit(client.request, "POST", BATCH_PATH, retry, allowed=(202, 409))
+                       for client, retry in zip((api, second_session), retries)]
+            responses = [future.result() for future in futures]
+        winners = [retry for retry, response in zip(retries, responses) if response == {"id": retry["id"]}]
+        require(len(winners) == 1, "concurrent retry did not admit exactly one batch")
+        winner = winners[0]
+        winner_id = winner["id"]
+        loser = next(response for retry, response in zip(retries, responses) if retry != winner)
+        require(loser.get("retry_batch_id") == winner_id, "conflicting retry did not identify the admitted attempt")
+        require(api.request("POST", BATCH_PATH, winner, allowed=(202,)) == {"id": winner_id},
+                "replaying the admitted request did not return the same batch")
+        require(read_host(batch_id).get("retry_batch_id") == winner_id, "source lost its admitted retry link")
+
+        def running_job():
+            host = read_host(winner_id)
+            return host.get("job_id") if host.get("job_status") == "running" else None
+
+        job_id = until(running_job, "retry did not start a real job")
+        def contacts():
+            return int(docker("exec", name, "/bin/sh", "-c",
+                              f"if test -f {PROBE_CONTACTS}; then wc -l < {PROBE_CONTACTS}; else printf '0'; fi"))
+
+        until(contacts, "retry job did not reach the isolated peer")
+        audit_path = f"/api/audit-events?action=update.start&status=started&target_type=server&target_name={BATCH_SERVER}"
+        admissions = api.request("GET", audit_path)
+        require(admissions["total"] == 1 and json.loads(admissions["items"][0]["meta_json"])["job_id"] == job_id and contacts() == 1,
+                "a concurrent or replayed retry produced more than one job admission")
+        evidence["single_retry_admission"] = "passed"
+
+        require(read_host(winner_id).get("job_status") == "running", "retry completed before the interruption checkpoint")
+        docker("kill", name)
+        docker("start", name)
+        self.connect(name, api)
+        api.request("POST", "/api/auth/login", credentials)
+        interrupted = read_host(winner_id)
+        require(interrupted.get("job_id") == job_id and interrupted.get("job_status") == "interrupted" and
+                interrupted["state"] == "completed" and not interrupted.get("retryable"),
+                "restart lost the admitted job or its interrupted result")
+        history = api.request("GET", BATCH_PATH)["batches"]
+        require(any(row["id"] == winner_id and row["terminal"] == 1 and row["needs_verification"] == 0 for row in history),
+                "owner history lost the interrupted retry")
+        evidence["interrupted_job_recovery"] = "passed"
 
     def controlled_reboot(self):
         build = self.work / "vm-runner"

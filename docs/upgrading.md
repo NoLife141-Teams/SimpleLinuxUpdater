@@ -1,9 +1,29 @@
 [Documentation map](README.md) | [Deployment](deployment.md) | [Accounts and API](personal-api.md) | [CI](ci-and-release.md)
 
-# Upgrading to v0.5.8
+# Upgrading SimpleLinuxUpdater
 
 Use the image digest recorded in the published release's `publication.json`,
 or download the matching versioned binary archive and checksum list.
+
+## From v0.5.8 to a candidate with Maintenance batch history
+
+Before upgrading, finish or cancel maintenance and verify an encrypted backup
+with `known_hosts` included. Preserve the v0.5.8 image digest or binary and use
+the matching executable and web assets for each installation. The candidate
+adds batch tables and a notification-delivery history index to the local
+database. An upgraded v0.5.8 installation starts with an empty batch history.
+
+After migrating, reload open tabs and sign in. Verify inventory, SSH trust,
+policy settings and **Admin → Notifications → Delivery history**. On a
+disposable Server, run a maintenance batch, open its result from the owning
+account and confirm its history after an application restart. A batch whose
+job was interrupted retains its job link. Review the job result and any APT
+reconciliation requirement before deciding on another action. Review and
+approve a newly discovered package plan after an interrupted approval.
+
+For rollback, restore the verified pre-upgrade archive into a separate
+v0.5.8 installation as described in [Restore and rollback](#restore-and-rollback).
+Keep the candidate volume available for inspection until rollback is verified.
 
 ## From v0.5.7
 
@@ -179,10 +199,9 @@ application as `app`; do not bypass it during normal startup. Do not restart
 the retained old container on the migrated volume.
 
 The Docker smoke gate checks non-root startup and account persistence when
-recreating a container with the same named volume. The upgrade harness checks
-the actual published old archive and candidate executable inside a separate
-networkless container; it does not qualify every operator's Compose/proxy setup
-or claim an old-GHCR-image migration test.
+recreating a container with the same named volume. Operational qualification
+upgrades a copy of the pinned published image's volume and verifies archive
+restoration in a separate volume on the private qualification bridge.
 
 ## Binary archive
 
@@ -284,12 +303,21 @@ The script seeds the published image pinned in
 [`operational-release.json`](../tools/ci/upgrade/operational-release.json),
 copies its stopped volume, upgrades the copy and restores an encrypted archive
 into a third volume. Application containers share a private internal Docker
-bridge and use generated, disabled fixture hosts and policies. The VM runs the
+bridge and use generated fixture hosts and disabled policies. On the migrated
+volume, a batch targeting a disabled fixture is refused and survives a restart.
+The scenario enables a loopback-only probe, verifies account isolation and a
+single admitted retry under concurrent submissions and replay, then abruptly
+stops the candidate while its job waits for SSH negotiation. After restart,
+it verifies the same job and its interrupted outcome. The probe holds the TCP
+connection without proceeding with SSH. The VM runs the
 same candidate binary in a container with only loopback. The guest image is
 verified by SHA-256 before boot.
 
 The CI and release gate retain `report.json` and `vm-report.json`. The reports
-record the candidate commit, image identifiers, outcomes and cleanup. Missing
+record the candidate commit, image identifiers, outcomes and cleanup. The
+`maintenance_batches` results identify history, account isolation, retry
+admission and interrupted-job recovery separately from the v0.5.8 archive
+restoration outcome. Missing
 runner prerequisites are reported as `not_executed` and return a nonzero exit
 code. Update the published image pin after each release. The v0.4.16 migration
 qualification below covers the older schema and authentication transition.

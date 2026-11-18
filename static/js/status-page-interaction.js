@@ -377,8 +377,15 @@
         }
 
         function replaceServers(items) {
+            const previousServersByName = serversByName;
             servers = normalizeNamedItems(items);
             serversByName = new Map(servers.map(server => [server.name, server]));
+            selectedServerNames.forEach(name => {
+                const identity = previousServersByName.get(name)?.server_identity;
+                if (identity && identity !== serversByName.get(name)?.server_identity) {
+                    selectedServerNames.delete(name);
+                }
+            });
             const effects = [];
             const retainedNames = new Set(servers.map(server => server.name));
             statusSortValues.forEach((_, name) => {

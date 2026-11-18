@@ -333,21 +333,25 @@ test("Status recovers the exact batch after lost responses and follows a waiting
     const environment = clock(), previousLoaded = deferred(), outcomeLoaded = deferred();
     const buttons = new Map(), signals = [], completed = deferred();
     let jobStatus = "waiting_approval", rendered;
+    let latestAvailable = false;
     const submissionIDs = [];
     const context = {
         BrowserEffects: {
             create: () => create({ ...environment, fetch: async (url, options) => {
                 signals.push(options.signal);
-                if (url.endsWith("/latest")) return Response.json({
-                    batch: { id: "previous", hosts: [{ name: "previous", state: "running" }] },
-                });
+                if (url.endsWith("/latest")) {
+                    if (!latestAvailable) return new Response(null, { status: 503 });
+                    return Response.json({
+                        batch: { id: "previous", hosts: [{ name: "previous", state: "running" }] },
+                    });
+                }
                 if (options.method === "POST") {
                     const { id } = JSON.parse(options.body);
                     submissionIDs.push(id);
-                    if (submissionIDs.length === 1) return new Response(new ReadableStream({
+                    if (submissionIDs.length === 1) return new Response("gateway timeout", { status: 504 });
+                    return new Response(new ReadableStream({
                         start(controller) { controller.error(new TypeError("response body lost")); },
                     }), { status: 202 });
-                    throw new TypeError("response lost");
                 }
                 if (url.endsWith(`/${submissionIDs[0]}`)) return Response.json({
                     batch: {
@@ -392,7 +396,16 @@ test("Status recovers the exact batch after lost responses and follows a waiting
             if (event.type === "actionCompleted") completed.resolve();
         },
     });
+    const runNextRead = () => {
+        const [timer, callback] = environment.pending.entries().next().value;
+        environment.pending.delete(timer);
+        callback();
+    };
     adapter.init();
+    await new Promise(setImmediate);
+    latestAvailable = true;
+    assert.equal(environment.pending.size, 1, "reopening the latest batch retries a transient failure");
+    runNextRead();
     await previousLoaded.promise;
     buttons.get("bulk-update").dispatchEvent(new Event("click"));
     await completed.promise;
@@ -402,12 +415,9 @@ test("Status recovers the exact batch after lost responses and follows a waiting
     jobStatus = "succeeded";
     adapter.refreshWaitingBatch();
     assert.equal(environment.pending.size, 1);
-    const [timer, callback] = environment.pending.entries().next().value;
-    environment.pending.delete(timer);
-    callback();
+    runNextRead();
     await outcomeLoaded.promise;
     adapter.destroy();
-    assert.equal(signals.length, 5);
     assert.equal(submissionIDs.length, 2);
     assert.equal(submissionIDs[0], submissionIDs[1]);
     assert.equal(signals.filter(signal => signal.aborted).length, 0);

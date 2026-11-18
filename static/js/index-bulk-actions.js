@@ -307,7 +307,7 @@
                             bulkResult: { executedCount: 0 },
                         });
                         else if (batchID) window.notifyApp(message);
-                    } else if (batchID || pendingPlan || batch) scheduleBatchRead();
+                    } else scheduleBatchRead();
                     return;
                 }
                 const data = await response.json();
@@ -336,8 +336,7 @@
                 }
                 if (admissionsPending || batch.hosts.some(host => ["accepted", "running"].includes(host.state))) scheduleBatchRead();
             } catch (error) {
-                if (lifecycle.isCurrent(lifetime) && sequence === batchRead && error?.name !== "AbortError"
-                    && (batchID || pendingPlan || batch?.hosts.some(host => ["queued", "admitting", "accepted", "running", "waiting_approval"].includes(host.state)))) {
+                if (lifecycle.isCurrent(lifetime) && sequence === batchRead && error?.name !== "AbortError") {
                     scheduleBatchRead();
                 }
             }
@@ -353,6 +352,10 @@
                         headers: { "Content-Type": "application/json" },
                         body: JSON.stringify(request),
                     });
+                    if (response.status >= 500) {
+                        lifecycle.discardResponse(response);
+                        throw new Error("The server did not confirm the submitted batch");
+                    }
                     if (!response.ok) {
                         const result = await response.json().catch(() => ({}));
                         return result?.error || "Could not submit maintenance batch";
@@ -366,8 +369,8 @@
                     errorMessage = await send();
                 } catch (error) {
                     if (!lifecycle.isCurrent(lifetime) || error?.name === "AbortError") return;
-                    // Either successful response may have been lost while the
-                    // command was already durable. Check its exact ID below.
+                    // A server or gateway error can hide a durable submission.
+                    // Repeat the same key and check the exact batch below.
                     await send().catch(() => {});
                 }
                 if (!lifecycle.isCurrent(lifetime)) return;

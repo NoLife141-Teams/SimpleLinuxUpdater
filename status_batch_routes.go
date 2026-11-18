@@ -24,14 +24,16 @@ const statusBatchWorkers = 4
 const statusBatchLimit = 100
 
 type statusBatchService struct {
-	deps   AppDeps
-	slots  chan struct{}
-	active sync.Map
-	create sync.Mutex
+	deps     AppDeps
+	slots    chan struct{}
+	activeMu sync.RWMutex
+	active   map[string]struct{}
 }
 
 func registerStatusBatchRoutes(r *gin.Engine, deps AppDeps) {
-	service := &statusBatchService{deps: deps, slots: make(chan struct{}, statusBatchWorkers)}
+	service := &statusBatchService{
+		deps: deps, slots: make(chan struct{}, statusBatchWorkers), active: make(map[string]struct{}),
+	}
 	r.POST("/api/status/batches", service.submit)
 	r.GET("/api/status/batches/latest", service.get)
 	r.GET("/api/status/batches/:id", service.get)
@@ -112,12 +114,12 @@ func (s *statusBatchService) submit(c *gin.Context) {
 	}
 	fingerprint := sha256.Sum256(serialized)
 	actor, clientIP := actorFromContext(c), clientIPFromContext(c)
-	s.create.Lock()
+	s.activeMu.Lock()
 	created, err := storeStatusBatch(ctx, db, request, hex.EncodeToString(fingerprint[:]), principal.Account.ID, actor, s.deps.Now().UTC().Format("2006-01-02T15:04:05.000000000Z"))
 	if created && err == nil {
-		s.active.Store(request.ID, struct{}{})
+		s.active[request.ID] = struct{}{}
 	}
-	s.create.Unlock()
+	s.activeMu.Unlock()
 	if err != nil {
 		if errors.Is(err, errBatchKeyConflict) {
 			c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
@@ -131,19 +133,20 @@ func (s *statusBatchService) submit(c *gin.Context) {
 		handedOff = true
 		startTrackedActionRunner(func() {
 			defer lease.Close()
-			defer s.active.Delete(request.ID)
 			s.process(currentApplicationMaintenanceContext(), db, request, principal.Account.ID, actor, clientIP)
+			s.activeMu.Lock()
+			delete(s.active, request.ID)
+			s.activeMu.Unlock()
 		})
 	}
 	c.JSON(http.StatusAccepted, gin.H{"id": request.ID})
 }
 
 func (s *statusBatchService) canRetry(ctx context.Context, db *sql.DB, request statusBatchRequest, account int64) bool {
-	original, err := readStatusBatch(ctx, db, request.RetryOf, account)
+	original, err := s.readBatch(ctx, db, request.RetryOf, account)
 	if err != nil || original.Action != request.Action {
 		return false
 	}
-	s.projectBatch(db, &original)
 	retryable := make(map[string]string, len(original.Hosts))
 	for _, host := range original.Hosts {
 		if host.Retryable {
@@ -269,7 +272,7 @@ func (s *statusBatchService) waitForHostJob(ctx context.Context, jobID string) {
 	defer ticker.Stop()
 	for {
 		job, err := manager.GetJob(jobID)
-		if err != nil || (job.Status != jobStatusQueued && job.Status != jobStatusRunning) {
+		if errors.Is(err, sql.ErrNoRows) || (err == nil && job.Status != jobStatusQueued && job.Status != jobStatusRunning) {
 			return
 		}
 		select {
@@ -297,7 +300,7 @@ func (s *statusBatchService) get(c *gin.Context) {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Maintenance batch storage is unavailable"})
 		return
 	}
-	batch, err := readStatusBatch(c.Request.Context(), db, id, principal.Account.ID)
+	batch, err := s.readBatch(c.Request.Context(), db, id, principal.Account.ID)
 	if errors.Is(err, sql.ErrNoRows) && id == "" {
 		c.JSON(http.StatusOK, gin.H{"batch": nil})
 		return
@@ -311,12 +314,24 @@ func (s *statusBatchService) get(c *gin.Context) {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Could not read maintenance batch"})
 		return
 	}
-	s.projectBatch(db, &batch)
 	c.JSON(http.StatusOK, gin.H{"batch": batch})
 }
 
-func (s *statusBatchService) projectBatch(db *sql.DB, batch *statusBatch) {
-	_, active := s.active.Load(batch.ID)
+func (s *statusBatchService) readBatch(ctx context.Context, db *sql.DB, id string, account int64) (statusBatch, error) {
+	// Take the durable snapshot and the active marker together. A worker may
+	// finish writing during the read, but it cannot remove the marker until
+	// after it is safe for a reader to infer that no further admission can occur.
+	s.activeMu.RLock()
+	batch, err := readStatusBatch(ctx, db, id, account)
+	_, active := s.active[batch.ID]
+	s.activeMu.RUnlock()
+	if err == nil {
+		s.projectBatch(db, &batch, active)
+	}
+	return batch, err
+}
+
+func (s *statusBatchService) projectBatch(db *sql.DB, batch *statusBatch, active bool) {
 	for i := range batch.Hosts {
 		host := &batch.Hosts[i]
 		switch host.State {

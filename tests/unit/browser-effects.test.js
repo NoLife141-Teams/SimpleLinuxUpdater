@@ -328,23 +328,36 @@ test("Status log recovery bounds reads, starts the open job first and drops supe
     adapter.destroy();
 });
 
-test("Status releases completed batch responses before destruction", async () => {
+test("Status recovers the exact batch after lost responses and follows a waiting job", async () => {
     const vm = require("node:vm"), fs = require("node:fs");
+    const environment = clock(), previousLoaded = deferred(), outcomeLoaded = deferred();
     const buttons = new Map(), signals = [], completed = deferred();
-    const hosts = [{ name: "synthetic", state: "completed" }];
+    let jobStatus = "waiting_approval", rendered;
     const submissionIDs = [];
     const context = {
         BrowserEffects: {
-            create: () => create({ fetch: async (url, options) => {
+            create: () => create({ ...environment, fetch: async (url, options) => {
                 signals.push(options.signal);
-                if (url.endsWith("/latest")) return new Response('{"batch":null}');
+                if (url.endsWith("/latest")) return Response.json({
+                    batch: { id: "previous", hosts: [{ name: "previous", state: "running" }] },
+                });
                 if (options.method === "POST") {
                     const { id } = JSON.parse(options.body);
                     submissionIDs.push(id);
-                    if (submissionIDs.length === 1) throw new TypeError("response lost");
-                    return Response.json({ id });
+                    if (submissionIDs.length === 1) return new Response(new ReadableStream({
+                        start(controller) { controller.error(new TypeError("response body lost")); },
+                    }), { status: 202 });
+                    throw new TypeError("response lost");
                 }
-                return Response.json({ batch: { id: submissionIDs[0], hosts } });
+                if (url.endsWith(`/${submissionIDs[0]}`)) return Response.json({
+                    batch: {
+                        id: submissionIDs[0], hosts: [{
+                            name: "synthetic", job_id: "job",
+                            state: jobStatus === "succeeded" ? "completed" : jobStatus, job_status: jobStatus,
+                        }],
+                    },
+                });
+                return new Response(null, { status: 404 });
             } }),
         },
         window: {
@@ -369,17 +382,32 @@ test("Status releases completed batch responses before destruction", async () =>
             eligibleNames: ["synthetic"], skippedHosts: [],
             payloadFacts: { synthetic: { serverIdentity: "identity" } },
         }) },
-        renderHTML() {},
+        renderHTML(_, markup) {
+            rendered = markup;
+            if (markup.includes("previous")) previousLoaded.resolve();
+            if (markup.includes("Succeeded")) outcomeLoaded.resolve();
+        },
         escapeHtml: String,
         dispatchStatusInteraction: (event) => {
             if (event.type === "actionCompleted") completed.resolve();
         },
     });
     adapter.init();
+    await previousLoaded.promise;
     buttons.get("bulk-update").dispatchEvent(new Event("click"));
     await completed.promise;
+    assert.match(rendered, />Accepted</);
+    assert.match(rendered, />Waiting for approval</);
+    assert.equal(environment.pending.size, 0);
+    jobStatus = "succeeded";
+    adapter.refreshWaitingBatch();
+    assert.equal(environment.pending.size, 1);
+    const [timer, callback] = environment.pending.entries().next().value;
+    environment.pending.delete(timer);
+    callback();
+    await outcomeLoaded.promise;
     adapter.destroy();
-    assert.equal(signals.length, 4);
+    assert.equal(signals.length, 5);
     assert.equal(submissionIDs.length, 2);
     assert.equal(submissionIDs[0], submissionIDs[1]);
     assert.equal(signals.filter(signal => signal.aborted).length, 0);

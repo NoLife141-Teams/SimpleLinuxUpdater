@@ -249,19 +249,31 @@
                 waiting_approval: "pending_approval", completed: "done", refused: "error",
                 interrupted: "error", uncertain: "error", succeeded: "done", failed: "error", cancelled: "idle",
             };
-            renderHTML(document.getElementById("status-batch-rows"), batch.hosts.map(host => `
+            const badge = state => `<span class="status-pill status-${statusClass[state] || "idle"}">${escapeHtml(labels[state] || state)}</span>`;
+            renderHTML(document.getElementById("status-batch-rows"), batch.hosts.map(host => {
+                const admitted = host.job_id || ["accepted", "running", "waiting_approval", "completed"].includes(host.state);
+                const admission = admitted ? "accepted" : host.state;
+                const outcome = host.job_status || (admitted && host.state !== admission ? host.state : "");
+                return `
                 <li data-render-key="${escapeHtml(host.name)}">
                     <strong>${escapeHtml(host.name)}</strong>
-                    <span class="status-pill status-${statusClass[host.job_status] || statusClass[host.state] || "idle"}">${escapeHtml(labels[host.job_status] || labels[host.state] || host.state)}</span>
+                    ${badge(admission)}
+                    ${outcome ? badge(outcome) : ""}
                     ${host.message ? `<p>${escapeHtml(host.message)}</p>` : ""}
                     ${host.job_id ? `<a href="/api/reports/jobs/${encodeURIComponent(host.job_id)}">Job report</a>` : ""}
                     ${host.retryable ? `<button type="button" class="inline-btn btn-ghost" data-action="retry-batch-host"
                         data-name="${escapeHtml(host.name)}">Retry ${escapeHtml(host.name)}</button>` : ""}
-                </li>`).join(""));
+                </li>`;
+            }).join(""));
+        }
+
+        function clearBatchRead() {
+            if (batchTimer !== null) lifecycle.clearTimeout(batchTimer);
+            batchTimer = null;
         }
 
         function scheduleBatchRead() {
-            if (batchTimer !== null) lifecycle.clearTimeout(batchTimer);
+            clearBatchRead();
             batchTimer = lifecycle.setTimeout(() => {
                 batchTimer = null;
                 readBatch();
@@ -295,7 +307,7 @@
                             bulkResult: { executedCount: 0 },
                         });
                         else if (batchID) window.notifyApp(message);
-                    } else if (pendingPlan || batch) scheduleBatchRead();
+                    } else if (batchID || pendingPlan || batch) scheduleBatchRead();
                     return;
                 }
                 const data = await response.json();
@@ -325,7 +337,7 @@
                 if (admissionsPending || batch.hosts.some(host => ["accepted", "running"].includes(host.state))) scheduleBatchRead();
             } catch (error) {
                 if (lifecycle.isCurrent(lifetime) && sequence === batchRead && error?.name !== "AbortError"
-                    && (pendingPlan || batch?.hosts.some(host => ["queued", "admitting", "accepted", "running"].includes(host.state)))) {
+                    && (batchID || pendingPlan || batch?.hosts.some(host => ["queued", "admitting", "accepted", "running", "waiting_approval"].includes(host.state)))) {
                     scheduleBatchRead();
                 }
             }
@@ -335,37 +347,44 @@
             const lifetime = lifecycle.capture();
             submitting = true;
             try {
-                const send = () => fetch("/api/status/batches", {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify(request),
-                });
-                let response;
+                const send = async () => {
+                    const response = await fetch("/api/status/batches", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify(request),
+                    });
+                    if (!response.ok) {
+                        const result = await response.json().catch(() => ({}));
+                        return result?.error || "Could not submit maintenance batch";
+                    }
+                    const result = await response.json();
+                    if (result.id !== request.id) throw new Error("The server did not confirm the submitted batch");
+                    return "";
+                };
+                let errorMessage;
                 try {
-                    response = await send();
+                    errorMessage = await send();
                 } catch (error) {
                     if (!lifecycle.isCurrent(lifetime) || error?.name === "AbortError") return;
-                    response = await send();
+                    // Either successful response may have been lost while the
+                    // command was already durable. Check its exact ID below.
+                    await send().catch(() => {});
                 }
                 if (!lifecycle.isCurrent(lifetime)) return;
-                const result = await response.json();
-                if (!response.ok) throw new Error(result.error || "Could not submit maintenance batch");
-                if (!lifecycle.isCurrent(lifetime)) return;
-                if (result.id !== request.id) throw new Error("The server did not confirm the submitted batch");
-                batchID = result.id;
+                if (errorMessage) {
+                    if (plan) await dispatchStatusInteraction({
+                        type: "actionFailed", operationId: plan.id, refreshStreams: [],
+                        message: errorMessage, bulkResult: { executedCount: 0, failedCount: plan.eligibleNames.length },
+                    });
+                    else window.notifyApp(errorMessage);
+                    return;
+                }
+                batchID = request.id;
+                batch = null;
                 pendingPlan = plan;
-                if (batchTimer !== null) lifecycle.clearTimeout(batchTimer);
+                clearBatchRead();
+                renderBatch();
                 document.getElementById("status-batch-panel").open = true;
-                await readBatch();
-            } catch (error) {
-                if (!lifecycle.isCurrent(lifetime) || error?.name === "AbortError") return;
-                if (plan) await dispatchStatusInteraction({
-                    type: "actionFailed", operationId: plan.id, refreshStreams: [],
-                    message: error?.message || "Could not confirm batch submission. Check the latest batch before retrying.",
-                    bulkResult: { executedCount: 0, failedCount: plan.eligibleNames.length },
-                });
-                else window.notifyApp(error?.message || "Could not submit maintenance batch");
-                batchID = "";
                 await readBatch();
             } finally {
                 submitting = false;

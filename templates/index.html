@@ -347,7 +347,8 @@
                 <aside class="context-panel fade-in" aria-label="Selected host">
                     <div class="context-block">
                         <div class="eyebrow"><svg class="status-section-icon" aria-hidden="true" focusable="false"><use href="/static/status-icons.svg#server"></use></svg>Selected host</div>
-                        <h2 id="selected-host-title">Selected host</h2>
+                        <h2 id="selected-host-title" tabindex="-1">Selected host</h2>
+                        <p class="muted" id="linked-server-message" role="status" tabindex="-1" hidden></p>
                         <p class="muted" id="selected-host-subtitle">Select a table row to inspect host details.</p>
                     </div>
                     <div id="selected-host-panel" class="selected-host-panel" aria-live="polite">

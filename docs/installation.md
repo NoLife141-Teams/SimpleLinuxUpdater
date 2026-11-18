@@ -29,25 +29,25 @@ Use the published image from GHCR (recommended):
 ```bash
 cp .env-template .env
 docker pull ghcr.io/nolife141-teams/simplelinuxupdater:v0.5.8
-docker run --env-file .env -p 8080:8080 -v debian-updater-data:/data ghcr.io/nolife141-teams/simplelinuxupdater:v0.5.8
+docker run --env-file .env -p 127.0.0.1:8080:8080 -v debian-updater-data:/data ghcr.io/nolife141-teams/simplelinuxupdater:v0.5.8
 ```
 
 Open the UI:
 
-- `http://localhost:8080`
+- `http://127.0.0.1:8080` on the Docker host
 
 Notes:
 
 - The container stores the SQLite DB at `/data/servers.db` and the encryption key at `/data/config.json` when a volume is mounted.
 - If you do not mount `/data`, state is not persisted.
-- The image explicitly sets `DEBIAN_UPDATER_LISTEN_ADDR=:8080`; published port
-  access therefore remains compatible with existing Docker deployments.
+- The published port is bound to loopback. See
+  [Deployment](deployment.md#docker-recommended) for access over a LAN or VPN.
 
 Build locally (optional):
 
 ```bash
 docker build -t debian-updater-web .
-docker run --env-file .env -p 8080:8080 -v debian-updater-data:/data debian-updater-web
+docker run --env-file .env -p 127.0.0.1:8080:8080 -v debian-updater-data:/data debian-updater-web
 ```
 
 ## Install a prebuilt release

@@ -29,6 +29,7 @@
         const statusActionAdapter = window.StatusActionAdapter.create(window);
         const statusInteraction = window.StatusPageInteraction.createStore({
             presentationFacts: dashboardConsumption.presentationFacts,
+            linkedServerName: new URLSearchParams(window.location.search).get("server"),
         });
         window.statusPageInteraction = statusInteraction;
         const statusViewScope = window.StatusRendering.createSnapshotScope(() =>
@@ -158,6 +159,8 @@
                     effect.scope === "serverState"
                 ) {
                     renderServerState();
+                } else if (effect.type === "revealLinkedServer") {
+                    revealLinkedServer(effect);
                 } else if (effect.type === "render" && effect.scope === "pendingUpdates") {
                     statusViewScope.run(renderDrawer);
                 } else if (effect.type === "renderDrawerLogs") {
@@ -1699,6 +1702,10 @@
                 type: "navigationRestored",
                 value: saved,
             });
+            syncDashboardFilterInputs();
+        }
+
+        function syncDashboardFilterInputs() {
             const view = getStatusView();
             document.getElementById("search").value = view.filters.search;
             document.getElementById("availability-filter").value =
@@ -1708,6 +1715,18 @@
             document.getElementById("auth-filter").value = view.filters.auth;
             document.getElementById("group-by").value = view.filters.groupBy;
             document.getElementById("page-size").value = String(view.pageSize);
+        }
+
+        function revealLinkedServer({ name, found }) {
+            const message = document.getElementById("linked-server-message");
+            const heading = document.getElementById("selected-host-title");
+            if (found) {
+                syncDashboardFilterInputs();
+            } else {
+                message.textContent = `Server “${name}” is no longer in the inventory.`;
+                message.hidden = false;
+            }
+            lifecycle.requestAnimationFrame(() => (found ? heading : message).focus());
         }
 
         function persistDashboardFilters(value) {
@@ -2377,6 +2396,7 @@
         }
 
         function selectServer(name) {
+            document.getElementById("linked-server-message").hidden = true;
             dispatchStatusInteraction({
                 type: "primaryServerSelected",
                 name: name || "",

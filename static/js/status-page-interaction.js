@@ -316,6 +316,7 @@
                 fragments: [],
                 terminal: createTerminalState(),
                 previewOnly: !!preview,
+                previewInvalidated: false,
                 recovering: false,
                 recoveryConnectionGeneration: -1,
                 resetPending: false,
@@ -344,6 +345,7 @@
             state.fragments = [];
             state.terminal = createTerminalState();
             state.previewOnly = false;
+            state.previewInvalidated = true;
             state.pending = {};
             state.expired = false;
             state.truncated = false;
@@ -652,7 +654,15 @@
             const detail = hostDetails[surface];
             if (!detail || detail.key !== hostDetailRequest(surface)?.key) return null;
             if (displayedServer && detail.key !== hostDetailKey(displayedServer, detail.view)) return null;
-            return { loading: detail.loading, snapshot: cloneValue(detail.snapshot) };
+            const snapshot = cloneValue(detail.snapshot);
+            if (detail.view === "logs" && snapshot?.logs) {
+                const jobLog = jobLogsByServer.get(detail.name);
+                // A compatibility preview can contain output the stream has replaced.
+                if (jobLog && (jobLog.previewInvalidated || jobLog.jobId !== detail.approvalIdentity.job_id)) {
+                    delete snapshot.logs;
+                }
+            }
+            return { loading: detail.loading, snapshot };
         }
 
         function drawerPendingServer() {

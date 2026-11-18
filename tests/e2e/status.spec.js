@@ -843,6 +843,30 @@ test("structured SSE job logs preserve drawer scroll and avoid server refetches"
         .click();
     await expect(logs).toContainText("<b>escaped while closed</b>");
     await expect(logs.locator("b")).toHaveCount(0);
+
+    let releaseReset;
+    const resetRecovery = new Promise(resolve => { releaseReset = resolve; });
+    await page.route("**/api/jobs/job-live/logs*", async route => {
+        await resetRecovery;
+        return fulfillJson(route, {
+            fragments: [{ sequence: 5, stream: "stdout", data: "Retained after reset\n" }],
+            has_more: false,
+            truncated: true,
+        });
+    });
+    try {
+        await page.evaluate(() => {
+            window.__statusEventSource.emit("dashboard", {
+                data: JSON.stringify({ reason: "job.log", server_name: "stream-host", job_id: "job-live", reset: true }),
+            });
+        });
+        await expect(logs).not.toContainText("Retained log preview", { timeout: 1000 });
+        await expect(downloadLogs).toBeDisabled({ timeout: 1000 });
+    } finally {
+        releaseReset();
+    }
+    await expect(logs).toContainText("Retained after reset");
+    await expect(downloadLogs).toBeEnabled();
     expect(serverRequests).toBe(requestsBeforeLogs);
 });
 

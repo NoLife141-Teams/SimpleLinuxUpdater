@@ -1,6 +1,7 @@
 package servers
 
 import (
+	"bufio"
 	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -673,7 +674,32 @@ func newKnownHostEntryChecker(deps KnownHostsDeps) (func(string, int) (bool, err
 	if len(existingPaths) == 0 {
 		return func(string, int) (bool, error) { return false, nil }, nil
 	}
+	if entries := literalKnownHostEntries(existingPaths); entries != nil {
+		return func(host string, port int) (bool, error) {
+			cleanHost := ServerHostForTransport(host)
+			if cleanHost == "" {
+				return false, errors.New("host is required")
+			}
+			port = NormalizePort(port)
+			if strings.ContainsAny(cleanHost, "[]") {
+				if _, _, err := net.SplitHostPort(net.JoinHostPort(cleanHost, strconv.Itoa(port))); err != nil {
+					return false, err
+				}
+			}
+			if _, exists := entries[ServerEndpoint{Host: cleanHost, Port: port}]; exists {
+				return true, nil
+			}
+			if ip, ok := parseServerIPLiteral(cleanHost); ok && ip.Is4In6() {
+				_, exists := entries[ServerEndpoint{Host: ip.Unmap().String(), Port: port}]
+				return exists, nil
+			}
+			return false, nil
+		}, nil
+	}
+	return generalKnownHostEntryChecker(existingPaths)
+}
 
+func generalKnownHostEntryChecker(existingPaths []string) (func(string, int) (bool, error), error) {
 	checkHostKey, err := knownhosts.New(existingPaths...)
 	if err != nil {
 		return nil, fmt.Errorf("load known_hosts: %w", err)
@@ -713,6 +739,63 @@ func newKnownHostEntryChecker(deps KnownHostsDeps) (func(string, int) (bool, err
 		}
 		return false, err
 	}, nil
+}
+
+// Index ordinary literal entries only for the inventory trust indicator.
+// Delegate the entire file set to the OpenSSH matcher when any entry has
+// aliases, patterns, hashes, markers or an unfamiliar form. Always read fresh files.
+func literalKnownHostEntries(paths []string) map[ServerEndpoint]struct{} {
+	entries := make(map[ServerEndpoint]struct{})
+	for _, path := range paths {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return nil
+		}
+		for raw := range bytes.SplitSeq(data, []byte{'\n'}) {
+			if len(raw) >= bufio.MaxScanTokenSize-1 {
+				return nil
+			}
+			line := bytes.Trim(bytes.TrimSuffix(raw, []byte{'\r'}), " \t")
+			if len(line) == 0 || line[0] == '#' {
+				continue
+			}
+			marker, hosts, key, _, _, err := ssh.ParseKnownHosts(line)
+			if err != nil || marker != "" || len(hosts) != 1 {
+				return nil
+			}
+			if _, isCertificate := key.(*ssh.Certificate); isCertificate {
+				return nil
+			}
+			endpoint, ok := literalKnownHostEndpoint(hosts[0])
+			if !ok {
+				return nil
+			}
+			entries[endpoint] = struct{}{}
+		}
+	}
+	return entries
+}
+
+func literalKnownHostEndpoint(token string) (ServerEndpoint, bool) {
+	host, port := token, 22
+	if strings.HasPrefix(token, "[") {
+		var rawPort string
+		var err error
+		host, rawPort, err = net.SplitHostPort(token)
+		if err != nil {
+			return ServerEndpoint{}, false
+		}
+		port, err = strconv.Atoi(rawPort)
+		if err != nil || port < 1 || port > 65535 || strconv.Itoa(port) != rawPort {
+			return ServerEndpoint{}, false
+		}
+	}
+	if host == "" || strings.ContainsFunc(host, func(r rune) bool {
+		return !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-' || r == '_' || r == '.')
+	}) {
+		return ServerEndpoint{}, false
+	}
+	return ServerEndpoint{Host: host, Port: port}, true
 }
 
 func knownHostEntryExistsInData(data []byte, token string) bool {

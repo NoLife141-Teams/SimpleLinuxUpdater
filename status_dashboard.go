@@ -232,20 +232,13 @@ func handleStatusChangedHosts(c *gin.Context, deps AppDeps) {
 		return
 	}
 	compactStarted := time.Now()
-	dashboard := projectStatusDashboard(summary)
-	selected := make([]statusDashboardRow, 0, len(names))
-	for _, row := range dashboard.Servers {
-		if _, ok := names[row.Name]; ok {
-			selected = append(selected, row)
-		}
-	}
+	dashboard := projectStatusDashboardRows(summary, names)
 	// Apply inventory, dashboard rows, and fleet totals together or read a
 	// fresh full snapshot when another dashboard invalidation raced this read.
-	if len(selected) != len(names) || broker.Revision() != revision {
+	if len(dashboard.Servers) != len(names) || broker.Revision() != revision {
 		stale()
 		return
 	}
-	dashboard.Servers = selected
 	writeStatusChangedHosts(c, statusChangedHosts{
 		Servers:   projectStatusRows(statuses, contextAllows(c, "logs:read")),
 		Dashboard: dashboard,
@@ -278,7 +271,17 @@ func writeStatusChangedHosts(c *gin.Context, payload statusChangedHosts, timings
 }
 
 func projectStatusDashboard(summary dashboardSummaryResponse) statusDashboardSummary {
-	rows := make([]statusDashboardRow, 0, len(summary.Servers))
+	return projectStatusDashboardRows(summary, nil)
+}
+
+func projectStatusDashboardRows(summary dashboardSummaryResponse, names map[string]struct{}) statusDashboardSummary {
+	capacity := len(summary.Servers)
+	if names != nil {
+		capacity = len(names)
+	}
+	rows := make([]statusDashboardRow, 0, capacity)
+	var encoded bytes.Buffer
+	encoder := json.NewEncoder(&encoded)
 	var rowsVersion uint64
 	for _, server := range summary.Servers {
 		row := statusDashboardRow{
@@ -292,14 +295,21 @@ func projectStatusDashboard(summary dashboardSummaryResponse) statusDashboardSum
 		// Fingerprint the compact row without its version or any summary
 		// timestamps. Stale facts, CVE evidence and policy windows can change
 		// on an untouched host even when no dashboard event is published.
-		encoded, err := json.Marshal(row)
-		if err == nil {
-			digest := sha256.Sum256(encoded)
+		_, selected := names[row.Name]
+		selected = selected || names == nil
+		encoded.Reset()
+		if err := encoder.Encode(row); err == nil {
+			serialized := encoded.Bytes()
+			digest := sha256.Sum256(serialized[:len(serialized)-1]) // Encode appends one newline.
 			version := binary.BigEndian.Uint64(digest[:8])
-			row.Version = strconv.FormatUint(version, 16)
 			rowsVersion ^= version
+			if selected {
+				row.Version = strconv.FormatUint(version, 16)
+			}
 		}
-		rows = append(rows, row)
+		if selected {
+			rows = append(rows, row)
+		}
 	}
 	return statusDashboardSummary{dashboardSummaryResponse: summary, Servers: rows, RowsVersion: strconv.FormatUint(rowsVersion, 16)}
 }

@@ -201,7 +201,8 @@ the retained old container on the migrated volume.
 The Docker smoke gate checks non-root startup and account persistence when
 recreating a container with the same named volume. Operational qualification
 upgrades a copy of the pinned published image's volume and verifies archive
-restoration in a separate volume on the private qualification bridge.
+restoration on both the candidate and the published image in separate volumes
+on the private qualification bridge.
 
 ## Binary archive
 
@@ -302,9 +303,13 @@ python3 tools/ci/upgrade/operational.py \
 The script seeds the published image pinned in
 [`operational-release.json`](../tools/ci/upgrade/operational-release.json),
 copies its stopped volume, upgrades the copy and restores an encrypted archive
-into a third volume. Application containers share a private internal Docker
-bridge and use generated fixture hosts and disabled policies. On the migrated
-volume, a batch targeting a disabled fixture is refused and survives a restart.
+into a third volume on the candidate. A fourth volume starts with the pinned
+published image and restores the same pre-upgrade archive to qualify rollback.
+Both restores invalidate the temporary administrator's session and verify the
+archived account, inventory, policies and SSH host-key trust across a restart.
+Application containers share a private internal Docker bridge and use generated
+fixture hosts and disabled policies. On the migrated volume, a batch targeting
+a disabled fixture is refused and survives a restart.
 The scenario enables a loopback-only probe, verifies account isolation and a
 single admitted retry under concurrent submissions and replay, then abruptly
 stops the candidate while its job waits for SSH negotiation. After restart,
@@ -315,9 +320,10 @@ verified by SHA-256 before boot.
 
 The CI and release gate retain `report.json` and `vm-report.json`. The reports
 record the candidate commit, image identifiers, outcomes and cleanup. The
-`maintenance_batches` results identify history, account isolation, retry
-admission and interrupted-job recovery separately from the v0.5.8 archive
-restoration outcome. Missing
+`docker_upgrade` result records the copied-volume migration and the separate
+candidate archive restore. `docker_rollback` records the restore to the
+published image. `maintenance_batches` records history, account isolation,
+retry admission and interrupted-job recovery. Missing
 runner prerequisites are reported as `not_executed` and return a nonzero exit
 code. Update the published image pin after each release. The v0.4.16 migration
 qualification below covers the older schema and authentication transition.

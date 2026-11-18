@@ -16,6 +16,22 @@ import uuid
 from run import API, DOCKER, IMAGES, LABEL, REPO, app_environment, command, copy_assets, loopback_port, require, wait_for_app
 
 
+BOOT_FACTS_COMMAND = "cat /proc/sys/kernel/random/boot_id; cut -d' ' -f1 /proc/uptime"
+# The updater's verification loop has 24 intervals of five seconds. Give
+# software-emulated guests time to return over SSH and complete verification.
+MINIMUM_BASELINE_UPTIME = 150
+
+
+def wait_for_reboot_baseline(ssh):
+    deadline = time.monotonic() + MINIMUM_BASELINE_UPTIME
+    while True:
+        boot = ssh(BOOT_FACTS_COMMAND).splitlines()
+        if float(boot[1]) >= MINIMUM_BASELINE_UPTIME:
+            return boot
+        require(time.monotonic() < deadline, "VM uptime did not reach the reboot baseline")
+        time.sleep(2)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--image", type=Path, help="local official Debian/Ubuntu amd64 cloud qcow2 image")
@@ -99,11 +115,6 @@ def main():
             except (RuntimeError, subprocess.TimeoutExpired): time.sleep(2)
         require(ssh("cat /var/lib/slu-fixture-owner").strip() == owner, "VM not ready")
         require(ssh("systemctl is-active ssh.service").strip() == "active", "VM SSH unit is not active")
-        # Give the initial uptime a useful margin over the post-reboot SSH startup time.
-        end = time.monotonic() + 90
-        while float(ssh("cut -d' ' -f1 /proc/uptime").strip()) < 60:
-            require(time.monotonic() < end, "VM uptime did not progress")
-            time.sleep(2)
         port = loopback_port()
         api = API(port, include_error_body=not args.isolated_app_directory)
         (work / "known_hosts").touch(mode=0o600)
@@ -138,12 +149,12 @@ def main():
                 "kind": "systemd_active", "unit": "ssh.service", "mode": "blocking", "timeout_seconds": 10, "interval_seconds": 1}]}]})
         probe = api.request("POST", "/api/servers/reboot-vm/postchecks/test")
         require(probe["results"][0]["passed"], "real systemd postcheck failed")
-        before = ssh("cat /proc/sys/kernel/random/boot_id; cut -d' ' -f1 /proc/uptime").splitlines()
+        before = wait_for_reboot_baseline(ssh)
         job_id = api.request("POST", "/api/reboot/reboot-vm", {"confirm": True})["job_id"]
         job, states = api.wait_job(job_id, lambda j: j["status"] in {"succeeded", "failed", "interrupted", "cancelled"}, seconds=240)
         require(job["status"] == "succeeded", "controlled reboot job failed")
         require(ssh("systemctl is-active ssh.service").strip() == "active", "VM SSH unit inactive after reboot")
-        after = ssh("cat /proc/sys/kernel/random/boot_id; cut -d' ' -f1 /proc/uptime").splitlines()
+        after = ssh(BOOT_FACTS_COMMAND).splitlines()
         require(before[0] != after[0] and float(after[1]) < float(before[1]), "reboot did not change boot identity and reset uptime")
         end = time.monotonic() + 5
         while True:

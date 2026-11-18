@@ -13,6 +13,15 @@ import run
 
 
 class HarnessSafetyTests(unittest.TestCase):
+    def test_controlled_reboot_baseline_allows_for_a_slower_second_boot(self):
+        spec = importlib.util.spec_from_file_location("vm_reboot_baseline", run.HERE / "vm-reboot.py")
+        vm = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(vm)
+        ssh = mock.Mock(side_effect=["fixture-boot-id\n80.00\n", "fixture-boot-id\n151.00\n"])
+        with mock.patch.object(vm.time, "sleep"):
+            baseline = vm.wait_for_reboot_baseline(ssh)
+        self.assertEqual(baseline, ["fixture-boot-id", "151.00"])
+
     def test_published_vm_evidence_omits_candidate_http_error_bodies(self):
         api = run.API(30000, include_error_body=False)
         response = mock.Mock(code=500)

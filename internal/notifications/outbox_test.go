@@ -463,14 +463,15 @@ func TestNotificationOutboxKeepsPollingAfterWakeSchedulingFailure(t *testing.T) 
 
 func TestNotificationOutboxRetainsDestinationSkipReasons(t *testing.T) {
 	for _, tc := range []struct {
-		code, label         string
-		enabled, configured bool
+		name, code, label            string
+		enabled, configured, changed bool
 	}{
-		{"destination_disabled", "Destination was disabled before delivery.", false, false},
-		{"destination_unconfigured", "Destination was not configured before delivery.", true, false},
-		{"destination_configuration_changed", "Destination configuration changed after admission.", true, true},
+		{"disabled with unchanged URL", "destination_disabled", "Destination was disabled before delivery.", false, true, false},
+		{"disabled and cleared", "destination_disabled", "Destination was disabled before delivery.", false, false, false},
+		{"unconfigured", "destination_unconfigured", "Destination was not configured before delivery.", true, false, false},
+		{"changed URL", "destination_configuration_changed", "Destination configuration changed after admission.", true, true, true},
 	} {
-		t.Run(tc.code, func(t *testing.T) {
+		t.Run(tc.name, func(t *testing.T) {
 			db := openOutboxTestDB(t, "destination-skip.db")
 			server, requests := newOutboxHTTPServer(t)
 			endpoint := ""
@@ -485,9 +486,11 @@ func TestNotificationOutboxRetainsDestinationSkipReasons(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			rows[0].DestinationFingerprint = destinationConfigFingerprint(Settings{
-				Enabled: true, WebhookURL: "https://old.example.test/hook",
-			}, DestinationWebhook)
+			admittedURL := server.URL
+			if tc.changed {
+				admittedURL = "https://old.example.test/hook"
+			}
+			rows[0].DestinationFingerprint = destinationConfigFingerprint(Settings{WebhookURL: admittedURL}, DestinationWebhook)
 			if err := insertOutboxRows(t.Context(), db, rows, now.Format(time.RFC3339Nano)); err != nil {
 				t.Fatal(err)
 			}

@@ -770,14 +770,14 @@ func (s *Service) processOutboxRow(ctx context.Context, row outboxRow) {
 		s.releaseClaim(row, err)
 		return
 	}
-	eligible, eligibilityErr := s.conditionDeliveryEligible(ctx, &row, settings)
+	eligibility, eligibilityErr := s.revalidateOutboxCondition(ctx, &row, settings)
 	if eligibilityErr != nil {
 		s.releaseClaim(row, eligibilityErr)
 		return
 	}
 	var skipReason string
 	switch {
-	case !eligible:
+	case eligibility == conditionIneligible:
 		skipReason = outboxSkipConditionIneligible
 	case !destinationEnabled(settings, row.Destination):
 		skipReason = outboxSkipDestinationDisabled
@@ -785,6 +785,8 @@ func (s *Service) processOutboxRow(ctx context.Context, row outboxRow) {
 		skipReason = outboxSkipDestinationUnconfigured
 	case row.DestinationFingerprint != "" && row.DestinationFingerprint != destinationConfigFingerprint(settings, row.Destination):
 		skipReason = outboxSkipDestinationChanged
+	case eligibility == reminderSuperseded:
+		skipReason = outboxSkipConditionIneligible
 	}
 	if skipReason != "" {
 		now := s.deps.Now().UTC().Format(time.RFC3339Nano)

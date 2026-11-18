@@ -399,60 +399,74 @@ func reminderIntent(state conditionState, settings Settings, now time.Time) (Del
 	return DeliveryIntent{Action: EventReminder, TargetType: "fleet", TargetName: "SimpleLinuxUpdater", Status: "attention", Message: message.String(), CreatedAt: now.Format(time.RFC3339Nano)}, true
 }
 
-func (s *Service) conditionDeliveryEligible(ctx context.Context, row *outboxRow, settings Settings) (bool, error) {
+type conditionDeliveryEligibility uint8
+
+const (
+	conditionIneligible conditionDeliveryEligibility = iota
+	conditionEligible
+	reminderSuperseded
+)
+
+func (s *Service) revalidateOutboxCondition(ctx context.Context, row *outboxRow, settings Settings) (conditionDeliveryEligibility, error) {
 	if row.EventType != EventReminder && !strings.HasPrefix(row.Intent.ID, "condition/") {
 		var meta struct {
 			ID string `json:"condition_id"`
 		}
 		_ = json.Unmarshal([]byte(row.Intent.MetaJSON), &meta)
 		if meta.ID == "" {
-			return true, nil
+			return conditionEligible, nil
 		}
 	}
 	if s.deps.ReadConditions != nil {
 		if !s.conditionMonitoringStarted() {
-			return false, errors.New("notification condition monitoring has not started")
+			return conditionIneligible, errors.New("notification condition monitoring has not started")
 		}
 		if err := s.reconcileConditions(ctx); err != nil {
-			return false, err
+			return conditionIneligible, err
 		}
 	}
 	state, err := loadConditionState(ctx, s.database())
 	if err != nil {
-		return false, err
+		return conditionIneligible, err
 	}
 	if row.EventType == EventReminder {
-		if !settings.RemindersEnabled || state.Reminders[row.DestinationFingerprint] != row.Intent.CreatedAt {
-			return false, nil
+		if !settings.RemindersEnabled {
+			return conditionIneligible, nil
 		}
 		intent, ok := reminderIntent(state, settings, s.deps.Now())
-		if ok {
-			row.Intent = intent
+		if !ok {
+			return conditionIneligible, nil
 		}
-		return ok, nil
+		// Changing a destination removes its old fingerprint from the reminder
+		// ledger even when the underlying conditions still need a reminder.
+		if state.Reminders[row.DestinationFingerprint] != row.Intent.CreatedAt {
+			return reminderSuperseded, nil
+		}
+		row.Intent = intent
+		return conditionEligible, nil
 	}
 	var meta struct {
 		ID      string `json:"condition_id"`
 		Episode int64  `json:"condition_episode"`
 	}
 	if err := json.Unmarshal([]byte(row.Intent.MetaJSON), &meta); err != nil {
-		return false, err
+		return conditionIneligible, err
 	}
 	condition, ok := state.Conditions[meta.ID]
 	if !ok || !condition.Fact.Active || condition.Fact.EventType != row.EventType || !eventEnabled(settings.EventTypes, row.EventType) {
-		return false, nil
+		return conditionIneligible, nil
 	}
 	fact := condition.Fact
 	if row.EventType == EventApprovalPublished && fact.Generation != "" {
 		admission, exists := state.findApprovalAdmission(fact.ID, fact.approvalAdmission(row.DestinationFingerprint))
 		if !exists || row.ID != admission.OutboxID {
-			return false, nil
+			return conditionIneligible, nil
 		}
 	} else if condition.Episode != meta.Episode {
-		return false, nil
+		return conditionIneligible, nil
 	}
 	row.Intent = conditionIntent(condition)
-	return true, nil
+	return conditionEligible, nil
 }
 
 func (s *Service) restoreConditions(ctx context.Context, db *sql.DB) error {

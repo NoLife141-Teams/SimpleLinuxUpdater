@@ -180,20 +180,30 @@ func TestKnownHostReadinessMatchesEndpointSpellingAndReadsFreshFiles(t *testing.
 		return checker
 	}
 	check := read()
+	generalCheck, err := generalKnownHostEntryChecker([]string{path})
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, tc := range []struct {
 		host string
 		port int
 		want bool
 	}{
 		{"node.example", 22, true},
+		{"[node.example]", 22, true},
 		{"Alias.example", 0, true},
 		{"alias.example", 22, false},
 		{"custom.example", 2201, true},
 		{"custom.example", 22, false},
 		{"192.0.2.10", 22, true},
+		{"[192.0.2.10]", 22, true},
 		{"[::ffff:192.0.2.10]", 22, true},
 		{"missing.example", 22, false},
 	} {
+		general, err := generalCheck(tc.host, tc.port)
+		if err != nil || general != tc.want {
+			t.Errorf("general readiness for %q:%d = %v (%v), want %v", tc.host, tc.port, general, err, tc.want)
+		}
 		got, err := check(tc.host, tc.port)
 		if err != nil || got != tc.want {
 			t.Errorf("readiness for %q:%d = %v (%v), want %v", tc.host, tc.port, got, err, tc.want)

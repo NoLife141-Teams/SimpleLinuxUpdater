@@ -682,9 +682,11 @@ func newKnownHostEntryChecker(deps KnownHostsDeps) (func(string, int) (bool, err
 			}
 			port = NormalizePort(port)
 			if strings.ContainsAny(cleanHost, "[]") {
-				if _, _, err := net.SplitHostPort(net.JoinHostPort(cleanHost, strconv.Itoa(port))); err != nil {
+				unwrapped, _, err := net.SplitHostPort(net.JoinHostPort(cleanHost, strconv.Itoa(port)))
+				if err != nil {
 					return false, err
 				}
+				cleanHost = unwrapped
 			}
 			if _, exists := entries[ServerEndpoint{Host: cleanHost, Port: port}]; exists {
 				return true, nil

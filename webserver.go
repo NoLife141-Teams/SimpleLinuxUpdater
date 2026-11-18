@@ -1084,7 +1084,7 @@ func handleServerFactsRefreshWithDeps(c *gin.Context, deps AppDeps) {
 	}
 	record, failure := runServerFactsRefresh(c.Request.Context(), deps, state, name, "", func(status, message string, meta map[string]any) {
 		audit(c, serverFactsRefreshAction, "server", name, status, message, meta)
-	})
+	}, nil)
 	if failure.statusCode != http.StatusOK {
 		writeServerActionLifecycleResult(c, failure)
 		return
@@ -1092,7 +1092,7 @@ func handleServerFactsRefreshWithDeps(c *gin.Context, deps AppDeps) {
 	c.JSON(http.StatusOK, record)
 }
 
-func runServerFactsRefresh(ctx context.Context, deps AppDeps, state *serverpkg.State, name, expectedIdentity string, recordAudit func(string, string, map[string]any)) (serverFactsRecord, serverActionLifecycleResult) {
+func runServerFactsRefresh(ctx context.Context, deps AppDeps, state *serverpkg.State, name, expectedIdentity string, recordAudit func(string, string, map[string]any), recordOutcome func(string, string)) (serverFactsRecord, serverActionLifecycleResult) {
 	if state.CurrentStatusSnapshot(name) == nil {
 		recordAudit("failure", "Server not found", nil)
 		return serverFactsRecord{}, jsonResult(http.StatusNotFound, "Server not found")
@@ -1138,8 +1138,15 @@ func runServerFactsRefresh(ctx context.Context, deps AppDeps, state *serverpkg.S
 
 	record, err := refreshServerFactsWithUpdateDeps(ctx, server, updateServiceEnsureDeps(deps.UpdateService))
 	if err != nil {
+		message := fmt.Sprintf("failed to refresh host facts: %v", err)
+		if recordOutcome != nil {
+			recordOutcome("failed", message)
+		}
 		recordAudit("failure", "Facts refresh failed", map[string]any{"error": err.Error(), "collection_attempted": true})
-		return serverFactsRecord{}, jsonResult(http.StatusBadGateway, fmt.Sprintf("failed to refresh host facts: %v", err))
+		return serverFactsRecord{}, jsonResult(http.StatusBadGateway, message)
+	}
+	if recordOutcome != nil {
+		recordOutcome("completed", "")
 	}
 	recordAudit("success", "Host facts refreshed", map[string]any{
 		"collected_at":                    record.CollectedAt,
@@ -1602,6 +1609,10 @@ func activeServerActionNames() []string {
 }
 
 func createServerActionJobWithStateAndManager(jm *JobManager, state *serverpkg.State, kind, serverName, actor, clientIP string, policy RetryPolicy) (JobRecord, error) {
+	return createServerActionJobWithAdmission(jm, state, kind, serverName, actor, clientIP, policy, nil)
+}
+
+func createServerActionJobWithAdmission(jm *JobManager, state *serverpkg.State, kind, serverName, actor, clientIP string, policy RetryPolicy, receipt jobsPkg.AdmissionReceipt) (JobRecord, error) {
 	if jm == nil {
 		return JobRecord{}, errors.New("job manager is not initialized")
 	}
@@ -1615,7 +1626,7 @@ func createServerActionJobWithStateAndManager(jm *JobManager, state *serverpkg.S
 	if snapshot != nil {
 		initialLogs = snapshot.Logs
 	}
-	record, err := jm.CreateJob(JobCreateParams{
+	record, err := jm.CreateJobWithAdmission(JobCreateParams{
 		Kind:            kind,
 		ServerName:      serverName,
 		Actor:           actor,
@@ -1624,7 +1635,7 @@ func createServerActionJobWithStateAndManager(jm *JobManager, state *serverpkg.S
 		LogsText:        initialLogs,
 		RetryPolicyJSON: marshalJobJSON(policy),
 		MetaJSON:        "{}",
-	})
+	}, receipt)
 	if err == nil && state != nil && snapshot != nil && !state.BindActionJob(serverName, record.ID, snapshot.ActionGeneration) {
 		return JobRecord{}, errors.New("server action admission changed while creating job")
 	}

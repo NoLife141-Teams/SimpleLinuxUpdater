@@ -77,7 +77,7 @@ func (l *serverActionLifecycle) persistPendingDecision(status *ServerStatus, can
 	if job.ServerName != status.Name || job.Kind != jobKindUpdate || job.Status != jobStatusWaitingApproval {
 		return jobspkg.ErrTransitionConflict
 	}
-	committed, err := jm.ResolvePendingApproval(job.ID, job.Revision, cancelled, summary)
+	committed, err := jm.ResolvePendingApprovalWithAdmission(job.ID, job.Revision, cancelled, summary, l.admissionReceipt)
 	if err != nil {
 		return err
 	}

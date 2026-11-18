@@ -7,6 +7,8 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -15,6 +17,112 @@ import (
 	"github.com/gin-gonic/gin"
 	"golang.org/x/crypto/ssh"
 )
+
+func TestStatusBatchSurvivesProcessExitAfterAdmission(t *testing.T) {
+	const (
+		dbEnv     = "SLU_TEST_BATCH_ADMISSION_DB"
+		actionEnv = "SLU_TEST_BATCH_ADMISSION_ACTION"
+		exitCode  = 71
+		hostName  = "crash-batch-host"
+		batchID   = "b56962f607fa4171adaada1fedea0592"
+	)
+	if path := os.Getenv(dbEnv); path != "" {
+		action := os.Getenv(actionEnv)
+		state := newServerState()
+		var app *testApp
+		updateDeps := testUpdateServiceDeps(t)
+		updateDeps.ServerState = state
+		updateDeps.CurrentJobManager = func() *JobManager {
+			return app.Deps.CurrentJobManager()
+		}
+		updateDeps.HostMaintenanceSessions = HostMaintenanceSessionFactoryFunc(func(context.Context, HostMaintenanceSessionRequest) (HostMaintenanceSession, error) {
+			return nil, errors.New("fixture host unavailable")
+		})
+		app = newTestAppWithDeps(t, path, AppDeps{
+			ServerState: state, UpdateService: NewUpdateService(updateDeps),
+			NotifyDashboardEvent: func(reason string) {
+				if (action == "update" && reason == "job.create") || (action == "refresh_facts" && reason == serverFactsRefreshAction) {
+					os.Exit(exitCode)
+				}
+			},
+			NotifyDashboardJob: func(_ string, job JobRecord) {
+				if action == "cancel" && job.Status == jobStatusCancelled {
+					os.Exit(exitCode)
+				}
+			},
+		})
+		cookie := app.authenticate(t)
+		if rec := identityRequest(app, "POST", "/api/servers", cookie, "", gin.H{
+			"name": hostName, "host": hostName + ".invalid", "user": "root", "pass": "fixture",
+		}); rec.Code != http.StatusCreated {
+			t.Fatalf("create host: %d %s", rec.Code, rec.Body.String())
+		}
+		server, ok := state.FindByName(hostName)
+		if !ok {
+			t.Fatal("missing fixture server")
+		}
+		target := statusBatchTarget{Name: hostName, ServerIdentity: server.Identity}
+		if action == "cancel" {
+			job, err := app.Deps.CurrentJobManager().CreateJob(JobCreateParams{
+				Kind: jobKindUpdate, ServerName: hostName, Status: jobStatusWaitingApproval,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			status := state.CurrentStatusSnapshot(hostName)
+			status.Status, status.JobID, status.ApprovalGeneration = "pending_approval", job.ID, 1
+			state.RestoreStatusSnapshot(hostName, status)
+			target.Approval = approvalIdentityForTest(state, hostName)
+		}
+		if rec := identityRequest(app, "POST", "/api/status/batches", cookie, "", statusBatchRequest{
+			ID: batchID, Action: action, Targets: []statusBatchTarget{target},
+		}); rec.Code != http.StatusAccepted {
+			t.Fatalf("submit batch: %d %s", rec.Code, rec.Body.String())
+		}
+		waitForUpdateRunners()
+		t.Fatal("fixture reached the end of the worker without crossing the crash checkpoint")
+	}
+
+	for _, tc := range []struct {
+		action, state, jobStatus string
+	}{
+		{"update", "completed", jobStatusInterrupted},
+		{"cancel", "completed", jobStatusCancelled},
+		{"refresh_facts", "failed", ""},
+	} {
+		t.Run(tc.action, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "crash-batch.db")
+			ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
+			defer cancel()
+			child := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestStatusBatchSurvivesProcessExitAfterAdmission$")
+			child.Env = append(os.Environ(), dbEnv+"="+path, actionEnv+"="+tc.action)
+			output, err := child.CombinedOutput()
+			var exitErr *exec.ExitError
+			if !errors.As(err, &exitErr) || exitErr.ExitCode() != exitCode {
+				t.Fatalf("fixture did not stop at the admission checkpoint: %v\n%s", err, output)
+			}
+			app := newTestAppWithDeps(t, path, AppDeps{ServerState: newServerState()})
+			db := app.Deps.DB()
+			if _, err := db.Exec("DELETE FROM audit_events"); err != nil {
+				t.Fatal(err)
+			}
+			cookie := identityLogin(t, app, "admin")
+			rec := identityRequest(app, "GET", "/api/status/batches/"+batchID, cookie, "", nil)
+			var response struct{ Batch statusBatch }
+			if rec.Code != http.StatusOK || json.Unmarshal(rec.Body.Bytes(), &response) != nil || len(response.Batch.Hosts) != 1 {
+				t.Fatalf("read recovered batch: %d %s", rec.Code, rec.Body.String())
+			}
+			host := response.Batch.Hosts[0]
+			if host.State != tc.state || host.JobStatus != tc.jobStatus || (host.JobID != "") != (tc.jobStatus != "") || host.Retryable {
+				t.Fatalf("wrong result after process exit and audit purge: %+v", host)
+			}
+			var jobs int
+			if err := db.QueryRow("SELECT COUNT(*) FROM jobs WHERE server_name = ?", hostName).Scan(&jobs); err != nil || jobs > 1 {
+				t.Fatalf("job count after restart: %d, %v", jobs, err)
+			}
+		})
+	}
+}
 
 func TestStatusBatchRetryAdmitsOnlyOneRunner(t *testing.T) {
 	t.Setenv(retryMaxAttemptsEnv, "1")
@@ -298,6 +406,17 @@ func TestStatusBatchSurvivesLostResponseAndTracksRunnerOutcome(t *testing.T) {
 	if recovered.State != "completed" || recovered.JobID != batch.Hosts[1].JobID || recovered.Retryable {
 		t.Fatalf("batch lost audit recovery after interrupted recording: %+v", recovered)
 	}
+	if _, err := db.Exec(`UPDATE status_action_batch_hosts SET state = 'admitting', job_id = '' WHERE batch_id = ? AND name = ?`, approvalBatchID, server.Name); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE audit_events SET meta_json = json_set(meta_json, '$.approval_generation', ?)
+		WHERE action = 'update.approve' AND status = 'success' AND json_extract(meta_json, '$.maintenance_batch_id') = ?`,
+		approval.Generation+1, approvalBatchID); err != nil {
+		t.Fatal(err)
+	}
+	if host := read("/api/status/batches/" + approvalBatchID).Hosts[1]; host.State != "uncertain" || host.JobID != "" || host.Retryable {
+		t.Fatalf("a different approval generation was accepted as proof: %+v", host)
+	}
 
 	created := identityRequest(app, "POST", "/api/auth/accounts", cookie, "", gin.H{
 		"username": "batch-reader", "password": testPasswordStrong, "role": "reader",
@@ -373,6 +492,12 @@ func TestStatusBatchShowsFailedHostFactsCollection(t *testing.T) {
 	}
 	if host := readHost(); host.State != "failed" || host.Message != "Facts refresh failed" || host.Retryable {
 		t.Fatalf("failed collection was not recovered from its audit: %+v", host)
+	}
+	if _, err := app.Deps.DB().Exec(`DELETE FROM audit_events WHERE json_extract(meta_json, '$.maintenance_batch_id') = ?`, id); err != nil {
+		t.Fatal(err)
+	}
+	if host := readHost(); host.State != "failed" || host.Message != "Facts refresh failed" || host.Retryable {
+		t.Fatalf("reconciled collection outcome was lost after audit retention: %+v", host)
 	}
 	historyRec := identityRequest(app, "GET", "/api/status/batches", cookie, "", nil)
 	var history statusBatchHistoryPage

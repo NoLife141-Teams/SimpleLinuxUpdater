@@ -120,6 +120,10 @@ type CreateParams struct {
 	MetaJSON        string
 }
 
+// AdmissionReceipt records an operation's durable admission in the same
+// transaction as the job mutation, before it can be published or dispatched.
+type AdmissionReceipt func(*sql.Tx, Record) error
+
 type Repository interface {
 	Create(record Record) error
 	Upsert(record Record) error
@@ -302,6 +306,10 @@ func (m *Manager) now() time.Time {
 }
 
 func (m *Manager) CreateJob(params CreateParams) (Record, error) {
+	return m.CreateJobWithAdmission(params, nil)
+}
+
+func (m *Manager) CreateJobWithAdmission(params CreateParams, receipt AdmissionReceipt) (Record, error) {
 	if m == nil || m.repo == nil {
 		return Record{}, errors.New("job manager is not initialized")
 	}
@@ -342,7 +350,17 @@ func (m *Manager) CreateJob(params CreateParams) (Record, error) {
 		record.Phase = PhaseComplete
 		record.FinishedAt = now
 	}
-	if err := m.repo.Create(record); err != nil {
+	var err error
+	if receipt == nil {
+		err = m.repo.Create(record)
+	} else if repo, ok := m.repo.(interface {
+		createWithAdmission(Record, AdmissionReceipt) error
+	}); ok {
+		err = repo.createWithAdmission(record, receipt)
+	} else {
+		err = errors.New("job repository does not support transactional admission receipts")
+	}
+	if err != nil {
 		return Record{}, err
 	}
 	m.notify("job.create")
@@ -728,6 +746,10 @@ func (m *Manager) notifyJobUpdate(job Record) {
 }
 
 func (r *SQLiteRepository) Create(record Record) error {
+	return r.createWithAdmission(record, nil)
+}
+
+func (r *SQLiteRepository) createWithAdmission(record Record, receipt AdmissionReceipt) error {
 	if r == nil || r.db == nil {
 		return errors.New("job repository is not initialized")
 	}
@@ -766,6 +788,11 @@ func (r *SQLiteRepository) Create(record Record) error {
 	}
 	if _, err := r.replaceLogSnapshotTx(tx, record.ID, record.LogsText, LogStreamCombined, record.UpdatedAt); err != nil {
 		return err
+	}
+	if receipt != nil {
+		if err := receipt(tx, record); err != nil {
+			return err
+		}
 	}
 	return tx.Commit()
 }
@@ -834,6 +861,10 @@ func (r *SQLiteRepository) ApplyTransition(record Record, expectedRevision int64
 }
 
 func (r *SQLiteRepository) applyTransitionWithLogResult(record Record, expectedRevision int64, activeOnly bool) (bool, logAppendResult, error) {
+	return r.applyTransitionWithAdmission(record, expectedRevision, activeOnly, nil)
+}
+
+func (r *SQLiteRepository) applyTransitionWithAdmission(record Record, expectedRevision int64, activeOnly bool, receipt AdmissionReceipt) (bool, logAppendResult, error) {
 	if r == nil || r.db == nil || strings.TrimSpace(record.ID) == "" {
 		return false, logAppendResult{}, nil
 	}
@@ -870,6 +901,11 @@ func (r *SQLiteRepository) applyTransitionWithLogResult(record Record, expectedR
 	} else if record.logAppend != "" {
 		write, err = r.appendFragmentsTx(tx, record.ID, []LogFragment{{Stream: LogStreamCombined, Data: record.logAppend}}, record.UpdatedAt)
 		if err != nil {
+			return false, logAppendResult{}, err
+		}
+	}
+	if receipt != nil {
+		if err := receipt(tx, record); err != nil {
 			return false, logAppendResult{}, err
 		}
 	}

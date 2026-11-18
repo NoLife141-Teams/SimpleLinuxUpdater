@@ -66,7 +66,7 @@ func (s *statusBatchService) history(c *gin.Context) {
 	interpretation := s.deps.ApplicationTime.Current()
 	for _, record := range records {
 		batch := &record.batch
-		s.projectBatch(ctx, db, batch, record.active)
+		s.projectBatch(ctx, db, batch, record.active, principal.Account.ID)
 		display, _ := interpretation.Format(batch.CreatedAt, "")
 		summary := statusBatchSummary{ID: batch.ID, Action: batch.Action, CreatedAt: batch.CreatedAt, CreatedAtDisplay: display}
 		for _, host := range batch.Hosts {
@@ -104,8 +104,9 @@ func (s *statusBatchService) readBatchHistory(ctx context.Context, db *sql.DB, a
 	pageQuery += ` ORDER BY created_at DESC, id DESC LIMIT ?`
 	args = append(args, statusBatchHistorySize+1)
 	rows, err := db.QueryContext(ctx, `WITH page AS (`+pageQuery+`)
-		SELECT p.id, p.action, p.created_at, p.actor, COALESCE(h.name, ''), COALESCE(h.state, ''),
-			COALESCE(h.job_id, ''), COALESCE(j.status, '')
+		SELECT p.id, p.action, p.created_at, p.actor, COALESCE(h.name, ''), COALESCE(h.server_identity, ''), COALESCE(h.state, ''),
+			COALESCE(h.job_id, ''), COALESCE(j.status, ''), COALESCE(h.approval_job_id, ''),
+			COALESCE(h.approval_generation, 0), COALESCE(h.deferral_revision, '')
 		FROM page p
 		LEFT JOIN status_action_batch_hosts h ON h.batch_id = p.id
 		LEFT JOIN jobs j ON j.id = h.job_id
@@ -118,7 +119,8 @@ func (s *statusBatchService) readBatchHistory(ctx context.Context, db *sql.DB, a
 		var batch statusBatch
 		var host statusBatchHost
 		if err := rows.Scan(&batch.ID, &batch.Action, &batch.CreatedAt, &batch.Actor,
-			&host.Name, &host.State, &host.JobID, &host.JobStatus); err != nil {
+			&host.Name, &host.ServerIdentity, &host.State, &host.JobID, &host.JobStatus,
+			&host.approval.JobID, &host.approval.Generation, &host.approval.DeferralRevision); err != nil {
 			return nil, err
 		}
 		if len(records) == 0 || records[len(records)-1].batch.ID != batch.ID {

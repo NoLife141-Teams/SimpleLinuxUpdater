@@ -22,6 +22,14 @@ class HarnessSafetyTests(unittest.TestCase):
         self.assertIn('HTTP 500', str(failure.exception))
         self.assertNotIn('reflected-fixture-key', str(failure.exception))
 
+    def test_published_vm_evidence_omits_job_payload_on_timeout(self):
+        api = run.API(30000, include_error_body=False)
+        job = {"status": "running", "phase": "verify", "message": "fixture-only diagnostic"}
+        with mock.patch.object(api, "job", return_value=job), \
+                mock.patch.object(run.time, "monotonic", side_effect=[0, 0, 1]), \
+                mock.patch.object(run.time, "sleep"), self.assertRaisesRegex(AssertionError, "^job timeout$"):
+            api.wait_job("fixture-job", lambda _: False, seconds=1)
+
     def test_api_request_uses_the_callers_remaining_timeout(self):
         api = run.API(30000)
         response = mock.Mock(code=200)

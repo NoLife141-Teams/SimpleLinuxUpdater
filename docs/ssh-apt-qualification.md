@@ -56,7 +56,11 @@ Install QEMU, `qemu-utils`, `cloud-image-utils`, OpenSSH client, Docker and Go o
 python3 tools/ci/ssh-apt/vm-reboot.py --check-prerequisites --output .tmp-ssh-apt/vm-prerequisites
 ```
 
-Exit code `2` and `status: not_executed` mean the VM was not run. A real failed qualification returns `1`; only a completed VM proof returns `0`. This implementation's local runner has no QEMU, `qemu-img`, `cloud-localds` or `/dev/kvm`, so reboot/systemd qualification was **not executed**. The committed prerequisite report records that limit. Hosted PR container jobs do not claim VM coverage.
+Exit code `2` and `status: not_executed` identify a prerequisite check or an
+unavailable VM runner. A failed qualification returns `1`. A completed VM proof
+returns `0`. The committed prerequisite report records the missing tooling on
+the original standalone test runner. CI runs the VM proof through the
+Docker-backed operational qualification described below.
 
 For a reproducible Ubuntu example, use the [official Noble release dated 20261017](https://cloud-images.ubuntu.com/releases/noble/release-20261017/). Its [published SHA256SUMS](https://cloud-images.ubuntu.com/releases/noble/release-20261017/SHA256SUMS) identifies the amd64 qcow2 image:
 

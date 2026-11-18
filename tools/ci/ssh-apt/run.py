@@ -161,9 +161,12 @@ class API:
                 observations.append(state)
             if predicate(job):
                 return job, observations
-            require(job["status"] not in TERMINAL, f"job terminated before expected state: {job}")
+            if job["status"] in TERMINAL:
+                detail = f": {job}" if self.include_error_body else ""
+                raise AssertionError("job terminated before expected state" + detail)
             time.sleep(.15)
-        raise AssertionError(f"job timeout: {self.job(job_id)}")
+        detail = f": {self.job(job_id)}" if self.include_error_body else ""
+        raise AssertionError("job timeout" + detail)
 
 
 class Harness:

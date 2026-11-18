@@ -37,12 +37,18 @@ old-version export and candidate restore. A real negative control must detect
 inventory loss in the disposable fixture before the independent positive run.
 No production behavior is patched for that control.
 
-The 15-minute CI job has only Contents read permission. The pinned Python runtime
-runs without external networking or target-host access. Only explicit redacted
-negative/positive `report.json` paths are uploaded for one day; application logs,
-DB/config files, cookies, keys and archives are never uploaded. Ownership labels,
-independent cleanup and deadlines protect failures and signals. Failed steps and
-unexecuted steps remain distinct, and report/global exit codes must agree.
+The 15-minute CI job uses Contents read permission. The pinned Python runtime
+runs the archive migration in a networkless container. The operational
+qualification upgrades a disposable copy of the pinned published image's volume
+and restores its archive into a fresh candidate volume. A networkless QEMU runner
+uses the candidate image's binary and assets to verify a controlled reboot and
+the return of SSH and systemd.
+
+The negative and positive archive reports, the operational report and the VM
+report are uploaded for one day from explicit paths. These redacted JSON files
+contain the step outcomes and cleanup results. Ownership labels, independent
+cleanup and deadlines protect failures and signals. Failed and unexecuted steps
+remain distinct, and report and process exit codes must agree.
 See [scope, fixture states and reproduction](upgrading.md#reproduce-qualification).
 
 The release gate runs the same qualification before any publication, using the

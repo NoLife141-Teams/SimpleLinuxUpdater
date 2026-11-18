@@ -255,13 +255,26 @@ func TestServerActionLifecycleRejectsUnreadyConnectionsBeforeMutationOrJobCreati
 func TestServerActionLifecycleAptRepairRequiresConfirmationAndReconciliationState(t *testing.T) {
 	server := Server{Name: "srv-repair", Identity: "fixture-server", Host: "example.org", Port: 22, User: "root", Pass: "pw"}
 
-	t.Run("confirmation required", func(t *testing.T) {
-		h := newLifecycleTestHarness(t, server, &ServerStatus{Name: server.Name, Status: "needs_reconciliation"})
-		result := h.lifecycle().StartAptRepair(server.Name, "alice", "192.0.2.10", false, "")
-		if result.statusCode != http.StatusBadRequest || result.body["error"] != "APT repair confirmation required" {
-			t.Fatalf("result = %+v, want explicit confirmation error", result)
-		}
-	})
+	for _, tc := range []struct {
+		name, jobID, outcome, message string
+		confirmed                     bool
+		code                          int
+	}{
+		{"confirmation required", "", "failure", "APT repair confirmation required", false, http.StatusBadRequest},
+		{"job ID required", "", "failure", "Confirm the job requiring APT reconciliation", true, http.StatusBadRequest},
+		{"unknown job refused", "unknown-job", "ignored", "The original APT repair target could not be verified. Review the job report.", true, http.StatusConflict},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newLifecycleTestHarness(t, server, &ServerStatus{Name: server.Name, Status: "needs_reconciliation"})
+			result := h.lifecycle().StartAptRepair(server.Name, "alice", "192.0.2.10", tc.confirmed, tc.jobID)
+			if result.statusCode != tc.code || result.body["error"] != tc.message || h.runnerRun != nil {
+				t.Fatalf("result = %+v, want rejected confirmation with %q", result, tc.message)
+			}
+			if len(h.auditEvents) != 1 || h.auditEvents[0].action != "apt_repair.start" || h.auditEvents[0].status != tc.outcome || h.auditEvents[0].message != tc.message {
+				t.Fatalf("audit = %+v, want rejected repair attempt", h.auditEvents)
+			}
+		})
+	}
 
 	t.Run("healthy state rejected", func(t *testing.T) {
 		healthy := &ServerStatus{Name: server.Name, Status: "idle"}

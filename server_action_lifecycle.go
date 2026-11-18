@@ -128,23 +128,26 @@ func (l *serverActionLifecycle) startAutoremove(name, actor, clientIP, expectedI
 }
 
 func (l *serverActionLifecycle) StartAptRepair(name, actor, clientIP string, confirmed bool, jobID string) serverActionLifecycleResult {
+	reject := func(code int, outcome, message string) serverActionLifecycleResult {
+		l.recordAudit("apt_repair.start", name, outcome, message, retryPolicyMeta(l.retryPolicy()))
+		return jsonResult(code, message)
+	}
 	if !confirmed {
-		l.recordAudit("apt_repair.start", name, "failure", "APT repair confirmation required", retryPolicyMeta(l.retryPolicy()))
-		return jsonResult(http.StatusBadRequest, "APT repair confirmation required")
+		return reject(http.StatusBadRequest, "failure", "APT repair confirmation required")
 	}
 	if strings.TrimSpace(jobID) == "" {
-		return jsonResult(http.StatusBadRequest, "Confirm the job requiring APT reconciliation")
+		return reject(http.StatusBadRequest, "failure", "Confirm the job requiring APT reconciliation")
 	}
 	jm := l.currentJobManager()
 	if jm == nil {
-		return jsonResult(http.StatusServiceUnavailable, "APT reconciliation jobs are unavailable")
+		return reject(http.StatusServiceUnavailable, "failure", "APT reconciliation jobs are unavailable")
 	}
 	job, err := jm.GetJob(jobID)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return jsonResult(http.StatusServiceUnavailable, "APT reconciliation job is unavailable")
+		return reject(http.StatusServiceUnavailable, "failure", "APT reconciliation job is unavailable")
 	}
 	if err != nil || job.Status != jobStatusFailed || job.ErrorClass != "reconciliation_required" || job.APTTarget == "" {
-		return jsonResult(http.StatusConflict, "The original APT repair target could not be verified. Review the job report.")
+		return reject(http.StatusConflict, "ignored", "The original APT repair target could not be verified. Review the job report.")
 	}
 	return l.startAction(name, actor, clientIP, "", serverActionStartSpec{
 		expectedAPTTarget: job.APTTarget,

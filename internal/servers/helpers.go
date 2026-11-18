@@ -747,33 +747,45 @@ func generalKnownHostEntryChecker(existingPaths []string) (func(string, int) (bo
 func literalKnownHostEntries(paths []string) map[ServerEndpoint]struct{} {
 	entries := make(map[ServerEndpoint]struct{})
 	for _, path := range paths {
-		data, err := os.ReadFile(path)
-		if err != nil {
+		if !readLiteralKnownHostEntries(path, entries) {
 			return nil
-		}
-		for raw := range bytes.SplitSeq(data, []byte{'\n'}) {
-			if len(raw) >= bufio.MaxScanTokenSize-1 {
-				return nil
-			}
-			line := bytes.Trim(bytes.TrimSuffix(raw, []byte{'\r'}), " \t")
-			if len(line) == 0 || line[0] == '#' {
-				continue
-			}
-			marker, hosts, key, _, _, err := ssh.ParseKnownHosts(line)
-			if err != nil || marker != "" || len(hosts) != 1 {
-				return nil
-			}
-			if _, isCertificate := key.(*ssh.Certificate); isCertificate {
-				return nil
-			}
-			endpoint, ok := literalKnownHostEndpoint(hosts[0])
-			if !ok {
-				return nil
-			}
-			entries[endpoint] = struct{}{}
 		}
 	}
 	return entries
+}
+
+func readLiteralKnownHostEntries(path string, entries map[ServerEndpoint]struct{}) bool {
+	file, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer file.Close()
+
+	// Keep the general matcher's line-length limit even for malformed files.
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		line := bytes.Trim(scanner.Bytes(), " \t")
+		if len(line) == 0 || line[0] == '#' {
+			continue
+		}
+		// ParseKnownHosts returns an empty marker for the invalid bare '@'.
+		if line[0] == '@' {
+			return false
+		}
+		_, hosts, key, _, _, err := ssh.ParseKnownHosts(line)
+		if err != nil || len(hosts) != 1 {
+			return false
+		}
+		if _, isCertificate := key.(*ssh.Certificate); isCertificate {
+			return false
+		}
+		endpoint, ok := literalKnownHostEndpoint(hosts[0])
+		if !ok {
+			return false
+		}
+		entries[endpoint] = struct{}{}
+	}
+	return scanner.Err() == nil
 }
 
 func literalKnownHostEndpoint(token string) (ServerEndpoint, bool) {

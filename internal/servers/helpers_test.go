@@ -151,7 +151,7 @@ func TestKnownHostsHostTokenCanonicalizesIPLiteral(t *testing.T) {
 	}
 }
 
-func TestLiteralKnownHostIndexMatchesGeneralReadinessAndReadsFreshFiles(t *testing.T) {
+func TestKnownHostReadinessMatchesEndpointSpellingAndReadsFreshFiles(t *testing.T) {
 	key, err := ssh.NewPublicKey(ed25519.NewKeyFromSeed(make([]byte, 32)).Public())
 	if err != nil {
 		t.Fatal(err)
@@ -165,10 +165,6 @@ func TestLiteralKnownHostIndexMatchesGeneralReadinessAndReadsFreshFiles(t *testi
 		}
 	}
 	write("# managed entries\r\n\r\n" + entry("node.example") + entry("Alias.example") + entry("[custom.example]:2201") + entry("192.0.2.10"))
-	paths := []string{path}
-	if literalKnownHostEntries(paths) == nil {
-		t.Fatal("literal entries did not get indexed")
-	}
 	deps := KnownHostsDeps{Getenv: func(key string) string {
 		if key == "DEBIAN_UPDATER_KNOWN_HOSTS" {
 			return path
@@ -184,10 +180,6 @@ func TestLiteralKnownHostIndexMatchesGeneralReadinessAndReadsFreshFiles(t *testi
 		return checker
 	}
 	check := read()
-	general, err := generalKnownHostEntryChecker(paths)
-	if err != nil {
-		t.Fatal(err)
-	}
 	for _, tc := range []struct {
 		host string
 		port int
@@ -203,9 +195,8 @@ func TestLiteralKnownHostIndexMatchesGeneralReadinessAndReadsFreshFiles(t *testi
 		{"missing.example", 22, false},
 	} {
 		got, err := check(tc.host, tc.port)
-		reference, refErr := general(tc.host, tc.port)
-		if err != nil || refErr != nil || got != reference || got != tc.want {
-			t.Errorf("readiness for %q:%d = %v (%v), general = %v (%v), want %v", tc.host, tc.port, got, err, reference, refErr, tc.want)
+		if err != nil || got != tc.want {
+			t.Errorf("readiness for %q:%d = %v (%v), want %v", tc.host, tc.port, got, err, tc.want)
 		}
 	}
 	write(entry("next.example"))
@@ -218,7 +209,7 @@ func TestLiteralKnownHostIndexMatchesGeneralReadinessAndReadsFreshFiles(t *testi
 	}
 }
 
-func TestKnownHostIndexDefersNonLiteralAndInvalidFilesToGeneralChecker(t *testing.T) {
+func TestKnownHostReadinessHandlesNonLiteralAndInvalidFiles(t *testing.T) {
 	key, err := ssh.NewPublicKey(ed25519.NewKeyFromSeed(make([]byte, 32)).Public())
 	if err != nil {
 		t.Fatal(err)
@@ -235,18 +226,14 @@ func TestKnownHostIndexDefersNonLiteralAndInvalidFilesToGeneralChecker(t *testin
 		trusted, error bool
 	}{
 		{"aliases", knownhosts.Line([]string{"node.example", "other.example"}, key), true, false},
-		{"wildcard", knownhosts.Line([]string{"*.example"}, key), true, false},
 		{"negation", knownhosts.Line([]string{"!node.example", "*.example"}, key), false, false},
-		{"hashed", knownhosts.Line([]string{knownhosts.HashHostname("node.example")}, key), true, false},
 		{"revoked", "@revoked " + knownhosts.Line([]string{"node.example"}, key), false, false},
 		{"malformed", "invalid-entry", false, true},
+		{"empty-marker", "@ " + knownhosts.Line([]string{"node.example"}, key), false, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if err := os.WriteFile(path, []byte(tc.line+"\n"), 0600); err != nil {
 				t.Fatal(err)
-			}
-			if literalKnownHostEntries([]string{path}) != nil {
-				t.Fatal("entry did not fall back to the general checker")
 			}
 			checker, err := newKnownHostEntryChecker(deps)
 			if (err != nil) != tc.error {

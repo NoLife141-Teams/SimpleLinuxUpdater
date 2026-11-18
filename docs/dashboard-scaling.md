@@ -362,6 +362,7 @@ and 137.9 → 102.7 ms. Smaller-fleet timings varied by scenario.
 The separate 1,000-Server HTTP benchmark measured 78.6 → 49.2 ms/op and
 41.4 → 28.2 MB allocated per operation. Maintenance readiness fell from
 21.6% to 1.4% of CPU samples, and the general known-host matcher disappeared
-from the candidate's profile for the literal-entry fixture. CI checks
-behavior deterministically through full/targeted parity, current role
-visibility, byte bounds and revision/reconnect coverage.
+from the candidate's profile for the literal-entry fixture. A repeat after
+matching the general parser's line-length limit measured 51.0 ms/op and
+28.0 MB/op. CI checks behavior deterministically through full/targeted parity,
+current role visibility, byte bounds and revision/reconnect coverage.

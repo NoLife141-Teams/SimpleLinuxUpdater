@@ -821,11 +821,12 @@ func TestStatusChangedHostsMatchesFleetProjectionWithinByteBudget(t *testing.T) 
 			t.Fatalf("targeted projection reused the old %s session: HTTP %d", role, rec.Code)
 		}
 		a.viewer = a.login(t, "/api/auth/login", viewer.Username)
+		query.Set("revision", strconv.FormatUint(broker.Revision(), 10))
 		var patch statusChangedHosts
 		decode(a.request(path+query.Encode(), "viewer", false), &patch)
 		index := slices.IndexFunc(patch.Servers, func(row statusServerRow) bool { return row.Name == profileHost })
 		if index < 0 || patch.Servers[index].HasApplicationPostchecks != (role == "operator") {
-			t.Fatalf("targeted projection ignored current role %s for the same revision", role)
+			t.Fatalf("targeted projection ignored current role %s", role)
 		}
 	}
 	if rec := a.request(path+query.Encode(), "pat", false); rec.Code != http.StatusUnauthorized {

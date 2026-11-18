@@ -621,6 +621,9 @@ results by destination, delivery state or exact job ID. Approval alerts show
 the generation when recorded, and scheduled retries show their next attempt.
 The panel shows the active retention for completed results and exposes only
 diagnostic fields and safe failure reasons.
+Skipped results distinguish disabled, unconfigured or changed destinations
+from notification conditions that were no longer eligible. Older results
+without a recorded cause show a general eligibility message.
 
 The new condition events are opt-in: existing selections remain unchanged. Initial alerts are admitted promptly from persisted server facts, independently of open browser tabs. Automatic approvals do not request an operator decision. Approval acceptance, cancellation, expiration, interruption, or a newer plan stops delivery of the old actionable alert. Expiration is a separate historical event, sent only if selected when it is observed; enabling it later does not replay consumed expirations.
 

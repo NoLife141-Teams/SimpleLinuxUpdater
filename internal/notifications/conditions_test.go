@@ -368,6 +368,7 @@ func TestConditionDeliveryRevalidatesEachDestinationAndUnavailableFacts(t *testi
 	if h.client.calls != 1 {
 		t.Fatalf("second destination sent stale alert: %d", h.client.calls)
 	}
+	assertPersistedSkipReason(t, h.db, "condition_ineligible", "The notification condition was no longer eligible.")
 	h.client.onCall = nil
 	h.facts = []ConditionFact{rebootFact(true)}
 	h.reconcile(t)

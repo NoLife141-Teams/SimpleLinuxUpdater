@@ -38,6 +38,7 @@ type DeliveryHistoryItem struct {
 	AttemptedAt        string `json:"attempted_at,omitempty"`
 	CompletedAt        string `json:"completed_at,omitempty"`
 	NextAttemptAt      string `json:"next_attempt_at,omitempty"`
+	ReasonCode         string `json:"reason_code,omitempty"`
 	Reason             string `json:"reason,omitempty"`
 }
 
@@ -86,13 +87,23 @@ func historyCursor(value string) (createdAt, id string, ok bool) {
 	return createdAt, id, ok && historyTimestamp(createdAt) != "" && validHistoryID(id, 32)
 }
 
+func historySkipReason(reason string) (code, label string) {
+	switch reason {
+	case outboxSkipConditionIneligible:
+		return reason, "The notification condition was no longer eligible."
+	case outboxSkipDestinationDisabled:
+		return reason, "Destination was disabled before delivery."
+	case outboxSkipDestinationUnconfigured:
+		return reason, "Destination was not configured before delivery."
+	case outboxSkipDestinationChanged, "destination configuration changed after notification admission":
+		return outboxSkipDestinationChanged, "Destination configuration changed after admission."
+	default:
+		return "", "Delivery was no longer eligible."
+	}
+}
+
 func historyReason(state, message string, httpStatus int) string {
 	switch state {
-	case outboxStateSkipped:
-		if message == "destination configuration changed after notification admission" {
-			return "Destination configuration changed after admission."
-		}
-		return "Delivery was no longer eligible."
 	case outboxStateFailed, outboxStateRetrying:
 		if httpStatus >= 100 && httpStatus <= 599 {
 			return fmt.Sprintf("Destination returned HTTP %d.", httpStatus)
@@ -200,7 +211,11 @@ func (s *Service) DeliveryHistory(ctx context.Context, filter DeliveryHistoryQue
 		} else if approvalGeneration > 0 && (item.EventType == EventApprovalPublished || item.EventType == EventApprovalExpired) {
 			item.ApprovalGeneration = uint64(approvalGeneration)
 		}
-		item.Reason = historyReason(item.State, rawReason, httpStatus)
+		if item.State == outboxStateSkipped {
+			item.ReasonCode, item.Reason = historySkipReason(rawReason)
+		} else {
+			item.Reason = historyReason(item.State, rawReason, httpStatus)
+		}
 		page.Items = append(page.Items, item)
 	}
 	return page, rows.Err()

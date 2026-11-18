@@ -6,6 +6,22 @@ The format is inspired by Keep a Changelog, and this project uses Semantic Versi
 
 ## [Unreleased]
 
+### Added
+
+- Record Maintenance batches with per-Server outcomes, retry links and account-scoped history in Status. After sign-in, direct links open the recorded batch or the exact approval plan.
+- Show retained notification deliveries by destination, delivery state and job in Admin.
+- Warn about automatic backup overlaps in scheduled policy previews. Qualify Docker volume upgrades, encrypted archive restoration, batch recovery after interruption and controlled VM reboot in CI.
+
+### Fixed
+
+- Require individual removal confirmation for kept-back security plans and reserve each eligible batch retry once.
+- Preserve admitted batch jobs and decisions through an interruption and retain exact historical reconciliations through audit pruning.
+- Deduplicate approval alerts by exact plan and destination. Preserve scheduled-run Server links across inventory renames.
+
+### Changed
+
+- Send compact Status snapshots, fetch host details on demand and group event-driven refreshes. Use scoped rows for eligible changes, bound job log recovery and reduce browser work when rendering updates.
+
 ## [v0.5.8] - 2026-11-11
 
 ### Changed

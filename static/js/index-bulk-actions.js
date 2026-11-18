@@ -315,7 +315,15 @@
                 batch = data.batch;
                 renderBatch();
                 if (!batch) return;
-                const admissionsPending = batch.hosts.some(host => ["queued", "admitting"].includes(host.state));
+                const resolvedHosts = batch.hosts.filter(host => !["queued", "admitting"].includes(host.state));
+                const admissionsPending = resolvedHosts.length < batch.hosts.length;
+                if (pendingPlan && admissionsPending && resolvedHosts.length) {
+                    void dispatchStatusInteraction({
+                        type: "bulkHostAdmissionsResolved",
+                        operationId: pendingPlan.id,
+                        serverNames: resolvedHosts.map(host => host.name),
+                    });
+                }
                 if (pendingPlan && !admissionsPending) {
                     const plan = pendingPlan;
                     pendingPlan = null;

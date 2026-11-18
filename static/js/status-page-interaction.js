@@ -1111,6 +1111,16 @@
                     };
                 }
                 return [{ type: "render", scope: "serverState", priority: "immediate" }];
+            } else if (event.type === "bulkHostAdmissionsResolved") {
+                if (!bulkAction || bulkAction.operationId !== event.operationId) return [];
+                let changed = false;
+                for (const name of event.serverNames) {
+                    if (inFlightActions.get(name)?.operationId === event.operationId) {
+                        inFlightActions.delete(name);
+                        changed = true;
+                    }
+                }
+                return changed ? [{ type: "render", scope: "serverState", priority: "immediate" }] : [];
             } else if (event.type === "actionCompleted" || event.type === "actionFailed") {
                 const operationId = String(event.operationId || "");
                 Array.from(inFlightActions.entries()).forEach(([name, action]) => {

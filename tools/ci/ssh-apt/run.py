@@ -115,9 +115,10 @@ def wait_for_app(api, *, check_running=None):
 
 
 class API:
-    def __init__(self, port):
+    def __init__(self, port, *, include_error_body=True):
         validate_local_endpoint("127.0.0.1", port)
         self.base = f"http://127.0.0.1:{port}"
+        self.include_error_body = include_error_body
         self.client = urllib.request.build_opener(urllib.request.ProxyHandler({}),
             urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
 
@@ -130,6 +131,9 @@ class API:
             response = self.client.open(request, timeout=timeout)
         except urllib.error.HTTPError as error:
             response = error
+        if response.code not in allowed and not self.include_error_body:
+            response.close()
+            raise AssertionError(f"{method} {path}: HTTP {response.code}: response body omitted")
         result = json.loads(response.read())
         require(response.code in allowed, f"{method} {path}: HTTP {response.code}: {result}")
         return result
@@ -157,9 +161,12 @@ class API:
                 observations.append(state)
             if predicate(job):
                 return job, observations
-            require(job["status"] not in TERMINAL, f"job terminated before expected state: {job}")
+            if job["status"] in TERMINAL:
+                detail = f": {job}" if self.include_error_body else ""
+                raise AssertionError("job terminated before expected state" + detail)
             time.sleep(.15)
-        raise AssertionError(f"job timeout: {self.job(job_id)}")
+        detail = f": {self.job(job_id)}" if self.include_error_body else ""
+        raise AssertionError("job timeout" + detail)
 
 
 class Harness:

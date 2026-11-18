@@ -1,0 +1,6 @@
+{
+  "published_version": "v0.5.8",
+  "published_image": "ghcr.io/nolife141-teams/simplelinuxupdater@sha256:59fef24a3cf044dd732737f7da8a05408ff05ad683587831ff30340409ad4c48",
+  "vm_image_url": "https://cloud-images.ubuntu.com/releases/noble/release-20261017/ubuntu-24.04-server-cloudimg-amd64.img",
+  "vm_image_sha256": "04e8f2461a16a44e78a370284471f29616cdd9baf1893df25807b71f985b6c94"
+}

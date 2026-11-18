@@ -56,7 +56,11 @@ Install QEMU, `qemu-utils`, `cloud-image-utils`, OpenSSH client, Docker and Go o
 python3 tools/ci/ssh-apt/vm-reboot.py --check-prerequisites --output .tmp-ssh-apt/vm-prerequisites
 ```
 
-Exit code `2` and `status: not_executed` mean the VM was not run. A real failed qualification returns `1`; only a completed VM proof returns `0`. This implementation's local runner has no QEMU, `qemu-img`, `cloud-localds` or `/dev/kvm`, so reboot/systemd qualification was **not executed**. The committed prerequisite report records that limit. Hosted PR container jobs do not claim VM coverage.
+Exit code `2` and `status: not_executed` identify a prerequisite check or an
+unavailable VM runner. A failed qualification returns `1`. A completed VM proof
+returns `0`. The committed prerequisite report records the missing tooling on
+the original standalone test runner. CI runs the VM proof through the
+Docker-backed operational qualification described below.
 
 For a reproducible Ubuntu example, use the [official Noble release dated 20261017](https://cloud-images.ubuntu.com/releases/noble/release-20261017/). Its [published SHA256SUMS](https://cloud-images.ubuntu.com/releases/noble/release-20261017/SHA256SUMS) identifies the amd64 qcow2 image:
 
@@ -71,6 +75,12 @@ python3 tools/ci/ssh-apt/vm-reboot.py \
 ```
 
 Retain `report.json` from the VM run. The VM is terminated and its overlay, seed, private keys and temporary app data are deleted on exit; the downloaded backing image remains available for another fresh run. New cloud images require an explicitly reviewed URL/checksum update. No VM execution is implied by the presence of this command or its prerequisite tests.
+
+The operational qualification also runs this proof on the binary and assets
+from the candidate container. It installs QEMU in a disposable runner image.
+The runner shares only loopback with the fresh guest’s forwarded SSH socket and
+has no host Docker socket. The post-reboot proof checks `ssh.service` again
+after SSH returns. See [reproducing the Docker and VM qualification](upgrading.md#qualify-a-docker-volume-upgrade-and-vm-reboot).
 
 Application startup waits at most 30 seconds, including connection failures and
 HTTP 503 responses while startup maintenance is active. Each API call uses the

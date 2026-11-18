@@ -268,6 +268,34 @@ from target hosts until policy and credential review is complete.
 
 ## Reproduce qualification
 
+### Qualify a Docker volume upgrade and VM reboot
+
+Run on a Linux amd64 runner with Git, Docker using the local UNIX socket,
+Python 3.12+ and curl. Use a checked-out candidate commit. The tracked contents of
+that commit become the image build context.
+
+```bash
+python3 tools/ci/upgrade/operational.py \
+  --candidate-source "$PWD" --candidate-sha "$(git rev-parse HEAD)" \
+  --output "$(mktemp -d)"
+```
+
+The script seeds the published image pinned in
+[`operational-release.json`](../tools/ci/upgrade/operational-release.json),
+copies its stopped volume, upgrades the copy and restores an encrypted archive
+into a third volume. Application containers share a private internal Docker
+bridge and use generated, disabled fixture hosts and policies. The VM runs the
+same candidate binary in a container with only loopback. The guest image is
+verified by SHA-256 before boot.
+
+The CI and release gate retain `report.json` and `vm-report.json`. The reports
+record the candidate commit, image identifiers, outcomes and cleanup. Missing
+runner prerequisites are reported as `not_executed` and return a nonzero exit
+code. Update the published image pin after each release. The v0.4.16 migration
+qualification below covers the older schema and authentication transition.
+
+### Qualify migration from v0.4.16
+
 From a candidate checkout, build a fresh Linux amd64 executable (CI does this),
 then run with Python 3.12+ and Docker on Linux:
 

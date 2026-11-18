@@ -371,6 +371,10 @@ jobs:
         env:
           CANDIDATE_SHA: ${{ github.sha }}
         run: python3 tools/ci/upgrade/run.py --candidate "$RUNNER_TEMP/upgrade-candidate" --candidate-sha "$CANDIDATE_SHA" --output upgrade-evidence/positive
+      - name: Qualify Docker volume upgrade and controlled VM reboot
+        env:
+          CANDIDATE_SHA: ${{ github.sha }}
+        run: python3 tools/ci/upgrade/operational.py --candidate-source "$PWD" --candidate-sha "$CANDIDATE_SHA" --output upgrade-evidence/operational
       - name: Retain only redacted qualification reports
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -379,6 +383,8 @@ jobs:
           path: |
             upgrade-evidence/negative/report.json
             upgrade-evidence/positive/report.json
+            upgrade-evidence/operational/report.json
+            upgrade-evidence/operational/vm-report.json
           retention-days: 1
 
   ci-required:

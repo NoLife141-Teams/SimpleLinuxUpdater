@@ -895,7 +895,7 @@ test("bulk actions execute immediately, skip ineligible hosts, and report partia
     page,
 }) => {
     const servers = [
-        makeServer("idle-host", "idle", [], { has_key: true }),
+        makeServer("idle-host", "idle", [], { has_key: true, server_identity: "idle-inventory-identity" }),
         makeServer("ok-sec-host", "pending_approval", makePendingUpdates(3), {
             has_password: true,
             upgrade_plan: {
@@ -918,6 +918,7 @@ test("bulk actions execute immediately, skip ineligible hosts, and report partia
     await stubDashboardApi(page, () => servers);
     await page.route("**/api/update/idle-host", (route) => {
         state.updateIdle = (state.updateIdle || 0) + 1;
+        state.updateIdentity = route.request().headers()["x-slu-server-identity"];
         return fulfillJson(route, { ok: true });
     });
     await page.route("**/api/approve/ok-sec-host", (route) => {
@@ -975,6 +976,7 @@ test("bulk actions execute immediately, skip ineligible hosts, and report partia
     );
     await page.locator("#bulk-update").click();
     await expect.poll(() => state.updateIdle || 0).toBe(1);
+    expect(state.updateIdentity).toBe("idle-inventory-identity");
     await expect(page.locator("#bulk-action-hint")).toHaveText(
         "2 selected · 1 executed · 1 skipped",
     );

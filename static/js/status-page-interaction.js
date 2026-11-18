@@ -216,9 +216,10 @@
         let page = 1;
         let pageSize = 25;
         let primaryServerName = "";
-        let linkedServerName = normalizedString(options.linkedServerName, "", 200);
+        let linkedServerIdentity = normalizedString(options.linkedServerIdentity, "", 200);
+        let pendingLinkedServerReveal = Boolean(linkedServerIdentity);
         let selectedServerNames = new Set();
-        let drawer = { open: false, serverName: "", tab: "logs", logFollow: true };
+        let drawer = { open: false, serverName: "", serverIdentity: "", tab: "logs", logFollow: true };
         const pendingUpdatesInteraction = pendingUpdates.createStore();
         function createStreamState() {
             return {
@@ -376,8 +377,15 @@
         }
 
         function replaceServers(items) {
+            const previousServersByName = serversByName;
             servers = normalizeNamedItems(items);
             serversByName = new Map(servers.map(server => [server.name, server]));
+            selectedServerNames.forEach(name => {
+                const identity = previousServersByName.get(name)?.server_identity;
+                if (identity && identity !== serversByName.get(name)?.server_identity) {
+                    selectedServerNames.delete(name);
+                }
+            });
             const effects = [];
             const retainedNames = new Set(servers.map(server => server.name));
             statusSortValues.forEach((_, name) => {
@@ -483,6 +491,7 @@
         }
 
         function matchesFilters(server) {
+            if (linkedServerIdentity && server.server_identity !== linkedServerIdentity) return false;
             if (!matchesAvailability(server)) return false;
             const status = String(server.status || "").toLowerCase();
             const search = filters.search.trim().toLowerCase();
@@ -546,10 +555,13 @@
             }
             const totalPages = Math.max(1, Math.ceil(visible.length / pageSize));
             page = Math.max(1, Math.min(page, totalPages));
-            if (drawer.open && !loadedNames.has(drawer.serverName)) {
-                drawer = { open: false, serverName: "", tab: "logs", logFollow: true };
-            } else if (drawer.open && drawer.tab === "pending" && !hasPendingUpdates(serversByName.get(drawer.serverName))) {
-                drawer = { ...drawer, tab: "logs" };
+            if (drawer.open) {
+                const server = serversByName.get(drawer.serverName);
+                if (!loadedNames.has(drawer.serverName) || (drawer.serverIdentity && drawer.serverIdentity !== server?.server_identity)) {
+                    drawer = { open: false, serverName: "", serverIdentity: "", tab: "logs", logFollow: true };
+                } else if (drawer.tab === "pending" && !hasPendingUpdates(server)) {
+                    drawer = { ...drawer, tab: "logs" };
+                }
             }
             return previousPrimaryServerName !== primaryServerName;
         }
@@ -800,11 +812,18 @@
                 const stream = streams.servers;
                 if (requestId && (!stream.inFlight || stream.inFlight.requestId !== requestId || requestId < stream.lastAcceptedRequestId)) return [];
                 const priority = requestId && stream.inFlight ? stream.inFlight.priority : normalizedRefreshPriority(event.priority);
+                const previousLinkedServer = serversByName.get(primaryServerName);
                 const logEffects = replaceServers(event.servers);
-                const linkedName = linkedServerName;
-                linkedServerName = "";
-                const linkedServer = linkedName ? serversByName.get(linkedName) : undefined;
-                if (linkedServer) {
+                const linkedServer = linkedServerIdentity
+                    ? servers.find(server => server.server_identity === linkedServerIdentity)
+                    : undefined;
+                const linkedServerChanged = linkedServerIdentity && (
+                    pendingLinkedServerReveal
+                    || linkedServer?.name !== previousLinkedServer?.name
+                    || linkedServer?.disabled !== previousLinkedServer?.disabled
+                );
+                pendingLinkedServerReveal = false;
+                if (linkedServerChanged && linkedServer) {
                     filters = {
                         ...filters,
                         availability: linkedServer.disabled ? "disabled" : "enabled",
@@ -815,13 +834,12 @@
                         tag: ""
                     };
                     primaryServerName = linkedServer.name;
-                    const index = sortedVisibleServers().findIndex(server => server.name === primaryServerName);
-                    page = Math.floor(index / pageSize) + 1;
+                    page = 1;
                 }
                 const persistenceChanged = reconcileNavigation();
                 return [
-                    ...stateEffects({ persist: !linkedName && persistenceChanged, scope: "serverState", priority: linkedName ? "immediate" : priority }),
-                    ...(linkedName ? [{ type: "revealLinkedServer", name: linkedName, found: Boolean(linkedServer) }] : []),
+                    ...stateEffects({ persist: !linkedServerIdentity && persistenceChanged, scope: "serverState", priority: linkedServerChanged ? "immediate" : priority }),
+                    ...(linkedServerChanged ? [{ type: "revealLinkedServer", found: Boolean(linkedServer) }] : []),
                     { type: "renderSyncState" },
                     ...(requestId ? finishRefresh("servers", requestId, event.receivedAt) : []),
                     ...logEffects,
@@ -1003,6 +1021,9 @@
                 restoreNavigation(event.value);
                 return stateEffects({ render: false });
             } else if (event.type === "filtersChanged") {
+                const wasLinked = Boolean(linkedServerIdentity);
+                linkedServerIdentity = "";
+                pendingLinkedServerReveal = false;
                 lastBulkResult = null;
                 const patch = event.patch && typeof event.patch === "object" ? event.patch : {};
                 filters = {
@@ -1017,7 +1038,10 @@
                 if (Object.hasOwn(patch, "pageSize")) pageSize = normalizedPageSize(patch.pageSize);
                 page = 1;
                 reconcileNavigation();
-                return stateEffects({ persist: true });
+                return [
+                    ...stateEffects({ persist: true }),
+                    ...(wasLinked ? [{ type: "dismissLinkedServer" }] : [])
+                ];
             } else if (event.type === "sortChanged") {
                 lastBulkResult = null;
                 const key = normalizedChoice(event.key, allowedSortKeys, "name");
@@ -1051,19 +1075,29 @@
                 });
                 return stateEffects();
             } else if (event.type === "primaryServerSelected") {
-                primaryServerName = serversByName.has(String(event.name || "")) ? String(event.name) : "";
+                const selectedServer = serversByName.get(String(event.name || ""));
+                const leavingLinkedServer = linkedServerIdentity && selectedServer && selectedServer.server_identity !== linkedServerIdentity;
+                if (leavingLinkedServer) {
+                    linkedServerIdentity = "";
+                    pendingLinkedServerReveal = false;
+                    filters = { ...filters, search: "", availability: selectedServer.disabled ? "disabled" : "enabled" };
+                }
+                primaryServerName = selectedServer?.name || "";
                 reconcileNavigation();
                 return [
                     ...stateEffects({ persist: true }),
+                    ...(leavingLinkedServer ? [{ type: "dismissLinkedServer" }] : []),
                     ...requestPrimaryCommandHistory("immediate", "selected-host")
                 ];
             } else if (event.type === "drawerOpened") {
                 const name = String(event.name || "");
-                if (serversByName.has(name) && matchesAvailability(serversByName.get(name))) {
+                const server = serversByName.get(name);
+                if (server && matchesAvailability(server)) {
                     drawer = {
                         open: true,
                         serverName: name,
-                        tab: event.tab === "pending" && hasPendingUpdates(serversByName.get(name)) ? "pending" : "logs",
+                        serverIdentity: String(server.server_identity || ""),
+                        tab: event.tab === "pending" && hasPendingUpdates(server) ? "pending" : "logs",
                         logFollow: drawer.serverName === name ? drawer.logFollow : true
                     };
                 }
@@ -1148,8 +1182,9 @@
             return id;
         }
 
-        function approvalPayloadFacts(server) {
+        function actionPayloadFacts(server) {
             return {
+                serverIdentity: String(server?.server_identity || ""),
                 counts: canonicalApprovalCounts(server),
                 approvalIdentity: {
                     job_id: String(server?.job_id || ""),
@@ -1181,7 +1216,7 @@
                 reason: defaultActionReason(actionKey, server, action, canonicalApprovalCounts),
                 readiness: String(action.readiness || (action.enabled ? "ready" : "blocked")),
                 blockingStatus: String(action.blocking_status || ""),
-                payloadFacts: approvalPayloadFacts(server)
+                payloadFacts: actionPayloadFacts(server)
             };
         }
 
@@ -1221,7 +1256,7 @@
                 eligibleHosts,
                 ineligible,
                 skippedHosts: [...hiddenHosts, ...ineligible],
-                payloadFacts: Object.fromEntries(eligibleNames.map(name => [name, approvalPayloadFacts(actionServer(name))]))
+                payloadFacts: Object.fromEntries(eligibleNames.map(name => [name, actionPayloadFacts(actionServer(name))]))
             };
         }
 
@@ -1291,7 +1326,12 @@
                 visibleSelectedNames,
                 hiddenSelectedNames,
                 visibleSelectedServers: cloneValue(pageServers.filter(server => selectedServerNames.has(server.name))),
-                drawer: cloneValue(drawer),
+                drawer: {
+                    open: drawer.open,
+                    serverName: drawer.serverName,
+                    tab: drawer.tab,
+                    logFollow: drawer.logFollow
+                },
                 pendingUpdates: cloneValue(pendingUpdatesInteraction.view(serversByName.get(drawer.serverName))),
                 jobLogs: Object.fromEntries(Array.from(jobLogsByServer.entries()).map(([name, state]) => [name, {
                     jobId: state.jobId,

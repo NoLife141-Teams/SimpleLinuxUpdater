@@ -468,8 +468,20 @@ func handleUpdatePolicyRunsWithDeps(c *gin.Context, deps AppDeps) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load policy runs"})
 		return
 	}
+	identities := deps.ServerState.InventoryIdentities()
 	for i := range result.Items {
-		enrichPolicyRunHistoryItem(&result.Items[i], interpretation)
+		run := &result.Items[i]
+		enrichPolicyRunHistoryItem(run, interpretation)
+		if run.Status != updatePolicyRunSkipped || run.ServerName == "" {
+			continue
+		}
+		if run.ServerIdentity == "" {
+			run.UpdateCheckMessage = "Server identity is unavailable for this run."
+		} else if _, exists := identities[run.ServerIdentity]; !exists {
+			run.UpdateCheckMessage = "This run’s server is no longer in the inventory."
+		} else {
+			run.UpdateCheckURL = "/?server_identity=" + url.QueryEscape(run.ServerIdentity)
+		}
 	}
 	c.JSON(http.StatusOK, gin.H{
 		"items":             result.Items,

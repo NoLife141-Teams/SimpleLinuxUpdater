@@ -638,19 +638,32 @@ test("a skipped Scheduled Run opens a fresh update check for the current host", 
     const target = "srv-web + QA & staging";
     const other = "other-server";
     const disabled = "disabled-server";
+    await ensureAuthenticatedSession(page);
+    const identities = await page.evaluate(async ({ target, disabled }) => {
+        for (const [name, host] of [[target, "linked.example.test"], [disabled, "disabled.example.test"]]) {
+            const response = await fetch("/api/servers", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ name, host, user: "root" }),
+            });
+            if (!response.ok) throw new Error(`Could not create server fixture: ${response.status}`);
+        }
+        const inventory = await (await fetch("/api/servers")).json();
+        return Object.fromEntries(inventory.map(server => [server.name, server.server_identity]));
+    }, { target, disabled });
+    const link = name => `/?${new URLSearchParams({ server_identity: identities[name] })}`;
     const servers = [
         makeServer(other, "idle", [], { has_password: true }),
-        makeServer(target, "idle", [], { has_password: true }),
-        makeServer(disabled, "idle", [], { has_password: true, disabled: true }),
+        makeServer(target, "idle", [], { has_password: true, server_identity: identities[target] }),
+        makeServer(disabled, "idle", [], { has_password: true, disabled: true, server_identity: identities[disabled] }),
     ];
     const updates = [];
-    await ensureAuthenticatedSession(page);
     await stubDashboardApi(page, () => servers);
     await stubAdminApi(page);
     await page.route("**/api/update-policies/runs?*", (route) =>
         fulfillJson(route, {
             items: [
-                { id: 1, policy_name: "Nightly", server_name: target, status: "skipped", exact_skip_reason: "busy" },
+                { id: 1, policy_name: "Nightly", server_name: "old-host-name", status: "skipped", exact_skip_reason: "busy", update_check_url: link(target) },
                 { id: 2, policy_name: "Nightly", server_name: other, status: "succeeded" },
                 { id: 3, policy_name: "No matching hosts", status: "skipped" },
             ],
@@ -660,7 +673,10 @@ test("a skipped Scheduled Run opens a fresh update check for the current host", 
         }),
     );
     await page.route("**/api/update/*", (route) => {
-        updates.push(decodeURIComponent(new URL(route.request().url()).pathname.split("/").at(-1)));
+        updates.push({
+            name: decodeURIComponent(new URL(route.request().url()).pathname.split("/").at(-1)),
+            identity: route.request().headers()["x-slu-server-identity"],
+        });
         return fulfillJson(route, { job_id: "fresh-update-check" });
     });
     await page.evaluate((name) => {
@@ -684,16 +700,16 @@ test("a skipped Scheduled Run opens a fresh update check for the current host", 
     const update = page.locator("#selected-host-panel").getByRole("button", { name: "Update", exact: true });
     await expect(update).toBeEnabled();
     await update.click();
-    await expect.poll(() => updates).toEqual([target]);
+    await expect.poll(() => updates).toEqual([{ name: target, identity: identities[target] }]);
 
-    await page.goto(`/?${new URLSearchParams({ server: disabled })}`);
+    await page.goto(link(disabled));
     await expect(heading).toHaveText(disabled);
     await expect(page.locator("#availability-filter")).toHaveValue("disabled");
     await expect(update).toHaveCount(0);
 
-    await page.goto("/?server=deleted-server");
-    await expect(page.getByText("Server “deleted-server” is no longer in the inventory.")).toBeFocused();
-    expect(updates).toEqual([target]);
+    await page.goto("/?server_identity=deleted-server");
+    await expect(page.getByText("The linked server is no longer in the inventory.")).toBeFocused();
+    expect(updates).toEqual([{ name: target, identity: identities[target] }]);
 });
 
 test("admin scheduled run history filters, paginates, and exposes existing investigation details", async ({

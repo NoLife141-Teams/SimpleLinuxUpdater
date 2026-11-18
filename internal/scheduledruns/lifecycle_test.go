@@ -306,6 +306,71 @@ func TestLifecycleHandlesSkippedCandidateIdempotently(t *testing.T) {
 	}
 }
 
+func TestScheduledRunSkipsReplacementBeforeJobAdmission(t *testing.T) {
+	for _, mode := range []string{policies.ExecutionScanOnly, policies.ExecutionAutoApply} {
+		t.Run(mode, func(t *testing.T) {
+			db, err := sql.Open("sqlite", ":memory:")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer db.Close()
+			db.SetMaxOpenConns(1)
+			for _, ensure := range []func(*sql.DB) error{audit.EnsureSchema, jobs.EnsureSchema, policies.EnsureSchema} {
+				if err := ensure(db); err != nil {
+					t.Fatal(err)
+				}
+			}
+			dbProvider := func() *sql.DB { return db }
+			repository := policies.NewSQLiteRepository(policies.SQLiteRepositoryDeps{DB: dbProvider})
+			original := servers.Server{Name: "srv", Identity: "scheduled-server"}
+			replacement := servers.Server{Name: original.Name, Identity: "replacement"}
+			inventory := []servers.Server{original}
+			statuses := map[string]*servers.ServerStatus{original.Name: servers.NewIdleStatus(original)}
+			state := servers.NewState(&sync.Mutex{}, &inventory, &statuses, nil)
+			manager := jobs.NewManager(jobs.NewSQLiteRepository(db), jobs.ManagerOptions{})
+			lifecycle := scheduledruns.New(scheduledruns.Deps{
+				AuditService:      audit.NewService(audit.ServiceOptions{DB: dbProvider}),
+				PolicyRepository:  repository,
+				ServerState:       state,
+				CurrentJobManager: func() *jobs.Manager { return manager },
+				LoadRetryPolicy:   func() updates.RetryPolicy { return updates.RetryPolicy{} },
+				AcquireScheduledAction: func(string) func() {
+					state.Lock()
+					defer state.Unlock()
+					state.SetServers([]servers.Server{replacement})
+					return func() {}
+				},
+				StartJobRunner:                  func(string, func(), ...func()) { t.Fatal("job runner started on a replacement") },
+				StartScheduledRunReconciliation: func(int64, string) {},
+			})
+
+			result := lifecycle.HandleScheduledRun(policies.ScheduledRunRequest{
+				Policy: policies.Policy{ID: 1, Name: "nightly", ExecutionMode: mode},
+				Server: original, ScheduledForUTC: "2026-11-18T01:00:00Z",
+			})
+			if result.Err != nil || result.Status != policies.RunSkipped || result.JobID != "" {
+				t.Fatalf("replacement run result = %+v", result)
+			}
+			run, err := repository.GetRun(result.RunID)
+			if err != nil || run.ServerIdentity != original.Identity || run.Status != policies.RunSkipped {
+				t.Fatalf("persisted scheduled run = %+v, %v", run, err)
+			}
+			var count int
+			if err := db.QueryRow("SELECT COUNT(*) FROM jobs").Scan(&count); err != nil || count != 0 {
+				t.Fatalf("scheduled jobs = %d, %v", count, err)
+			}
+			if err := db.QueryRow(`SELECT COUNT(*) FROM audit_events WHERE action = 'schedule.run.skipped'
+				AND json_extract(meta_json, '$.reason_code') = ? AND json_extract(meta_json, '$.run_id') = ?`,
+				servers.MaintenanceReadinessIdentityChanged, run.ID).Scan(&count); err != nil || count != 1 {
+				t.Fatalf("identity skip audits = %d, %v", count, err)
+			}
+			if current := state.CurrentStatusSnapshot(replacement.Name); current == nil || current.Status != "idle" {
+				t.Fatalf("replacement status = %+v, want idle", current)
+			}
+		})
+	}
+}
+
 func TestLifecycleDoesNotStartUpdateWhenRunningStateCannotBePersisted(t *testing.T) {
 	for _, mode := range []string{policies.ExecutionAutoApply, policies.ExecutionAutoremove} {
 		t.Run(mode, func(t *testing.T) { testLifecycleMutationStartPersistenceFailure(t, mode) })

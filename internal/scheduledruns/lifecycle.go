@@ -94,6 +94,7 @@ func (l *Lifecycle) HandleScheduledRun(req policies.ScheduledRunRequest) policie
 		PolicyID:        req.Policy.ID,
 		PolicyName:      req.Policy.Name,
 		ServerName:      req.Server.Name,
+		ServerIdentity:  req.Server.Identity,
 		ScheduledForUTC: req.ScheduledForUTC,
 		ExecutionMode:   req.Policy.ExecutionMode,
 		PackageScope:    req.Policy.PackageScope,
@@ -201,8 +202,16 @@ func (l *Lifecycle) markReadinessSkipped(run policies.Run, policy policies.Polic
 		"policy_name":       policy.Name,
 		"scheduled_for_utc": run.ScheduledForUTC,
 		"reason_code":       readiness.Code,
+		"run_id":            run.ID,
 	})
 	return status, "", err
+}
+
+func (l *Lifecycle) markIdentityChangedSkipped(run policies.Run, policy policies.Policy, server servers.Server) (string, string, error) {
+	return l.markReadinessSkipped(run, policy, server, servers.MaintenanceReadiness{
+		Code:    servers.MaintenanceReadinessIdentityChanged,
+		Message: "Server identity changed before scheduled maintenance could start",
+	})
 }
 
 func (l *Lifecycle) buildScheduledJobMeta(policy policies.Policy, scheduledForUTC string) updates.ScheduledJobMeta {
@@ -218,6 +227,7 @@ func (l *Lifecycle) recordSkippedCandidate(policy policies.Policy, server server
 		PolicyID:        policy.ID,
 		PolicyName:      policy.Name,
 		ServerName:      server.Name,
+		ServerIdentity:  server.Identity,
 		ScheduledForUTC: scheduledForUTC,
 		ExecutionMode:   policy.ExecutionMode,
 		PackageScope:    policy.PackageScope,
@@ -300,14 +310,18 @@ func (l *Lifecycle) runPackageMutation(run policies.Run, policy policies.Policy,
 	if policy.ExecutionMode == policies.ExecutionAutoremove {
 		kind, operation, runtimeStatus = jobs.KindAutoremove, "autoremove", "autoremove"
 	}
-	preStartStatus := l.deps.ServerState.CurrentStatusSnapshot(server.Name)
-	serverForRun, err := l.deps.ServerState.BeginPackageMutation(server.Name, runtimeStatus)
+	serverForRun, preStartStatus, err := l.deps.ServerState.BeginActionWithOptions(server.Name, runtimeStatus, servers.ActionAdmissionOptions{
+		PackageMutation: true, ExpectedServerIdentity: run.ServerIdentity,
+	})
 	if err != nil {
 		status := policies.RunFailed
 		reason := policies.RunReasonMissing
 		summary := "Server unavailable for scheduled " + operation
 		if errors.Is(err, servers.ErrDisabled) {
 			return l.markReadinessSkipped(run, policy, server, servers.DisabledReadiness())
+		}
+		if errors.Is(err, servers.ErrIdentityChanged) {
+			return l.markIdentityChangedSkipped(run, policy, server)
 		}
 		if errors.Is(err, servers.ErrActionInProgress) {
 			status = policies.RunSkipped
@@ -410,14 +424,18 @@ func (l *Lifecycle) runPackageMutation(run policies.Run, policy policies.Policy,
 }
 
 func (l *Lifecycle) runScan(run policies.Run, policy policies.Policy, server servers.Server) (string, string, error) {
-	preStartStatus := l.deps.ServerState.CurrentStatusSnapshot(server.Name)
-	serverForRun, err := l.deps.ServerState.BeginAction(server.Name, "updating")
+	serverForRun, preStartStatus, err := l.deps.ServerState.BeginActionWithOptions(server.Name, "updating", servers.ActionAdmissionOptions{
+		ExpectedServerIdentity: run.ServerIdentity,
+	})
 	if err != nil {
 		status := policies.RunFailed
 		reason := policies.RunReasonMissing
 		summary := "Server unavailable for scheduled scan"
 		if errors.Is(err, servers.ErrDisabled) {
 			return l.markReadinessSkipped(run, policy, server, servers.DisabledReadiness())
+		}
+		if errors.Is(err, servers.ErrIdentityChanged) {
+			return l.markIdentityChangedSkipped(run, policy, server)
 		}
 		if errors.Is(err, servers.ErrActionInProgress) {
 			status = policies.RunSkipped

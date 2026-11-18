@@ -28,7 +28,8 @@ func EnsureSchema(db *sql.DB) error {
 			key_enc TEXT NOT NULL DEFAULT '',
 			key_path TEXT NOT NULL DEFAULT '',
 			tags TEXT NOT NULL DEFAULT '',
-			disabled INTEGER NOT NULL DEFAULT 0
+			disabled INTEGER NOT NULL DEFAULT 0,
+			identity TEXT NOT NULL DEFAULT ''
 		)
 	`); err != nil {
 		return err
@@ -43,6 +44,7 @@ func EnsureSchema(db *sql.DB) error {
 	hasTags := false
 	hasPort := false
 	hasDisabled := false
+	hasIdentity := false
 	for rows.Next() {
 		var cid int
 		var name, ctype string
@@ -65,6 +67,9 @@ func EnsureSchema(db *sql.DB) error {
 		}
 		if name == "port" {
 			hasPort = true
+		}
+		if name == "identity" {
+			hasIdentity = true
 		}
 	}
 	if err := rows.Err(); err != nil {
@@ -95,5 +100,14 @@ func EnsureSchema(db *sql.DB) error {
 			return err
 		}
 	}
-	return nil
+	if !hasIdentity {
+		if _, err := db.Exec("ALTER TABLE servers ADD COLUMN identity TEXT NOT NULL DEFAULT ''"); err != nil {
+			return err
+		}
+	}
+	if _, err := db.Exec("UPDATE servers SET identity = lower(hex(randomblob(16))) WHERE identity = ''"); err != nil {
+		return err
+	}
+	_, err = db.Exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_servers_identity ON servers(identity) WHERE identity <> ''")
+	return err
 }

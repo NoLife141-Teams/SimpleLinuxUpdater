@@ -509,9 +509,12 @@ recovery do not rearm it. The policy list, editor preview and calendar show
 consumption; Scheduled Runs retains per-server results and investigation links.
 Editing its cadence, date/time, targets or timezone cannot reset consumption.
 Create a new policy for another scheduled operation. For a skipped run with
-a server, **Prepare a new update check** opens that host in Status. Review its
+a linked server, **Prepare a new update check** opens that host in Status.
+The link follows server renames. Deleted servers and historical entries with
+unknown identity show an explanation in the run history. Review the host’s
 current eligibility and select **Update** to check for packages. Any resulting
-package plan goes through the normal manual approval workflow.
+package plan goes through the normal manual approval workflow. Status checks the
+inventory identity again when reserving the server for an update.
 
 The existing missed-tick policy remains conservative: only the current minute
 can start a new occurrence. With an unchanged persisted scheduling state, the

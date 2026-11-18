@@ -202,6 +202,9 @@ type Run struct {
 	PolicyID             int64  `json:"policy_id"`
 	PolicyName           string `json:"policy_name"`
 	ServerName           string `json:"server_name"`
+	ServerIdentity       string `json:"-"`
+	UpdateCheckURL       string `json:"update_check_url,omitempty"`
+	UpdateCheckMessage   string `json:"update_check_message,omitempty"`
 	ScheduledForUTC      string `json:"scheduled_for_utc"`
 	ScheduledForDisplay  string `json:"scheduled_for_display,omitempty"`
 	ExecutionMode        string `json:"execution_mode"`

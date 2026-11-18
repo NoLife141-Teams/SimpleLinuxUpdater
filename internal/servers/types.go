@@ -22,6 +22,7 @@ var (
 	ErrNotFound            = errors.New("server not found")
 	ErrActionInProgress    = errors.New("action already in progress")
 	ErrDisabled            = errors.New("server is disabled; enable it in Manage Servers before starting maintenance")
+	ErrIdentityChanged     = errors.New("server identity changed")
 	ErrActionNotAllowed    = errors.New("action is not available for the current server status")
 	ErrFingerprintMismatch = errors.New("host key fingerprint mismatch")
 )
@@ -39,6 +40,7 @@ func (e EndpointConflictError) Unwrap() error {
 }
 
 type Server struct {
+	Identity string   `json:"-"`
 	Disabled bool     `json:"disabled"`
 	Name     string   `json:"name"`
 	Host     string   `json:"host"`
@@ -79,6 +81,7 @@ const (
 const (
 	MaintenanceReadinessReady                    = "ready"
 	MaintenanceReadinessDisabled                 = "server_disabled"
+	MaintenanceReadinessIdentityChanged          = "server_identity_changed"
 	MaintenanceReadinessMissingAuthentication    = "missing_authentication"
 	MaintenanceReadinessAuthenticationUnknown    = "authentication_unavailable"
 	MaintenanceReadinessHostKeyNotTrusted        = "host_key_not_trusted"
@@ -109,6 +112,7 @@ func EvaluateMaintenanceReadiness(hasPassword, hasServerKey, hasGlobalKey, globa
 }
 
 type ServerStatus struct {
+	ServerIdentity              string                     `json:"server_identity,omitempty"`
 	RemediationPlanID           string                     `json:"remediation_plan_id,omitempty"`
 	RemediationDigest           string                     `json:"remediation_digest,omitempty"`
 	APTMetadata                 vulnerabilities.APTContext `json:"apt_metadata,omitzero"`
@@ -312,6 +316,18 @@ func (s *State) CloneStatusMap() map[string]*ServerStatus {
 	return CloneStatusMap(*s.statusMap)
 }
 
+func (s *State) InventoryIdentities() map[string]struct{} {
+	s.Lock()
+	defer s.Unlock()
+	identities := make(map[string]struct{}, len(s.Servers()))
+	for _, server := range s.Servers() {
+		if server.Identity != "" {
+			identities[server.Identity] = struct{}{}
+		}
+	}
+	return identities
+}
+
 func (s *State) ListStatuses() []ServerStatus {
 	s.Lock()
 	defer s.Unlock()
@@ -331,6 +347,7 @@ func (s *State) ListStatuses() []ServerStatus {
 		status.HasKey = server.Key != ""
 		status.Tags = server.Tags
 		copyStatus := CloneServerStatus(status)
+		copyStatus.ServerIdentity = server.Identity
 		statuses = append(statuses, *copyStatus)
 	}
 	return statuses
@@ -412,8 +429,9 @@ func (s *State) BeginPackageMutation(name, newStatus string) (Server, error) {
 }
 
 type ActionAdmissionOptions struct {
-	PackageMutation bool
-	AllowedStatuses map[string]bool
+	PackageMutation        bool
+	AllowedStatuses        map[string]bool
+	ExpectedServerIdentity string
 }
 
 func (s *State) beginAction(name, newStatus string, packageMutation bool) (Server, error) {
@@ -439,6 +457,9 @@ func (s *State) BeginActionWithOptions(name, newStatus string, opts ActionAdmiss
 	server, found := s.FindByNameLocked(name)
 	if !found {
 		return Server{}, nil, sql.ErrNoRows
+	}
+	if opts.ExpectedServerIdentity != "" && server.Identity != opts.ExpectedServerIdentity {
+		return Server{}, nil, ErrIdentityChanged
 	}
 	if server.Disabled {
 		return Server{}, nil, ErrDisabled

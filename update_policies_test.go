@@ -703,6 +703,88 @@ func TestUpdatePolicyRunsLimitValidationAndClamp(t *testing.T) {
 	}
 }
 
+func TestScheduledRunUpdateCheckFollowsServerIdentity(t *testing.T) {
+	app := newUpdatePolicyTestApp(t, filepath.Join(t.TempDir(), "scheduled-run-link.db"))
+	handler, cookie := authenticateUpdatePolicyTestApp(t, app)
+	inventory := app.Deps.ServerInventoryService
+	server, err := inventory.Create(Server{Name: "original", Host: "original.example.test", User: "root"})
+	if err != nil || server.Identity == "" {
+		t.Fatalf("create inventory entry with identity: %v", err)
+	}
+	policy := UpdatePolicy{ID: 1, Name: "Nightly"}
+	scheduled := "2026-01-04T03:00:00.000000000Z"
+	result := scheduledRunLifecycleFromComposedApp(app.Deps).HandleScheduledRun(policypkg.ScheduledRunRequest{
+		Policy: policy, Server: server, ScheduledForUTC: scheduled, Outcome: policypkg.RunReasonBusy,
+	})
+	if !result.Inserted || result.Err != nil {
+		t.Fatalf("record skipped run: %+v", result)
+	}
+	var auditCount int
+	err = app.Deps.DB().QueryRow(`SELECT COUNT(*) FROM audit_events
+		WHERE action = 'schedule.run.skipped' AND target_name = ? AND json_extract(meta_json, '$.run_id') = ?`,
+		server.Name, result.RunID).Scan(&auditCount)
+	if err != nil || auditCount != 1 {
+		t.Fatalf("skipped run audit count = %d, err = %v", auditCount, err)
+	}
+	_, inserted, err := app.Deps.PolicyRepository.CreateRun(UpdatePolicyRun{
+		PolicyID: 2, ServerName: server.Name, ScheduledForUTC: scheduled, Status: updatePolicyRunSkipped,
+	})
+	if err != nil || !inserted {
+		t.Fatalf("record legacy run: %v", err)
+	}
+
+	request := func(path string) string {
+		t.Helper()
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req.AddCookie(cookie)
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET %s returned %d: %s", path, rec.Code, rec.Body.String())
+		}
+		return rec.Body.String()
+	}
+	history := func() (UpdatePolicyRun, UpdatePolicyRun) {
+		t.Helper()
+		var page struct {
+			Items []UpdatePolicyRun `json:"items"`
+		}
+		if err := json.Unmarshal([]byte(request("/api/update-policies/runs")), &page); err != nil || len(page.Items) != 2 {
+			t.Fatalf("decode history: %+v, %v", page, err)
+		}
+		return page.Items[1], page.Items[0]
+	}
+	run, legacy := history()
+	if run.UpdateCheckURL == "" || legacy.UpdateCheckURL != "" || legacy.UpdateCheckMessage == "" {
+		t.Fatalf("unexpected linked and legacy history entries: %+v and %+v", run, legacy)
+	}
+	oldLink := run.UpdateCheckURL
+
+	server.Name = "renamed"
+	renamed, err := inventory.Update("original", server)
+	if err != nil || renamed.Identity != server.Identity {
+		t.Fatalf("rename preserved identity = %t, err = %v", renamed.Identity == server.Identity, err)
+	}
+	run, _ = history()
+	if run.ServerName != "original" || run.UpdateCheckURL != oldLink ||
+		!strings.Contains(request(oldLink), `data-linked-server-identity="`+server.Identity+`"`) {
+		t.Fatalf("renamed server link did not preserve its historical association: %+v", run)
+	}
+
+	if err := inventory.Delete("renamed"); err != nil {
+		t.Fatal(err)
+	}
+	reused, err := inventory.Create(Server{Name: "original", Host: "replacement.example.test", User: "root"})
+	if err != nil || reused.Identity == server.Identity {
+		t.Fatalf("replacement reused identity = %t, err = %v", reused.Identity == server.Identity, err)
+	}
+	run, _ = history()
+	if run.UpdateCheckURL != "" || run.UpdateCheckMessage == "" ||
+		!strings.Contains(request(oldLink), "The linked server is no longer in the inventory.") {
+		t.Fatalf("deleted server association should not be actionable: %+v", run)
+	}
+}
+
 func TestUpdatePolicyRunsHistoryFiltersPaginationAndInvestigationProjection(t *testing.T) {
 	dbFile := filepath.Join(t.TempDir(), "update-policy-runs-history.db")
 	app := newUpdatePolicyTestApp(t, dbFile)

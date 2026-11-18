@@ -5,6 +5,34 @@ const path = require("node:path");
 
 const { createStore } = require("../../static/js/status-page-interaction.js");
 
+test("a skipped run link follows live renames and cannot select a replacement", () => {
+    const store = createStore({ linkedServerIdentity: "original" });
+    const snapshot = (...servers) => store.dispatch({ type: "serversSnapshotReceived", servers });
+    const original = { name: "web", server_identity: "original", status: "idle", has_password: true };
+    const renamed = { ...original, name: "renamed" };
+    const replacement = { ...renamed, server_identity: "replacement" };
+
+    snapshot(original);
+    assert.equal(store.getView().primaryServerName, "web");
+    snapshot(renamed);
+    assert.equal(store.getView().primaryServerName, "renamed");
+    assert.equal(store.getView().filters.search, "renamed");
+    store.dispatch({ type: "drawerOpened", name: "renamed" });
+    assert.equal(store.getView().drawer.open, true);
+    store.dispatch({ type: "selectionChanged", name: "renamed", selected: true });
+    assert.deepEqual(store.planBulkAction("update").eligibleNames, ["renamed"]);
+    const effects = snapshot(replacement);
+    assert.equal(store.getView().primaryServerName, "");
+    assert.deepEqual(store.getView().visibleServers, []);
+    assert.equal(store.getView().drawer.open, false);
+    assert.ok(effects.some(effect => effect.type === "revealLinkedServer" && !effect.found));
+
+    store.dispatch({ type: "filtersChanged", patch: { search: "" } });
+    assert.equal(store.getView().primaryServerName, "renamed");
+    assert.equal(store.planAction("renamed", "update").payloadFacts.serverIdentity, "replacement");
+    assert.deepEqual(store.planBulkAction("update").eligibleNames, []);
+});
+
 test("bulk preview budgets evaluate package facts only for selected hosts", () => {
     // Empty filters exercise toolbar planning. A global package/risk filter may
     // legitimately inspect facts for every Server before selecting the page.

@@ -192,6 +192,8 @@
             };
         }
         function bulkActionRequestOptions(actionPath, facts) {
+            if (actionPath === "update" && facts?.serverIdentity)
+                return { headers: { "X-SLU-Server-Identity": facts.serverIdentity } };
             if (!actionPath.startsWith("approve") && actionPath !== "cancel")
                 return {};
             const confirmRemovals =

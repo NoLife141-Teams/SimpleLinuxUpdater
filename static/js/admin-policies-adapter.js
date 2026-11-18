@@ -1717,10 +1717,8 @@
                         ? `/api/reports/jobs/${encodeURIComponent(run.job_id)}`
                         : "");
                 const auditURL = run.audit_url || "";
-                const checkURL =
-                    outcome === "skipped" && run.server_name
-                        ? `/?${new URLSearchParams({ server: run.server_name })}`
-                        : "";
+                const checkURL = run.update_check_url || "";
+                const checkMessage = run.update_check_message || "";
                 row.innerHTML = `
             <td data-label="Scheduled" title="${escapeHtml(scheduled.title || "")}">
                 <div>${escapeHtml(scheduled.primary || "")}</div>
@@ -1749,7 +1747,8 @@
                     ${reportURL ? `<a class="inline-btn btn-ghost" href="${escapeHtml(reportURL)}">Report</a>` : ""}
                     ${auditURL ? `<a class="inline-btn btn-ghost" href="${escapeHtml(auditURL)}">Audit trail</a>` : ""}
                     ${checkURL ? `<a class="inline-btn btn-ghost" href="${escapeHtml(checkURL)}">Prepare a new update check</a>` : ""}
-                    ${!jobDetailURL && !reportURL && !auditURL && !checkURL ? '<span class="subtle">No linked details</span>' : ""}
+                    ${checkMessage ? `<span class="subtle">${escapeHtml(checkMessage)}</span>` : ""}
+                    ${!jobDetailURL && !reportURL && !auditURL && !checkURL && !checkMessage ? '<span class="subtle">No linked details</span>' : ""}
                 </div>
             </td>
         `;

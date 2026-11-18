@@ -198,7 +198,7 @@ func TestUpdateRouteStartsFromIdleAndConflictsWhenBusy(t *testing.T) {
 		t.Setenv("DEBIAN_UPDATER_KNOWN_HOSTS", knownHostsPath)
 		app, sessionCookie := newActionAPITestApp(t, dbFile)
 
-		server := Server{Name: "srv-update-route", Host: "example.org", Port: 22, User: "root", Pass: "pw"}
+		server := Server{Identity: "current-identity", Name: "srv-update-route", Host: "example.org", Port: 22, User: "root", Pass: "pw"}
 		func() {
 			mu.Lock()
 			defer mu.Unlock()
@@ -218,6 +218,25 @@ func TestUpdateRouteStartsFromIdleAndConflictsWhenBusy(t *testing.T) {
 		})
 		t.Setenv(sshCommandTimeoutSecondsEnv, "1")
 		t.Setenv(retryMaxAttemptsEnv, "1")
+
+		stale := httptest.NewRecorder()
+		staleReq := httptest.NewRequest(http.MethodPost, "/api/update/"+server.Name, nil)
+		staleReq.AddCookie(sessionCookie)
+		staleReq.Header.Set("X-SLU-Server-Identity", "removed-identity")
+		markSameOriginAuthRequest(staleReq)
+		app.Handler.ServeHTTP(stale, staleReq)
+		if stale.Code != http.StatusConflict || !strings.Contains(stale.Body.String(), "The server has changed") {
+			t.Fatalf("stale update identity status = %d, body = %s", stale.Code, stale.Body.String())
+		}
+		var count int
+		if err := app.Deps.DB().QueryRow(`SELECT COUNT(*) FROM audit_events
+			WHERE action = 'update.start' AND target_name = ? AND status = 'ignored'
+			  AND json_extract(meta_json, '$.reason_code') = 'server_identity_changed'`, server.Name).Scan(&count); err != nil || count != 1 {
+			t.Fatalf("stale update audit count = %d, err = %v", count, err)
+		}
+		if err := app.Deps.DB().QueryRow("SELECT COUNT(*) FROM jobs WHERE server_name = ?", server.Name).Scan(&count); err != nil || count != 0 {
+			t.Fatalf("stale update jobs count = %d, err = %v", count, err)
+		}
 
 		rec := httptest.NewRecorder()
 		req := httptest.NewRequest(http.MethodPost, "/api/update/"+server.Name, nil)

@@ -12,7 +12,7 @@
 <link rel="stylesheet" href="/static/css/package-deferrals.css?v=ui-components-515-20261029">
     <link rel="stylesheet" href="/static/css/operator-workspace.css?v=admin-horizontal-20261104">
 </head>
-<body class="status-page" data-account-role="{{.Role}}">
+<body class="status-page" data-account-role="{{.Role}}" data-linked-server-identity="{{.LinkedServerIdentity}}">
     <div class="dashboard-shell">
         {{template "operator-application-shell" .}}
 
@@ -348,7 +348,7 @@
                     <div class="context-block">
                         <div class="eyebrow"><svg class="status-section-icon" aria-hidden="true" focusable="false"><use href="/static/status-icons.svg#server"></use></svg>Selected host</div>
                         <h2 id="selected-host-title" tabindex="-1">Selected host</h2>
-                        <p class="muted" id="linked-server-message" role="status" tabindex="-1" hidden></p>
+                        <p class="muted" id="linked-server-message" role="status" tabindex="-1"{{if not .LinkedServerError}} hidden{{end}}>{{.LinkedServerError}}</p>
                         <p class="muted" id="selected-host-subtitle">Select a table row to inspect host details.</p>
                     </div>
                     <div id="selected-host-panel" class="selected-host-panel" aria-live="polite">
@@ -425,16 +425,16 @@
     <script src="/static/js/dashboard-projection-consumption.js?v=apt-update-cve-scope-20261103"></script>
     <script src="/static/js/pending-updates-interaction.js?v=dense-packages-20261103"></script>
     <script src="/static/js/pending-updates-view.js?v=top-pagination-20261103"></script>
-    <script src="/static/js/status-page-interaction.js?v=compact-cve-20261103b"></script>
+    <script src="/static/js/status-page-interaction.js?v=scheduled-run-identity-566"></script>
     <script src="/static/js/status-formatting.js?v=job-log-stream-20260724"></script>
     <script src="/static/js/status-transport.js?v=frontend-isolation-20261027"></script>
     <script src="/static/js/status-rendering.js?v=apt-update-cve-scope-20261103"></script>
     <script src="/static/js/status-drawer-adapter.js?v=quality-pass-20260711b"></script>
     <script src="/static/js/status-table-adapter.js?v=quality-pass-20260711b"></script>
     <script src="/static/js/status-action-adapter.js?v=quality-pass-20260711b"></script>
-    <script src="/static/js/index-bulk-actions.js?v=frontend-isolation-20261027"></script>
+    <script src="/static/js/index-bulk-actions.js?v=scheduled-run-identity-566"></script>
     <script src="/static/js/package-deferrals.js?v=frontend-isolation-20261027"></script>
 <script src="/static/js/status-snapshot-adapter.js?v=frontend-isolation-20261027"></script>
-<script src="/static/js/index.js?v=visual-metric-filters-20261104"></script>
+<script src="/static/js/index.js?v=scheduled-run-identity-566"></script>
 </body>
 </html>

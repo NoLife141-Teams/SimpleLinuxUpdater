@@ -1,6 +1,7 @@
 package servers
 
 import (
+	"crypto/rand"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -52,17 +53,17 @@ func (r SQLiteRepository) Load() ([]Server, error) {
 	if db == nil {
 		return nil, errors.New("database is not initialized")
 	}
-	rows, err := db.Query("SELECT name, host, port, user, pass_enc, key_enc, tags, disabled FROM servers ORDER BY name")
+	rows, err := db.Query("SELECT name, host, port, user, pass_enc, key_enc, tags, disabled, identity FROM servers ORDER BY name")
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	loaded := []Server{}
 	for rows.Next() {
-		var name, host, user, passEnc, keyEnc, tags string
+		var name, host, user, passEnc, keyEnc, tags, identity string
 		var port int
 		var disabled bool
-		if err := rows.Scan(&name, &host, &port, &user, &passEnc, &keyEnc, &tags, &disabled); err != nil {
+		if err := rows.Scan(&name, &host, &port, &user, &passEnc, &keyEnc, &tags, &disabled, &identity); err != nil {
 			return nil, err
 		}
 		pass, err := r.decrypt(passEnc)
@@ -74,6 +75,7 @@ func (r SQLiteRepository) Load() ([]Server, error) {
 			return nil, fmt.Errorf("decrypt SSH key for %s: %w", name, err)
 		}
 		loaded = append(loaded, Server{
+			Identity: identity,
 			Disabled: disabled,
 			Name:     name,
 			Host:     host,
@@ -103,13 +105,18 @@ func (r SQLiteRepository) Save(servers []Server, txHook TxHook) error {
 		_ = tx.Rollback()
 		return fmt.Errorf("clear servers table: %w", err)
 	}
-	stmt, err := tx.Prepare("INSERT INTO servers (name, host, port, user, pass_enc, key_enc, tags, disabled) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+	stmt, err := tx.Prepare("INSERT INTO servers (name, host, port, user, pass_enc, key_enc, tags, disabled, identity) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
 	if err != nil {
 		_ = tx.Rollback()
 		return fmt.Errorf("prepare insert: %w", err)
 	}
 	defer stmt.Close()
-	for _, server := range servers {
+	identities := make([]string, len(servers))
+	for i, server := range servers {
+		identities[i] = server.Identity
+		if identities[i] == "" {
+			identities[i] = rand.Text()
+		}
 		enc, err := r.encrypt(server.Pass)
 		if err != nil {
 			_ = tx.Rollback()
@@ -122,7 +129,7 @@ func (r SQLiteRepository) Save(servers []Server, txHook TxHook) error {
 		}
 		tags := JoinTags(server.Tags)
 		port := NormalizePort(server.Port)
-		if _, err := stmt.Exec(server.Name, server.Host, port, server.User, enc, keyEnc, tags, server.Disabled); err != nil {
+		if _, err := stmt.Exec(server.Name, server.Host, port, server.User, enc, keyEnc, tags, server.Disabled, identities[i]); err != nil {
 			_ = tx.Rollback()
 			return fmt.Errorf("insert server %s: %w", server.Name, err)
 		}
@@ -135,6 +142,13 @@ func (r SQLiteRepository) Save(servers []Server, txHook TxHook) error {
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit servers: %w", err)
+	}
+	// Some callers, including inventory import, publish the same slice after
+	// Save. Make assigned identities visible only after the database commit.
+	for i := range servers {
+		if servers[i].Identity == "" {
+			servers[i].Identity = identities[i]
+		}
 	}
 	return nil
 }
@@ -286,6 +300,7 @@ func (s *Service) Create(server Server) (Server, error) {
 	if ServerEndpointExists(state.Servers(), server.Host, server.Port, -1) {
 		return server, EndpointConflictError{Endpoint: NormalizeServerEndpoint(server.Host, server.Port)}
 	}
+	server.Identity = rand.Text()
 	state.SetServers(append(state.Servers(), server))
 	state.StatusMap()[server.Name] = NewIdleStatus(server)
 	if err := s.SaveOrRollbackLocked(prevServers, prevStatusMap, nil); err != nil {
@@ -319,6 +334,7 @@ func (s *Service) Update(name string, server Server) (Server, error) {
 		}
 		// Availability changes use SetDisabled so ordinary edits preserve operator intent.
 		server.Disabled = existing.Disabled
+		server.Identity = existing.Identity
 		if strings.TrimSpace(server.Pass) == "" {
 			server.Pass = existing.Pass
 		}

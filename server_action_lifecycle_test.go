@@ -116,10 +116,10 @@ func (h *lifecycleTestHarness) createPendingUpdateJob(t *testing.T, serverName s
 }
 
 func TestServerActionLifecycleStartUpdateSuccessDispatchesRunner(t *testing.T) {
-	server := Server{Name: "srv-start", Host: "example.org", Port: 22, User: "root", Pass: "pw"}
+	server := Server{Identity: "active-identity", Name: "srv-start", Host: "example.org", Port: 22, User: "root", Pass: "pw"}
 	h := newLifecycleTestHarness(t, server, &ServerStatus{Name: server.Name, Status: "idle"})
 
-	result := h.lifecycle().StartUpdate(server.Name, "alice", "192.0.2.10")
+	result := h.lifecycle().StartUpdate(server.Name, "alice", "192.0.2.10", server.Identity)
 
 	if result.statusCode != http.StatusOK || result.body["message"] != "Update started" {
 		t.Fatalf("StartUpdate result = %+v, want 200 update started", result)
@@ -147,6 +147,28 @@ func TestServerActionLifecycleStartUpdateSuccessDispatchesRunner(t *testing.T) {
 	}
 }
 
+func TestServerActionLifecycleRechecksIdentityAtAdmission(t *testing.T) {
+	server := Server{Identity: "original", Name: "web", Host: "example.org", Port: 22, User: "root", Pass: "pw"}
+	h := newLifecycleTestHarness(t, server, &ServerStatus{Name: server.Name, Status: "idle"})
+	lifecycle := h.lifecycle()
+	lifecycle.maintenanceReadiness = func(_ Server) serverpkg.MaintenanceReadiness {
+		replacement := server
+		replacement.Identity = "replacement"
+		h.state.Lock()
+		defer h.state.Unlock()
+		h.state.SetServers([]Server{replacement})
+		return serverpkg.MaintenanceReadiness{Ready: true}
+	}
+
+	result := lifecycle.StartUpdate(server.Name, "alice", "192.0.2.10", server.Identity)
+	if result.statusCode != http.StatusConflict || h.runnerRun != nil {
+		t.Fatalf("replacement admission = %+v, runner dispatched = %t", result, h.runnerRun != nil)
+	}
+	if status := h.state.CurrentStatusSnapshot(server.Name); status.Status != "idle" {
+		t.Fatalf("replacement status = %s, want idle", status.Status)
+	}
+}
+
 func TestServerActionLifecycleRejectsUnreadyConnectionsBeforeMutationOrJobCreation(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -154,7 +176,7 @@ func TestServerActionLifecycleRejectsUnreadyConnectionsBeforeMutationOrJobCreati
 		start  func(*serverActionLifecycle, string) serverActionLifecycleResult
 	}{
 		{name: "update", status: "idle", start: func(l *serverActionLifecycle, name string) serverActionLifecycleResult {
-			return l.StartUpdate(name, "alice", "192.0.2.10")
+			return l.StartUpdate(name, "alice", "192.0.2.10", "")
 		}},
 		{name: "autoremove", status: "idle", start: func(l *serverActionLifecycle, name string) serverActionLifecycleResult {
 			return l.StartAutoremove(name, "alice", "192.0.2.10")
@@ -230,7 +252,7 @@ func TestServerActionLifecycleAptRepairRequiresConfirmationAndReconciliationStat
 
 	t.Run("package mutation remains blocked", func(t *testing.T) {
 		h := newLifecycleTestHarness(t, server, &ServerStatus{Name: server.Name, Status: "needs_reconciliation"})
-		result := h.lifecycle().StartUpdate(server.Name, "alice", "192.0.2.10")
+		result := h.lifecycle().StartUpdate(server.Name, "alice", "192.0.2.10", "")
 		if result.statusCode != http.StatusConflict || result.body["error"] != "APT reconciliation is required before another package mutation" {
 			t.Fatalf("result = %+v, want package mutation conflict", result)
 		}
@@ -299,7 +321,7 @@ func TestServerActionLifecycleSudoersRecoveryPreservesReconciliationRequirement(
 			if status == nil || status.Status != "needs_reconciliation" {
 				t.Fatalf("status after sudoers %s = %+v, want reconciliation requirement preserved", tt.name, status)
 			}
-			blocked := h.lifecycle().StartUpdate(server.Name, "alice", "192.0.2.10")
+			blocked := h.lifecycle().StartUpdate(server.Name, "alice", "192.0.2.10", "")
 			if blocked.statusCode != http.StatusConflict || blocked.body["error"] != "APT reconciliation is required before another package mutation" {
 				t.Fatalf("StartUpdate after sudoers %s = %+v, want reconciliation conflict", tt.name, blocked)
 			}
@@ -351,7 +373,7 @@ func TestServerActionLifecycleStartRejectsMissingServerAndInProgress(t *testing.
 
 	t.Run("missing server", func(t *testing.T) {
 		h := newLifecycleTestHarness(t, server, nil)
-		result := h.lifecycle().StartUpdate(server.Name, "alice", "192.0.2.10")
+		result := h.lifecycle().StartUpdate(server.Name, "alice", "192.0.2.10", "")
 		if result.statusCode != http.StatusNotFound || result.body["error"] != "Server not found" {
 			t.Fatalf("missing result = %+v, want 404 server not found", result)
 		}
@@ -373,7 +395,7 @@ func TestServerActionLifecycleStartJobFailureRollsBackRuntimeState(t *testing.T)
 	lifecycle := h.lifecycle()
 	lifecycle.currentJobManager = func() *JobManager { return nil }
 
-	result := lifecycle.StartUpdate(server.Name, "alice", "192.0.2.10")
+	result := lifecycle.StartUpdate(server.Name, "alice", "192.0.2.10", "")
 
 	if result.statusCode != http.StatusInternalServerError || result.body["error"] != "Failed to create update job" {
 		t.Fatalf("job failure result = %+v, want failed create update job", result)
@@ -389,7 +411,7 @@ func TestServerActionLifecycleRunnerAdmissionFailureRollsBackRuntimeState(t *tes
 	original := &ServerStatus{Name: server.Name, Status: "idle", Logs: "ready", Upgradable: []string{"openssl"}}
 	h := newLifecycleTestHarness(t, server, original)
 
-	result := h.lifecycle().StartUpdate(server.Name, "alice", "192.0.2.10")
+	result := h.lifecycle().StartUpdate(server.Name, "alice", "192.0.2.10", "")
 	if result.statusCode != http.StatusOK || h.runnerAdmissionFailure == nil {
 		t.Fatalf("StartUpdate result = %+v, admission rollback configured? %t", result, h.runnerAdmissionFailure != nil)
 	}

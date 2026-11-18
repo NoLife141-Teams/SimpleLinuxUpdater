@@ -426,14 +426,17 @@ from datetime import UTC, datetime
 job_id, expected_server, url, ordinary_id, stale_id = sys.argv[1:]
 fingerprint = hashlib.sha256(("webhook\\0" + url).encode()).hexdigest()
 with sqlite3.connect("file:/data/servers.db?mode=rw", uri=True) as db:
-    job = db.execute("SELECT status, server_name FROM jobs WHERE id=?", (job_id,)).fetchone()
-    if job != ("interrupted", expected_server):
+    job = db.execute("SELECT j.status, j.server_name, s.identity FROM jobs j "
+                     "JOIN servers s ON s.name=j.server_name WHERE j.id=?", (job_id,)).fetchone()
+    if job is None or job[:2] != ("interrupted", expected_server) or not job[2]:
         raise ValueError("pending deliveries require the terminal batch fixture")
+    server_identity = job[2]
     created = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+    condition_id = "approval/" + job_id
+    plan_meta = {"job_id": job_id, "approval_generation": 1}
     for delivery_id, event, metadata in (
         (ordinary_id, "update.complete", {"job_id": job_id}),
-        (stale_id, "approval.published", {"job_id": job_id, "approval_generation": 1,
-                                       "condition_id": "approval/" + job_id, "condition_episode": 1}),
+        (stale_id, "approval.published", {**plan_meta, "condition_id": condition_id, "condition_episode": 1}),
     ):
         db.execute(
             "INSERT INTO notification_outbox (id, destination, event_type, action, target_type, target_name, "
@@ -441,6 +444,24 @@ with sqlite3.connect("file:/data/servers.db?mode=rw", uri=True) as db:
             "VALUES (?, 'webhook', ?, ?, 'server', ?, ?, ?, ?, 'pending', '9999-01-01T00:00:00Z', ?, ?)",
             (delivery_id, event, event, expected_server, created, json.dumps(metadata), fingerprint, created, created),
         )
+    # Model a previously admitted approval whose job terminated before
+    # the condition monitor observed the change.
+    prior = db.execute("SELECT state_json FROM notification_conditions WHERE id=1").fetchone()
+    state = json.loads(prior[0]) if prior else {"Conditions": {}, "Admissions": {}, "Reminders": {}}
+    state["Conditions"][condition_id] = {
+        "Fact": {
+            "ID": condition_id, "EventType": "approval.published", "TargetType": "server",
+            "TargetName": expected_server, "ServerIdentity": server_identity, "Generation": "1",
+            "Active": True, "Message": "Previous fixture approval", "MetaJSON": json.dumps(plan_meta),
+            "CreatedAt": created,
+        },
+        "Episode": 1, "UpdatedAt": created,
+    }
+    state.setdefault("ApprovalAdmissions", {})[condition_id] = [{
+        "ServerIdentity": server_identity, "Generation": "1", "Fingerprint": fingerprint, "OutboxID": stale_id,
+    }]
+    db.execute("INSERT INTO notification_conditions(id,state_json) VALUES(1,?) "
+               "ON CONFLICT(id) DO UPDATE SET state_json=excluded.state_json", (json.dumps(state),))
 db.close()
 """
         self.edit_fixture_database(name, "candidate-data", "outbox-fixture", script,

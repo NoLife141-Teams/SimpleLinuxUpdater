@@ -320,7 +320,8 @@ single admitted retry under concurrent submissions and replay, then abruptly
 stops the candidate while its job waits for SSH negotiation. After restart,
 it verifies the same job and its interrupted outcome. The probe holds the TCP
 connection without proceeding with SSH. A stopped, labeled volume receives
-two undelivered notification fixtures through the pinned Python image. The
+two undelivered notification fixtures through the pinned Python image. One
+retains an earlier approval admission linked to the now-interrupted job. The
 candidate then exports a new archive containing those deliveries and batches.
 A fresh candidate volume restores that archive and retains the owner, exact
 job, retry lineage, and account isolation across restart. Replaying the accepted

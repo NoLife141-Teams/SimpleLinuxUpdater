@@ -137,13 +137,12 @@ func TestConditionRemindersSelectedGroupedAndResolvedBeforeDelivery(t *testing.T
 	if h.count(t, EventReminder) != 0 {
 		t.Fatal("reminders enabled by default")
 	}
-	_, err := h.service.SaveSettings(SettingsUpdate{Enabled: true, EventTypes: []string{EventRebootRequired}, RemindersEnabled: true, ReminderIntervalMinutes: 5})
+	_, err := h.service.SaveSettings(SettingsUpdate{Enabled: true, EventTypes: []string{EventRebootRequired, EventApprovalPublished}, RemindersEnabled: true, ReminderIntervalMinutes: 5})
 	if err != nil {
 		t.Fatal(err)
 	}
-	other := rebootFact(true)
-	other.ID = "reboot/second"
-	other.TargetName = "second"
+	const approvalURL = "https://updates.example/?approval_generation=2&job_id=job&server_identity=stable"
+	other := ConditionFact{ID: "approval/job", EventType: EventApprovalPublished, TargetName: "second", Generation: "2", Active: true, Message: "Review the exact plan in Status: " + approvalURL}
 	hidden := ConditionFact{ID: "backup/missing", EventType: EventBackupCoverageMissing, TargetName: "backup", Active: true, Message: "Do not include unselected backup"}
 	h.facts = []ConditionFact{rebootFact(true), other, hidden}
 	h.reconcile(t)
@@ -158,7 +157,7 @@ func TestConditionRemindersSelectedGroupedAndResolvedBeforeDelivery(t *testing.T
 	if err := h.db.QueryRow(`SELECT message FROM notification_outbox WHERE event_type=?`, EventReminder).Scan(&message); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(message, "2 unresolved") || strings.Contains(message, "backup") {
+	if !strings.Contains(message, "2 unresolved") || !strings.Contains(message, approvalURL) || strings.Contains(message, "backup") {
 		t.Fatal(message)
 	}
 	h.facts = []ConditionFact{rebootFact(false)}

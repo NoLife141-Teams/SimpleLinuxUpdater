@@ -12,7 +12,7 @@
 <link rel="stylesheet" href="/static/css/package-deferrals.css?v=ui-components-515-20261029">
     <link rel="stylesheet" href="/static/css/operator-workspace.css?v=admin-horizontal-20261104">
 </head>
-<body class="status-page" data-account-role="{{.Role}}" data-linked-server-identity="{{.LinkedServerIdentity}}">
+<body class="status-page" data-account-role="{{.Role}}" data-linked-server-identity="{{.LinkedServerIdentity}}"{{with .ApprovalReturnTo}} data-approval-return-to="{{.}}"{{end}}{{with .LinkedApproval}} data-linked-approval-job="{{.JobID}}" data-linked-approval-generation="{{.Generation}}"{{end}}>
     <div class="dashboard-shell">
         {{template "operator-application-shell" .}}
 
@@ -426,14 +426,14 @@
             </div>
         </form>
     </div>
-    <script src="/static/auth.js"></script>
+    <script src="/static/auth.js?v=approval-link-579"></script>
     <script src="/static/js/browser-effects.js?v=frontend-isolation-20261027"></script>
     <script src="/static/js/common.js?v=quality-pass-20260711a"></script>
     <div class="phase-tooltip hidden" id="phase-tooltip" role="tooltip"></div>
     <script src="/static/js/dashboard-projection-consumption.js?v=status-projection-569"></script>
     <script src="/static/js/pending-updates-interaction.js?v=dense-packages-20261103"></script>
     <script src="/static/js/pending-updates-view.js?v=top-pagination-20261103"></script>
-    <script src="/static/js/status-page-interaction.js?v=durable-status-batches-578-resume"></script>
+    <script src="/static/js/status-page-interaction.js?v=approval-link-pending-579"></script>
     <script src="/static/js/status-formatting.js?v=job-log-stream-20260724"></script>
     <script src="/static/js/status-transport.js?v=bounded-status-sse-577"></script>
     <script src="/static/js/status-rendering.js?v=apt-update-cve-scope-20261103"></script>
@@ -442,7 +442,7 @@
     <script src="/static/js/status-action-adapter.js?v=bulk-removal-review-576"></script>
     <script src="/static/js/index-bulk-actions.js?v=durable-status-batches-578-resume"></script>
     <script src="/static/js/package-deferrals.js?v=frontend-isolation-20261027"></script>
-<script src="/static/js/status-snapshot-adapter.js?v=bounded-status-sse-577"></script>
-<script src="/static/js/index.js?v=durable-status-batches-578"></script>
+<script src="/static/js/status-snapshot-adapter.js?v=approval-link-pending-579"></script>
+<script src="/static/js/index.js?v=approval-link-579"></script>
 </body>
 </html>

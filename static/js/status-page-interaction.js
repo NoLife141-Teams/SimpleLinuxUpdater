@@ -233,6 +233,8 @@
         let primaryServerName = "";
         let linkedServerIdentity = normalizedString(options.linkedServerIdentity, "", 200);
         let pendingLinkedServerReveal = Boolean(linkedServerIdentity);
+        let linkedApproval = linkedServerIdentity && options.linkedApproval?.jobId
+            ? { ...options.linkedApproval, opened: false } : null;
         let selectedServerNames = new Set();
         let drawer = { open: false, serverName: "", serverIdentity: "", tab: "logs", logFollow: true };
         const pendingUpdatesInteraction = pendingUpdates.createStore();
@@ -588,7 +590,7 @@
                 const server = serversByName.get(drawer.serverName);
                 if (!loadedNames.has(drawer.serverName) || (drawer.serverIdentity && drawer.serverIdentity !== server?.server_identity)) {
                     drawer = { open: false, serverName: "", serverIdentity: "", tab: "logs", logFollow: true };
-                } else if (drawer.tab === "pending" && !hasPendingUpdates(server)) {
+                } else if (drawer.tab === "pending" && !drawer.fromApprovalLink && !hasPendingUpdates(server)) {
                     drawer = { ...drawer, tab: "logs" };
                 }
             }
@@ -646,7 +648,10 @@
             if (view === "logs" && options.canReadLogs === false) return null;
             const identity = approvalIdentity(server);
             const key = hostDetailKey(server, view, identity);
-            return { name, view, key, serverIdentity: server.server_identity, approvalIdentity: identity };
+            return {
+                name, view, key, serverIdentity: server.server_identity, approvalIdentity: identity,
+                ...(isDrawer && drawer.fromApprovalLink ? { requirePendingApproval: true } : {}),
+            };
         }
 
         function hostDetailKey(server, view, identity = approvalIdentity(server)) {
@@ -946,10 +951,33 @@
                     primaryServerName = linkedServer.name;
                     page = 1;
                 }
+                let approvalEffect;
+                if (linkedApproval) {
+                    let reason;
+                    if (!linkedServer) {
+                        reason = "removed";
+                    } else if (linkedServer.status !== "pending_approval" || linkedServer.job_id !== linkedApproval.jobId) {
+                        reason = "expired";
+                    } else if (String(linkedServer.approval_generation) !== linkedApproval.generation) {
+                        reason = "replaced";
+                    }
+                    if (reason) {
+                        const closeDrawer = drawer.open && drawer.fromApprovalLink;
+                        if (closeDrawer) drawer = { ...drawer, open: false };
+                        linkedApproval = null;
+                        if (!linkedServer) linkedServerIdentity = "";
+                        approvalEffect = { type: "linkedApprovalUnavailable", reason, closeDrawer };
+                    } else if (!linkedApproval.opened) {
+                        linkedApproval.opened = true;
+                        approvalEffect = { type: "openLinkedApproval", name: linkedServer.name };
+                    } else if (drawer.open && drawer.fromApprovalLink) {
+                        drawer = { ...drawer, serverName: linkedServer.name };
+                    }
+                }
                 const persistenceChanged = reconcileNavigation();
                 return [
-                    ...stateEffects({ persist: !linkedServerIdentity && persistenceChanged, scope: "serverState", priority: linkedServerChanged ? "immediate" : priority, refreshHostDetails: true }),
-                    ...(linkedServerChanged ? [{ type: "revealLinkedServer", found: Boolean(linkedServer) }] : []),
+                    ...stateEffects({ persist: !linkedServerIdentity && !approvalEffect && persistenceChanged, scope: "serverState", priority: linkedServerChanged || approvalEffect ? "immediate" : priority, refreshHostDetails: true }),
+                    ...(approvalEffect ? [approvalEffect] : linkedServerChanged ? [{ type: "revealLinkedServer", found: Boolean(linkedServer) }] : []),
                     { type: "renderSyncState" },
                     ...(requestId ? finishRefresh("servers", requestId, event.receivedAt) : []),
                     ...logEffects,
@@ -961,6 +989,16 @@
                     || current.key !== hostDetailRequest(event.surface)?.key) return [];
                 current.loading = false;
                 current.snapshot = event.stale ? null : (event.snapshot ?? current.snapshot);
+                if (event.stale && event.surface === "drawer" && drawer.fromApprovalLink && linkedApproval) {
+                    const effects = [{ type: "renderHostDetail", surface: "drawer" }];
+                    // Refresh the compact identity once per rejected detail key.
+                    // The resulting snapshot can distinguish replacement from expiry or removal.
+                    if (linkedApproval.recheckedDetailKey !== current.key) {
+                        linkedApproval.recheckedDetailKey = current.key;
+                        effects.push(...startRefresh("servers", "immediate", "linked approval detail changed"));
+                    }
+                    return effects;
+                }
                 // Host detail renders include fleet facts. Apply them on the
                 // deferred fleet render to keep pressed actions stable.
                 if (interaction.deferredRender && (interaction.depth > 0 || interaction.releasePending)) return [];
@@ -1162,6 +1200,7 @@
                 const wasLinked = Boolean(linkedServerIdentity);
                 linkedServerIdentity = "";
                 pendingLinkedServerReveal = false;
+                linkedApproval = null;
                 lastBulkResult = null;
                 const patch = event.patch && typeof event.patch === "object" ? event.patch : {};
                 filters = {
@@ -1218,6 +1257,7 @@
                 if (leavingLinkedServer) {
                     linkedServerIdentity = "";
                     pendingLinkedServerReveal = false;
+                    linkedApproval = null;
                     filters = { ...filters, search: "", availability: selectedServer.disabled ? "disabled" : "enabled" };
                 }
                 primaryServerName = selectedServer?.name || "";
@@ -1235,19 +1275,21 @@
                         open: true,
                         serverName: name,
                         serverIdentity: String(server.server_identity || ""),
-                        tab: event.tab === "pending" && hasPendingUpdates(server) ? "pending" : "logs",
-                        logFollow: drawer.serverName === name ? drawer.logFollow : true
+                        tab: event.tab === "pending" && (event.fromApprovalLink || hasPendingUpdates(server)) ? "pending" : "logs",
+                        logFollow: drawer.serverName === name ? drawer.logFollow : true,
+                        ...(event.fromApprovalLink ? { fromApprovalLink: true } : {}),
                     };
                 }
                 return [
                     ...stateEffects(),
-                    ...logRecoveryEffect(name, jobLogsByServer.get(name))
+                    ...(event.fromApprovalLink ? [] : logRecoveryEffect(name, jobLogsByServer.get(name)))
                 ];
             } else if (event.type === "drawerClosed") {
+                if (drawer.fromApprovalLink) linkedApproval = null;
                 drawer = { ...drawer, open: false };
                 return stateEffects();
             } else if (event.type === "drawerTabChanged") {
-                const tab = event.tab === "pending" && hasPendingUpdates(serversByName.get(drawer.serverName)) ? "pending" : "logs";
+                const tab = event.tab === "pending" && (drawer.fromApprovalLink || hasPendingUpdates(serversByName.get(drawer.serverName))) ? "pending" : "logs";
                 drawer = { ...drawer, tab };
                 return [
                     ...stateEffects(),
@@ -1487,7 +1529,8 @@
                     open: drawer.open,
                     serverName: drawer.serverName,
                     tab: drawer.tab,
-                    logFollow: drawer.logFollow
+                    logFollow: drawer.logFollow,
+                    ...(drawer.fromApprovalLink ? { fromApprovalLink: true } : {}),
                 },
                 pendingUpdates: pendingUpdatesView(),
                 jobLogs: Object.fromEntries(Array.from(jobLogsByServer.entries()).map(([name, state]) => [name, {

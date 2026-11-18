@@ -1,4 +1,5 @@
 let loginChallenge = '';
+const { returnTo, setupUrl } = document.body.dataset;
 const form = document.getElementById('login-form');
         const errorBanner = document.getElementById('error-banner');
 
@@ -15,11 +16,11 @@ const form = document.getElementById('login-form');
                 }
                 const payload = await response.json();
                 if (payload.setup_required) {
-                    window.location.href = '/setup';
+                    window.location.href = setupUrl;
                     return;
                 }
                 if (payload.authenticated) {
-                    window.location.href = '/';
+                    window.location.href = returnTo;
                 }
             } catch (_) {
                 // Best effort; user can still submit form.
@@ -44,7 +45,7 @@ const form = document.getElementById('login-form');
                     body: JSON.stringify({ username, password }),
                 });
                 if (response.status === 409) {
-                    window.location.href = '/setup';
+                    window.location.href = setupUrl;
                     return;
                 }
                 if (!response.ok) {
@@ -61,7 +62,7 @@ const form = document.getElementById('login-form');
                     document.getElementById('mfa-login-code').focus();
                     return;
                 }
-                window.location.href = '/';
+                window.location.href = returnTo;
             } catch (error) {
                 showError(error?.message || 'Login failed.');
             }
@@ -78,6 +79,6 @@ const form = document.getElementById('login-form');
             loginChallenge='';form.hidden=false;document.getElementById('mfa-login-form').hidden=true;
             showError(payload.error||'Verification failed. Sign in again.');return;
         }
-        loginChallenge='';window.location.href='/';
+        loginChallenge='';window.location.href=returnTo;
     } catch(error) { showError(error.message || 'Verification failed.'); }
  });

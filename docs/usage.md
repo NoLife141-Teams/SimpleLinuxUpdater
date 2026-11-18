@@ -615,7 +615,9 @@ Changing a destination skips deliveries still bound to its previous credentials 
 
 A controlled database restore preserves the live admission ledger and existing outbox replacement protections, skips historical audit replay, and revalidates restored job, Server, and backup facts before delivery. Restored pending jobs interrupted by runtime recovery cannot produce actionable approval reminders. Previously resolved conditions may become new episodes if restored evidence explicitly reports them again. A cold start from an older standalone database backup has only that backup's ledger: external deliveries made after the archive was created cannot be inferred or undone.
 
-Messages contain readable Server/backup and job identifiers, with allowlisted condition metadata. This application has no configured public notification base URL, so these alerts do not invent links. Operators open the authenticated Status or Administration page to review the current facts; notifications do not execute approvals or maintenance actions.
+Messages contain readable Server/backup and job identifiers with allowlisted condition metadata. When [the public application URL](configuration.md#notification-destinations) is configured, published approval alerts and their reminder entries link to the exact plan in Status. Webhooks also include `meta.approval_url` on the approval alert. The link uses the stable inventory identity, job ID, and plan generation. After signing in, readers and operators can inspect the plan. Operators approve through the usual Status controls.
+
+If the approval expired, the plan was replaced, or the host was removed or recreated, Status shows the reason. To review a newer plan, select the host and open its packages in Status. Without a configured URL, approval notifications give text directions to the Status page.
 
 
 ## Audit trail

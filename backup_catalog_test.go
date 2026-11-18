@@ -255,7 +255,7 @@ func TestBackupCatalogRejectsReplacedCorruptSymlinkMissingAndForeign(t *testing.
 				if err != nil || health.Verification.State != internalbackup.RecoveryStateFailed {
 					t.Fatalf("damage did not update recovery facts: %+v %v", health, err)
 				}
-				source := newNotificationConditionSource(app.Deps.DB, a.deps.Now)
+				source := newNotificationConditionSource(app.Deps.DB, a.deps.Now, nil)
 				batch, err := source(context.Background(), "", nil)
 				if err != nil {
 					t.Fatal(err)
@@ -596,7 +596,7 @@ func TestBackupCatalogRetriesLossAfterAuditWriteFailure(t *testing.T) {
 			if err != nil || health.Verification.State != internalbackup.RecoveryStateFailed {
 				t.Fatalf("retried loss recovery health=%+v %v", health, err)
 			}
-			source := newNotificationConditionSource(app.Deps.DB, a.deps.Now)
+			source := newNotificationConditionSource(app.Deps.DB, a.deps.Now, nil)
 			batch, err := source(context.Background(), "", nil)
 			if err != nil || !lastConditionFact(batch.Facts, "backup/verify").Active {
 				t.Fatalf("retried loss notification condition missing: %v", err)
@@ -658,7 +658,7 @@ func TestBackupCatalogExplicitVerificationRequiresAuditEvidence(t *testing.T) {
 			if err != nil || health.Verification.State != wantState {
 				t.Fatalf("retried verification health=%+v %v", health, err)
 			}
-			source := newNotificationConditionSource(app.Deps.DB, a.deps.Now)
+			source := newNotificationConditionSource(app.Deps.DB, a.deps.Now, nil)
 			batch, err := source(context.Background(), "", nil)
 			if err != nil || lastConditionFact(batch.Facts, "backup/verify").Active != (wantState == internalbackup.RecoveryStateFailed) {
 				t.Fatalf("retried verification notification evidence=%+v %v", batch, err)

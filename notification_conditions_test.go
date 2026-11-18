@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"database/sql/driver"
 	"encoding/json"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -115,7 +116,7 @@ func TestNotificationSourceKeepsApprovalGenerationAndAuditCursorConsistent(t *te
 	if _, err := writer.Exec(`INSERT INTO servers(name,host,user,pass_enc) VALUES('test','unused.invalid','root',''); INSERT INTO jobs(id,kind,server_name,actor,status,meta_json,created_at,updated_at) VALUES('job','update','test','tester','waiting_approval','{"approval_generation":1}','2026-10-25T12:00:00Z','2026-10-25T12:00:00Z')`); err != nil {
 		t.Fatal(err)
 	}
-	source := newNotificationConditionSource(func() *sql.DB { return db }, time.Now)
+	source := newNotificationConditionSource(func() *sql.DB { return db }, time.Now, nil)
 	batch, err := source(context.Background(), "", nil)
 	if err != nil {
 		// A concurrent write can invalidate SQLite's read-to-write upgrade. The
@@ -143,6 +144,62 @@ func TestNotificationSourceKeepsApprovalGenerationAndAuditCursorConsistent(t *te
 	}
 }
 
+func TestNotificationApprovalLinkFollowsExactPlanAndStableInventory(t *testing.T) {
+	db := conditionSourceDB(t)
+	write := func(query string) {
+		t.Helper()
+		if _, err := db.Exec(query); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(`INSERT INTO servers(name,host,user,pass_enc,identity) VALUES('original','demo.invalid','root','','stable-host');
+		INSERT INTO jobs(id,kind,server_name,actor,status,meta_json,created_at,updated_at)
+		VALUES('job','update','original','tester','waiting_approval','{"approval_generation":1,"server_identity":"stable-host","password":"test-secret"}','2026-10-25T12:00:00Z','2026-10-25T12:00:00Z')`)
+	origin, err := parseApplicationOrigin("https://updates.example")
+	if err != nil {
+		t.Fatal(err)
+	}
+	read := func(base *url.URL, cursor string, previous []notificationpkg.Condition) (notificationpkg.ConditionBatch, notificationpkg.ConditionFact) {
+		t.Helper()
+		source := newNotificationConditionSource(func() *sql.DB { return db }, time.Now, base)
+		batch, err := source(t.Context(), cursor, previous)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return batch, lastConditionFact(batch.Facts, "approval/job")
+	}
+	assertLink := func(fact notificationpkg.ConditionFact, name, generation string) {
+		t.Helper()
+		var meta struct {
+			URL string `json:"approval_url"`
+		}
+		if err := json.Unmarshal([]byte(fact.MetaJSON), &meta); err != nil {
+			t.Fatal(err)
+		}
+		want := "https://updates.example/?approval_generation=" + generation + "&job_id=job&server_identity=stable-host"
+		if !fact.Active || fact.TargetName != name || meta.URL != want || !strings.Contains(fact.Message, want) || strings.Contains(fact.MetaJSON, "test-secret") {
+			t.Fatalf("unexpected approval alert: %+v", fact)
+		}
+	}
+	first, fact := read(origin, "", nil)
+	assertLink(fact, "original", "1")
+	_, textual := read(nil, first.Cursor, conditionPrevious(first.Facts))
+	if !textual.Active || strings.Contains(textual.MetaJSON, "approval_url") || !strings.Contains(textual.Message, "authenticated Status page") {
+		t.Fatalf("unconfigured origin changed the textual notification: %+v", textual)
+	}
+
+	write(`UPDATE servers SET name='renamed' WHERE name='original';
+		UPDATE jobs SET server_name='renamed', meta_json='{"approval_generation":2,"server_identity":"stable-host"}' WHERE id='job'`)
+	next, fact := read(origin, first.Cursor, conditionPrevious(first.Facts))
+	assertLink(fact, "renamed", "2")
+	write(`DELETE FROM servers WHERE name='renamed';
+		INSERT INTO servers(name,host,user,pass_enc,identity) VALUES('renamed','replacement.invalid','root','','replacement-host')`)
+	_, replaced := read(origin, next.Cursor, conditionPrevious(next.Facts))
+	if replaced.Active || strings.Contains(replaced.MetaJSON, "approval_url") {
+		t.Fatalf("same-name replacement received the old plan: %+v", replaced)
+	}
+}
+
 func TestNotificationSourceKeepsServerIdentityConsistentDuringRename(t *testing.T) {
 	var writer *sql.DB
 	interleaved := false
@@ -165,7 +222,7 @@ func TestNotificationSourceKeepsServerIdentityConsistentDuringRename(t *testing.
 	if _, err := writer.Exec(`INSERT INTO servers(name,host,user,pass_enc) VALUES('test','unused.invalid','root',''); INSERT INTO server_health_snapshots(server_name,captured_at,reboot_required) VALUES('test','2026-10-25T12:00:00Z',1)`); err != nil {
 		t.Fatal(err)
 	}
-	source := newNotificationConditionSource(func() *sql.DB { return db }, time.Now)
+	source := newNotificationConditionSource(func() *sql.DB { return db }, time.Now, nil)
 	batch, err := source(context.Background(), "", nil)
 	if err != nil {
 		t.Fatal(err)
@@ -222,7 +279,7 @@ func conditionPrevious(facts []notificationpkg.ConditionFact) []notificationpkg.
 func TestNotificationBackupFactsManualAutomaticCoverageAndUnavailable(t *testing.T) {
 	db := conditionSourceDB(t)
 	now := time.Date(2026, 10, 25, 12, 0, 0, 0, time.UTC)
-	source := newNotificationConditionSource(func() *sql.DB { return db }, func() time.Time { return now })
+	source := newNotificationConditionSource(func() *sql.DB { return db }, func() time.Time { return now }, nil)
 	batch, err := source(context.Background(), "", nil)
 	if err != nil {
 		t.Fatal(err)
@@ -287,7 +344,7 @@ func TestNotificationApprovalGenerationExpirationCancelAndRestart(t *testing.T) 
 	if _, err := db.Exec(`INSERT INTO servers(name,host,user,pass_enc) VALUES('test','unused.invalid','root',''); INSERT INTO jobs(id,kind,server_name,actor,status,meta_json,created_at,updated_at) VALUES('job','update','test','tester','waiting_approval','{"approval_generation":2}','2026-10-25T12:00:00Z','2026-10-25T12:00:00Z')`); err != nil {
 		t.Fatal(err)
 	}
-	source := newNotificationConditionSource(func() *sql.DB { return db }, func() time.Time { return now })
+	source := newNotificationConditionSource(func() *sql.DB { return db }, func() time.Time { return now }, nil)
 	// Persisted job recovers publication even when its best-effort audit failed.
 	batch, err := source(context.Background(), "", nil)
 	if err != nil {
@@ -308,7 +365,7 @@ func TestNotificationApprovalGenerationExpirationCancelAndRestart(t *testing.T) 
 	if lastConditionFact(batch.Facts, "approval/job").Active || !lastConditionFact(batch.Facts, "approval/job/expired/2").Active {
 		t.Fatal("expiration lost identity or retained approval")
 	}
-	restart := newNotificationConditionSource(func() *sql.DB { return db }, func() time.Time { return now })
+	restart := newNotificationConditionSource(func() *sql.DB { return db }, func() time.Time { return now }, nil)
 	batch, err = restart(context.Background(), batch.Cursor, conditionPrevious(batch.Facts))
 	if err != nil {
 		t.Fatal(err)
@@ -326,7 +383,7 @@ func TestNotificationRebootUnknownRenameDeleteAndRestoreIDCollision(t *testing.T
 	if _, err := db.Exec(`INSERT INTO servers(name,host,user,pass_enc) VALUES('first','unused.invalid','root',''); INSERT INTO server_health_snapshots(server_name,captured_at,reboot_required) VALUES('first','2026-10-25T12:00:00Z',1)`); err != nil {
 		t.Fatal(err)
 	}
-	source := newNotificationConditionSource(func() *sql.DB { return db }, func() time.Time { return now })
+	source := newNotificationConditionSource(func() *sql.DB { return db }, func() time.Time { return now }, nil)
 	batch, err := source(context.Background(), "", nil)
 	if err != nil {
 		t.Fatal(err)
@@ -397,7 +454,7 @@ func TestNotificationRestoreReconcilesBackupFailuresWithoutHistoricalExpiry(t *t
 	appendConditionAudit(t, db, at, "backup.verify", "success", `{"restore_ready":true}`)
 	appendConditionAudit(t, db, at, "approval.expired", "success", `{"job_id":"old-job","approval_generation":1}`)
 	previous := []notificationpkg.Condition{{Fact: notificationpkg.ConditionFact{ID: "backup/export", EventType: notificationpkg.EventBackupExportFailed, Active: true}, Episode: 1}, {Fact: notificationpkg.ConditionFact{ID: "backup/verify", EventType: notificationpkg.EventBackupVerifyFailed, Active: true}, Episode: 1}}
-	source := newNotificationConditionSource(func() *sql.DB { return db }, func() time.Time { return now })
+	source := newNotificationConditionSource(func() *sql.DB { return db }, func() time.Time { return now }, nil)
 	batch, err := source(context.Background(), "restore", previous)
 	if err != nil {
 		t.Fatal(err)
@@ -420,7 +477,7 @@ func TestNotificationRebootRetiresEvidenceFromPreviousEndpoint(t *testing.T) {
 			if _, err := db.Exec(`INSERT INTO servers(name,host,user,pass_enc) VALUES('host','192.0.2.1','root',''); INSERT INTO server_health_snapshots(server_name,captured_at,reboot_required) VALUES('host','2026-10-25T12:00:00Z',1)`); err != nil {
 				t.Fatal(err)
 			}
-			source := newNotificationConditionSource(func() *sql.DB { return db }, func() time.Time { return now })
+			source := newNotificationConditionSource(func() *sql.DB { return db }, func() time.Time { return now }, nil)
 			cursor := ""
 			var previous []notificationpkg.Condition
 			if mode != "unobserved" {

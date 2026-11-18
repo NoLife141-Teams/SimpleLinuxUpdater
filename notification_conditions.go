@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -24,7 +25,7 @@ type notificationFactQuerier interface {
 
 // The adapter reads accepted server facts, never browser projections. Audit and
 // health cursors belong to Notification Delivery Lifecycle and commit with admission.
-func newNotificationConditionSource(dbProvider func() *sql.DB, now func() time.Time) notificationpkg.ConditionSource {
+func newNotificationConditionSource(dbProvider func() *sql.DB, now func() time.Time, origin *url.URL) notificationpkg.ConditionSource {
 	recovery := backuppkg.NewService(backuppkg.ServiceDeps{DB: dbProvider, Now: now})
 	return func(ctx context.Context, cursorText string, previous []notificationpkg.Condition) (notificationpkg.ConditionBatch, error) {
 		batch := notificationpkg.ConditionBatch{}
@@ -156,26 +157,44 @@ func newNotificationConditionSource(dbProvider func() *sql.DB, now func() time.T
 				approvals[fact.ID] = fact
 			}
 		}
-		waiting, err := tx.QueryContext(ctx, `SELECT id,server_name,meta_json,updated_at FROM jobs WHERE status='waiting_approval'`)
+		for id, fact := range approvals {
+			fact.Active = false
+			approvals[id] = fact
+		}
+		waiting, err := tx.QueryContext(ctx, `SELECT j.id,j.server_name,j.meta_json,j.updated_at,s.identity
+			FROM jobs j JOIN servers s ON s.name=j.server_name WHERE j.status='waiting_approval'`)
 		if err != nil {
 			return batch, err
 		}
 		for waiting.Next() {
-			var id, name, raw, created string
-			if err := waiting.Scan(&id, &name, &raw, &created); err != nil {
+			var id, name, raw, created, inventoryIdentity string
+			if err := waiting.Scan(&id, &name, &raw, &created, &inventoryIdentity); err != nil {
 				_ = waiting.Close()
 				return batch, err
 			}
 			var meta struct {
-				Generation uint64 `json:"approval_generation"`
+				Generation     uint64 `json:"approval_generation"`
+				ServerIdentity string `json:"server_identity"`
 			}
 			_ = json.Unmarshal([]byte(raw), &meta)
 			if meta.Generation == 0 {
 				continue
 			}
 			generation := strconv.FormatUint(meta.Generation, 10)
-			safeMeta, _ := json.Marshal(map[string]any{"job_id": id, "approval_generation": meta.Generation})
-			approvals["approval/"+id] = notificationpkg.ConditionFact{ID: "approval/" + id, EventType: notificationpkg.EventApprovalPublished, TargetType: "server", TargetName: name, Generation: generation, Active: true, CreatedAt: created, MetaJSON: string(safeMeta), Message: fmt.Sprintf("Approval pending for job %s, plan generation %s. Review the current plan in the authenticated Status page.", id, generation)}
+			link := approvalLink{ServerIdentity: meta.ServerIdentity, JobID: id, Generation: meta.Generation}
+			conditionID := "approval/" + id
+			active := meta.ServerIdentity == "" || meta.ServerIdentity == inventoryIdentity
+			fact := notificationpkg.ConditionFact{ID: conditionID, EventType: notificationpkg.EventApprovalPublished, TargetType: "server", TargetName: name, Generation: generation, Active: active, CreatedAt: created}
+			safeMeta := map[string]any{"job_id": id, "approval_generation": meta.Generation}
+			fact.Message = fmt.Sprintf("Approval pending for job %s, plan generation %s. Review the current plan in the authenticated Status page.", id, generation)
+			if fact.Active && origin != nil && link.valid() {
+				approvalURL := link.url(*origin)
+				safeMeta["approval_url"] = approvalURL
+				fact.Message = fmt.Sprintf("Approval pending for job %s, plan generation %s. Review the exact plan in Status: %s", id, generation, approvalURL)
+			}
+			encoded, _ := json.Marshal(safeMeta)
+			fact.MetaJSON = string(encoded)
+			approvals[conditionID] = fact
 		}
 		if err := waiting.Err(); err != nil {
 			_ = waiting.Close()
@@ -183,27 +202,6 @@ func newNotificationConditionSource(dbProvider func() *sql.DB, now func() time.T
 		}
 		_ = waiting.Close()
 		for _, fact := range approvals {
-			if !fact.Active {
-				continue
-			}
-			var meta struct {
-				JobID string `json:"job_id"`
-			}
-			_ = json.Unmarshal([]byte(fact.MetaJSON), &meta)
-			var status, name string
-			err := tx.QueryRowContext(ctx, `SELECT status,server_name FROM jobs WHERE id=?`, meta.JobID).Scan(&status, &name)
-			if err != nil && err != sql.ErrNoRows {
-				return batch, err
-			}
-			var exists int
-			if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM servers WHERE name=?`, name).Scan(&exists); err != nil {
-				return batch, err
-			}
-			if status != "waiting_approval" || exists == 0 {
-				fact.Active = false
-			} else {
-				fact.TargetName = name
-			}
 			batch.Facts = append(batch.Facts, fact)
 		}
 		if err := tx.Commit(); err != nil {

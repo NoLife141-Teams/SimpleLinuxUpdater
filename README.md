@@ -118,6 +118,7 @@ Environment variables for auth/session:
 
 - `DEBIAN_UPDATER_SESSION_COOKIE_SECURE`: optional boolean (`true|false`, default `false`), enables secure-only session cookies; set `true` behind HTTPS.
 - `DEBIAN_UPDATER_SESSION_IDLE_TIMEOUT_HOURS`: optional integer idle timeout in hours; `0` or unset keeps default behavior.
+- `DEBIAN_UPDATER_PUBLIC_URL`: optional browser-facing HTTP(S) origin for exact approval links in notifications. Use the address operators can reach, for example `https://updates.example.com`. See [notification configuration](docs/configuration.md#notification-destinations).
 
 Environment variables for job logs:
 

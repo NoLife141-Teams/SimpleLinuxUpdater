@@ -585,6 +585,10 @@ func (s *Service) PreparePersistenceReplacement(ctx context.Context) error {
 		s.resumePersistence()
 		return err
 	}
+	if err := migrateApprovalOutboxHistory(ctx, s.database(), &conditions); err != nil {
+		s.resumePersistence()
+		return err
+	}
 	rows, err := loadCurrentOutboxRows(ctx, s.database())
 	if err != nil {
 		s.resumePersistence()

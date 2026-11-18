@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -125,6 +126,180 @@ func TestConditionEpisodesRestartResolutionUnknownAndGeneration(t *testing.T) {
 	fact.Active = false
 	h.facts = []ConditionFact{fact}
 	h.reconcile(t)
+}
+
+func TestApprovalAdmissionSurvivesOlderObservationAndRestore(t *testing.T) {
+	h := newConditionHarness(t)
+	old := ConditionFact{ID: "approval/job", EventType: EventApprovalPublished, TargetType: "server",
+		TargetName: "original", ServerIdentity: "inventory", Generation: "1", Active: true, Message: "Generation 1",
+		MetaJSON: `{"job_id":"job","approval_generation":1}`}
+	current := old
+	current.Generation, current.Message = "2", "Generation 2"
+	current.MetaJSON = `{"job_id":"job","approval_generation":2}`
+	h.facts = []ConditionFact{current}
+	h.reconcile(t)
+	h.drain(t)
+
+	// The admission must survive an episode rollover even if a condition source
+	// reports an older observation before restoring the current generation.
+	h.facts = []ConditionFact{old, current}
+	h.reconcile(t)
+	h.facts = []ConditionFact{current}
+	h.drain(t)
+	if h.client.calls != 1 || h.count(t, EventApprovalPublished) != 1 {
+		t.Fatalf("older observation re-admitted the current plan: deliveries=%d", h.client.calls)
+	}
+
+	current.Active = false
+	h.facts = []ConditionFact{current}
+	h.reconcile(t)
+	state, err := loadConditionState(t.Context(), h.db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.service = &Service{deps: h.service.deps, wake: make(chan struct{}, 1), monitoringStarted: true, replacementConditions: &state}
+	if err := h.service.restoreConditions(t.Context(), h.db); err != nil {
+		t.Fatal(err)
+	}
+	// A legacy row from a restored archive must not be sent if the live
+	// ledger already admitted a different row for this exact plan.
+	settings, err := h.service.currentSettings()
+	if err != nil {
+		t.Fatal(err)
+	}
+	fingerprint := destinationConfigFingerprint(settings, DestinationWebhook)
+	legacy := Condition{Fact: current, Episode: state.Conditions[current.ID].Episode + 1}
+	insertLegacyApprovalRow(t, h, legacy, fingerprint, outboxStatePending)
+	current.Active, current.TargetName = true, "renamed"
+	h.facts = []ConditionFact{current}
+	h.reconcile(t)
+	h.drain(t)
+	if h.client.calls != 1 || h.count(t, EventApprovalPublished) != 2 {
+		t.Fatalf("restored live ledger re-admitted the same plan: deliveries=%d", h.client.calls)
+	}
+
+	_, err = h.service.SaveSettings(SettingsUpdate{Enabled: true, EventTypes: settings.EventTypes,
+		WebhookURLIntent: WebhookURLReplace, WebhookURL: "https://hooks.example.test/changed"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.reconcile(t)
+	h.drain(t)
+	if h.client.calls != 2 || h.count(t, EventApprovalPublished) != 3 {
+		t.Fatalf("new destination did not get exactly one current alert: deliveries=%d", h.client.calls)
+	}
+}
+
+func TestApprovalMigratesAndDeliversExistingPendingEpisode(t *testing.T) {
+	for _, previouslySent := range []bool{false, true} {
+		name, deliveries := "pending", 1
+		if previouslySent {
+			name, deliveries = "already delivered in an earlier episode", 0
+		}
+		t.Run(name, func(t *testing.T) {
+			h := newConditionHarness(t)
+			settings, err := h.service.currentSettings()
+			if err != nil {
+				t.Fatal(err)
+			}
+			fact := ConditionFact{ID: "approval/old-job", EventType: EventApprovalPublished, TargetType: "server",
+				TargetName: "original", Generation: "2", Active: true, Message: "Review the plan in Status",
+				MetaJSON: `{"job_id":"old-job","approval_generation":2}`}
+			legacy := Condition{Fact: fact, Episode: 4, UpdatedAt: h.now.Format(time.RFC3339Nano)}
+			fingerprint := destinationConfigFingerprint(settings, DestinationWebhook)
+			wantRows := 1
+			if previouslySent {
+				earlier := legacy
+				earlier.Episode = 2
+				insertLegacyApprovalRow(t, h, earlier, fingerprint, outboxStateSucceeded)
+				wantRows++
+			}
+			id := insertLegacyApprovalRow(t, h, legacy, fingerprint, outboxStatePending)
+			raw, err := json.Marshal(conditionState{
+				Conditions: map[string]Condition{fact.ID: legacy},
+				Admissions: map[string]bool{id: true},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := h.db.Exec(`INSERT INTO notification_conditions(id,state_json) VALUES(1,?)`, string(raw)); err != nil {
+				t.Fatal(err)
+			}
+			fact.ServerIdentity = "stable-inventory"
+			h.facts = []ConditionFact{fact}
+			h.reconcile(t)
+			h.drain(t)
+			if h.client.calls != deliveries || h.count(t, EventApprovalPublished) != wantRows {
+				t.Fatalf("legacy queue sent %d notifications, want %d", h.client.calls, deliveries)
+			}
+		})
+	}
+}
+
+func TestApprovalMigrationRemembersPreviousDestination(t *testing.T) {
+	h := newConditionHarness(t)
+	settings, err := h.service.currentSettings()
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalURL := settings.WebhookURL
+	fact := ConditionFact{ID: "approval/old-job", EventType: EventApprovalPublished, TargetType: "server",
+		TargetName: "original", Generation: "2", Active: true, Message: "Review the plan in Status",
+		MetaJSON: `{"job_id":"old-job","approval_generation":2}`}
+	legacy := Condition{Fact: fact, Episode: 4, UpdatedAt: h.now.Format(time.RFC3339Nano)}
+	insertLegacyApprovalRow(t, h, legacy, destinationConfigFingerprint(settings, DestinationWebhook), outboxStateSucceeded)
+
+	replaceDestination := func(url string) {
+		t.Helper()
+		_, err := h.service.SaveSettings(SettingsUpdate{Enabled: true, EventTypes: settings.EventTypes,
+			WebhookURLIntent: WebhookURLReplace, WebhookURL: url})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	const replacementURL = "https://hooks.example.test/replacement"
+	replaceDestination(replacementURL)
+	settings.WebhookURL = replacementURL
+	currentAdmission := insertLegacyApprovalRow(t, h, legacy, destinationConfigFingerprint(settings, DestinationWebhook), outboxStateSucceeded)
+	// The pre-upgrade ledger retained only the configured destination, while
+	// the outbox still records the delivery to the original configuration.
+	raw, err := json.Marshal(conditionState{
+		Conditions: map[string]Condition{fact.ID: legacy},
+		Admissions: map[string]bool{currentAdmission: true},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.db.Exec(`INSERT INTO notification_conditions(id,state_json) VALUES(1,?)`, string(raw)); err != nil {
+		t.Fatal(err)
+	}
+	fact.ServerIdentity = "stable-inventory"
+	h.facts = []ConditionFact{fact}
+	h.reconcile(t)
+	replaceDestination(originalURL)
+	h.reconcile(t)
+	h.drain(t)
+	if h.client.calls != 0 || h.count(t, EventApprovalPublished) != 2 {
+		t.Fatalf("switching back re-admitted a delivered legacy plan: deliveries=%d", h.client.calls)
+	}
+}
+
+func insertLegacyApprovalRow(t *testing.T, h *conditionHarness, legacy Condition, fingerprint, state string) string {
+	t.Helper()
+	intent := conditionIntent(legacy)
+	intent.ID = fmt.Sprintf("condition/%s/%d/%s", legacy.Fact.ID, legacy.Episode, fingerprint)
+	rows, err := buildOutboxRows(intent, EventApprovalPublished, []string{DestinationWebhook}, h.now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows[0].DestinationFingerprint = fingerprint
+	if err := insertOutboxRows(t.Context(), h.db, rows, h.now.Format(time.RFC3339Nano)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.db.Exec(`UPDATE notification_outbox SET state = ? WHERE id = ?`, state, rows[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	return intent.ID
 }
 
 func TestConditionRemindersSelectedGroupedAndResolvedBeforeDelivery(t *testing.T) {

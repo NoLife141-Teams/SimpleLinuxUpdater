@@ -1197,6 +1197,16 @@ test("bulk kept-back approval requires individual consent for packages that will
         const rail = button.closest(".fleet-rail");
         return button.scrollWidth <= button.clientWidth && button.getBoundingClientRect().right <= rail.getBoundingClientRect().right;
     })).toBe(true);
+    // A press that was released outside its button still has a short grace period.
+    const removalCheckbox = await row(removalHost).elementHandle();
+    const reviewCleared = await review.evaluate((button, checkbox) => {
+        button.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+        checkbox.dispatchEvent(new PointerEvent("pointerup", { bubbles: true }));
+        checkbox.click();
+        return !button.checkVisibility();
+    }, removalCheckbox);
+    expect(reviewCleared).toBe(true);
+    await row(removalHost).check();
     await row("safe-host").check();
     await expect(bulk).toHaveText("Approve kept-back security (1)");
     await bulk.click();

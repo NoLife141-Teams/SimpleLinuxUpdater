@@ -889,6 +889,10 @@
 
         function dispatch(event) {
             if (!event || typeof event !== "object") return [];
+            // Explicit navigation supersedes the selection held after an action press.
+            if (interaction.releasePending && ["filtersChanged", "sortChanged", "pageChanged", "selectionChanged", "pageSelectionChanged", "primaryServerSelected"].includes(event.type)) {
+                interaction.actionContext = null;
+            }
             if (event.type === "serversSnapshotReceived") {
                 const requestId = Number(event.requestId || 0);
                 const stream = streams.servers;
@@ -1018,7 +1022,7 @@
                 const requestedStreams = Array.isArray(event.streams) ? event.streams : [event.stream];
                 return requestedStreams.flatMap(stream => startRefresh(String(stream || ""), event.priority, event.reason));
             } else if (event.type === "interactionStarted") {
-                if (interaction.depth === 0 && (!interaction.releasePending || !interaction.deferredRender)) {
+                if (interaction.depth === 0 && (!interaction.actionContext || !interaction.releasePending || !interaction.deferredRender)) {
                     const projection = projectView();
                     interaction.actionContext = {
                         serversByName: new Map(Array.from(serversByName.entries()).map(([name, server]) => [name, cloneValue(server)])),

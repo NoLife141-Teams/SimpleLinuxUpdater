@@ -27,7 +27,7 @@ func parseApplicationOrigin(raw string) (*url.URL, error) {
 	}
 	origin, err := url.Parse(raw)
 	if err != nil || (origin.Scheme != "https" && origin.Scheme != "http") ||
-		origin.Hostname() == "" || origin.User != nil || origin.Opaque != "" ||
+		origin.Hostname() == "" || strings.ContainsRune(origin.Hostname(), '%') || origin.User != nil || origin.Opaque != "" ||
 		(origin.EscapedPath() != "" && origin.EscapedPath() != "/") || strings.ContainsAny(raw, "?#") {
 		return nil, errors.New("use an absolute HTTP(S) origin without credentials, a path, a query, or a fragment")
 	}

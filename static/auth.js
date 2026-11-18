@@ -4,6 +4,9 @@
     }
     window.__authHelpersReady = true;
     const role = document.body.dataset.accountRole || 'admin';
+    const approvalReturnTo = document.body.dataset.approvalReturnTo;
+    const authDestination = path => approvalReturnTo
+        ? `${path}?${new URLSearchParams({ return_to: approvalReturnTo })}` : path;
     window.canUseScope = scope => role === 'admin' || scope === 'operational:read'
         || (role === 'operator' && ['maintenance:write', 'approvals:write', 'logs:read'].includes(scope));
 
@@ -15,7 +18,7 @@
         window.fetch = async (...args) => {
             const response = await window.__nativeFetch(...args);
             if (response.status === 401 && !(await response.clone().json().catch(() => ({}))).reauthentication_required) {
-                window.location.href = '/login';
+                window.location.href = authDestination('/login');
                 // Prevent unhandled rejections while navigation is in progress.
                 return new Promise(() => {});
             }
@@ -38,16 +41,16 @@
         try {
             const response = await window.__nativeFetch('/api/auth/status', { cache: 'no-store' });
             if (!response.ok) {
-                window.location.replace('/login');
+                window.location.replace(authDestination('/login'));
                 return;
             }
             const payload = await response.json();
             if (payload.setup_required) {
-                window.location.replace('/setup');
+                window.location.replace(authDestination('/setup'));
                 return;
             }
             if (!payload.authenticated) {
-                window.location.replace('/login');
+                window.location.replace(authDestination('/login'));
             }
         } catch (_) {
             // Best effort; the next authenticated fetch will redirect on 401.

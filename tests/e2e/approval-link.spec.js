@@ -12,9 +12,13 @@ function approvalLink(overrides = {}) {
 }
 
 async function signInThroughLink(page, baseURL, role) {
-    const target = approvalLink();
     await page.context().clearCookies();
-    await page.goto(target);
+    await page.goto(approvalLink());
+    await completeApprovalSignIn(page, baseURL, role);
+}
+
+async function completeApprovalSignIn(page, baseURL, role) {
+    const target = approvalLink();
     await expect(page).toHaveURL(url => url.pathname === "/login" && url.searchParams.get("return_to") === target);
     await page.locator("#username").fill(role);
     await page.locator("#password").fill(password);
@@ -44,6 +48,9 @@ test("approval notification opens the exact renamed host after sign-in and prese
     });
     await signInThroughLink(page, baseURL, "operator");
     await expect(page.locator("#drawer-approve-all")).toBeEnabled();
+    await page.context().clearCookies();
+    await page.evaluate(() => { void window.fetchServers(); });
+    await completeApprovalSignIn(page, baseURL, "operator");
     await signInThroughLink(page, baseURL, "reader");
     await expect(page.locator("#status-drawer-approval-actions")).toBeHidden();
     expect(maintenanceRequests).toEqual([]);
@@ -67,14 +74,23 @@ test("approval link distinguishes stale plans and closes the drawer when the lin
     }
     await page.goto(approvalLink());
     await expect(page.locator("#drawer-panel-pending")).toContainText("openssl");
+    let detailConflict = false;
+    await page.route("**/api/servers/status-detail?**", async route => {
+        const request = new URL(route.request().url());
+        if (request.searchParams.get("view") !== "packages") return route.continue();
+        detailConflict = true;
+        await route.fulfill({ status: 409, json: { error: "Host status changed." } });
+    });
     await page.route("**/api/servers", async route => {
         const response = await route.fetch();
         const rows = await response.json();
-        rows.find(row => row.server_identity === "stable-notification-host").approval_generation = 5;
+        if (detailConflict) {
+            rows.find(row => row.server_identity === "stable-notification-host").approval_generation = 5;
+        }
         await route.fulfill({ response, json: rows });
     });
     await page.evaluate(() => window.fetchServers());
+    await expect(notice).toContainText("This approval plan was replaced.", { timeout: 4000 });
     await expect(drawer).toHaveAttribute("aria-hidden", "true");
-    await expect(notice).toContainText("This approval plan was replaced.");
     await expect(notice).toBeFocused();
 });

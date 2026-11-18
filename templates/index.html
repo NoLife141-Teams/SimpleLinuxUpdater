@@ -12,7 +12,7 @@
 <link rel="stylesheet" href="/static/css/package-deferrals.css?v=ui-components-515-20261029">
     <link rel="stylesheet" href="/static/css/operator-workspace.css?v=admin-horizontal-20261104">
 </head>
-<body class="status-page" data-account-role="{{.Role}}" data-linked-server-identity="{{.LinkedServerIdentity}}"{{with .LinkedApproval}} data-linked-approval-job="{{.JobID}}" data-linked-approval-generation="{{.Generation}}"{{end}}>
+<body class="status-page" data-account-role="{{.Role}}" data-linked-server-identity="{{.LinkedServerIdentity}}"{{with .ApprovalReturnTo}} data-approval-return-to="{{.}}"{{end}}{{with .LinkedApproval}} data-linked-approval-job="{{.JobID}}" data-linked-approval-generation="{{.Generation}}"{{end}}>
     <div class="dashboard-shell">
         {{template "operator-application-shell" .}}
 
@@ -426,7 +426,7 @@
             </div>
         </form>
     </div>
-    <script src="/static/auth.js"></script>
+    <script src="/static/auth.js?v=approval-link-579"></script>
     <script src="/static/js/browser-effects.js?v=frontend-isolation-20261027"></script>
     <script src="/static/js/common.js?v=quality-pass-20260711a"></script>
     <div class="phase-tooltip hidden" id="phase-tooltip" role="tooltip"></div>

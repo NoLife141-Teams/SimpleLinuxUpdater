@@ -6,7 +6,11 @@ import (
 )
 
 func TestApprovalApplicationOrigin(t *testing.T) {
-	for _, input := range []string{"data:text/html,updates", "//updates.example", "https://", "https://user:pass@updates.example", "https://updates.example/path", "https://updates.example:99999", "https://updates.example/?", "https://updates.example/#fragment"} {
+	for _, input := range []string{
+		"data:text/html,updates", "//updates.example", "https://", "https://user:pass@updates.example",
+		"https://updates.example/path", "https://updates.example:99999", "https://updates.example/?", "https://updates.example/#fragment",
+		"https://[updates.example]/", "http://::1/", "https://%25.example/",
+	} {
 		if _, err := parseApplicationOrigin(input); err == nil {
 			t.Errorf("accepted invalid application origin %q", input)
 		}

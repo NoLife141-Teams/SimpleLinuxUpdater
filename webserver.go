@@ -16,6 +16,7 @@ import (
 	"log"
 	"mime/multipart"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -1897,6 +1898,7 @@ func registerProtectedPageRoutes(r *gin.Engine, deps AppDeps) {
 			LinkedServerIdentity string
 			LinkedServerError    string
 			LinkedApproval       *approvalLink
+			ApprovalReturnTo     string
 		}{
 			operatorApplicationShellView: operatorShellForContext(c, "status", "Status"),
 		}
@@ -1905,11 +1907,14 @@ func registerProtectedPageRoutes(r *gin.Engine, deps AppDeps) {
 			link, valid := parseApprovalLink(query)
 			if !valid {
 				view.LinkedServerError = "This approval link is incomplete or invalid."
-			} else if problem := approvalLinkProblem(deps.ServerState, link); problem != "" {
-				view.LinkedServerError = problem
 			} else {
-				view.LinkedServerIdentity = link.ServerIdentity
-				view.LinkedApproval = &link
+				view.ApprovalReturnTo = link.url(url.URL{})
+				if problem := approvalLinkProblem(deps.ServerState, link); problem != "" {
+					view.LinkedServerError = problem
+				} else {
+					view.LinkedServerIdentity = link.ServerIdentity
+					view.LinkedApproval = &link
+				}
 			}
 		} else if identity := query.Get("server_identity"); identity != "" {
 			view.LinkedServerIdentity = identity

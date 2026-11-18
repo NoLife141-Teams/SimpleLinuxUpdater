@@ -986,6 +986,16 @@
                     || current.key !== hostDetailRequest(event.surface)?.key) return [];
                 current.loading = false;
                 current.snapshot = event.stale ? null : (event.snapshot ?? current.snapshot);
+                if (event.stale && event.surface === "drawer" && drawer.fromApprovalLink && linkedApproval) {
+                    const effects = [{ type: "renderHostDetail", surface: "drawer" }];
+                    // Refresh the compact identity once per rejected detail key.
+                    // The resulting snapshot can distinguish replacement from expiry or removal.
+                    if (linkedApproval.recheckedDetailKey !== current.key) {
+                        linkedApproval.recheckedDetailKey = current.key;
+                        effects.push(...startRefresh("servers", "immediate", "linked approval detail changed"));
+                    }
+                    return effects;
+                }
                 // Host detail renders include fleet facts. Apply them on the
                 // deferred fleet render to keep pressed actions stable.
                 if (interaction.deferredRender && (interaction.depth > 0 || interaction.releasePending)) return [];

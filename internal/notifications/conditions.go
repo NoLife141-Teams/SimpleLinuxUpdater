@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -46,11 +47,12 @@ type ConditionBatch struct {
 type ConditionSource func(context.Context, string, []Condition) (ConditionBatch, error)
 
 type conditionState struct {
-	Cursor             string
-	Conditions         map[string]Condition
-	Admissions         map[string]bool
-	Reminders          map[string]string
-	ApprovalAdmissions map[string][]approvalAdmission `json:",omitempty"`
+	Cursor                  string
+	Conditions              map[string]Condition
+	Admissions              map[string]bool
+	Reminders               map[string]string
+	ApprovalAdmissions      map[string][]approvalAdmission `json:",omitempty"`
+	ApprovalHistoryMigrated bool                           `json:",omitempty"`
 }
 
 type approvalAdmission struct {
@@ -102,7 +104,51 @@ func conditionFingerprints(settings Settings) map[string]string {
 	return fingerprints
 }
 
-func migrateEpisodeApprovalAdmissions(ctx context.Context, db *sql.DB, state *conditionState, fingerprints map[string]string) error {
+func migrateApprovalOutboxHistory(ctx context.Context, db *sql.DB, state *conditionState) error {
+	if db == nil || state.ApprovalHistoryMigrated {
+		return nil
+	}
+	// The old episode ledger discarded admissions after destination changes.
+	// Retained outbox rows still identify those plans and their destinations.
+	rows, err := db.QueryContext(ctx, `
+		SELECT id, destination, destination_fingerprint, meta_json FROM notification_outbox
+		WHERE event_type = ? AND destination_fingerprint <> ''
+		ORDER BY CASE state WHEN 'succeeded' THEN 0 WHEN 'failed' THEN 1 WHEN 'skipped' THEN 3 ELSE 2 END, rowid
+	`, EventApprovalPublished)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id, destination, fingerprint, rawMeta string
+		if err := rows.Scan(&id, &destination, &fingerprint, &rawMeta); err != nil {
+			return err
+		}
+		var meta struct {
+			ConditionID string `json:"condition_id"`
+			Episode     int64  `json:"condition_episode"`
+			Generation  uint64 `json:"approval_generation"`
+		}
+		if err := json.Unmarshal([]byte(rawMeta), &meta); err != nil || meta.ConditionID == "" || meta.Episode <= 0 || meta.Generation == 0 {
+			continue
+		}
+		legacy := Condition{Fact: ConditionFact{ID: meta.ConditionID}, Episode: meta.Episode}
+		if id != outboxDeliveryID(episodeAdmissionID(legacy, fingerprint), destination) {
+			continue
+		}
+		admission := approvalAdmission{Generation: strconv.FormatUint(meta.Generation, 10), Fingerprint: fingerprint, OutboxID: id}
+		if _, exists := state.findApprovalAdmission(meta.ConditionID, admission); !exists {
+			state.recordApprovalAdmission(meta.ConditionID, admission)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	state.ApprovalHistoryMigrated = true
+	return nil
+}
+
+func migrateEpisodeApprovalAdmissions(state *conditionState, fingerprints map[string]string) {
 	for _, condition := range state.Conditions {
 		fact := condition.Fact
 		if fact.EventType != EventApprovalPublished || fact.Generation == "" {
@@ -117,26 +163,11 @@ func migrateEpisodeApprovalAdmissions(ctx context.Context, db *sql.DB, state *co
 			if _, exists := state.findApprovalAdmission(fact.ID, admission); exists {
 				continue
 			}
-			// A previous release could enqueue a second episode for the same
-			// plan. Prefer a completed delivery or the earliest viable row.
-			err := db.QueryRowContext(ctx, `
-				SELECT id FROM notification_outbox
-				WHERE event_type = ? AND destination_fingerprint = ? AND state <> ?
-					AND (id = ? OR CASE WHEN json_valid(meta_json) THEN
-						json_extract(meta_json, '$.condition_id') = ? AND
-						CAST(json_extract(meta_json, '$.approval_generation') AS TEXT) = ?
-					END)
-				ORDER BY CASE state WHEN 'succeeded' THEN 0 WHEN 'failed' THEN 1 ELSE 2 END, rowid
-				LIMIT 1
-			`, EventApprovalPublished, fingerprint, outboxStateSkipped,
-				outboxDeliveryID(legacyID, destination), fact.ID, fact.Generation).Scan(&admission.OutboxID)
-			if err != nil && !errors.Is(err, sql.ErrNoRows) {
-				return err
-			}
+			// Preserve an admission even if its outbox row has been pruned.
+			admission.OutboxID = outboxDeliveryID(legacyID, destination)
 			state.recordApprovalAdmission(fact.ID, admission)
 		}
 	}
-	return nil
 }
 
 func ensureConditionSchema(db *sql.DB) error {
@@ -191,9 +222,10 @@ func (s *Service) reconcileConditions(ctx context.Context) error {
 	}
 	now := s.deps.Now().UTC()
 	fingerprints := conditionFingerprints(settings)
-	if err := migrateEpisodeApprovalAdmissions(ctx, s.database(), &state, fingerprints); err != nil {
+	if err := migrateApprovalOutboxHistory(ctx, s.database(), &state); err != nil {
 		return err
 	}
+	migrateEpisodeApprovalAdmissions(&state, fingerprints)
 	rows := []outboxRow{}
 	freshOneShots := map[string]bool{}
 	for _, fact := range batch.Facts {
@@ -449,8 +481,8 @@ func isConditionEvent(event string) bool {
 	return false
 }
 
-// Keep per-target episode counters, but discard consumed terminal job facts and
-// obsolete admission fingerprints. Audit cursors prevent historical replay.
+// Keep episode counters and exact approval admissions while their job facts
+// are retained. Other event types only keep configured destination fingerprints.
 func pruneConditionState(state *conditionState, fingerprints map[string]string, now time.Time) {
 	for id, condition := range state.Conditions {
 		updated, _ := time.Parse(time.RFC3339Nano, condition.UpdatedAt)
@@ -471,21 +503,9 @@ func pruneConditionState(state *conditionState, fingerprints map[string]string, 
 		}
 	}
 	state.Admissions = keep
-	for id, admitted := range state.ApprovalAdmissions {
+	for id := range state.ApprovalAdmissions {
 		if _, exists := state.Conditions[id]; !exists {
 			delete(state.ApprovalAdmissions, id)
-			continue
-		}
-		retained := admitted[:0]
-		for _, admission := range admitted {
-			if fingerprints[admission.Fingerprint] != "" {
-				retained = append(retained, admission)
-			}
-		}
-		if len(retained) == 0 {
-			delete(state.ApprovalAdmissions, id)
-		} else {
-			state.ApprovalAdmissions[id] = retained
 		}
 	}
 	for fingerprint := range state.Reminders {

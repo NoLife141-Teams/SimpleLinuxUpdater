@@ -236,6 +236,54 @@ func TestApprovalMigratesAndDeliversExistingPendingEpisode(t *testing.T) {
 	}
 }
 
+func TestApprovalMigrationRemembersPreviousDestination(t *testing.T) {
+	h := newConditionHarness(t)
+	settings, err := h.service.currentSettings()
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalURL := settings.WebhookURL
+	fact := ConditionFact{ID: "approval/old-job", EventType: EventApprovalPublished, TargetType: "server",
+		TargetName: "original", Generation: "2", Active: true, Message: "Review the plan in Status",
+		MetaJSON: `{"job_id":"old-job","approval_generation":2}`}
+	legacy := Condition{Fact: fact, Episode: 4, UpdatedAt: h.now.Format(time.RFC3339Nano)}
+	insertLegacyApprovalRow(t, h, legacy, destinationConfigFingerprint(settings, DestinationWebhook), outboxStateSucceeded)
+
+	replaceDestination := func(url string) {
+		t.Helper()
+		_, err := h.service.SaveSettings(SettingsUpdate{Enabled: true, EventTypes: settings.EventTypes,
+			WebhookURLIntent: WebhookURLReplace, WebhookURL: url})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	const replacementURL = "https://hooks.example.test/replacement"
+	replaceDestination(replacementURL)
+	settings.WebhookURL = replacementURL
+	currentAdmission := insertLegacyApprovalRow(t, h, legacy, destinationConfigFingerprint(settings, DestinationWebhook), outboxStateSucceeded)
+	// The pre-upgrade ledger retained only the configured destination, while
+	// the outbox still records the delivery to the original configuration.
+	raw, err := json.Marshal(conditionState{
+		Conditions: map[string]Condition{fact.ID: legacy},
+		Admissions: map[string]bool{currentAdmission: true},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.db.Exec(`INSERT INTO notification_conditions(id,state_json) VALUES(1,?)`, string(raw)); err != nil {
+		t.Fatal(err)
+	}
+	fact.ServerIdentity = "stable-inventory"
+	h.facts = []ConditionFact{fact}
+	h.reconcile(t)
+	replaceDestination(originalURL)
+	h.reconcile(t)
+	h.drain(t)
+	if h.client.calls != 0 || h.count(t, EventApprovalPublished) != 2 {
+		t.Fatalf("switching back re-admitted a delivered legacy plan: deliveries=%d", h.client.calls)
+	}
+}
+
 func insertLegacyApprovalRow(t *testing.T, h *conditionHarness, legacy Condition, fingerprint, state string) string {
 	t.Helper()
 	intent := conditionIntent(legacy)

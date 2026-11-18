@@ -220,6 +220,12 @@ func ensureColumn(db *sql.DB, table, name, definition string) error {
 }
 
 func (r SQLiteObservation) AcceptCollectedFacts(record CollectedFacts) error {
+	return r.AcceptCollectedFactsWithReceipt(record, nil)
+}
+
+// AcceptCollectedFactsWithReceipt commits the outcome that owns this observation
+// together with the current facts and health history.
+func (r SQLiteObservation) AcceptCollectedFactsWithReceipt(record CollectedFacts, receipt func(*sql.Tx) error) error {
 	db := r.dbConn()
 	if db == nil {
 		return errors.New("database is not initialized")
@@ -297,6 +303,11 @@ func (r SQLiteObservation) AcceptCollectedFacts(record CollectedFacts) error {
 	}
 	if err := pruneHealthSnapshots(tx, r.now()); err != nil {
 		return err
+	}
+	if receipt != nil {
+		if err := receipt(tx); err != nil {
+			return err
+		}
 	}
 	return tx.Commit()
 }

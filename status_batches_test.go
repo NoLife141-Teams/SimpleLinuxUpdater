@@ -14,9 +14,24 @@ import (
 	"testing"
 	"time"
 
+	healthpkg "debian-updater/internal/health"
+
 	"github.com/gin-gonic/gin"
 	"golang.org/x/crypto/ssh"
 )
+
+type exitAfterFactsCommit struct {
+	healthpkg.SQLiteObservation
+	code int
+}
+
+func (o exitAfterFactsCommit) AcceptCollectedFactsWithReceipt(record serverFactsRecord, receipt func(*sql.Tx) error) error {
+	if err := o.SQLiteObservation.AcceptCollectedFactsWithReceipt(record, receipt); err != nil {
+		return err
+	}
+	os.Exit(o.code)
+	return nil
+}
 
 func TestStatusBatchSurvivesProcessExitAfterAdmission(t *testing.T) {
 	const (
@@ -35,10 +50,17 @@ func TestStatusBatchSurvivesProcessExitAfterAdmission(t *testing.T) {
 		updateDeps.CurrentJobManager = func() *JobManager {
 			return app.Deps.CurrentJobManager()
 		}
-		updateDeps.HostMaintenanceSessions = HostMaintenanceSessionFactoryFunc(func(context.Context, HostMaintenanceSessionRequest) (HostMaintenanceSession, error) {
+		updateDeps.HostMaintenanceSessions = HostMaintenanceSessionFactoryFunc(func(_ context.Context, request HostMaintenanceSessionRequest) (HostMaintenanceSession, error) {
+			if action == "refresh_facts_success" {
+				return &HostMaintenanceSessionFuncs{
+					CollectServerFactsFunc: func(context.Context) serverFactsRecord {
+						return serverFactsRecord{ServerName: request.Server.Name, OSPrettyName: "Recovered fixture observation"}
+					},
+				}, nil
+			}
 			return nil, errors.New("fixture host unavailable")
 		})
-		app = newTestAppWithDeps(t, path, AppDeps{
+		overrides := AppDeps{
 			ServerState: state, UpdateService: NewUpdateService(updateDeps),
 			NotifyDashboardEvent: func(reason string) {
 				if (action == "update" && reason == "job.create") || (action == "refresh_facts" && reason == serverFactsRefreshAction) {
@@ -50,7 +72,16 @@ func TestStatusBatchSurvivesProcessExitAfterAdmission(t *testing.T) {
 					os.Exit(exitCode)
 				}
 			},
-		})
+		}
+		batchAction := action
+		if action == "refresh_facts_success" {
+			batchAction = "refresh_facts"
+			overrides.HostHealthObservation = exitAfterFactsCommit{
+				SQLiteObservation: healthpkg.SQLiteObservation{DB: func() *sql.DB { return app.Deps.DB() }},
+				code:              exitCode,
+			}
+		}
+		app = newTestAppWithDeps(t, path, overrides)
 		cookie := app.authenticate(t)
 		if rec := identityRequest(app, "POST", "/api/servers", cookie, "", gin.H{
 			"name": hostName, "host": hostName + ".invalid", "user": "root", "pass": "fixture",
@@ -75,7 +106,7 @@ func TestStatusBatchSurvivesProcessExitAfterAdmission(t *testing.T) {
 			target.Approval = approvalIdentityForTest(state, hostName)
 		}
 		if rec := identityRequest(app, "POST", "/api/status/batches", cookie, "", statusBatchRequest{
-			ID: batchID, Action: action, Targets: []statusBatchTarget{target},
+			ID: batchID, Action: batchAction, Targets: []statusBatchTarget{target},
 		}); rec.Code != http.StatusAccepted {
 			t.Fatalf("submit batch: %d %s", rec.Code, rec.Body.String())
 		}
@@ -89,6 +120,7 @@ func TestStatusBatchSurvivesProcessExitAfterAdmission(t *testing.T) {
 		{"update", "completed", jobStatusInterrupted},
 		{"cancel", "completed", jobStatusCancelled},
 		{"refresh_facts", "failed", ""},
+		{"refresh_facts_success", "completed", ""},
 	} {
 		t.Run(tc.action, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "crash-batch.db")
@@ -115,6 +147,12 @@ func TestStatusBatchSurvivesProcessExitAfterAdmission(t *testing.T) {
 			host := response.Batch.Hosts[0]
 			if host.State != tc.state || host.JobStatus != tc.jobStatus || (host.JobID != "") != (tc.jobStatus != "") || host.Retryable {
 				t.Fatalf("wrong result after process exit and audit purge: %+v", host)
+			}
+			if tc.action == "refresh_facts_success" {
+				facts, err := app.Deps.HostHealthObservation.Latest()
+				if err != nil || facts[hostName].OSPrettyName != "Recovered fixture observation" {
+					t.Fatalf("batch result did not commit with the host observation: %v, %v", facts, err)
+				}
 			}
 			var jobs int
 			if err := db.QueryRow("SELECT COUNT(*) FROM jobs WHERE server_name = ?", hostName).Scan(&jobs); err != nil || jobs > 1 {
@@ -490,11 +528,21 @@ func TestStatusBatchShowsFailedHostFactsCollection(t *testing.T) {
 	if _, err := app.Deps.DB().Exec(`UPDATE status_action_batch_hosts SET state = 'admitting', message = '' WHERE batch_id = ?`, id); err != nil {
 		t.Fatal(err)
 	}
+	reopened := &statusBatchService{}
+	staleHistory, err := reopened.readBatchHistory(t.Context(), app.Deps.DB(), 1, "")
+	if err != nil || len(staleHistory) != 1 {
+		t.Fatalf("read history before reconciliation: %+v %v", staleHistory, err)
+	}
 	if host := readHost(); host.State != "failed" || host.Message != "Facts refresh failed" || host.Retryable {
 		t.Fatalf("failed collection was not recovered from its audit: %+v", host)
 	}
 	if _, err := app.Deps.DB().Exec(`DELETE FROM audit_events WHERE json_extract(meta_json, '$.maintenance_batch_id') = ?`, id); err != nil {
 		t.Fatal(err)
+	}
+	staleBatch := &staleHistory[0].batch
+	reopened.projectBatch(t.Context(), app.Deps.DB(), staleBatch, false, 1)
+	if host := staleBatch.Hosts[0]; host.State != "failed" || host.Message != "Facts refresh failed" || host.Retryable {
+		t.Fatalf("overlapping history returned an uncertain outcome after reconciliation: %+v", host)
 	}
 	if host := readHost(); host.State != "failed" || host.Message != "Facts refresh failed" || host.Retryable {
 		t.Fatalf("reconciled collection outcome was lost after audit retention: %+v", host)

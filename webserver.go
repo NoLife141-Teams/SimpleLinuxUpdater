@@ -1084,7 +1084,7 @@ func handleServerFactsRefreshWithDeps(c *gin.Context, deps AppDeps) {
 	}
 	record, failure := runServerFactsRefresh(c.Request.Context(), deps, state, name, "", func(status, message string, meta map[string]any) {
 		audit(c, serverFactsRefreshAction, "server", name, status, message, meta)
-	}, nil)
+	}, serverFactsRefreshPersistence{})
 	if failure.statusCode != http.StatusOK {
 		writeServerActionLifecycleResult(c, failure)
 		return
@@ -1092,7 +1092,12 @@ func handleServerFactsRefreshWithDeps(c *gin.Context, deps AppDeps) {
 	c.JSON(http.StatusOK, record)
 }
 
-func runServerFactsRefresh(ctx context.Context, deps AppDeps, state *serverpkg.State, name, expectedIdentity string, recordAudit func(string, string, map[string]any), recordOutcome func(string, string)) (serverFactsRecord, serverActionLifecycleResult) {
+type serverFactsRefreshPersistence struct {
+	save        func(serverFactsRecord) error
+	recordError func(string)
+}
+
+func runServerFactsRefresh(ctx context.Context, deps AppDeps, state *serverpkg.State, name, expectedIdentity string, recordAudit func(string, string, map[string]any), persistence serverFactsRefreshPersistence) (serverFactsRecord, serverActionLifecycleResult) {
 	if state.CurrentStatusSnapshot(name) == nil {
 		recordAudit("failure", "Server not found", nil)
 		return serverFactsRecord{}, jsonResult(http.StatusNotFound, "Server not found")
@@ -1136,17 +1141,18 @@ func runServerFactsRefresh(ctx context.Context, deps AppDeps, state *serverpkg.S
 	}
 	defer state.RestoreStatusSnapshot(name, preRefreshStatus)
 
-	record, err := refreshServerFactsWithUpdateDeps(ctx, server, updateServiceEnsureDeps(deps.UpdateService))
+	updateDeps := updateServiceEnsureDeps(deps.UpdateService)
+	if persistence.save != nil {
+		updateDeps.SaveServerFacts = persistence.save
+	}
+	record, err := refreshServerFactsWithUpdateDeps(ctx, server, updateDeps)
 	if err != nil {
 		message := fmt.Sprintf("failed to refresh host facts: %v", err)
-		if recordOutcome != nil {
-			recordOutcome("failed", message)
+		if persistence.recordError != nil {
+			persistence.recordError(message)
 		}
 		recordAudit("failure", "Facts refresh failed", map[string]any{"error": err.Error(), "collection_attempted": true})
 		return serverFactsRecord{}, jsonResult(http.StatusBadGateway, message)
-	}
-	if recordOutcome != nil {
-		recordOutcome("completed", "")
 	}
 	recordAudit("success", "Host facts refreshed", map[string]any{
 		"collected_at":                    record.CollectedAt,

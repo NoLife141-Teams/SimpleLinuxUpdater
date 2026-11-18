@@ -32,6 +32,28 @@ func addPreviewOperationalWarning(response *PreviewResponse, code, message strin
 	response.Warnings = append(response.Warnings, message)
 }
 
+// WarnAutomaticBackupOverlap compares the canonical instants. The same civil
+// time may occur twice at the end of daylight saving time.
+func (response *PreviewResponse) WarnAutomaticBackupOverlap(backupAt time.Time) {
+	if backupAt.IsZero() {
+		return
+	}
+	backupMinute := backupAt.Truncate(time.Minute)
+	for _, occurrence := range response.UpcomingOccurrences {
+		if occurrence.AdmissionOutcome != PreviewAdmissionAdmitted {
+			continue
+		}
+		slot, err := time.Parse(time.RFC3339Nano, occurrence.ScheduledForUTC)
+		if err != nil || !slot.Equal(backupMinute) {
+			continue
+		}
+		addPreviewOperationalWarning(response, "automatic_backup_overlap", fmt.Sprintf(
+			"An automatic backup is due at %s %s (%s, UTC%s). If both operations start in this minute, the backup may be deferred or the scheduled maintenance may be skipped.",
+			occurrence.LocalCivilTime, occurrence.Abbreviation, occurrence.Timezone, occurrence.Offset))
+		return
+	}
+}
+
 func addPreviewFact(response *PreviewResponse, code, message string) {
 	if response == nil {
 		return

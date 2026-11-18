@@ -564,6 +564,12 @@
                 message,
             });
             renderAdminDestructiveControls();
+            if (
+                !failed &&
+                ["saveBackupSchedule", "runBackupSchedule"].includes(plan.command)
+            ) {
+                schedulePolicyPreview();
+            }
             return effects;
         }
 

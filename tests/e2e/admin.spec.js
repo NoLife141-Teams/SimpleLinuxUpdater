@@ -2310,7 +2310,15 @@ test("automated backups validate configuration and display suspended, deferred a
         retain: 3,
         include_known_hosts: true,
     };
+    const overlapWarning =
+        "An automatic backup is due at 2026-10-26 03:15 EDT (America/Toronto, UTC-04:00).";
     const state = {
+        policyPreviewResponse: {
+            matched_servers: [{ name: "srv-web-01", tags: [] }],
+            operational_warnings: [
+                { code: "automatic_backup_overlap", message: overlapWarning },
+            ],
+        },
         backupStatusResponse: {
             db_path: "/tmp/test.db",
             recovery_health: backupRecoveryHealthFixture("healthy"),
@@ -2330,6 +2338,9 @@ test("automated backups validate configuration and display suspended, deferred a
     let saved = null;
     await page.route("**/api/backup/automation", async (route) => {
         saved = route.request().postDataJSON();
+        if (saved.time !== config.time) {
+            state.policyPreviewResponse.operational_warnings = [];
+        }
         state.backupStatusResponse.automation = {
             ...state.backupStatusResponse.automation,
             config: saved,
@@ -2354,7 +2365,14 @@ test("automated backups validate configuration and display suspended, deferred a
             body: JSON.stringify(state.backupStatusResponse.automation),
         });
     });
-    await page.goto("/admin#admin-section-backup");
+    await page.goto("/admin#admin-section-scheduled-policies");
+    await page.locator("#policy-name").fill("Matching backup schedule");
+    await page.locator("#policy-target-servers").fill("srv-web-01");
+    await page.locator("#policy-time-local").fill("03:15");
+    const policyWarnings = page.locator("#policy-preview-warnings");
+    await expect(policyWarnings).toContainText(overlapWarning);
+
+    await navigateSection(page, "admin", "backup");
     await expect(page.locator("#backup-automation-status")).toContainText(
         "configured: Local destination validated.",
     );
@@ -2365,11 +2383,19 @@ test("automated backups validate configuration and display suspended, deferred a
     await expect(page.locator("#backup-automation-success")).not.toHaveText(
         "Never",
     );
+    await page.locator("#backup-automation-time").fill("04:15");
     await page.locator("#backup-automation-retain").fill("2");
     await page.locator("#backup-automation-save").click();
     await expect.poll(() => saved?.retain).toBe(2);
+    expect(saved.time).toBe("04:15");
     expect(saved).not.toHaveProperty("passphrase");
     expect(saved).not.toHaveProperty("directory");
+    await navigateSection(page, "admin", "scheduled-policies");
+    await expect(page.locator("#policy-time-local")).toHaveValue("03:15");
+    await expect(policyWarnings).not.toContainText(overlapWarning);
+    await expect(page.locator("#policy-preview-count")).toHaveText("1 matched");
+
+    await navigateSection(page, "admin", "backup");
     await expect(page.locator("#backup-automation-run")).toBeEnabled();
     await page.locator("#backup-automation-run").click();
     await expect(page.locator("#backup-automation-status")).toContainText(

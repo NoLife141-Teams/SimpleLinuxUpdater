@@ -533,6 +533,12 @@ occurrences within one year for recurring schedules, or the configured future
 date for a one-time schedule. Blackouts skip an occurrence rather than moving it.
 No cron expression, external calendar, or automatic fleet reboot is involved.
 
+The policy preview warns when an eligible occurrence falls in the same minute
+as the next active automatic backup or its scheduled retry. The warning shows
+the application timezone and UTC offset. Use it to adjust either schedule
+before saving. Maintenance admission at execution time decides which work can
+start.
+
 ## Scheduled canary and wave rollouts
 
 In **Admin → Policy control → Execution**, choose **Canary, then waves** to avoid releasing one scheduled policy to the whole matched fleet at once. Configure:

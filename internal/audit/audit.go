@@ -614,6 +614,9 @@ func (s *Service) BuildJobMarkdownReport(job jobs.Record) string {
 	if strings.TrimSpace(job.ErrorClass) != "" {
 		fmt.Fprintf(&buf, "- Error class: %s\n", job.ErrorClass)
 	}
+	if job.Status == jobs.StatusFailed && job.ErrorClass == "reconciliation_required" && job.APTTarget == "" {
+		fmt.Fprintln(&buf, "- APT recovery: This job has no recorded SSH target. Verify the original machine and package state independently before resuming maintenance.")
+	}
 	appendJSONBlock(&buf, "Retry Policy", job.RetryPolicyJSON)
 	appendJSONBlock(&buf, "Metadata", job.MetaJSON)
 	fmt.Fprintf(&buf, "\n## Logs\n\n")

@@ -278,7 +278,7 @@
                     ${host.reconciliation_required ? (host.diagnostic_available
                         ? `<p>Check the host’s APT status before starting other maintenance.</p>
                            <a href="/?server_identity=${encodeURIComponent(host.server_identity)}">Open host diagnostics</a>`
-                        : "<p>This host is no longer in the inventory. Review its job report.</p>") : ""}
+                        : "<p>The original host or SSH endpoint could not be verified. Review its job report.</p>") : ""}
                     ${host.job_id ? `<a href="/api/reports/jobs/${encodeURIComponent(host.job_id)}">Job report</a>` : ""}
                     ${host.retry_batch_id ? `<a href="${batchLink(host.retry_batch_id)}" aria-label="Open retry attempt for ${escapeHtml(host.name)}">Open retry attempt</a>` : ""}
                     ${host.retry_needs_verification ? "<p>Review the earlier retry attempts before taking another action.</p>" : ""}

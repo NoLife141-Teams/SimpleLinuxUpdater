@@ -224,7 +224,7 @@ func TestRuntimeCompositionReloadRestoredStateRestoresReconciliationAfterInvento
 		t.Fatalf("ensure schema: %v", err)
 	}
 
-	server := Server{Name: "restored-reconciliation", Host: "example.org", Port: 22, User: "root"}
+	server := Server{Name: "restored-reconciliation", Identity: "fixture-apt-target", Host: "example.org", Port: 22, User: "root"}
 	state := newServerState()
 	inventory := serverpkg.NewService(serverpkg.ServiceDeps{
 		State:      state,
@@ -241,6 +241,7 @@ func TestRuntimeCompositionReloadRestoredStateRestoresReconciliationAfterInvento
 	if _, err := deps.NewJobManager(db).CreateJob(JobCreateParams{
 		Kind:       jobKindUpdate,
 		ServerName: server.Name,
+		APTTarget:  server.APTTarget(),
 		Actor:      "admin",
 		Status:     jobStatusFailed,
 		ErrorClass: "reconciliation_required",

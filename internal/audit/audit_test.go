@@ -566,6 +566,16 @@ func TestServiceMarkdownReports(t *testing.T) {
 		}
 	}
 
+	legacyJobBody := svc.BuildJobMarkdownReport(jobs.Record{
+		ID:         "legacy-apt-job",
+		Kind:       jobs.KindUpdate,
+		Status:     jobs.StatusFailed,
+		ErrorClass: "reconciliation_required",
+	})
+	if !strings.Contains(legacyJobBody, "Verify the original machine and package state independently") {
+		t.Fatalf("legacy job report missing verification guidance:\n%s", legacyJobBody)
+	}
+
 	truncatedBody := svc.BuildJobMarkdownReport(jobs.Record{ID: "truncated", LogsText: "head\ntail", LogsTruncated: true})
 	if !strings.Contains(truncatedBody, "middle of this job log was truncated") || !strings.Contains(truncatedBody, "head\ntail") {
 		t.Fatalf("truncated job report missing warning/logs:\n%s", truncatedBody)

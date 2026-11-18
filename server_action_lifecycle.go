@@ -32,6 +32,8 @@ type serverActionLifecycleResult struct {
 
 type serverActionStartSpec struct {
 	expectedServerIdentity string
+	expectedAPTTarget      string
+	expectedJobID          string
 	status                 string
 	jobKind                string
 	auditAction            string
@@ -125,18 +127,37 @@ func (l *serverActionLifecycle) startAutoremove(name, actor, clientIP, expectedI
 	})
 }
 
-func (l *serverActionLifecycle) StartAptRepair(name, actor, clientIP string, confirmed bool) serverActionLifecycleResult {
+func (l *serverActionLifecycle) StartAptRepair(name, actor, clientIP string, confirmed bool, jobID string) serverActionLifecycleResult {
+	reject := func(code int, outcome, message string) serverActionLifecycleResult {
+		l.recordAudit("apt_repair.start", name, outcome, message, retryPolicyMeta(l.retryPolicy()))
+		return jsonResult(code, message)
+	}
 	if !confirmed {
-		l.recordAudit("apt_repair.start", name, "failure", "APT repair confirmation required", retryPolicyMeta(l.retryPolicy()))
-		return jsonResult(http.StatusBadRequest, "APT repair confirmation required")
+		return reject(http.StatusBadRequest, "failure", "APT repair confirmation required")
+	}
+	if strings.TrimSpace(jobID) == "" {
+		return reject(http.StatusBadRequest, "failure", "Confirm the job requiring APT reconciliation")
+	}
+	jm := l.currentJobManager()
+	if jm == nil {
+		return reject(http.StatusServiceUnavailable, "failure", "APT reconciliation jobs are unavailable")
+	}
+	job, err := jm.GetJob(jobID)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return reject(http.StatusServiceUnavailable, "failure", "APT reconciliation job is unavailable")
+	}
+	if err != nil || job.Status != jobStatusFailed || job.ErrorClass != "reconciliation_required" || job.APTTarget == "" {
+		return reject(http.StatusConflict, "ignored", "The original APT repair target could not be verified. Review the job report.")
 	}
 	return l.startAction(name, actor, clientIP, "", serverActionStartSpec{
-		status:         runtimepkg.StatusRepairing,
-		jobKind:        jobKindAptRepair,
-		auditAction:    "apt_repair.start",
-		startFailure:   "Failed to start APT repair",
-		createFailure:  "Failed to create APT repair job",
-		successMessage: "APT repair started",
+		expectedAPTTarget: job.APTTarget,
+		expectedJobID:     job.ID,
+		status:            runtimepkg.StatusRepairing,
+		jobKind:           jobKindAptRepair,
+		auditAction:       "apt_repair.start",
+		startFailure:      "Failed to start APT repair",
+		createFailure:     "Failed to create APT repair job",
+		successMessage:    "APT repair started",
 		allowedStatuses: map[string]bool{
 			runtimepkg.StatusNeedsReconciliation: true,
 		},
@@ -275,12 +296,16 @@ func (l *serverActionLifecycle) startAction(name, actor, clientIP, sudoPassword 
 	server, admittedSnapshot, err := l.serverState.BeginActionWithOptions(name, spec.status, serverpkg.ActionAdmissionOptions{
 		PackageMutation: spec.packageMutation, AllowedStatuses: spec.allowedStatuses,
 		ExpectedServerIdentity: spec.expectedServerIdentity,
+		ExpectedAPTTarget:      spec.expectedAPTTarget, ExpectedJobID: spec.expectedJobID,
 	})
 	if err != nil {
 		if errors.Is(err, serverpkg.ErrIdentityChanged) {
 			message := "The server has changed. Review the current server before starting an update check."
 			if spec.jobKind != jobKindUpdate {
 				message = "The server has changed. Review the current server before starting maintenance."
+			}
+			if spec.jobKind == jobKindAptRepair {
+				message = "The APT repair target has changed. Review the current reconciliation job."
 			}
 			retryMeta["reason_code"] = serverpkg.MaintenanceReadinessIdentityChanged
 			l.recordAudit(spec.auditAction, name, "ignored", message, retryMeta)

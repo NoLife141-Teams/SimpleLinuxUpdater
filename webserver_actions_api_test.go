@@ -830,7 +830,7 @@ func TestAsyncActionRoutesReturnJobIDAndPersistJobRecords(t *testing.T) {
 	}{
 		{name: "update", path: "/api/update/%s", body: "", kind: jobKindUpdate, statusName: "updating"},
 		{name: "autoremove", path: "/api/autoremove/%s", body: "", kind: jobKindAutoremove, statusName: "autoremove"},
-		{name: "apt repair", path: "/api/repair/%s", body: `{"confirm":true}`, kind: jobKindAptRepair, statusName: "repairing", initialStatus: "needs_reconciliation"},
+		{name: "apt repair", path: "/api/repair/%s", body: `{"confirm":true,"job_id":"fixture-apt-reconciliation"}`, kind: jobKindAptRepair, statusName: "repairing", initialStatus: "needs_reconciliation"},
 		{name: "controlled reboot", path: "/api/reboot/%s", body: `{"confirm":true}`, kind: jobKindReboot, statusName: "rebooting", initialStatus: "done"},
 		{name: "sudoers enable", path: "/api/sudoers/%s", body: `{"password":"pw"}`, kind: jobKindSudoersEnable, statusName: "sudoers"},
 		{name: "sudoers disable", path: "/api/sudoers/disable/%s", body: `{"password":"pw"}`, kind: jobKindSudoersDisable, statusName: "sudoers"},
@@ -846,7 +846,7 @@ func TestAsyncActionRoutesReturnJobIDAndPersistJobRecords(t *testing.T) {
 			dbFile := filepath.Join(t.TempDir(), strings.ReplaceAll(tc.kind, "/", "-")+".db")
 			handler, sessionCookie := setupAuthenticatedHandler(t, dbFile)
 
-			server := Server{Name: "srv-" + strings.ReplaceAll(tc.kind, "_", "-"), Host: "example.org", Port: 22, User: "root", Pass: "pw"}
+			server := Server{Name: "srv-" + strings.ReplaceAll(tc.kind, "_", "-"), Host: "example.org", Port: 22, User: "root", Pass: "pw", Identity: "fixture-action-identity"}
 			initialStatus := tc.initialStatus
 			if initialStatus == "" {
 				initialStatus = "idle"
@@ -859,6 +859,10 @@ func TestAsyncActionRoutesReturnJobIDAndPersistJobRecords(t *testing.T) {
 					server.Name: {Name: server.Name, Status: initialStatus, Upgradable: []string{}},
 				}
 			}()
+
+			if tc.kind == jobKindAptRepair {
+				seedAPTReconciliationJob(t, currentJobManager(), globalServerState(), server)
+			}
 
 			origDial := getDialSSHConnection()
 			setDialSSHConnection(func(_ Server, _ *ssh.ClientConfig) (sshConnection, error) {
@@ -923,7 +927,7 @@ func TestActionRoutesRestoreRuntimeSnapshotWhenJobCreationFails(t *testing.T) {
 	}{
 		{name: "update", path: "/api/update/%s", wantErr: "Failed to create update job"},
 		{name: "autoremove", path: "/api/autoremove/%s", wantErr: "Failed to create autoremove job"},
-		{name: "apt repair", path: "/api/repair/%s", body: `{"confirm":true}`, wantErr: "Failed to create APT repair job", initialStatus: "needs_reconciliation"},
+		{name: "apt repair", path: "/api/repair/%s", body: `{"confirm":true,"job_id":"fixture-apt-reconciliation"}`, wantErr: "Failed to create APT repair job", initialStatus: "needs_reconciliation"},
 		{name: "controlled reboot", path: "/api/reboot/%s", body: `{"confirm":true}`, wantErr: "Failed to create reboot job", initialStatus: "done"},
 		{name: "sudoers enable", path: "/api/sudoers/%s", body: `{"password":"pw"}`, wantErr: "Failed to create sudoers job"},
 		{name: "sudoers disable", path: "/api/sudoers/disable/%s", body: `{"password":"pw"}`, wantErr: "Failed to create sudoers disable job"},
@@ -973,12 +977,10 @@ func TestActionRoutesRestoreRuntimeSnapshotWhenJobCreationFails(t *testing.T) {
 				},
 			})
 			sessionCookie := app.authenticate(t)
-			if err := jobDB.Close(); err != nil {
-				t.Fatalf("close job db before action request: %v", err)
-			}
+			t.Cleanup(func() { _ = jobDB.Close() })
 			handler := app.Handler
 
-			server := Server{Name: "srv-" + strings.ReplaceAll(tc.name, " ", "-"), Host: "example.org", Port: 22, User: "root", Pass: "pw"}
+			server := Server{Name: "srv-" + strings.ReplaceAll(tc.name, " ", "-"), Host: "example.org", Port: 22, User: "root", Pass: "pw", Identity: "fixture-action-identity"}
 			initialStatus := tc.initialStatus
 			if initialStatus == "" {
 				initialStatus = "idle"
@@ -1015,6 +1017,13 @@ func TestActionRoutesRestoreRuntimeSnapshotWhenJobCreationFails(t *testing.T) {
 				}
 			}()
 
+			if tc.name == "apt repair" {
+				seedAPTReconciliationJob(t, app.Deps.CurrentJobManager(), state, server)
+				original.JobID = testAPTReconciliationJobID
+			}
+			if _, err := jobDB.Exec(`CREATE TRIGGER reject_action_job BEFORE INSERT ON jobs BEGIN SELECT RAISE(FAIL, 'fixture job insert failure'); END`); err != nil {
+				t.Fatal(err)
+			}
 			setCurrentJobManager(nil)
 
 			var body *bytes.Buffer

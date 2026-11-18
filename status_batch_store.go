@@ -51,6 +51,7 @@ type statusBatchHost struct {
 	RetryBatchID           string `json:"retry_batch_id,omitempty"`
 	RetryNeedsVerification bool   `json:"retry_needs_verification,omitempty"`
 	approval               serverActionApprovalIdentity
+	aptTarget              string
 }
 
 type statusBatch struct {
@@ -210,6 +211,7 @@ func readStatusBatch(ctx context.Context, db statusBatchQuerier, id string, acco
 		)
 		SELECT h.name, h.server_identity, h.state, h.message, h.job_id, COALESCE(j.status, ''),
 			COALESCE(j.status = 'failed' AND j.error_class = 'reconciliation_required', 0),
+			COALESCE(j.apt_target, ''),
 			h.approval_job_id, h.approval_generation, h.deferral_revision, h.remediation_digest,
 			COALESCE((
 				SELECT a.id FROM status_action_batches a JOIN status_action_batch_hosts ah ON ah.batch_id = a.id
@@ -230,7 +232,7 @@ func readStatusBatch(ctx context.Context, db statusBatchQuerier, id string, acco
 	defer rows.Close()
 	for rows.Next() {
 		var host statusBatchHost
-		if err := rows.Scan(&host.Name, &host.ServerIdentity, &host.State, &host.Message, &host.JobID, &host.JobStatus, &host.ReconciliationRequired,
+		if err := rows.Scan(&host.Name, &host.ServerIdentity, &host.State, &host.Message, &host.JobID, &host.JobStatus, &host.ReconciliationRequired, &host.aptTarget,
 			&host.approval.JobID, &host.approval.Generation, &host.approval.DeferralRevision, &host.approval.RemediationDigest,
 			&host.RetryBatchID, &host.RetryNeedsVerification); err != nil {
 			return statusBatch{}, err

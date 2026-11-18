@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"debian-updater/internal/postchecks"
+	runtimepkg "debian-updater/internal/runtime"
 )
 
 type CommandOutcome string
@@ -96,7 +97,11 @@ func (c *CommandService) UpdateServer(name string, server Server) CommandResult 
 		user := strings.TrimSpace(server.User)
 		return failedCommand(CommandOutcomeInvalid, "server.update", "server", name, "Invalid SSH username", "invalid user; allowed characters are letters, digits, '.', '-', '_'", map[string]any{"user": user})
 	case errors.Is(err, ErrActionInProgress):
-		return failedCommand(CommandOutcomeConflict, "server.update", "server", name, "Server action already in progress", "wait for the active server action to finish before editing this server", actionStatusMeta(err))
+		meta := actionStatusMeta(err)
+		if meta["status"] == runtimepkg.StatusNeedsReconciliation {
+			return failedCommand(CommandOutcomeConflict, "server.update", "server", name, "APT reconciliation required", "Repair APT on the original host before changing its SSH address or port", meta)
+		}
+		return failedCommand(CommandOutcomeConflict, "server.update", "server", name, "Server action already in progress", "wait for the active server action to finish before editing this server", meta)
 	case errors.Is(err, postchecks.ErrAssignmentConflict):
 		return failedCommand(CommandOutcomeConflict, "server.update", "server", name, "Post-check assignment conflict", err.Error(), nil)
 	case errors.Is(err, ErrNameExists):

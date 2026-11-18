@@ -447,7 +447,15 @@ func TestServerInventoryServiceRenamePreservesReconciliationAndMigratesJobs(t *t
 		return nil
 	}
 
-	updated, err := svc.Update("srv-old", Server{Name: "srv-new", Host: "new.example", User: "admin"})
+	commands := NewCommandService(svc)
+	for _, endpoint := range []ServerEndpoint{{Host: "new.example", Port: 22}, {Host: "old.example", Port: 2222}} {
+		result := commands.UpdateServer("srv-old", Server{Name: "srv-new", Host: endpoint.Host, Port: endpoint.Port, User: "admin"})
+		if result.Outcome != CommandOutcomeConflict || result.Audit.Meta["status"] != "needs_reconciliation" ||
+			!strings.Contains(result.Error, "Repair APT on the original host") || repo.saveCalls != 0 {
+			t.Fatalf("changing endpoint %v during reconciliation: %+v", endpoint, result)
+		}
+	}
+	updated, err := svc.Update("srv-old", Server{Name: "srv-new", Host: "old.example", User: "admin"})
 	if err != nil {
 		t.Fatalf("Update() unexpected error: %v", err)
 	}
@@ -461,7 +469,7 @@ func TestServerInventoryServiceRenamePreservesReconciliationAndMigratesJobs(t *t
 	if status == nil || status.Name != "srv-new" || status.Status != "needs_reconciliation" || status.Logs != "APT outcome uncertain" {
 		t.Fatalf("renamed status = %+v, want preserved reconciliation state", status)
 	}
-	if status.Host != "new.example" || status.User != "admin" {
+	if status.Host != "old.example" || status.User != "admin" {
 		t.Fatalf("renamed status inventory facts = %+v, want updated host and user", status)
 	}
 	if renamedFrom != "srv-old" || renamedTo != "srv-new" {

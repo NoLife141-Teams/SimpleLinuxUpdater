@@ -1632,6 +1632,13 @@ func createServerActionJobWithAdmission(jm *JobManager, state *serverpkg.State, 
 	if snapshot != nil {
 		initialLogs = snapshot.Logs
 	}
+	var aptTarget string
+	switch kind {
+	case jobKindUpdate, jobKindAutoremove, jobKindAptRepair:
+		if server, found := serverByName(state, serverName); found {
+			aptTarget = server.APTTarget()
+		}
+	}
 	record, err := jm.CreateJobWithAdmission(JobCreateParams{
 		Kind:            kind,
 		ServerName:      serverName,
@@ -1641,6 +1648,7 @@ func createServerActionJobWithAdmission(jm *JobManager, state *serverpkg.State, 
 		LogsText:        initialLogs,
 		RetryPolicyJSON: marshalJobJSON(policy),
 		MetaJSON:        "{}",
+		APTTarget:       aptTarget,
 	}, receipt)
 	if err == nil && state != nil && snapshot != nil && !state.BindActionJob(serverName, record.ID, snapshot.ActionGeneration) {
 		return JobRecord{}, errors.New("server action admission changed while creating job")
@@ -2438,7 +2446,8 @@ func registerServerAndActionRoutes(r *gin.Engine, deps AppDeps) {
 	r.POST("/api/repair/:name", func(c *gin.Context) {
 		name := c.Param("name")
 		var req struct {
-			Confirm bool `json:"confirm"`
+			Confirm bool   `json:"confirm"`
+			JobID   string `json:"job_id"`
 		}
 		if err := c.ShouldBindJSON(&req); err != nil {
 			audit(c, "apt_repair.start", "server", name, "failure", "Invalid request payload", retryPolicyMeta(loadRetryPolicyFromEnv()))
@@ -2448,7 +2457,7 @@ func registerServerAndActionRoutes(r *gin.Engine, deps AppDeps) {
 		lifecycle := newServerActionLifecycle(deps, func(action, targetType, targetName, status, message string, meta map[string]any) {
 			audit(c, action, targetType, targetName, status, message, meta)
 		})
-		writeServerActionLifecycleResult(c, lifecycle.StartAptRepair(name, actorFromContext(c), clientIPFromContext(c), req.Confirm))
+		writeServerActionLifecycleResult(c, lifecycle.StartAptRepair(name, actorFromContext(c), clientIPFromContext(c), req.Confirm, req.JobID))
 	})
 
 	r.POST("/api/reboot/:name", func(c *gin.Context) {

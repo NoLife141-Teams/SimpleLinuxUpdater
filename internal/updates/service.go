@@ -461,11 +461,7 @@ func (r *withActorRunner) setSudoPolicyErrorLogs(logs string) {
 func (r *withActorRunner) setCommandErrorLogs(logs string, err error) {
 	var reconciliation interface{ RequiresReconciliation() bool }
 	if r.jobKind == jobs.KindAptRepair || (errors.As(err, &reconciliation) && reconciliation.RequiresReconciliation()) {
-		r.lastErrClass = "reconciliation_required"
-		_ = r.withStatus(func(status *servers.ServerStatus) {
-			status.Status = runtimepkg.StatusNeedsReconciliation
-			status.Logs = logs + "\nAPT outcome requires reconciliation before another package mutation."
-		})
+		r.setReconciliationRequired(logs)
 		return
 	}
 	if !strings.EqualFold(strings.TrimSpace(r.server.User), "root") && IsSudoPolicyError(logs+"\n"+err.Error()) {
@@ -473,6 +469,14 @@ func (r *withActorRunner) setCommandErrorLogs(logs string, err error) {
 		return
 	}
 	r.setErrorLogs(logs)
+}
+
+func (r *withActorRunner) setReconciliationRequired(logs string) {
+	r.lastErrClass = "reconciliation_required"
+	_ = r.withStatus(func(status *servers.ServerStatus) {
+		status.Status = runtimepkg.StatusNeedsReconciliation
+		status.Logs = logs + "\nAPT outcome requires reconciliation before another package mutation."
+	})
 }
 
 func (r *withActorRunner) currentLogs() string {

@@ -422,7 +422,7 @@ func TestInitializeJobManagerRestoresReconciliationRequiredStatus(t *testing.T) 
 	preserveServerState(t)
 	t.Setenv("DEBIAN_UPDATER_DB_PATH", filepath.Join(t.TempDir(), "jobs-reconciliation.db"))
 
-	server := Server{Name: "srv-reconciliation", Host: "example.org", Port: 22, User: "root"}
+	server := Server{Name: "srv-reconciliation", Identity: "fixture-apt-target", Host: "example.org", Port: 22, User: "root"}
 	mu.Lock()
 	servers = []Server{server}
 	statusMap = map[string]*ServerStatus{
@@ -434,6 +434,7 @@ func TestInitializeJobManagerRestoresReconciliationRequiredStatus(t *testing.T) 
 	if _, err := jm.CreateJob(JobCreateParams{
 		Kind:       jobKindUpdate,
 		ServerName: server.Name,
+		APTTarget:  server.APTTarget(),
 		Actor:      "tester",
 		Status:     jobStatusFailed,
 		ErrorClass: "reconciliation_required",
@@ -457,7 +458,7 @@ func TestInitializeJobManagerRequiresReconciliationForInterruptedAptMutation(t *
 	preserveServerState(t)
 	t.Setenv("DEBIAN_UPDATER_DB_PATH", filepath.Join(t.TempDir(), "jobs-interrupted-apt-mutation.db"))
 
-	server := Server{Name: "srv-interrupted-apt-mutation", Host: "example.org", Port: 22, User: "root"}
+	server := Server{Name: "srv-interrupted-apt-mutation", Identity: "fixture-apt-target", Host: "example.org", Port: 22, User: "root"}
 	mu.Lock()
 	servers = []Server{server}
 	statusMap = map[string]*ServerStatus{
@@ -469,6 +470,7 @@ func TestInitializeJobManagerRequiresReconciliationForInterruptedAptMutation(t *
 	if _, err := jm.CreateJob(JobCreateParams{
 		Kind:       jobKindUpdate,
 		ServerName: server.Name,
+		APTTarget:  server.APTTarget(),
 		Actor:      "tester",
 		Status:     jobStatusRunning,
 		Phase:      jobPhaseAptUpgrade,

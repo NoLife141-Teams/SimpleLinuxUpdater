@@ -43,7 +43,7 @@ test("Status opens an older batch after paging and restores its link after sign-
     }
 });
 
-test("Status links an interrupted APT job to the same host after rename and preserves permissions", async ({ page, baseURL }) => {
+test("Status links an interrupted APT job to the same host after rename and preserves permissions", async ({ browser, page, baseURL }) => {
     await ensureAuthenticatedSession(page);
     await page.goto("/?maintenance_batch=" + (2).toString(16).padStart(32, "0"));
     const batch = page.locator("#status-batch-panel");
@@ -54,7 +54,7 @@ test("Status links an interrupted APT job to the same host after rename and pres
 
     const replaced = batch.locator("li").filter({ hasText: "replaced-host" });
     await expect(replaced.getByText("APT reconciliation required", { exact: true })).toBeVisible();
-    await expect(replaced.getByText("This host is no longer in the inventory.", { exact: false })).toBeVisible();
+    await expect(replaced.getByText("The original host or SSH endpoint could not be verified.", { exact: false })).toBeVisible();
     await expect(replaced.getByRole("link", { name: "Open host diagnostics" })).toHaveCount(0);
     await expect(replaced.getByRole("link", { name: "Job report" })).toBeVisible();
 
@@ -63,18 +63,29 @@ test("Status links an interrupted APT job to the same host after rename and pres
     await expect(page.locator("#selected-host-title")).toHaveText("renamed-host");
     const repair = page.locator("#selected-host-panel").getByRole("button", { name: "Repair APT" });
     await expect(repair).toBeEnabled();
+    await repair.click();
+    await expect(page.locator("#action-confirm-modal")).toContainText("SSH before-rename.invalid, port 22");
+    await page.locator("#action-confirm-cancel").click();
 
     const diagnosticURL = page.url();
     const headers = { Origin: baseURL };
     const reader = { username: "recovery-reader", password };
     const created = await page.request.post("/api/auth/accounts", { headers, data: { ...reader, role: "reader" } });
     expect(created.status()).toBe(201);
-    await page.context().clearCookies();
-    const login = await page.request.post("/api/auth/login", { headers, data: reader });
-    expect(login.ok()).toBe(true);
-    await page.goto(diagnosticURL);
-    await expect(page.locator("#selected-host-title")).toHaveText("renamed-host");
-    await expect(repair).toHaveCount(0);
-    const denied = await page.request.post("/api/repair/renamed-host", { headers, data: { confirm: true } });
-    expect(denied.status()).toBe(403);
+    const readerContext = await browser.newContext({ baseURL });
+    try {
+        const login = await readerContext.request.post("/api/auth/login", { headers, data: reader });
+        expect(login.ok()).toBe(true);
+        const readerPage = await readerContext.newPage();
+        await readerPage.goto(diagnosticURL);
+        await expect(readerPage.locator("#selected-host-title")).toHaveText("renamed-host");
+        await expect(readerPage.locator("#selected-host-panel").getByRole("button", { name: "Repair APT" })).toHaveCount(0);
+        const denied = await readerContext.request.post("/api/repair/renamed-host", {
+            headers,
+            data: { confirm: true, job_id: "recovery-job-before-rename" },
+        });
+        expect(denied.status()).toBe(403);
+    } finally {
+        await readerContext.close();
+    }
 });

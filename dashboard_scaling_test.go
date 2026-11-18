@@ -828,8 +828,10 @@ func seedBrowserBatchRecovery(t *testing.T, deps AppDeps) {
 			server.Name, server.Host, server.Port, server.User, server.Identity); err != nil {
 			t.Fatal(err)
 		}
+		original := server
+		original.Identity = identity
 		job := JobRecord{ID: "recovery-job-" + oldName, Kind: jobKindUpdate, ServerName: server.Name,
-			Status: jobStatusFailed, ErrorClass: "reconciliation_required"}
+			Status: jobStatusFailed, ErrorClass: "reconciliation_required", APTTarget: original.APTTarget()}
 		if err := deps.CurrentJobManager().ImportJobRecord(job); err != nil {
 			t.Fatal(err)
 		}

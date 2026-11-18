@@ -349,7 +349,7 @@ func (l *Lifecycle) runPackageMutation(run policies.Run, policy policies.Policy,
 	retryPolicy := l.deps.LoadRetryPolicy()
 	meta := l.buildScheduledJobMeta(policy, run.ScheduledForUTC)
 	meta.RunID = run.ID
-	job, err := l.createServerActionJob(l.deps.CurrentJobManager(), l.deps.ServerState, kind, server.Name, "system", "", retryPolicy, meta)
+	job, err := l.createServerActionJob(l.deps.CurrentJobManager(), l.deps.ServerState, kind, serverForRun, "system", "", retryPolicy, meta)
 	if err != nil {
 		l.deps.ServerState.RestoreStatusSnapshot(server.Name, preStartStatus)
 		status := policies.RunFailed
@@ -1073,29 +1073,30 @@ func (l *Lifecycle) UpdateJobDiscovery(jobID string, discovery updates.PackageDi
 	}
 }
 
-func (l *Lifecycle) createServerActionJob(jm *jobs.Manager, state *servers.State, kind, serverName, actor, clientIP string, policy updates.RetryPolicy, meta any) (jobs.Record, error) {
+func (l *Lifecycle) createServerActionJob(jm *jobs.Manager, state *servers.State, kind string, server servers.Server, actor, clientIP string, policy updates.RetryPolicy, meta any) (jobs.Record, error) {
 	if jm == nil {
 		return jobs.Record{}, errors.New("job manager is not initialized")
 	}
 	initialLogs := ""
 	var generation uint64
 	if state != nil {
-		if snapshot := state.CurrentStatusSnapshot(serverName); snapshot != nil {
+		if snapshot := state.CurrentStatusSnapshot(server.Name); snapshot != nil {
 			initialLogs = snapshot.Logs
 			generation = snapshot.ActionGeneration
 		}
 	}
 	record, err := jm.CreateJob(jobs.CreateParams{
 		Kind:            kind,
-		ServerName:      serverName,
+		ServerName:      server.Name,
 		Actor:           actor,
 		ClientIP:        clientIP,
 		Status:          jobs.StatusQueued,
 		LogsText:        initialLogs,
 		RetryPolicyJSON: jobs.MarshalJSON(policy),
 		MetaJSON:        jobs.MarshalJSON(meta),
+		APTTarget:       server.APTTarget(),
 	})
-	if err == nil && state != nil && !state.BindActionJob(serverName, record.ID, generation) {
+	if err == nil && state != nil && !state.BindActionJob(server.Name, record.ID, generation) {
 		return jobs.Record{}, errors.New("server action admission changed while creating job")
 	}
 	return record, err

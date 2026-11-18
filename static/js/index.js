@@ -598,7 +598,7 @@
                 policies: "policies",
                 globalKey: "global key",
             };
-            const streams = getStatusView().sync.streams;
+            const streams = statusInteraction.getSyncState().streams;
             const syncErrors = Object.entries(streams)
                 .filter(([, stream]) => stream.lastError)
                 .map(
@@ -3440,7 +3440,7 @@
             document,
             "pointerup",
             () => {
-                if (getStatusView().sync.interactionDepth > 0) {
+                if (statusInteraction.getSyncState().interactionDepth > 0) {
                     endActionInteraction();
                 }
             },
@@ -3450,7 +3450,7 @@
             document,
             "pointercancel",
             () => {
-                if (getStatusView().sync.interactionDepth > 0) {
+                if (statusInteraction.getSyncState().interactionDepth > 0) {
                     endActionInteraction();
                 }
             },
@@ -3479,7 +3479,7 @@
             "keyup",
             (event) => {
                 if (event.key !== "Enter" && event.key !== " ") return;
-                if (getStatusView().sync.interactionDepth > 0) {
+                if (statusInteraction.getSyncState().interactionDepth > 0) {
                     endActionInteraction();
                 }
             },

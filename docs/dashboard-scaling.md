@@ -215,3 +215,77 @@ exceeds 99% at 1,000 hosts. CI compares the partial rows and fleet counters
 to full reads for admin and reader. It caps the uncompressed response for
 three hosts at 16 KiB and 5% of the two full responses, and checks one request
 for a scoped update in Chromium. Latency has no CI threshold.
+
+## Status refresh latency (#593)
+
+The targeted scenario now captures five server phases through `Server-Timing`.
+**Wait** covers admission to the serialized projection. **Collect** includes
+reading SQLite and preparing the inputs from runtime, readiness and policy
+facts. **Project** constructs the Dashboard Projection from those inputs.
+**Compact** prepares and fingerprints its compact rows. **Encode** serializes
+the selected rows and compresses them when negotiated. In Chromium the fixture
+also records elapsed time between decoding the scoped JSON and detecting the
+updated rows. The full render time starts just before the fixture publishes the
+change, so it includes notification, transport, server and browser time.
+
+The browser change reads a small defensive synchronization snapshot for the
+sync indicator and interaction-depth checks. These frequent reads previously
+rebuilt the fleet view. The accepted dashboard keeps one owned set of compact
+rows, copies only new rows on a targeted refresh, and copies the dashboard once
+in each defensive view. Revision and row-version checks continue to take the
+full-resynchronization path when required.
+
+An experimental variant shared the next Dashboard Projection among same-revision
+callers already queued behind an active calculation. It closed the group before
+sampling the clock and calculated a fresh projection for later arrivals. The
+three-tab browser requests were staggered. None of the measured bursts shared a
+projection, so the shipped change keeps the existing server calculation path.
+
+The runs used Chromium 159.0.8154.6 on the same installation and fixture
+manifest. Each cell uses five trials after a warmup, with the 5 or 15 tab
+observations ranked together for latency. Reference is `4bd324b` with the
+instrumentation applied in `ceea02846772aa8fb060084f90c1cfedc81219f3`.
+Run the standalone commands above on that instrumentation commit and the
+candidate. The JSON reports include `server_ms` and `after_response_ms` for
+each tab. “Sync only” applies the small synchronization
+snapshot. “Server experiment” adds the pending-group change to sync only.
+“Accepted” applies both browser changes with the reference server.
+
+The table shows render p50/p95 in milliseconds. Request and encoded response
+body byte medians were identical across variants. All runs verified one
+scoped fleet request per tab and recovered both full snapshots on reconnect.
+
+| Hosts | Tabs | Change | Requests / bytes | Reference | Sync only | Server experiment | Accepted |
+| ---: | ---: | --- | ---: | ---: | ---: | ---: | ---: |
+| 100 | 1 | One host | 2 / 3,989 | 225 / 235 | 198 / 237 | 198 / 255 | 161 / 174 |
+| 100 | 1 | Three hosts | 2 / 4,714 | 197 / 214 | 184 / 230 | 170 / 198 | 164 / 168 |
+| 100 | 3 | One host | 6 / 11,967 | 303 / 480 | 270 / 345 | 270 / 357 | 202 / 235 |
+| 100 | 3 | Three hosts | 6 / 14,142 | 349 / 433 | 231 / 347 | 240 / 384 | 184 / 226 |
+| 1,000 | 1 | One host | 2 / 3,984 | 685 / 866 | 620 / 785 | 548 / 637 | 408 / 521 |
+| 1,000 | 1 | Three hosts | 2 / 4,714 | 664 / 874 | 567 / 661 | 559 / 658 | 337 / 373 |
+| 1,000 | 3 | One host | 6 / 11,952 | 1,207 / 1,967 | 1,100 / 2,017 | 1,105 / 1,877 | 663 / 911 |
+| 1,000 | 3 | Three hosts | 6 / 14,142 | 941 / 1,312 | 750 / 1,371 | 753 / 1,147 | 475 / 584 |
+
+Phase medians for reference → accepted are in milliseconds. The browser
+column covers JSON decode completion through the observed row change. The
+phase medians summarize different observations and need not sum to the
+median end-to-end time. The server calculation is unchanged between these
+two variants, so its duration differences describe run-to-run variation.
+
+| Hosts | Tabs | Change | Wait | Collect | Project | Compact | Encode | Browser |
+| ---: | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 100 | 1 | One host | 0.0 → 0.0 | 10.2 → 5.5 | 0.8 → 0.4 | 2.5 → 1.0 | 0.2 → 0.3 | 68 → 34 |
+| 100 | 1 | Three hosts | 0.0 → 0.0 | 10.4 → 5.3 | 0.8 → 0.3 | 2.6 → 1.1 | 0.4 → 0.3 | 53 → 31 |
+| 100 | 3 | One host | 0.0 → 0.0 | 12.7 → 6.5 | 1.0 → 0.4 | 2.6 → 1.4 | 0.4 → 0.8 | 123 → 62 |
+| 100 | 3 | Three hosts | 0.0 → 0.0 | 24.0 → 6.0 | 2.1 → 0.4 | 5.7 → 2.0 | 1.3 → 0.4 | 103 → 49 |
+| 1,000 | 1 | One host | 0.0 → 0.0 | 134.4 → 65.7 | 9.8 → 4.6 | 30.7 → 16.9 | 0.2 → 0.2 | 303 → 123 |
+| 1,000 | 1 | Three hosts | 0.0 → 0.0 | 103.4 → 54.3 | 9.4 → 4.8 | 29.3 → 13.5 | 0.5 → 0.3 | 327 → 133 |
+| 1,000 | 3 | One host | 0.0 → 0.0 | 149.5 → 74.8 | 15.1 → 7.4 | 33.9 → 19.8 | 0.3 → 0.2 | 466 → 236 |
+| 1,000 | 3 | Three hosts | 0.0 → 0.0 | 123.1 → 56.7 | 12.3 → 6.6 | 20.9 → 15.2 | 0.3 → 0.3 | 366 → 162 |
+
+At 1,000 hosts and three tabs, the accepted browser change reduced the p95
+from 1,967 to 911 ms for one host and from 1,312 to 584 ms for a burst
+on this machine. CI checks that sync reads skip fleet projection and that
+adapter and consumer inputs stay isolated. Existing browser and API budgets
+still cover row consistency, permissions, reconnect behavior and transferred
+volume. Timings describe this local fixture and have no CI threshold.

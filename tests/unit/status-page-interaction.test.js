@@ -5,6 +5,30 @@ const path = require("node:path");
 
 const { createStore } = require("../../static/js/status-page-interaction.js");
 
+test("reading Status synchronization state skips fleet projections", () => {
+    const facts = require("../../static/js/dashboard-projection-consumption.js").presentationFacts;
+    let approvalReads = 0;
+    const store = createStore({
+        presentationFacts: {
+            ...facts,
+            approvalCounts(server) {
+                approvalReads++;
+                return facts.approvalCounts(server);
+            },
+        },
+    });
+    store.dispatch({ type: "serversSnapshotReceived", servers: [{ name: "alpha", status: "pending_approval" }] });
+    store.dispatch({ type: "refreshRequested", streams: ["servers"] });
+    approvalReads = 0;
+    const sync = store.getSyncState();
+    assert.equal(approvalReads, 0);
+    assert.equal(sync.streams.servers.inFlight.requestId, 1);
+    sync.streams.servers.inFlight.requestId = 99;
+    assert.equal(store.getSyncState().streams.servers.inFlight.requestId, 1);
+    assert.deepEqual(store.getView().sync, store.getSyncState());
+    assert.ok(approvalReads > 0);
+});
+
 test("a skipped run link follows live renames and cannot select a replacement", () => {
     const store = createStore({ linkedServerIdentity: "original" });
     const snapshot = (...servers) => store.dispatch({ type: "serversSnapshotReceived", servers });
@@ -86,6 +110,10 @@ test("snapshot intake clones adapter-owned data", () => {
 
     assert.deepEqual(store.getServer("alpha"), { name: "alpha", status: "idle", tags: ["prod"] });
     assert.deepEqual(store.getDashboardServer("alpha"), { name: "alpha", timeline: { state: "idle" } });
+    const view = store.getView();
+    view.dashboardSnapshot.servers[0].timeline.state = "mutated by a consumer";
+    assert.equal(store.getView().dashboardServers[0].timeline.state, "idle");
+    assert.equal(store.getDashboardServer("alpha").timeline.state, "idle");
 });
 
 test("maintenance rows keep their positions across activity and recommendation changes", () => {

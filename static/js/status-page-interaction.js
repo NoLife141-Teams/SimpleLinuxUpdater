@@ -1326,7 +1326,12 @@
                 visibleSelectedNames,
                 hiddenSelectedNames,
                 visibleSelectedServers: cloneValue(pageServers.filter(server => selectedServerNames.has(server.name))),
-                drawer: cloneValue(drawer),
+                drawer: {
+                    open: drawer.open,
+                    serverName: drawer.serverName,
+                    tab: drawer.tab,
+                    logFollow: drawer.logFollow
+                },
                 pendingUpdates: cloneValue(pendingUpdatesInteraction.view(serversByName.get(drawer.serverName))),
                 jobLogs: Object.fromEntries(Array.from(jobLogsByServer.entries()).map(([name, state]) => [name, {
                     jobId: state.jobId,

@@ -1876,7 +1876,13 @@ func registerPublicRoutes(r *gin.Engine, deps AppDeps) {
 func registerProtectedPageRoutes(r *gin.Engine, deps AppDeps) {
 	r.GET("/", func(c *gin.Context) {
 		setNoStoreHeaders(c)
-		view := operatorShellForContext(c, "status", "Status")
+		view := struct {
+			operatorApplicationShellView
+			LinkedServerIdentity string
+			LinkedServerError    string
+		}{
+			operatorApplicationShellView: operatorShellForContext(c, "status", "Status"),
+		}
 		if identity := c.Query("server_identity"); identity != "" {
 			view.LinkedServerIdentity = identity
 			if _, exists := deps.ServerState.InventoryIdentities()[identity]; !exists {

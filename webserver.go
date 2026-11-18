@@ -313,6 +313,9 @@ func ensureSchema(db *sql.DB) error {
 	if err := ensureJobSchema(db); err != nil {
 		return err
 	}
+	if _, err := db.Exec(statusBatchSchema); err != nil {
+		return err
+	}
 	return ensureUpdatePolicySchema(db)
 }
 
@@ -1079,59 +1082,66 @@ func handleServerFactsRefreshWithDeps(c *gin.Context, deps AppDeps) {
 	if state == nil {
 		state = globalServerState()
 	}
-	if state.CurrentStatusSnapshot(name) == nil {
-		audit(c, serverFactsRefreshAction, "server", name, "failure", "Server not found", nil)
-		c.JSON(http.StatusNotFound, gin.H{"error": "Server not found"})
+	record, failure := runServerFactsRefresh(c.Request.Context(), deps, state, name, "", func(status, message string, meta map[string]any) {
+		audit(c, serverFactsRefreshAction, "server", name, status, message, meta)
+	})
+	if failure.statusCode != http.StatusOK {
+		writeServerActionLifecycleResult(c, failure)
 		return
 	}
+	c.JSON(http.StatusOK, record)
+}
+
+func runServerFactsRefresh(ctx context.Context, deps AppDeps, state *serverpkg.State, name, expectedIdentity string, recordAudit func(string, string, map[string]any)) (serverFactsRecord, serverActionLifecycleResult) {
+	if state.CurrentStatusSnapshot(name) == nil {
+		recordAudit("failure", "Server not found", nil)
+		return serverFactsRecord{}, jsonResult(http.StatusNotFound, "Server not found")
+	}
 	if active, status := state.ActionStatusInProgress(name); active {
-		audit(c, serverFactsRefreshAction, "server", name, "failure", "Server action already in progress", map[string]any{"status": status})
-		c.JSON(http.StatusConflict, gin.H{"error": "wait for the active server action to finish before refreshing host facts"})
-		return
+		recordAudit("failure", "Server action already in progress", map[string]any{"status": status})
+		return serverFactsRecord{}, jsonResult(http.StatusConflict, "wait for the active server action to finish before refreshing host facts")
 	}
 	serverForReadiness, found := serverByName(state, name)
 	if !found {
-		audit(c, serverFactsRefreshAction, "server", name, "failure", "Server not found", nil)
-		c.JSON(http.StatusNotFound, gin.H{"error": "Server not found"})
-		return
+		recordAudit("failure", "Server not found", nil)
+		return serverFactsRecord{}, jsonResult(http.StatusNotFound, "Server not found")
 	}
 	readiness := deps.MaintenanceReadiness([]Server{serverForReadiness})[serverForReadiness.Name]
 	if !readiness.Ready {
-		audit(c, serverFactsRefreshAction, "server", name, "ignored", readiness.Message, map[string]any{"reason_code": readiness.Code})
-		c.JSON(http.StatusConflict, gin.H{"error": readiness.Message})
-		return
+		recordAudit("ignored", readiness.Message, map[string]any{"reason_code": readiness.Code})
+		return serverFactsRecord{}, jsonResult(http.StatusConflict, readiness.Message)
 	}
-	server, preRefreshStatus, err := state.BeginTransientAction(name, "facts_refresh")
+	server, preRefreshStatus, err := state.BeginTransientActionForIdentity(name, "facts_refresh", expectedIdentity)
+	if errors.Is(err, serverpkg.ErrIdentityChanged) {
+		message := "The server has changed. Review the current server before refreshing host facts."
+		recordAudit("ignored", message, map[string]any{"reason_code": serverpkg.MaintenanceReadinessIdentityChanged})
+		return serverFactsRecord{}, jsonResult(http.StatusConflict, message)
+	}
 	if errors.Is(err, serverpkg.ErrDisabled) {
-		audit(c, serverFactsRefreshAction, "server", name, "ignored", err.Error(), map[string]any{"reason_code": serverpkg.MaintenanceReadinessDisabled})
-		c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
-		return
+		recordAudit("ignored", err.Error(), map[string]any{"reason_code": serverpkg.MaintenanceReadinessDisabled})
+		return serverFactsRecord{}, jsonResult(http.StatusConflict, err.Error())
 	}
 	if errors.Is(err, sql.ErrNoRows) {
-		audit(c, serverFactsRefreshAction, "server", name, "failure", "Server not found", nil)
-		c.JSON(http.StatusNotFound, gin.H{"error": "Server not found"})
-		return
+		recordAudit("failure", "Server not found", nil)
+		return serverFactsRecord{}, jsonResult(http.StatusNotFound, "Server not found")
 	}
 	if errors.Is(err, errActionInProgress) {
 		_, status := state.ActionStatusInProgress(name)
-		audit(c, serverFactsRefreshAction, "server", name, "failure", "Server action already in progress", map[string]any{"status": status})
-		c.JSON(http.StatusConflict, gin.H{"error": "wait for the active server action to finish before refreshing host facts"})
-		return
+		recordAudit("failure", "Server action already in progress", map[string]any{"status": status})
+		return serverFactsRecord{}, jsonResult(http.StatusConflict, "wait for the active server action to finish before refreshing host facts")
 	}
 	if err != nil {
-		audit(c, serverFactsRefreshAction, "server", name, "failure", "Facts refresh unavailable", map[string]any{"error": err.Error()})
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to start host facts refresh"})
-		return
+		recordAudit("failure", "Facts refresh unavailable", map[string]any{"error": err.Error()})
+		return serverFactsRecord{}, jsonResult(http.StatusInternalServerError, "failed to start host facts refresh")
 	}
 	defer state.RestoreStatusSnapshot(name, preRefreshStatus)
 
-	record, err := refreshServerFactsWithUpdateDeps(c.Request.Context(), server, updateServiceEnsureDeps(deps.UpdateService))
+	record, err := refreshServerFactsWithUpdateDeps(ctx, server, updateServiceEnsureDeps(deps.UpdateService))
 	if err != nil {
-		audit(c, serverFactsRefreshAction, "server", name, "failure", "Facts refresh failed", map[string]any{"error": err.Error()})
-		c.JSON(http.StatusBadGateway, gin.H{"error": fmt.Sprintf("failed to refresh host facts: %v", err)})
-		return
+		recordAudit("failure", "Facts refresh failed", map[string]any{"error": err.Error()})
+		return serverFactsRecord{}, jsonResult(http.StatusBadGateway, fmt.Sprintf("failed to refresh host facts: %v", err))
 	}
-	audit(c, serverFactsRefreshAction, "server", name, "success", "Host facts refreshed", map[string]any{
+	recordAudit("success", "Host facts refreshed", map[string]any{
 		"collected_at":                    record.CollectedAt,
 		"disk_status":                     record.DiskStatus,
 		"apt_status":                      record.AptStatus,
@@ -1141,7 +1151,7 @@ func handleServerFactsRefreshWithDeps(c *gin.Context, deps AppDeps) {
 		"running_kernel_version":          record.RunningKernelVersion,
 		"latest_installed_kernel_version": record.LatestInstalledKernelVersion,
 	})
-	c.JSON(http.StatusOK, record)
+	return record, serverActionLifecycleResult{statusCode: http.StatusOK, body: map[string]any{"message": "Host facts refreshed"}}
 }
 
 func handleDashboardSummaryWithService(c *gin.Context, service *ObservabilityService, now func() time.Time) {
@@ -2153,6 +2163,7 @@ func registerServerAndActionRoutes(r *gin.Engine, deps AppDeps) {
 	registerServerInventoryImportRoutes(r, deps, inventoryCommands)
 	registerServerInventoryBulkRoutes(r, deps, inventoryCommands)
 	registerServerAvailabilityRoutes(r, deps, inventoryCommands)
+	registerStatusBatchRoutes(r, deps)
 	registerServerOnboardingRoutes(r, deps)
 	serverState := func() *serverpkg.State {
 		return deps.ServerState

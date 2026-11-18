@@ -1149,6 +1149,9 @@ test("bulk actions execute immediately, skip ineligible hosts, and report partia
     const failureNotice = page.locator('#app-feedback-region[role="alert"]');
     await expect(failureNotice).toContainText("fail-sec-host: backend down");
     await expect(failureNotice).not.toContainText("no-sec-host: backend down");
+    const batchPanel = page.locator("#status-batch-panel");
+    await expect(batchPanel).toContainText("backend down");
+    const savedBatchURL = await batchPanel.getByRole("link", { name: "Link to this batch" }).getAttribute("href");
 
     await page
         .locator(
@@ -1176,6 +1179,13 @@ test("bulk actions execute immediately, skip ineligible hosts, and report partia
 
     await page.locator("#refresh-all-facts").click();
     await expect.poll(() => state.refreshIdle || 0).toBe(1);
+
+    await page.goto(savedBatchURL);
+    await expect(batchPanel).toContainText("Approve security updates");
+    await expect(batchPanel.locator("li").filter({ hasText: "fail-sec-host" })).toContainText("Refused");
+    await expect(batchPanel.locator("li").filter({ hasText: "ok-sec-host" })).toContainText("Completed");
+    await expect(batchPanel.getByRole("button", { name: "Retry fail-sec-host", exact: true })).toBeVisible();
+    await expect(batchPanel).not.toContainText("no-sec-host");
 });
 
 test("bulk kept-back approval requires individual consent for packages that will be removed", async ({ page }) => {

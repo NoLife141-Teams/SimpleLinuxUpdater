@@ -504,6 +504,10 @@ func (s *State) RestoreAdmittedAction(name string, generation uint64, previous *
 }
 
 func (s *State) BeginTransientAction(name, newStatus string) (Server, *ServerStatus, error) {
+	return s.BeginTransientActionForIdentity(name, newStatus, "")
+}
+
+func (s *State) BeginTransientActionForIdentity(name, newStatus, expectedIdentity string) (Server, *ServerStatus, error) {
 	s.Lock()
 	defer s.Unlock()
 	status, exists := (*s.statusMap)[name]
@@ -516,6 +520,9 @@ func (s *State) BeginTransientAction(name, newStatus string) (Server, *ServerSta
 	server, found := s.FindByNameLocked(name)
 	if !found {
 		return Server{}, nil, sql.ErrNoRows
+	}
+	if expectedIdentity != "" && server.Identity != expectedIdentity {
+		return Server{}, nil, ErrIdentityChanged
 	}
 	if server.Disabled {
 		return Server{}, nil, ErrDisabled

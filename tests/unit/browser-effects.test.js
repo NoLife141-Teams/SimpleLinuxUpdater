@@ -328,47 +328,61 @@ test("Status log recovery bounds reads, starts the open job first and drops supe
     adapter.destroy();
 });
 
-test("successful bulk commands release ignored response bodies before destruction", async () => {
+test("Status releases completed batch responses before destruction", async () => {
     const vm = require("node:vm"), fs = require("node:fs");
-    for (const buttonID of ["bulk-update", "refresh-all-facts"]) {
-        const buttons = new Map(), signals = [], completed = deferred();
-        const names = Array.from({ length: 20 }, (_, index) => `host-${index}`);
-        const context = {
-            BrowserEffects: {
-                create: () => create({ fetch: async (_url, options) => {
-                    signals.push(options.signal);
-                    return new Response('{"ok":true}');
-                } }),
-            },
-            window: { notifyApp() {} },
-            document: { getElementById(id) {
-                if (!buttons.has(id)) buttons.set(id, new EventTarget());
-                return buttons.get(id);
-            } },
-            console,
-        };
-        vm.runInNewContext(fs.readFileSync(
-            require.resolve("../../static/js/index-bulk-actions.js"), "utf8",
-        ), context);
-        const adapter = context.StatusBulkActions.create({
-            getStatusView: () => ({ actions: { bulk: null, inFlight: [{ operationId: "bulk" }] } }),
-            statusInteraction: { planBulkAction: () => ({
-                id: "bulk", selectedNames: names, visibleNames: names,
-                eligibleNames: names, hiddenNames: [], ineligible: [], skippedHosts: [],
-                payloadFacts: {},
-            }) },
-            dispatchStatusInteraction: (event) => {
-                if (event.type === "actionCompleted") completed.resolve();
-            },
-        });
-        adapter.init();
-        buttons.get(buttonID).dispatchEvent(new Event("click"));
-        await completed.promise;
-        adapter.destroy();
-        assert.equal(signals.length, 20);
-        assert.equal(signals.filter((signal) => signal.aborted).length, 0,
-            `${buttonID} must release completed command responses`);
-    }
+    const buttons = new Map(), signals = [], completed = deferred();
+    const hosts = [{ name: "synthetic", state: "completed" }];
+    const submissionIDs = [];
+    const context = {
+        BrowserEffects: {
+            create: () => create({ fetch: async (url, options) => {
+                signals.push(options.signal);
+                if (url.endsWith("/latest")) return new Response('{"batch":null}');
+                if (options.method === "POST") {
+                    const { id } = JSON.parse(options.body);
+                    submissionIDs.push(id);
+                    if (submissionIDs.length === 1) throw new TypeError("response lost");
+                    return Response.json({ id });
+                }
+                return Response.json({ batch: { id: submissionIDs[0], hosts } });
+            } }),
+        },
+        window: {
+            notifyApp() {}, canUseScope() { return true; }, location: { search: "" },
+            crypto: require("node:crypto").webcrypto,
+        },
+        URLSearchParams,
+        encodeURIComponent,
+        document: { getElementById(id) {
+            if (!buttons.has(id)) buttons.set(id, new EventTarget());
+            return buttons.get(id);
+        } },
+        console,
+    };
+    vm.runInNewContext(fs.readFileSync(
+        require.resolve("../../static/js/index-bulk-actions.js"), "utf8",
+    ), context);
+    const adapter = context.StatusBulkActions.create({
+        getStatusView: () => ({ actions: { bulk: null, inFlight: [{ operationId: "bulk" }] } }),
+        statusInteraction: { planBulkAction: () => ({
+            id: "bulk", actionKey: "update", selectedNames: ["synthetic"],
+            eligibleNames: ["synthetic"], skippedHosts: [],
+            payloadFacts: { synthetic: { serverIdentity: "identity" } },
+        }) },
+        renderHTML() {},
+        escapeHtml: String,
+        dispatchStatusInteraction: (event) => {
+            if (event.type === "actionCompleted") completed.resolve();
+        },
+    });
+    adapter.init();
+    buttons.get("bulk-update").dispatchEvent(new Event("click"));
+    await completed.promise;
+    adapter.destroy();
+    assert.equal(signals.length, 4);
+    assert.equal(submissionIDs.length, 2);
+    assert.equal(submissionIDs[0], submissionIDs[1]);
+    assert.equal(signals.filter(signal => signal.aborted).length, 0);
 });
 
 test("discarding an unused response preserves cancellation and stale rejection for a pending JSON body", async () => {

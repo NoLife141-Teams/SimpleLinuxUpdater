@@ -7,7 +7,7 @@
     <link rel="icon" type="image/png" href="/static/logo.png">
     <link rel="stylesheet" href="/static/css/base.css?v=select-spacing-global-20261104">
     <link rel="stylesheet" href="/static/css/pending-updates.css?v=top-pagination-20261103">
-    <link rel="stylesheet" href="/static/css/index.css?v=bulk-removal-review-576">
+    <link rel="stylesheet" href="/static/css/index.css?v=durable-status-batches-578">
     <link rel="stylesheet" href="/static/css/status-polish.css?v=select-spacing-global-20261104">
 <link rel="stylesheet" href="/static/css/package-deferrals.css?v=ui-components-515-20261029">
     <link rel="stylesheet" href="/static/css/operator-workspace.css?v=admin-horizontal-20261104">
@@ -268,6 +268,13 @@
                     </div>
                     </section>
 
+                    <details class="supporting-details" id="status-batch-panel" hidden>
+                        <summary>Maintenance batch <strong id="status-batch-label"></strong></summary>
+                        <div class="supporting-details-body">
+                            <a id="status-batch-link" href="/">Link to this batch</a>
+                            <ul id="status-batch-rows" aria-label="Batch results by host"></ul>
+                        </div>
+                    </details>
                     <details class="supporting-details fade-in" id="status-supporting-details">
                         <summary>
                             <span class="supporting-summary-copy">
@@ -426,16 +433,16 @@
     <script src="/static/js/dashboard-projection-consumption.js?v=status-projection-569"></script>
     <script src="/static/js/pending-updates-interaction.js?v=dense-packages-20261103"></script>
     <script src="/static/js/pending-updates-view.js?v=top-pagination-20261103"></script>
-    <script src="/static/js/status-page-interaction.js?v=bounded-status-sse-577"></script>
+    <script src="/static/js/status-page-interaction.js?v=durable-status-batches-578"></script>
     <script src="/static/js/status-formatting.js?v=job-log-stream-20260724"></script>
     <script src="/static/js/status-transport.js?v=bounded-status-sse-577"></script>
     <script src="/static/js/status-rendering.js?v=apt-update-cve-scope-20261103"></script>
     <script src="/static/js/status-drawer-adapter.js?v=quality-pass-20260711b"></script>
     <script src="/static/js/status-table-adapter.js?v=quality-pass-20260711b"></script>
     <script src="/static/js/status-action-adapter.js?v=bulk-removal-review-576"></script>
-    <script src="/static/js/index-bulk-actions.js?v=bulk-removal-review-576"></script>
+    <script src="/static/js/index-bulk-actions.js?v=durable-status-batches-578"></script>
     <script src="/static/js/package-deferrals.js?v=frontend-isolation-20261027"></script>
 <script src="/static/js/status-snapshot-adapter.js?v=bounded-status-sse-577"></script>
-<script src="/static/js/index.js?v=bounded-status-sse-577"></script>
+<script src="/static/js/index.js?v=durable-status-batches-578"></script>
 </body>
 </html>

@@ -12,14 +12,15 @@ import (
 )
 
 type serverActionLifecycle struct {
-	validateRemediation  func(*ServerStatus, Server, string, bool) error
-	serverState          *serverpkg.State
-	updateService        *UpdateService
-	currentJobManager    func() *JobManager
-	startJobRunner       func(func() *JobManager, string, func(), ...func())
-	loadRetryPolicy      func() RetryPolicy
-	audit                func(action, targetType, targetName, status, message string, meta map[string]any)
-	maintenanceReadiness func(Server) serverpkg.MaintenanceReadiness
+	expectedServerIdentity string
+	validateRemediation    func(*ServerStatus, Server, string, bool) error
+	serverState            *serverpkg.State
+	updateService          *UpdateService
+	currentJobManager      func() *JobManager
+	startJobRunner         func(func() *JobManager, string, func(), ...func())
+	loadRetryPolicy        func() RetryPolicy
+	audit                  func(action, targetType, targetName, status, message string, meta map[string]any)
+	maintenanceReadiness   func(Server) serverpkg.MaintenanceReadiness
 }
 
 type serverActionLifecycleResult struct {
@@ -97,14 +98,19 @@ func (l *serverActionLifecycle) StartUpdate(name, actor, clientIP, expectedServe
 }
 
 func (l *serverActionLifecycle) StartAutoremove(name, actor, clientIP string) serverActionLifecycleResult {
+	return l.startAutoremove(name, actor, clientIP, "")
+}
+
+func (l *serverActionLifecycle) startAutoremove(name, actor, clientIP, expectedIdentity string) serverActionLifecycleResult {
 	return l.startAction(name, actor, clientIP, "", serverActionStartSpec{
-		status:          "autoremove",
-		packageMutation: true,
-		jobKind:         jobKindAutoremove,
-		auditAction:     "autoremove.start",
-		startFailure:    "Failed to start autoremove",
-		createFailure:   "Failed to create autoremove job",
-		successMessage:  "Autoremove started",
+		expectedServerIdentity: expectedIdentity,
+		status:                 "autoremove",
+		packageMutation:        true,
+		jobKind:                jobKindAutoremove,
+		auditAction:            "autoremove.start",
+		startFailure:           "Failed to start autoremove",
+		createFailure:          "Failed to create autoremove job",
+		successMessage:         "Autoremove started",
 		runWithJob: func(service *UpdateService, server Server, actor, clientIP string, policy RetryPolicy, jobID, _ string) {
 			service.RunAutoremoveJob(AutoremoveRunRequest{
 				Server:   server,
@@ -271,6 +277,9 @@ func (l *serverActionLifecycle) startAction(name, actor, clientIP, sudoPassword 
 	if err != nil {
 		if errors.Is(err, serverpkg.ErrIdentityChanged) {
 			message := "The server has changed. Review the current server before starting an update check."
+			if spec.jobKind != jobKindUpdate {
+				message = "The server has changed. Review the current server before starting maintenance."
+			}
 			retryMeta["reason_code"] = serverpkg.MaintenanceReadinessIdentityChanged
 			l.recordAudit(spec.auditAction, name, "ignored", message, retryMeta)
 			return jsonResult(http.StatusConflict, message)
@@ -314,6 +323,7 @@ func (l *serverActionLifecycle) startAction(name, actor, clientIP, sudoPassword 
 	}, func() {
 		l.serverState.RestoreAdmittedAction(name, admittedGeneration, preStartStatus)
 	})
+	retryMeta["job_id"] = job.ID
 	l.recordAudit(spec.auditAction, name, "started", spec.successMessage, retryMeta)
 	return serverActionLifecycleResult{
 		statusCode: http.StatusOK,

@@ -1378,6 +1378,16 @@
             };
         }
 
+        function planBatchRetry(actionKey, name, expectedIdentity) {
+            const server = serversByName.get(name);
+            if (!server || !expectedIdentity || server.server_identity !== expectedIdentity
+                || (actionKey === "approve_security_kept_back" && keptBackApprovalHasRemovals(server))) {
+                return null;
+            }
+            const plan = planAction(name, actionKey);
+            return plan.enabled && plan.payloadFacts.serverIdentity === expectedIdentity ? plan.payloadFacts : null;
+        }
+
         function actionLifecycleEffects(event, status) {
             const effects = [{ type: "render", scope: "serverState", priority: "immediate" }];
             const refreshStreams = Array.isArray(event.refreshStreams) ? event.refreshStreams : ["servers"];
@@ -1506,6 +1516,7 @@
             isCurrentJobLog,
             isOpenJobLog,
             planAction,
+            planBatchRetry,
             planBulkAction
         });
     }

@@ -29,6 +29,8 @@ func buildRoutePermissions() map[string]routePermission {
 	add("inventory:write", false, "GET", "/manage")
 	add("operational:read", true, "GET", "/api/servers/:name/remediation", "/api/servers/:name/remediation/:plan_id", "/api/servers/:name/remediation/:plan_id/evidence", "/api/security-actions", "/api/vulnerabilities", "/api/vulnerabilities/:id", "/api/vulnerabilities/plan", "/api/servers", "/api/servers/:name/vulnerabilities", "/api/dashboard/summary", "/api/observability/summary", "/api/observability/health-trends", "/api/app-settings/timezone", "/api/package-deferral-snapshots/:revision", "/api/servers/:name/package-deferrals")
 	add("logs:read", true, "GET", "/api/jobs/:id", "/api/jobs/:id/logs", "/api/reports/jobs/:id")
+	add("logs:read", false, "GET", "/api/status/batches/latest", "/api/status/batches/:id")
+	add("maintenance:write", false, "POST", "/api/status/batches")
 	add("audit:read", true, "POST", "/api/audit-events/export")
 	add("audit:read", true, "GET", "/api/audit-events", "/api/reports/audit/:id")
 	add("maintenance:write", true, "POST", "/api/servers/:name/remediation/prepare", "/api/servers/:name/remediation/:plan_id/retry", "/api/servers/:name/vulnerabilities/reviews", "/api/update/:name", "/api/autoremove/:name", "/api/repair/:name", "/api/reboot/:name", "/api/servers/:name/facts/refresh", "/api/servers/:name/vulnerabilities/scan", "/api/servers/:name/vulnerabilities/scans/:scan_id/cancel", "/api/servers/:name/postchecks/test")

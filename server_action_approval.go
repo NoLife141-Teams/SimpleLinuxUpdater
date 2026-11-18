@@ -43,6 +43,12 @@ func (l *serverActionLifecycle) ApproveFullUpgrade(name string, confirmRemovals 
 func (l *serverActionLifecycle) withPendingApproval(name string, identity serverActionApprovalIdentity, apply func(*ServerStatus) serverActionLifecycleResult) serverActionLifecycleResult {
 	l.serverState.Lock()
 	defer l.serverState.Unlock()
+	if l.expectedServerIdentity != "" {
+		server, found := l.serverState.FindByNameLocked(name)
+		if !found || server.Identity != l.expectedServerIdentity || server.Disabled {
+			return jsonResult(http.StatusConflict, "The server has changed or is unavailable. Review the current server.")
+		}
+	}
 	status := l.serverState.StatusMap()[name]
 	if status == nil {
 		return jsonResult(http.StatusNotFound, "Server not found")

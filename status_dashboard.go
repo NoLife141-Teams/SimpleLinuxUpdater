@@ -128,6 +128,7 @@ func handleStatusHostDetail(c *gin.Context, state *serverpkg.State) {
 
 	status := state.InventoryStatusSnapshot(name)
 	if status == nil || status.ServerIdentity != identity ||
+		(c.Query("require_pending_approval") == "true" && status.Status != "pending_approval") ||
 		status.JobID != c.Query("job_id") || status.ApprovalGeneration != generation ||
 		status.UpgradePlan.PackageDeferrals.Revision != c.Query("deferral_revision") ||
 		status.RemediationDigest != c.Query("remediation_digest") {

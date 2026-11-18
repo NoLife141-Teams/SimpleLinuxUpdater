@@ -18,11 +18,12 @@
         let jobLogDrainScheduled = false;
         const compactProjection = { headers: { "X-SLU-Status-Projection": "compact" } };
 
-        async function fetchHostDetail(name, serverIdentity, approvalIdentity, view) {
+        async function fetchHostDetail(name, serverIdentity, approvalIdentity, view, requirePendingApproval = false) {
             const lifetime = lifecycle.capture();
             const query = new URLSearchParams({
                 ...approvalIdentity, server_name: name, server_identity: serverIdentity, view,
             });
+            if (requirePendingApproval) query.set("require_pending_approval", "true");
             const response = await fetch(`/api/servers/status-detail?${query}`);
             if (!lifecycle.isCurrent(lifetime)) return;
             if (!response.ok) {
@@ -39,7 +40,8 @@
             const lifetime = lifecycle.capture();
             let snapshot, stale = false;
             try {
-                snapshot = await fetchHostDetail(effect.name, effect.serverIdentity, effect.approvalIdentity, effect.view);
+                const { name, serverIdentity, approvalIdentity, view, requirePendingApproval } = effect;
+                snapshot = await fetchHostDetail(name, serverIdentity, approvalIdentity, view, requirePendingApproval);
             } catch (error) {
                 if (error?.name === "AbortError") return;
                 stale = error.status === 409;

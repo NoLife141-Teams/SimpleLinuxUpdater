@@ -435,6 +435,24 @@ func TestStatusHostDetailBindsSnapshotAndRedactsByRole(t *testing.T) {
 		}
 		query.Set(key, current)
 	}
+
+	query.Set("view", "packages")
+	query.Set("require_pending_approval", "true")
+	if detail := read("viewer"); len(detail.PendingUpdates) != 20 {
+		t.Fatal("reader lost the linked approval plan")
+	}
+	// Approval can start after the compact snapshot, without changing any of
+	// the values that identified the packages shown to the operator.
+	status.Status = "approved"
+	a.deps.ServerState.RestoreStatusSnapshot(name, status)
+	if rec := request("viewer"); rec.Code != http.StatusConflict {
+		t.Errorf("linked detail returned HTTP %d after approval", rec.Code)
+	}
+	query.Del("require_pending_approval")
+	query.Set("view", "logs")
+	if detail := read("admin"); detail.Logs != status.Logs {
+		t.Fatal("ordinary detail lost the accepted job's logs")
+	}
 }
 
 // Opt-in measurements keep shared CI independent of absolute timing.

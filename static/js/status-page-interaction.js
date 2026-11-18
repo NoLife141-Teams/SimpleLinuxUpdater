@@ -648,7 +648,10 @@
             if (view === "logs" && options.canReadLogs === false) return null;
             const identity = approvalIdentity(server);
             const key = hostDetailKey(server, view, identity);
-            return { name, view, key, serverIdentity: server.server_identity, approvalIdentity: identity };
+            return {
+                name, view, key, serverIdentity: server.server_identity, approvalIdentity: identity,
+                ...(isDrawer && drawer.fromApprovalLink ? { requirePendingApproval: true } : {}),
+            };
         }
 
         function hostDetailKey(server, view, identity = approvalIdentity(server)) {

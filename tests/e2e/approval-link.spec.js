@@ -77,7 +77,9 @@ test("approval link distinguishes stale plans and closes the drawer when the lin
     let detailConflict = false;
     await page.route("**/api/servers/status-detail?**", async route => {
         const request = new URL(route.request().url());
-        if (request.searchParams.get("view") !== "packages") return route.continue();
+        if (request.searchParams.get("view") !== "packages" || request.searchParams.get("require_pending_approval") !== "true") {
+            return route.continue();
+        }
         detailConflict = true;
         await route.fulfill({ status: 409, json: { error: "Host status changed." } });
     });

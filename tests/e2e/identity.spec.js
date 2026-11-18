@@ -228,6 +228,10 @@ test.describe("named identities on isolated installations", () => {
         await expect(page.getByRole("button", { name: "Create personal token" })).toBeDisabled();
         await expect(page.locator("#recovery-codes")).not.toBeEmpty();
         await page.locator("#recovery-dismiss").click();
+        await expect(page).toHaveURL(`${baseURL}/login`);
+        const expiredLink = "/?approval_generation=1&job_id=expired&server_identity=removed";
+        await page.goto(`${baseURL}${expiredLink}`);
+        await expect(page).toHaveURL(url => url.pathname === "/login" && url.searchParams.get("return_to") === expiredLink);
         await page.locator("#username").fill("admin");
         await page.locator("#password").fill(password);
         await page
@@ -240,7 +244,8 @@ test.describe("named identities on isolated installations", () => {
         expect(incomplete.authenticated).toBe(false);
         await page.locator("#mfa-login-code").fill(codes[0]);
         await page.getByRole("button", { name: "Verify and sign in" }).click();
-        await expect(page).toHaveURL(`${baseURL}/`);
+        await expect(page).toHaveURL(`${baseURL}${expiredLink}`);
+        await expect(page.locator("#linked-server-message")).toContainText("removed or replaced");
         await page.goto(`${baseURL}/account`);
         await expect(page.locator("#mfa-status")).toHaveText(
             "Authenticator enabled.",

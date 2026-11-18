@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"net/url"
 	"sync"
 	"time"
 
@@ -65,6 +66,7 @@ type AppDeps struct {
 	MetricsRateLimiter        *AuthRateLimiter
 
 	TrustedProxies                    func() []string
+	PublicOrigin                      *url.URL
 	Now                               func() time.Time
 	JobTimestampNow                   func() string
 	LoadRetryPolicy                   func() RetryPolicy

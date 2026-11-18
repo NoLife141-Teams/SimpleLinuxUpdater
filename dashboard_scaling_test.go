@@ -698,8 +698,40 @@ func readScalingEvent(t *testing.T, s *bufio.Scanner) {
 	t.Fatalf("SSE ended before event: %v", s.Err())
 }
 
-// Run the historical browser suite against the real router with empty owned
-// persistence, normal setup/auth and no process startup workers or SSH transport.
+func seedBrowserApprovalLink(t *testing.T, deps AppDeps) {
+	t.Helper()
+	server := Server{Name: "renamed-edge", Host: "edge.invalid", Port: 22, User: "synthetic", Identity: "stable-notification-host"}
+	if _, err := deps.DB().Exec(`INSERT INTO servers(name,host,port,user,pass_enc,identity) VALUES(?,?,?,?,'',?)`,
+		server.Name, server.Host, server.Port, server.User, server.Identity); err != nil {
+		t.Fatal(err)
+	}
+	job := JobRecord{
+		ID: "notification-job", Kind: jobKindUpdate, ServerName: server.Name, Actor: "synthetic",
+		Status: jobStatusWaitingApproval, Phase: jobPhaseApprovalWait,
+		MetaJSON: `{"approval_generation":4,"server_identity":"stable-notification-host"}`,
+	}
+	if err := deps.CurrentJobManager().ImportJobRecord(job); err != nil {
+		t.Fatal(err)
+	}
+	state := deps.ServerState
+	state.Lock()
+	defer state.Unlock()
+	state.SetServers([]Server{server})
+	status := serverpkg.NewIdleStatus(server)
+	status.Status = "pending_approval"
+	status.JobID = job.ID
+	status.ApprovalGeneration = 4
+	status.PendingUpdates = []serverpkg.PendingUpdate{
+		{Package: "openssl", CurrentVersion: "3.0.1", CandidateVersion: "3.0.2", Security: true},
+		{Package: "curl", CurrentVersion: "8.4.0", CandidateVersion: "8.5.0", Security: true},
+		{Package: "tzdata", CurrentVersion: "2026a", CandidateVersion: "2026b"},
+	}
+	status.UpgradePlan = serverpkg.UpgradePlan{StandardPackageCount: 3, StandardSecurityCount: 2, TotalSecurityCount: 2}
+	state.StatusMap()[server.Name] = status
+}
+
+// Run the browser suite against the real router with owned persistence, normal
+// setup/auth and no process startup workers or SSH transport.
 func TestDashboardScalingE2EServe(t *testing.T) {
 	addr := os.Getenv("SLU_SCALING_E2E_LISTEN")
 	if addr == "" {
@@ -710,6 +742,9 @@ func TestDashboardScalingE2EServe(t *testing.T) {
 		t.Fatal("E2E helper requires explicit IPv4 loopback")
 	}
 	a := newScalingRuntime(t, 0, false, false)
+	if os.Getenv("SLU_E2E_APPROVAL_LINK") == "1" {
+		seedBrowserApprovalLink(t, a.deps)
+	}
 	if os.Getenv("SLU_E2E_BACKUP_CATALOG") == "1" {
 		automation := a.deps.BackupAutomation
 		automation.deployment = backupAutomationDeployment{Directory: t.TempDir(), SecretFile: filepath.Join(t.TempDir(), "catalog-passphrase")}

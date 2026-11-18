@@ -13,7 +13,7 @@
             ? lifecycle.observer(root.ResizeObserver)
             : undefined;
         const LOG_BOTTOM_THRESHOLD = 20;
-        const canManageMaintenance = ["admin", "operator"].includes(document.body.dataset.accountRole);
+        const canApprove = window.canUseScope("approvals:write");
         const dashboardConsumption = window.DashboardProjectionConsumption;
         const statusFormatting = window.StatusFormatting;
         const statusRendering = window.StatusRendering.create(document);
@@ -30,6 +30,10 @@
         const statusInteraction = window.StatusPageInteraction.createStore({
             presentationFacts: dashboardConsumption.presentationFacts,
             linkedServerIdentity: document.body.dataset.linkedServerIdentity,
+            linkedApproval: {
+                jobId: document.body.dataset.linkedApprovalJob,
+                generation: document.body.dataset.linkedApprovalGeneration,
+            },
             canReadLogs: window.canUseScope("logs:read"),
         });
         window.statusPageInteraction = statusInteraction;
@@ -177,6 +181,11 @@
                     renderServerState();
                 } else if (effect.type === "revealLinkedServer") {
                     revealLinkedServer(effect);
+                } else if (effect.type === "openLinkedApproval") {
+                    syncDashboardFilterInputs();
+                    openDrawer(effect.name, "pending", true);
+                } else if (effect.type === "linkedApprovalUnavailable") {
+                    showLinkedApprovalUnavailable(effect);
                 } else if (effect.type === "dismissLinkedServer") {
                     document.getElementById("linked-server-message").hidden = true;
                     syncDashboardFilterInputs();
@@ -1747,6 +1756,19 @@
             lifecycle.requestAnimationFrame(() => (found ? heading : message).focus());
         }
 
+        function showLinkedApprovalUnavailable({ reason, closeDrawer: shouldCloseDrawer }) {
+            if (shouldCloseDrawer) closeDrawer();
+            const message = document.getElementById("linked-server-message");
+            message.textContent = {
+                removed: "The linked host was removed or replaced in the inventory.",
+                expired: "This approval has expired or is no longer pending.",
+                replaced: "This approval plan was replaced. Select the host in Status to review the current plan.",
+            }[reason];
+            message.hidden = false;
+            syncDashboardFilterInputs();
+            lifecycle.requestAnimationFrame(() => message.focus());
+        }
+
         function persistDashboardFilters(value) {
             try {
                 localStorage.setItem(
@@ -1902,14 +1924,14 @@
             lifecycle.setTimeout(updateSelectPageState, 0);
         }
 
-        function openDrawer(name, tab = "logs") {
+        function openDrawer(name, tab = "logs", fromApprovalLink = false) {
             if (!window.canUseScope("logs:read")) tab = "pending";
             const previousDrawer = getStatusView().drawer;
             if (previousDrawer.serverName !== name) {
                 drawerLogScrollTop = 0;
                 drawerPendingScrollTop = 0;
             }
-            dispatchStatusInteraction({ type: "drawerOpened", name, tab });
+            dispatchStatusInteraction({ type: "drawerOpened", name, tab, fromApprovalLink });
             renderDrawer();
             statusDrawerAdapter.open(
                 document.getElementById("status-drawer"),
@@ -2037,6 +2059,7 @@
             const safeStatus = safeStatusClass(server.status);
             const safeStatusText = escapeHtml(statusLabel(server.status));
             const isPendingApproval = server.status === "pending_approval";
+            const linkedPlanLoaded = !drawerState.fromApprovalLink || !!detail?.snapshot?.upgrade_plan;
             const hasPending = hasPendingUpdates(server);
             const driftReason = pendingApprovalDriftReason(server);
             const triage = getServerApprovalTriage(server);
@@ -2059,29 +2082,30 @@
             title.textContent = server.name || "Server details";
             statusContainer.innerHTML = `
 	                <span class="status-pill status-${safeStatus}">${safeStatusText}</span>
+	                ${drawerState.fromApprovalLink ? `<span class="drawer-status-note">Linked plan · Generation ${escapeHtml(String(server.approval_generation))}</span>` : ""}
 	                ${applicationPostchecksHtml(server, detail?.snapshot)}
  ${driftReason ? `<span class="drawer-status-note pending-drift-note" title="${escapeHtml(driftReason)}">${escapeHtml(driftReason)}</span>` : ""}
 	            `;
-            approvalActions.classList.toggle("hidden", !isPendingApproval);
+            approvalActions.classList.toggle("hidden", !isPendingApproval || !canApprove);
             drawerApproveAllBtn.textContent = `Approve (${approvalCounts.standard})`;
-            drawerApproveAllBtn.disabled = !triage.can_approve_all;
+            drawerApproveAllBtn.disabled = !canApprove || !linkedPlanLoaded || !triage.can_approve_all;
             drawerApproveSecurityBtn.textContent = securityApprovalLabel;
-            drawerApproveSecurityBtn.disabled = !triage.can_approve_security;
+            drawerApproveSecurityBtn.disabled = !canApprove || !linkedPlanLoaded || !triage.can_approve_security;
             drawerApproveKeptBackSecurityBtn.textContent = `Kept-back security (${keptBackSecurityCount})`;
             drawerApproveKeptBackSecurityBtn.disabled =
-                !canApproveKeptBackSecurity;
+                !canApprove || !linkedPlanLoaded || !canApproveKeptBackSecurity;
             drawerApproveKeptBackSecurityBtn.classList.toggle(
                 "hidden",
                 !canApproveKeptBackSecurity,
             );
             drawerApproveFullBtn.textContent = `Full upgrade (${approvalCounts.full})`;
-            drawerApproveFullBtn.disabled = !triage.can_approve_full;
+            drawerApproveFullBtn.disabled = !canApprove || !linkedPlanLoaded || !triage.can_approve_full;
             drawerApproveFullBtn.classList.toggle(
                 "hidden",
                 !triage.can_approve_full,
             );
 
-            pendingTabBtn.disabled = !hasPending;
+            pendingTabBtn.disabled = !hasPending && !drawerState.fromApprovalLink;
             pendingTabBtn.classList.toggle(
                 "active",
                 drawerState.tab === "pending",

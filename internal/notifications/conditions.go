@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // ConditionFact contains accepted domain facts only. Unknown observations must
@@ -242,8 +243,22 @@ func reminderIntent(state conditionState, settings Settings, now time.Time) (Del
 	if len(lines) == 0 {
 		return DeliveryIntent{}, false
 	}
-	message := fmt.Sprintf("%d unresolved conditions:\n%s", len(lines), strings.Join(lines, "\n"))
-	return DeliveryIntent{Action: EventReminder, TargetType: "fleet", TargetName: "SimpleLinuxUpdater", Status: "attention", Message: truncate(message, 3500), CreatedAt: now.Format(time.RFC3339Nano)}, true
+	const limit = 3500
+	const overflow = "\nMore conditions are available in Status or Administration."
+	var message strings.Builder
+	fmt.Fprintf(&message, "%d unresolved conditions:", len(lines))
+	remaining := limit - message.Len() - len(overflow)
+	for _, line := range lines {
+		size := utf8.RuneCountInString(line) + 1
+		if size > remaining {
+			message.WriteString(overflow)
+			break
+		}
+		message.WriteByte('\n')
+		message.WriteString(line)
+		remaining -= size
+	}
+	return DeliveryIntent{Action: EventReminder, TargetType: "fleet", TargetName: "SimpleLinuxUpdater", Status: "attention", Message: message.String(), CreatedAt: now.Format(time.RFC3339Nano)}, true
 }
 
 func (s *Service) conditionDeliveryEligible(ctx context.Context, row *outboxRow, settings Settings) (bool, error) {

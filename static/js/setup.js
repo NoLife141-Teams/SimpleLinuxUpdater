@@ -1,5 +1,6 @@
 const form = document.getElementById('setup-form');
 const errorBanner = document.getElementById('error-banner');
+const { returnTo, loginUrl } = document.body.dataset;
 
 if (!form || !errorBanner) {
     console.warn('setup.js: required elements #setup-form or #error-banner were not found.');
@@ -18,9 +19,9 @@ if (!form || !errorBanner) {
             const payload = await response.json();
             if (!payload.setup_required) {
                 if (payload.authenticated) {
-                    window.location.href = '/';
+                    window.location.href = returnTo;
                 } else {
-                    window.location.href = '/login';
+                    window.location.href = loginUrl;
                 }
             }
         } catch (_) {
@@ -48,7 +49,7 @@ if (!form || !errorBanner) {
                 body: JSON.stringify({ username, password }),
             });
             if (response.status === 409) {
-                window.location.href = '/login';
+                window.location.href = loginUrl;
                 return;
             }
             if (!response.ok) {
@@ -56,7 +57,7 @@ if (!form || !errorBanner) {
                 showError(payload.error || 'Setup failed.');
                 return;
             }
-            window.location.href = '/';
+            window.location.href = returnTo;
         } catch (error) {
             showError(error?.message || 'Setup failed.');
         }

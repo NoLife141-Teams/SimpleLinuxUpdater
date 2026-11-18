@@ -7,7 +7,7 @@
     <link rel="icon" type="image/png" href="/static/logo.png">
     <link rel="stylesheet" href="/static/css/base.css?v=select-spacing-global-20261104">
     <link rel="stylesheet" href="/static/css/pending-updates.css?v=top-pagination-20261103">
-    <link rel="stylesheet" href="/static/css/index.css?v=compact-cve-20261103b">
+    <link rel="stylesheet" href="/static/css/index.css?v=bulk-removal-review-576">
     <link rel="stylesheet" href="/static/css/status-polish.css?v=select-spacing-global-20261104">
 <link rel="stylesheet" href="/static/css/package-deferrals.css?v=ui-components-515-20261029">
     <link rel="stylesheet" href="/static/css/operator-workspace.css?v=admin-horizontal-20261104">
@@ -89,6 +89,7 @@
 	                        <button class="inline-btn" type="button" id="bulk-autoremove" disabled>Autoremove</button>
 	                        <button class="inline-btn facts-refresh-action" type="button" id="refresh-all-facts" aria-label="Refresh facts for visible selected hosts" title="Select visible hosts first">Refresh facts</button>
 	                        <p class="bulk-hint" id="bulk-action-hint" role="status" aria-live="polite" aria-atomic="true">No hosts selected</p>
+                            <div id="bulk-removal-review" hidden></div>
 	                    </div>
 	                </div>
 	                <div class="rail-section">
@@ -425,16 +426,16 @@
     <script src="/static/js/dashboard-projection-consumption.js?v=status-projection-569"></script>
     <script src="/static/js/pending-updates-interaction.js?v=dense-packages-20261103"></script>
     <script src="/static/js/pending-updates-view.js?v=top-pagination-20261103"></script>
-    <script src="/static/js/status-page-interaction.js?v=status-projection-569"></script>
+    <script src="/static/js/status-page-interaction.js?v=bulk-removal-review-576"></script>
     <script src="/static/js/status-formatting.js?v=job-log-stream-20260724"></script>
     <script src="/static/js/status-transport.js?v=frontend-isolation-20261027"></script>
     <script src="/static/js/status-rendering.js?v=apt-update-cve-scope-20261103"></script>
     <script src="/static/js/status-drawer-adapter.js?v=quality-pass-20260711b"></script>
     <script src="/static/js/status-table-adapter.js?v=quality-pass-20260711b"></script>
-    <script src="/static/js/status-action-adapter.js?v=quality-pass-20260711b"></script>
-    <script src="/static/js/index-bulk-actions.js?v=status-projection-569"></script>
+    <script src="/static/js/status-action-adapter.js?v=bulk-removal-review-576"></script>
+    <script src="/static/js/index-bulk-actions.js?v=bulk-removal-review-576"></script>
     <script src="/static/js/package-deferrals.js?v=frontend-isolation-20261027"></script>
 <script src="/static/js/status-snapshot-adapter.js?v=status-projection-569"></script>
-<script src="/static/js/index.js?v=status-projection-569"></script>
+<script src="/static/js/index.js?v=bulk-removal-review-576"></script>
 </body>
 </html>

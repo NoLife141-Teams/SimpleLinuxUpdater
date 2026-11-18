@@ -119,6 +119,9 @@
                 pendingApprovalRequestOptions(...args),
             dispatchStatusInteraction: (...args) =>
                 dispatchStatusInteraction(...args),
+            escapeHtml: (...args) => escapeHtml(...args),
+            renderHTML: statusRendering.html,
+            reviewKeptBackApproval: (...args) => approveKeptBackSecurityUpdates(...args),
         });
         const { updateBulkActionState } = statusBulk;
         statusBulk.init();
@@ -3520,9 +3523,13 @@
             if (!lifecycle.isCurrent(lifetime)) return;
         }
 
-        async function approveKeptBackSecurityUpdates(name) {
+        async function approveKeptBackSecurityUpdates(name, expectedServerIdentity) {
             const lifetime = lifecycle.capture();
 
+            if (expectedServerIdentity && getServerByName(name)?.server_identity !== expectedServerIdentity) {
+                statusActionAdapter.notify("This host changed. Review the current selection before approving.");
+                return;
+            }
             await runSingleHostAction(
                 name,
                 "approve_security_kept_back",
@@ -3530,6 +3537,10 @@
                 async (plan) => {
                     const lifetime = lifecycle.capture();
 
+                    if (expectedServerIdentity && plan.payloadFacts.serverIdentity !== expectedServerIdentity) {
+                        statusActionAdapter.notify("This host changed. Review the current selection before approving.");
+                        return false;
+                    }
                     const server = getServerByName(name);
                     const counts = plan.payloadFacts.counts;
                     const triage = getServerApprovalTriage(server, {

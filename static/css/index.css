@@ -1967,7 +1967,8 @@ body.status-page .head-meta {
 }
 
 .rail-bulk .select-page,
-.rail-bulk .bulk-hint {
+.rail-bulk .bulk-hint,
+#bulk-removal-review {
     grid-column: 1 / -1;
 }
 
@@ -2003,6 +2004,24 @@ body.status-page .head-meta {
 
 .bulk-hint.warning {
     color: var(--warning-text);
+}
+
+#bulk-removal-review .bulk-hint {
+    min-height: 0;
+}
+
+#bulk-removal-review ul {
+    display: grid;
+    gap: 4px;
+    list-style: none;
+    margin: 4px 0 0;
+    padding: 0;
+}
+
+#bulk-removal-review .inline-btn {
+    height: auto;
+    overflow-wrap: anywhere;
+    white-space: normal;
 }
 
 .fleet-rail .bulk-actions .inline-btn:disabled {
@@ -2931,6 +2950,10 @@ body.status-page .triage-wrap table {
 @media (max-width: 1280px) {
     .variant-c-layout {
         grid-template-columns: minmax(186px, 208px) minmax(0, 1fr);
+    }
+
+    .fleet-rail {
+        position: static;
     }
 
     .context-panel {

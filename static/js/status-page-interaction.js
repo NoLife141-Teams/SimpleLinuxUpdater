@@ -118,6 +118,11 @@
         return `${count} ${count === 1 ? singular : `${singular}s`}`;
     }
 
+    function keptBackApprovalHasRemovals(server) {
+        const plan = server?.upgrade_plan;
+        return Boolean(plan?.kept_back_security_has_removals || plan?.kept_back_security_removed_packages?.length);
+    }
+
     function defaultActionReason(key, server, action, approvalCounts) {
         if (action && action.reason) return action.reason;
         if (!server) return "Host is no longer loaded";
@@ -129,8 +134,8 @@
             if (key === "approve_all") return `${pluralized(counts.standard, "standard update")} ready for approval.`;
             if (key === "approve_security") return `${pluralized(counts.standardSecurity, "standard security update")} ready for approval.`;
             if (key === "approve_security_kept_back") {
-                const removalNote = (server.upgrade_plan?.kept_back_security_has_removals || counts.keptBackSecurityRemovedPackages.length > 0)
-                    ? " Package removals will be confirmed from the previewed plan."
+                const removalNote = keptBackApprovalHasRemovals(server)
+                    ? " Package removals require individual confirmation."
                     : "";
                 return `${pluralized(counts.keptBackSecurity, "kept-back security update")} ready for targeted approval.${removalNote}`;
             }
@@ -253,7 +258,10 @@
             policies: createStreamState(),
             globalKey: createStreamState()
         };
-        let interaction = { depth: 0, releasePending: false, deferredRender: false, actionContext: null };
+        let interaction = {
+            depth: 0, releasePending: false, deferredRender: false,
+            renderedHeldActions: false, actionContext: null
+        };
         let nextActionPlanId = 1;
         let inFlightActions = new Map();
         let bulkAction = null;
@@ -601,11 +609,22 @@
 
         function renderEffects(options = {}) {
             const priority = normalizedRefreshPriority(options.priority);
-            if (options.scope === "serverState" && priority !== "immediate" && (interaction.depth > 0 || interaction.releasePending)) {
-                interaction.deferredRender = true;
-                return [];
+            if (options.scope === "serverState" && (interaction.depth > 0 || interaction.releasePending)) {
+                if (priority !== "immediate") {
+                    interaction.deferredRender = true;
+                    return [];
+                }
+                // Immediate renders can still project the held bulk action controls.
+                if (interaction.actionContext) interaction.renderedHeldActions = true;
             }
             return [{ type: "render", scope: options.scope || "navigation", priority }];
+        }
+
+        function settleActionControls() {
+            if (interaction.depth > 0 || (!interaction.deferredRender && !interaction.renderedHeldActions)) return [];
+            interaction.deferredRender = false;
+            interaction.renderedHeldActions = false;
+            return [{ type: "render", scope: "serverState", priority: "deferable" }];
         }
 
         function stateEffects(options = {}) {
@@ -884,6 +903,10 @@
 
         function dispatch(event) {
             if (!event || typeof event !== "object") return [];
+            // Explicit navigation supersedes the selection held after an action press.
+            if (interaction.releasePending && ["filtersChanged", "sortChanged", "pageChanged", "selectionChanged", "pageSelectionChanged", "primaryServerSelected"].includes(event.type)) {
+                interaction.actionContext = null;
+            }
             if (event.type === "serversSnapshotReceived") {
                 const requestId = Number(event.requestId || 0);
                 const stream = streams.servers;
@@ -1013,7 +1036,7 @@
                 const requestedStreams = Array.isArray(event.streams) ? event.streams : [event.stream];
                 return requestedStreams.flatMap(stream => startRefresh(String(stream || ""), event.priority, event.reason));
             } else if (event.type === "interactionStarted") {
-                if (interaction.depth === 0 && (!interaction.releasePending || !interaction.deferredRender)) {
+                if (interaction.depth === 0 && (!interaction.actionContext || !interaction.releasePending || !interaction.deferredRender)) {
                     const projection = projectView();
                     interaction.actionContext = {
                         serversByName: new Map(Array.from(serversByName.entries()).map(([name, server]) => [name, cloneValue(server)])),
@@ -1038,19 +1061,12 @@
             } else if (event.type === "interactionReleased") {
                 interaction.releasePending = false;
                 interaction.actionContext = null;
-                if (!interaction.deferredRender || interaction.depth > 0) return [];
-                interaction.deferredRender = false;
-                return [{ type: "render", scope: "serverState", priority: "deferable" }];
+                return settleActionControls();
             } else if (event.type === "interactionReset") {
                 interaction.depth = 0;
                 interaction.releasePending = false;
                 interaction.actionContext = null;
-                const effects = [{ type: "cancelInteractionRelease" }];
-                if (interaction.deferredRender) {
-                    interaction.deferredRender = false;
-                    effects.push({ type: "render", scope: "serverState", priority: "deferable" });
-                }
-                return effects;
+                return [{ type: "cancelInteractionRelease" }, ...settleActionControls()];
             } else if (event.type === "actionStarted") {
                 const plan = event.plan && typeof event.plan === "object" ? event.plan : {};
                 const names = Array.isArray(plan.serverNames) ? plan.serverNames.filter(name => !!actionServer(name)) : [];
@@ -1275,7 +1291,6 @@
             return {
                 serverIdentity: String(server?.server_identity || ""),
                 detailsDeferred: Boolean(server?.package_counts),
-                keptBackSecurityHasRemovals: Boolean(server?.upgrade_plan?.kept_back_security_has_removals || counts.keptBackSecurityRemovedPackages.length > 0),
                 counts,
                 approvalIdentity: approvalIdentity(server),
                 pendingUpdates: cloneValue(server?.pending_updates || [])
@@ -1313,15 +1328,23 @@
             const eligibleNames = [];
             const eligibleHosts = [];
             const ineligible = [];
+            const removalReviews = [];
             visibleSelectedNames.forEach(name => {
                 const server = actionServer(name);
                 const action = getAction(name, actionKey) || { enabled: false, reason: "Action is unavailable", readiness: "blocked" };
+                const auth = canonicalAuthFacts(server, globalKeyAvailable).label;
+                if (actionKey === "approve_security_kept_back" && keptBackApprovalHasRemovals(server)
+                    && (action.enabled || (action.readiness === "in_progress" && getAction(name, actionKey, { ignoreInFlight: true })?.enabled))) {
+                    ineligible.push({ name, auth, reason: "Package removals require individual confirmation" });
+                    removalReviews.push({ name, serverIdentity: String(server.server_identity || "") });
+                    return;
+                }
                 const reason = defaultActionReason(actionKey, server, action, canonicalApprovalCounts);
                 if (action.enabled) {
                     eligibleNames.push(name);
-                    eligibleHosts.push({ name, auth: canonicalAuthFacts(server, globalKeyAvailable).label, readiness: reason });
+                    eligibleHosts.push({ name, auth, readiness: reason });
                 } else {
-                    ineligible.push({ name, auth: canonicalAuthFacts(server, globalKeyAvailable).label, reason });
+                    ineligible.push({ name, auth, reason });
                 }
             });
             const hiddenHosts = hiddenSelectedNames.map(name => ({
@@ -1341,6 +1364,7 @@
                 serverNames: cloneValue(eligibleNames),
                 eligibleHosts,
                 ineligible,
+                removalReviews,
                 skippedHosts: [...hiddenHosts, ...ineligible],
                 payloadFacts: Object.fromEntries(eligibleNames.map(name => [name, actionPayloadFacts(actionServer(name))]))
             };

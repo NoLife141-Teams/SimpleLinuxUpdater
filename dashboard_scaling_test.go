@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -27,6 +28,7 @@ import (
 	authpkg "debian-updater/internal/auth"
 	"debian-updater/internal/events"
 	observabilitypkg "debian-updater/internal/observability"
+	"debian-updater/internal/postchecks"
 	serverpkg "debian-updater/internal/servers"
 	"debian-updater/internal/testutil/dashboardfixture"
 	"debian-updater/internal/vulnerabilities"
@@ -142,6 +144,9 @@ func newScalingRuntime(t testing.TB, n int, metered, bootstrap bool) *scalingApp
 		t.Fatal(err)
 	}
 	state.Lock()
+	for i := range d.Servers {
+		d.Servers[i].Identity = fmt.Sprintf("status-fixture-%04d", i)
+	}
 	state.SetServers(d.Servers)
 	state.SetStatusMap(d.Statuses)
 	state.Unlock()
@@ -180,7 +185,18 @@ func newScalingRuntime(t testing.TB, n int, metered, bootstrap bool) *scalingApp
 
 func (a *scalingApp) get(t testing.TB, path, credential string) *httptest.ResponseRecorder {
 	t.Helper()
+	rec := a.request(path, credential, false)
+	if rec.Code != 200 {
+		t.Fatalf("GET %s (%s): %d %s", path, credential, rec.Code, rec.Body.String())
+	}
+	return rec
+}
+
+func (a *scalingApp) request(path, credential string, compact bool) *httptest.ResponseRecorder {
 	req := httptest.NewRequest("GET", path, nil)
+	if compact {
+		req.Header.Set(statusProjectionHeader, "compact")
+	}
 	switch credential {
 	case "viewer":
 		req.AddCookie(a.viewer)
@@ -193,9 +209,6 @@ func (a *scalingApp) get(t testing.TB, path, credential string) *httptest.Respon
 	req.RemoteAddr = fmt.Sprintf("192.0.2.%d:475", a.data.Manifest.Servers/10+1)
 	rec := httptest.NewRecorder()
 	a.handler.ServeHTTP(rec, req)
-	if rec.Code != 200 {
-		t.Fatalf("GET %s (%s): %d %s", path, credential, rec.Code, rec.Body.String())
-	}
 	return rec
 }
 
@@ -324,7 +337,103 @@ func TestDashboardScalingBudgets(t *testing.T) {
 				}
 				t.Logf("size=%d %s %s bytes=%d SQL=%d allocations=%.0f", size, tc.path, tc.credential, rec.Body.Len(), queries, allocs)
 			}
+			checkCompactStatusBudgets(t, a, size)
 		})
+	}
+}
+
+func checkCompactStatusBudgets(t *testing.T, a *scalingApp, size int) {
+	t.Helper()
+	inventory := a.request("/api/servers", "admin", true)
+	dashboard := a.request("/api/dashboard/summary", "admin", true)
+	for _, budget := range []struct {
+		name         string
+		rec          *httptest.ResponseRecorder
+		bytesPerHost int
+	}{{"inventory", inventory, 760}, {"summary", dashboard, 4300}} {
+		if budget.rec.Code != http.StatusOK {
+			t.Fatalf("compact %s: HTTP %d", budget.name, budget.rec.Code)
+		}
+		if bytes := budget.rec.Body.Len(); bytes > budget.bytesPerHost*size+1024 {
+			t.Errorf("compact %s exceeded JSON budget: %d bytes", budget.name, bytes)
+		}
+		t.Logf("size=%d compact %s bytes=%d", size, budget.name, budget.rec.Body.Len())
+	}
+	var rows []statusServerRow
+	var summary statusDashboardSummary
+	if err := json.Unmarshal(inventory.Body.Bytes(), &rows); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(dashboard.Body.Bytes(), &summary); err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != size || len(summary.Servers) != size || summary.Fleet["pending_packages"] != float64(size*12) || summary.Fleet["pending_approval"] != float64(size/5) {
+		t.Fatalf("compact fleet and row counts drifted: rows=%d summary=%d fleet=%v", len(rows), len(summary.Servers), summary.Fleet)
+	}
+	for _, row := range rows {
+		s := a.data.Statuses[row.Name]
+		if s == nil || row.Status != s.Status || row.JobID != s.JobID || row.ApprovalGeneration != s.ApprovalGeneration ||
+			row.PackageCounts.Pending != len(s.PendingUpdates) || row.UpgradePlan.StandardSecurityCount != s.UpgradePlan.StandardSecurityCount {
+			t.Fatalf("compact row lost status or package facts: %+v", row)
+		}
+	}
+	if !summary.Servers[1].Actions["approve_all"].Enabled || summary.Servers[0].Actions["update"].Enabled {
+		t.Fatal("compact summary changed approval or active job eligibility")
+	}
+}
+
+func TestStatusHostDetailBindsSnapshotAndRedactsByRole(t *testing.T) {
+	a := newScalingApp(t, 10)
+	const name = "synthetic-0001"
+	status := a.deps.ServerState.InventoryStatusSnapshot(name)
+	status.ApplicationPostcheckProfile = &postchecks.Snapshot{Name: "Synthetic profile"}
+	status.UpgradePlan.PackageDeferrals.Revision = "test-revision"
+	status.RemediationDigest = "test-digest"
+	a.deps.ServerState.RestoreStatusSnapshot(name, status)
+
+	query := url.Values{
+		"view": {"packages"}, "server_name": {name}, "server_identity": {status.ServerIdentity},
+		"job_id": {status.JobID}, "approval_generation": {"1"},
+		"deferral_revision": {"test-revision"}, "remediation_digest": {"test-digest"},
+	}
+	request := func(credential string) *httptest.ResponseRecorder {
+		return a.request("/api/servers/status-detail?"+query.Encode(), credential, false)
+	}
+	read := func(credential string) statusHostDetail {
+		t.Helper()
+		rec := request(credential)
+		if rec.Code != http.StatusOK || rec.Header().Get("Cache-Control") != "no-store" {
+			t.Fatalf("status detail %s: HTTP %d", credential, rec.Code)
+		}
+		var detail statusHostDetail
+		if err := json.Unmarshal(rec.Body.Bytes(), &detail); err != nil {
+			t.Fatal(err)
+		}
+		return detail
+	}
+	packages := read("viewer")
+	if len(packages.PendingUpdates) != 20 || packages.UpgradePlan == nil || packages.ApplicationPostcheckProfile != nil || packages.Logs != "" {
+		t.Fatal("reader lost package detail or received restricted fields")
+	}
+	query.Set("view", "logs")
+	admin := read("admin")
+	if admin.Logs == "" || admin.Logs != status.Logs || admin.ApplicationPostcheckProfile == nil || admin.UpgradePlan != nil {
+		t.Fatal("admin log view must include bounded logs and checks without packages")
+	}
+	viewer := read("viewer")
+	if viewer.Logs != "" || viewer.ApplicationPostcheckProfile != nil || viewer.UpgradePlan != nil {
+		t.Fatal("log view disclosed restricted details to a reader")
+	}
+	if rec := request("pat"); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("browser-only detail with a PAT: got HTTP %d, want a cookie login", rec.Code)
+	}
+	for _, key := range []string{"server_name", "server_identity", "job_id", "approval_generation", "deferral_revision", "remediation_digest"} {
+		current := query.Get(key)
+		query.Set(key, "2")
+		if rec := request("admin"); rec.Code != http.StatusConflict {
+			t.Errorf("mismatched %s returned %d", key, rec.Code)
+		}
+		query.Set(key, current)
 	}
 }
 

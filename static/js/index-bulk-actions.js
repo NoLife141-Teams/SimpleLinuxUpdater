@@ -198,7 +198,7 @@
                 return {};
             const confirmRemovals =
                 actionPath === "approve-security-kept-back" &&
-                facts.counts.keptBackSecurityRemovedPackages.length > 0;
+                facts.keptBackSecurityHasRemovals;
             return pendingApprovalRequestOptions(
                 facts.approvalIdentity,
                 confirmRemovals,

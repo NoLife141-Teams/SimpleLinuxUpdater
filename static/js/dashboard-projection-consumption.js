@@ -55,30 +55,35 @@
     function pendingApprovalCounts(server) {
         const pending = list(server.pending_updates);
         const plan = record(server.upgrade_plan);
+        const compactCounts = server.package_counts;
         const planStandard = Number(plan.standard_package_count);
         const planKeptBack = Number(plan.kept_back_package_count);
         const planStandardSecurity = Number(plan.standard_security_count);
         const planTotalSecurity = Number(plan.total_security_count);
-        const hasDeferrals = list(record(plan.package_deferrals).rules).length > 0;
+        const deferrals = record(plan.package_deferrals);
+        const hasDeferrals = deferrals.has_rules === true || list(deferrals.rules).length > 0;
  const hasPlan = Number.isFinite(planStandard)
             && Number.isFinite(planKeptBack)
             && (hasDeferrals || planStandard > 0 || planKeptBack > 0 || count(plan.full_upgrade_package_count) > 0);
         const pendingSecurity = pending.filter(update => !!record(update).security);
         const keptSecurity = pendingSecurity.filter(update => !!record(update).kept_back || !!record(update).requires_full_upgrade);
         const upgradableFallback = list(server.upgradable).length;
-        const total = pending.length > 0 ? pending.length : upgradableFallback;
-        const standardSecurity = Math.max(0, pendingSecurity.length - keptSecurity.length);
+        const pendingCount = compactCounts?.pending ?? pending.length;
+        const total = compactCounts?.total ?? (pending.length > 0 ? pending.length : upgradableFallback);
+        const securityCount = compactCounts?.security ?? pendingSecurity.length;
+        const keptSecurityCount = compactCounts?.kept_security ?? keptSecurity.length;
+        const standardSecurity = Math.max(0, securityCount - keptSecurityCount);
 
         return {
             total,
             standard: hasPlan ? planStandard : total,
-            keptBack: hasPlan ? planKeptBack : pending.filter(update => !!record(update).kept_back || !!record(update).requires_full_upgrade).length,
+            keptBack: hasPlan ? planKeptBack : (compactCounts?.kept_back ?? pending.filter(update => !!record(update).kept_back || !!record(update).requires_full_upgrade).length),
             full: hasDeferrals ? count(plan.full_upgrade_package_count) : count(plan.full_upgrade_package_count) || total,
-            security: hasPlan && Number.isFinite(planStandardSecurity) ? planStandardSecurity : (pending.length > 0 ? standardSecurity : null),
-            totalSecurity: hasPlan && Number.isFinite(planTotalSecurity) ? planTotalSecurity : (pending.length > 0 ? pendingSecurity.length : null),
+            security: hasPlan && Number.isFinite(planStandardSecurity) ? planStandardSecurity : (pendingCount > 0 ? standardSecurity : null),
+            totalSecurity: hasPlan && Number.isFinite(planTotalSecurity) ? planTotalSecurity : (pendingCount > 0 ? securityCount : null),
             keptBackSecurity: hasDeferrals ? count(plan.kept_back_security_package_count) : hasPlan && Number.isFinite(planTotalSecurity) && Number.isFinite(planStandardSecurity)
                 ? Math.max(0, planTotalSecurity - planStandardSecurity)
-                : (pending.length > 0 ? keptSecurity.length : 0),
+                : keptSecurityCount,
             fullPlanAvailable: !!plan.full_upgrade_plan_available,
             keptBackSecurityPlanAvailable: !!plan.kept_back_security_plan_available,
             newPackages: clone(list(plan.full_upgrade_new_packages)),
@@ -179,9 +184,9 @@
         const timelinePending = text(timeline.current_phase).toLowerCase() === "pending_approval";
         const pendingApproval = runtimePending || timelinePending;
         const pendingPackages = canonicalCount(rawTriage, "pending_packages", approvalCounts.total);
-        const securityFallback = pendingUpdates.length > 0 ? pendingUpdates.filter(update => !!record(update).security).length : 0;
+        const securityFallback = server.package_counts?.security ?? pendingUpdates.filter(update => !!record(update).security).length;
         const securityUpdates = canonicalCount(rawTriage, "security_updates", securityFallback);
-        const cveFallback = pendingUpdates.reduce((sum, update) => sum + list(record(update).cves).length, 0);
+        const cveFallback = server.package_counts?.cves ?? pendingUpdates.reduce((sum, update) => sum + list(record(update).cves).length, 0);
         const cveCount = canonicalCount(rawTriage, "cve_count", cveFallback);
         let riskLabel = text(rawTriage.risk_label) || text(rawRisk.summary);
         if (!riskLabel) {
@@ -272,7 +277,7 @@
             pendingApproval,
             runtimePending,
             timelinePending,
-            hasPendingUpdates: pendingUpdates.length > 0,
+            hasPendingUpdates: (server.package_counts?.pending ?? pendingUpdates.length) > 0,
             updateCVEs: clone(record(rawRisk.update_cves)),
             risk: { label: riskLabel, level: riskLevel, order: riskOrder, cveCount, securityUpdates, pendingPackages },
             auth,

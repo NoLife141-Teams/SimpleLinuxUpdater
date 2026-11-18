@@ -83,6 +83,36 @@ share only inspected summaries or regenerate traces in a disposable environment.
 request credentials. The harness removes its executable; Node closes each browser
 context, stops each server, waits for its exit and deletes fixture connection facts.
 
+## Compact Status projection (#569)
+
+In the authenticated browser scenario, Status requests the compact projection of
+the inventory and Dashboard Projection. Inventory sends filter, selection, and
+approval facts. The dashboard still supplies global totals and canonical action
+eligibility. The previous inventory repeated package rows, CVE evidence, package
+transactions, and log previews on every refresh. The dashboard also repeated CVE
+IDs and risk fields already represented by the per-host triage counters and labels.
+The browser fetches packages, approval impact and bounded log previews per host.
+It matches the selected inventory identity, job, approval generation, deferral
+revision and remediation digest before accepting details.
+
+Same Chromium, fixture, viewport and five-trial protocol on one machine. The
+reference is `fc7b5b5`. Bytes are the sum of the two fleet response bodies
+reported by Playwright, including dashboard gzip in the transferred column. The
+first pair on initial load and the pair requested by a single SSE event had the
+same sizes in each trial.
+
+| Hosts | Transferred bytes before → after | Decoded bytes before → after | First row p50 before → after | SSE refresh p50 before → after |
+| ---: | ---: | ---: | ---: | ---: |
+| 100 | 889,523 → 93,965 | 1,303,153 → 493,493 | 819 → 614 ms | 257 → 168 ms |
+| 1,000 | 8,886,914 → 931,352 | 13,028,719 → 4,932,119 | 3,324 → 2,114 ms | 1,797 → 979 ms |
+
+The on-demand package and log interaction took 550 → 412 ms p50 at 1,000 hosts.
+In the three forced reconnects, Chromium still requested logs for 300 distinct
+jobs per cycle at that size. These times describe a loopback fixture. CI budgets
+the compact JSON at 760 bytes per inventory row and 4,300 bytes per dashboard row,
+each with 1 KiB for fixed overhead. The legacy API budget and redaction assertions
+continue to run alongside the compact assertions.
+
 Regular CI runs `TestDashboardScalingBudgets` at all three sizes. It bounds JSON
 bytes, actual executed SQL statements and allocations, checks global counts and
 action eligibility, validates role redaction, and rejects detailed log chunks in

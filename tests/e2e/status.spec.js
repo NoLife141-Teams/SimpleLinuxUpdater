@@ -27,6 +27,70 @@ const {
 const fs = require("node:fs");
 const path = require("node:path");
 
+async function stubCompactStatus(page, getServers) {
+    const identity = (server) => ({
+        server_identity: server.server_identity || `inventory-${server.name}`,
+        job_id: server.job_id || (server.status === "pending_approval" ? `job-${server.name}` : ""),
+        approval_generation: server.approval_generation || (server.status === "pending_approval" ? 1 : 0),
+    });
+    const details = [];
+    await stubDashboardApi(page, getServers);
+    await page.route("**/api/servers", (route) => {
+        expect(route.request().headers()["x-slu-status-projection"]).toBe("compact");
+        return fulfillJson(route, getServers().map((server) => {
+            const { pending_updates, logs, upgradable, application_postcheck_profile, upgrade_plan = {}, ...row } = server;
+            const kept = pending_updates.filter((update) => update.kept_back || update.requires_full_upgrade);
+            const {
+                full_upgrade_new_packages, full_upgrade_removed_packages,
+                kept_back_security_new_packages, kept_back_security_removed_packages,
+                package_deferrals, deferral_scopes, deferred_packages, deferred_security_packages,
+                ...plan
+            } = upgrade_plan;
+            return {
+                ...row, ...identity(server),
+                has_application_postchecks: !!application_postcheck_profile,
+                upgrade_plan: {
+                    ...plan,
+                    kept_back_security_has_removals: !!kept_back_security_removed_packages?.length,
+                    package_deferrals: package_deferrals && {
+                        revision: package_deferrals.revision,
+                        has_rules: package_deferrals.rules.length > 0,
+                    },
+                },
+                package_counts: {
+                    pending: pending_updates.length,
+                    total: pending_updates.length || upgradable?.length || 0,
+                    security: pending_updates.filter((update) => update.security).length,
+                    kept_back: kept.length,
+                    kept_security: kept.filter((update) => update.security).length,
+                    cves: pending_updates.reduce((count, update) => count + (update.cves?.length || 0), 0),
+                },
+            };
+        }));
+    });
+    await page.route("**/api/servers/status-detail?*", (route) => {
+        const query = Object.fromEntries(new URL(route.request().url()).searchParams);
+        const server = getServers().find((item) => item.name === query.server_name);
+        details.push(query);
+        const expected = {
+            ...(server && identity(server)),
+            deferral_revision: server?.upgrade_plan?.package_deferrals?.revision || "",
+            remediation_digest: server?.remediation_digest || "",
+        };
+        if (!server || Object.entries(expected).some(([key, value]) => String(value) !== (query[key] || ""))) {
+            return fulfillJson(route, { error: "Host status changed" }, 409);
+        }
+        if (query.view === "packages") {
+            return fulfillJson(route, {
+                pending_updates: server.pending_updates, upgrade_plan: server.upgrade_plan || {},
+                application_postcheck_profile: server.application_postcheck_profile,
+            });
+        }
+        return fulfillJson(route, { logs: server.logs, application_postcheck_profile: server.application_postcheck_profile });
+    });
+    return details;
+}
+
 test("scheduled wave shows its release time and predecessor caveat", async ({
     baseURL,
     page,
@@ -602,7 +666,7 @@ test("structured SSE job logs preserve drawer scroll and avoid server refetches"
     const servers = [
         makeServer("stream-host", "idle", [], {
             job_id: "job-live",
-            logs: "",
+            logs: "Retained log preview\n",
         }),
     ];
     let serverRequests = 0;
@@ -610,7 +674,13 @@ test("structured SSE job logs preserve drawer scroll and avoid server refetches"
         if (new URL(request.url()).pathname === "/api/servers")
             serverRequests += 1;
     });
-    await stubDashboardApi(page, () => servers);
+    await stubCompactStatus(page, () => servers);
+    let releasePreview;
+    const preview = new Promise(resolve => { releasePreview = resolve; });
+    await page.route("**/api/servers/status-detail?*", async route => {
+        await preview;
+        await route.fallback();
+    });
     await page.route("**/api/jobs/job-live/logs*", (route) => {
         const afterSequence = Number(
             new URL(route.request().url()).searchParams.get("after_seq") || 0,
@@ -634,6 +704,21 @@ test("structured SSE job logs preserve drawer scroll and avoid server refetches"
     const logs = page.locator("#drawer-logs");
     await expect(logs).toHaveAttribute("role", "log");
     await expect(logs).toHaveAttribute("aria-live", "polite");
+    const copyLogs = page.getByRole("button", { name: "Copy", exact: true });
+    const downloadLogs = page.getByRole("button", { name: "Download", exact: true });
+    try {
+        await expect(logs).toHaveText("Loading logs…");
+        await expect(copyLogs).toBeDisabled({ timeout: 1000 });
+        await expect(downloadLogs).toBeDisabled({ timeout: 1000 });
+    } finally {
+        releasePreview();
+    }
+    await expect(logs).toContainText("Retained log preview");
+    await expect(copyLogs).toBeEnabled();
+    const logDownload = page.waitForEvent("download");
+    await downloadLogs.click();
+    expect(await fs.promises.readFile(await (await logDownload).path(), "utf8"))
+        .toBe("Retained log preview\n");
     await expect
         .poll(() => page.evaluate(() => !!window.__statusEventSource))
         .toBe(true);
@@ -758,6 +843,30 @@ test("structured SSE job logs preserve drawer scroll and avoid server refetches"
         .click();
     await expect(logs).toContainText("<b>escaped while closed</b>");
     await expect(logs.locator("b")).toHaveCount(0);
+
+    let releaseReset;
+    const resetRecovery = new Promise(resolve => { releaseReset = resolve; });
+    await page.route("**/api/jobs/job-live/logs*", async route => {
+        await resetRecovery;
+        return fulfillJson(route, {
+            fragments: [{ sequence: 5, stream: "stdout", data: "Retained after reset\n" }],
+            has_more: false,
+            truncated: true,
+        });
+    });
+    try {
+        await page.evaluate(() => {
+            window.__statusEventSource.emit("dashboard", {
+                data: JSON.stringify({ reason: "job.log", server_name: "stream-host", job_id: "job-live", reset: true }),
+            });
+        });
+        await expect(logs).not.toContainText("Retained log preview", { timeout: 1000 });
+        await expect(downloadLogs).toBeDisabled({ timeout: 1000 });
+    } finally {
+        releaseReset();
+    }
+    await expect(logs).toContainText("Retained after reset");
+    await expect(downloadLogs).toBeEnabled();
     expect(serverRequests).toBe(requestsBeforeLogs);
 });
 
@@ -792,7 +901,11 @@ for (const responseTiming of ["offline", "reconnected"]) {
             makeServer("anchor", "done", [], { job_id: "job-anchor" }),
             makeServer("worker", "updating", [], { job_id: "job-worker" }),
         ];
-        await stubDashboardApi(page, () => servers);
+        if (responseTiming === "offline") {
+            await stubCompactStatus(page, () => servers);
+        } else {
+            await stubDashboardApi(page, () => servers);
+        }
         let releaseFirst;
         const firstPage = new Promise((resolve) => {
             releaseFirst = resolve;
@@ -915,7 +1028,7 @@ test("bulk actions execute immediately, skip ineligible hosts, and report partia
         }),
     ];
     const state = {};
-    await stubDashboardApi(page, () => servers);
+    const detailRequests = await stubCompactStatus(page, () => servers);
     await page.route("**/api/update/idle-host", (route) => {
         state.updateIdle = (state.updateIdle || 0) + 1;
         state.updateIdentity = route.request().headers()["x-slu-server-identity"];
@@ -929,6 +1042,7 @@ test("bulk actions execute immediately, skip ineligible hosts, and report partia
         "**/api/approve-security-kept-back/ok-sec-host",
         (route) => {
             state.approveKept = (state.approveKept || 0) + 1;
+            state.keptDecision = route.request().postDataJSON();
             return fulfillJson(route, { ok: true });
         },
     );
@@ -1001,6 +1115,8 @@ test("bulk actions execute immediately, skip ineligible hosts, and report partia
 
     await page.locator("#bulk-approve-kept-security").click();
     await expect.poll(() => state.approveKept || 0).toBe(1);
+    expect(state.keptDecision).toEqual({ job_id: "job-ok-sec-host", approval_generation: 1, confirm_removals: true });
+    expect(detailRequests).toEqual([]);
 
     await page
         .locator(
@@ -1110,6 +1226,28 @@ test("auto refresh resumes when an action press loses page focus", async ({
         page.locator('#servers-table tbody tr[data-name="renamed-host"]'),
     ).toBeVisible();
     await page.mouse.up();
+});
+
+test("compact host detail respects a deferred drawer approval refresh", async ({ page }) => {
+    let servers = [makeServer("demo-host", "pending_approval", makePendingUpdates(2), { has_key: true })];
+    await stubCompactStatus(page, () => servers);
+    await ensureAuthenticatedSession(page);
+    await page.locator('#servers-table button[data-tab="pending"][data-name="demo-host"]').click();
+    await expect(page.getByRole("searchbox", { name: "Filter packages", exact: true })).toBeVisible();
+
+    const approve = page.locator("#drawer-approve-all");
+    await expect(approve).toBeEnabled();
+    await approve.dispatchEvent("pointerdown");
+    try {
+        servers = [makeServer("demo-host", "done", [], { has_key: true })];
+        await page.evaluate(() => window.fetchServers(false, "approval-press"));
+        await expect(approve).toBeVisible();
+        await expect(page.getByRole("searchbox", { name: "Filter packages", exact: true })).toBeVisible();
+    } finally {
+        await page.dispatchEvent("body", "pointercancel");
+    }
+    await expect(approve).toBeHidden();
+    await expect(page.locator("#status-drawer-status .status-pill")).toHaveText("done");
 });
 
 test("status metrics stay compact without secondary descriptions", async ({
@@ -2047,7 +2185,7 @@ test("an old full-upgrade dialog keeps its approval identity after another tab r
     const second = await page.context().newPage();
     try {
         for (const tab of [page, second]) {
-            await stubDashboardApi(tab, () => servers);
+            await stubCompactStatus(tab, () => servers);
             await tab.route("**/api/jobs/*/logs*", (route) =>
                 fulfillJson(route, { fragments: [], has_more: false }),
             );
@@ -2229,7 +2367,7 @@ test("package deferrals 473 approval shows executable transactions CVE exposure 
             },
         ),
     ];
-    await stubDashboardApi(page, () => servers);
+    const detailRequests = await stubCompactStatus(page, () => servers);
     const requests = [];
     await page.route("**/api/approve-full/deferral-host", (route) => {
         requests.push(route.request().postDataJSON());
@@ -2248,6 +2386,7 @@ test("package deferrals 473 approval shows executable transactions CVE exposure 
         )
         .click();
     const panel = page.locator("#drawer-panel-pending");
+    await expect.poll(() => detailRequests[0]?.deferral_revision).toBe(revision);
     await expect(panel).toContainText("Deferred — security exposure remains");
     await expect(panel).toContainText("Dependency conflict");
     await expect(panel).toContainText("CVE");
@@ -2272,6 +2411,7 @@ test("package deferrals 473 approval shows executable transactions CVE exposure 
             '#servers-table [data-action="approve-full"][data-name="deferral-host"]',
         )
         .click();
+    await expect(page.locator("#action-confirm-message")).toContainText("obsolete-runtime");
     servers = [
         {
             ...servers[0],
@@ -2324,9 +2464,9 @@ test("live refresh preserves host action nodes, focus and updated eligibility", 
     await expect(page.locator('#status-drawer-title')).toHaveText('other-host');
 });
 
-test("pending package controls and search selection survive enrichment refresh", async ({ page }) => {
+test("pending package controls and search selection survive enrichment and plan refresh", async ({ page }) => {
     let servers = [makeServer("demo-host", "pending_approval", makePendingUpdates(3), { has_key: true })];
-    await stubDashboardApi(page, () => servers);
+    await stubCompactStatus(page, () => servers);
     await ensureAuthenticatedSession(page);
     await page.locator('#servers-table button[data-select-host="demo-host"]').click();
     await page.locator('#selected-host-panel button[data-tab="pending"]').click();
@@ -2340,6 +2480,79 @@ test("pending package controls and search selection survive enrichment refresh",
     expect(await details.evaluate(el => el.isConnected)).toBe(true);
     await expect(search).toBeFocused();
     expect(await search.evaluate(el => [el.selectionStart, el.selectionEnd])).toEqual([1, 2]);
-    await details.click();
-    await expect(panel.getByRole('heading', { name: 'pkg-01', exact: true })).toBeVisible();
+
+    let releasePlan;
+    const nextPlan = new Promise(resolve => { releasePlan = resolve; });
+    await page.route("**/api/servers/status-detail?*", async route => {
+        const query = new URL(route.request().url()).searchParams;
+        if (query.get("server_name") === "demo-host" && query.get("approval_generation") === "2") await nextPlan;
+        await route.fallback();
+    });
+    try {
+        servers = [makeServer("demo-host", "pending_approval", makePendingUpdates(2).map(p => ({
+            ...p, package: `pkg-next-${p.package}`
+        })), { has_key: true, approval_generation: 2 })];
+        await page.evaluate(() => { void window.fetchServers(true, "new-approval-identity"); });
+        const loading = panel.getByRole("status").filter({ hasText: "Loading package details…" });
+        await expect(loading).toBeFocused();
+        await expect(panel.getByRole('button', { name: 'Details for pkg-01', exact: true })).toHaveCount(0);
+    } finally {
+        releasePlan();
+    }
+    await expect(search).toBeFocused();
+    await expect(search).toHaveValue("pkg");
+    expect(await search.evaluate(el => [el.selectionStart, el.selectionEnd])).toEqual([1, 2]);
+    await panel.getByRole('button', { name: 'Details for pkg-next-pkg-01', exact: true }).click();
+    await expect(panel.getByRole('heading', { name: 'pkg-next-pkg-01', exact: true })).toBeVisible();
+});
+
+test("compact rows expose application checks and keep the inspector bound to the displayed host", async ({ page }) => {
+    const idle = makeServer("idle-host");
+    const pendingHost = (name, profile) => makeServer(name, "pending_approval", makePendingUpdates(1), {
+        application_postcheck_profile: { name: profile, revision: 1, checks: [{
+            name: "App", kind: "systemd_active", unit: `${name}.service`, mode: "blocking", timeout_seconds: 15,
+        }] },
+    });
+    const previous = pendingHost("..", "Previous expectations");
+    const replacement = pendingHost("replacement-host", "Replacement expectations");
+    let servers = [idle, previous];
+    await stubCompactStatus(page, () => servers);
+    await ensureAuthenticatedSession(page);
+
+    const oldRow = page.locator(`#servers-table tr[data-name="${previous.name}"]`);
+    await oldRow.getByRole("button", { name: "Packages & checks", exact: true }).click();
+    await expect(page.locator("#status-drawer-status")).toContainText("Previous expectations");
+    await page.locator("#status-drawer-close").click();
+    await oldRow.getByRole("button", { name: previous.name, exact: true }).click();
+    const inspector = page.locator("#selected-host-panel");
+    await expect(inspector).toContainText("Previous expectations");
+
+    let arrive, release;
+    const replacementRequest = new Promise(resolve => { arrive = resolve; });
+    const releaseReplacement = new Promise(resolve => { release = resolve; });
+    await page.route("**/api/servers/status-detail?*", async route => {
+        if (new URL(route.request().url()).searchParams.get("server_name") === replacement.name) {
+            arrive();
+            await releaseReplacement;
+        }
+        await route.fallback();
+    });
+    const approval = inspector.getByRole("button", { name: "Approve (1)", exact: true });
+    await approval.dispatchEvent("pointerdown");
+    try {
+        servers = [replacement];
+        const refreshed = page.evaluate(() => window.fetchServers(false, "deferred-inspector-test"));
+        await replacementRequest;
+        await page.evaluate(() => window.fetchDashboardExtras("deferred-inspector-secondary", false));
+        release();
+        await refreshed;
+        await expect(page.locator("#selected-host-title")).toHaveText(previous.name);
+        await expect(inspector).toContainText("Previous expectations");
+        await expect(approval).toBeEnabled();
+    } finally {
+        release();
+        await page.dispatchEvent("body", "pointercancel");
+    }
+    await expect(page.locator("#selected-host-title")).toHaveText("replacement-host");
+    await expect(inspector).toContainText("Replacement expectations");
 });

@@ -11,6 +11,40 @@
             ? lifecycle.observer(root.ResizeObserver)
             : undefined;
         const { dispatchStatusInteraction, encodeURIComponent } = options;
+        const compactProjection = { headers: { "X-SLU-Status-Projection": "compact" } };
+
+        async function fetchHostDetail(name, serverIdentity, approvalIdentity, view) {
+            const lifetime = lifecycle.capture();
+            const query = new URLSearchParams({
+                ...approvalIdentity, server_name: name, server_identity: serverIdentity, view,
+            });
+            const response = await fetch(`/api/servers/status-detail?${query}`);
+            if (!lifecycle.isCurrent(lifetime)) return;
+            if (!response.ok) {
+                lifecycle.discardResponse(response);
+                const error = new Error(`Host details: HTTP ${response.status}`);
+                error.status = response.status;
+                throw error;
+            }
+            const detail = await response.json();
+            if (lifecycle.isCurrent(lifetime)) return detail;
+        }
+
+        async function executeHostDetailFetch(effect) {
+            const lifetime = lifecycle.capture();
+            let snapshot, stale = false;
+            try {
+                snapshot = await fetchHostDetail(effect.name, effect.serverIdentity, effect.approvalIdentity, effect.view);
+            } catch (error) {
+                if (error?.name === "AbortError") return;
+                stale = error.status === 409;
+            }
+            if (lifecycle.isCurrent(lifetime)) {
+                return dispatchStatusInteraction({
+                    type: "hostDetailReceived", surface: effect.surface, requestId: effect.requestId, snapshot, stale,
+                });
+            }
+        }
         async function executeRecentActivityFetch(effect) {
             const lifetime = lifecycle.capture();
 
@@ -167,6 +201,7 @@
             try {
                 const response = await fetch(
                     "/api/dashboard/summary?window=7d&include_command_history=false&include_vulnerability_findings=false",
+                    compactProjection,
                 );
                 if (!lifecycle.isCurrent(lifetime)) return;
                 if (!response.ok) {
@@ -352,7 +387,7 @@
             const lifetime = lifecycle.capture();
 
             try {
-                const response = await fetch("/api/servers");
+                const response = await fetch("/api/servers", compactProjection);
                 if (!lifecycle.isCurrent(lifetime)) return;
                 if (!response.ok) {
                     lifecycle.discardResponse(response);
@@ -399,6 +434,9 @@
                     : undefined,
             executeJobLogFetch: (...args) =>
                 lifecycle.active ? executeJobLogFetch(...args) : undefined,
+            executeHostDetailFetch: (...args) =>
+                lifecycle.active ? executeHostDetailFetch(...args) : undefined,
+            fetchHostDetail,
         });
     }
     root.StatusSnapshotAdapter = Object.freeze({ create });

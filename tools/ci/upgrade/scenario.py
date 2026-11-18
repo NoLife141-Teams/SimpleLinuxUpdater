@@ -47,9 +47,10 @@ class RefuseRedirects(urllib.request.HTTPRedirectHandler):
 class API:
     def __init__(self, *, follow_redirects=True):
         self.base = 'http://127.0.0.1:8080'
+        self.cookies = http.cookiejar.CookieJar()
         redirect_handlers = () if follow_redirects else (RefuseRedirects(),)
         self.client = urllib.request.build_opener(urllib.request.ProxyHandler({}),
-            urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()), *redirect_handlers)
+            urllib.request.HTTPCookieProcessor(self.cookies), *redirect_handlers)
 
     def request(self, method, path, data=None, allowed=(200,), raw=None, mime='application/json', binary=False, timeout=30):
         body = raw if raw is not None else (json.dumps(data).encode() if data is not None else None)

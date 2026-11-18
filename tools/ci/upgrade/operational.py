@@ -15,6 +15,7 @@ import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
+from copy import copy
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -187,8 +188,17 @@ class Qualification:
         restored.request("POST", "/api/auth/setup", {"username": setup_username, "password": secrets.token_urlsafe(28) + "Aa1!"})
         require(restored.upload("/api/backup/verify", backup.archive, backup.passphrase)["restore_ready"],
                 "published archive was not restore-ready")
+        # Keep the initial session independently of cookie expiration in the restore response.
+        initial_session = API(follow_redirects=False)
+        initial_session.base = restored.base
+        for cookie in restored.cookies:
+            initial_session.cookies.set_cookie(copy(cookie))
+        require(initial_session.request("GET", "/api/auth/status")["authenticated"],
+                "initialization session was not established before restore")
         restored.upload("/api/backup/restore", backup.archive, backup.passphrase)
-        require(not restored.request("GET", "/api/auth/status")["authenticated"], "restore retained the previous session")
+        require(not restored.request("GET", "/api/auth/status")["authenticated"] and
+                not initial_session.request("GET", "/api/auth/status")["authenticated"],
+                "restore retained the previous session")
         restored.request("POST", "/api/auth/login", backup.credentials)
         self.verify_inventory(restored, name, backup.known_host)
         docker("restart", "--timeout", "25", name)

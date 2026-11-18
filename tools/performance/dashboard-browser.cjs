@@ -64,6 +64,24 @@ async function measureHostRefresh(browser, fixture) {
         const errors = [];
         let measured = null;
         await Promise.all(pages.map(async page => {
+          await page.addInitScript(() => {
+            const fetch = window.fetch.bind(window);
+            window.fetch = async (...args) => {
+              const response = await fetch(...args);
+              if (new URL(response.url).pathname === '/api/status/changed-hosts') {
+                const json = response.json.bind(response);
+                response.json = async () => {
+                  const payload = await json();
+                  window.scalingStatusReceipt = {
+                    parsedAt: performance.now(),
+                    serverTiming: response.headers.get('Server-Timing'),
+                  };
+                  return payload;
+                };
+              }
+              return response;
+            };
+          });
           page.on('pageerror', error => errors.push(String(error)));
           page.on('request', request => {
             if (measured && refreshPaths.has(new URL(request.url()).pathname)) measured.push(request);
@@ -77,23 +95,40 @@ async function measureHostRefresh(browser, fixture) {
         const sample = {};
         for (const scenario of ['single', 'burst']) {
           await Promise.all(pages.map(page => page.waitForFunction(snapshotsIdle, null, { polling: 50 })));
+          await Promise.all(pages.map(page => page.evaluate(() => { window.scalingStatusReceipt = null; })));
           measured = [];
           const at = performance.now();
           const change = await context.request.post(fixture.url + '/__scaling/hosts?burst=' + Number(scenario === 'burst'));
           assert.ok(change.ok());
           const states = await change.json();
-          const latency = await Promise.all(pages.map(async page => {
-            await page.waitForFunction(changed => Object.entries(changed).every(([name, state]) =>
-              document.querySelector(`#servers-table tr[data-name="${name}"] .status-pill`)?.textContent.trim().toLowerCase() === state
-            ), states, { polling: 20 });
-            return performance.now() - at;
+          const rendered = await Promise.all(pages.map(async page => {
+            const observed = await page.waitForFunction(changed => {
+              if (!Object.entries(changed).every(([name, state]) =>
+                document.querySelector(`#servers-table tr[data-name="${name}"] .status-pill`)?.textContent.trim().toLowerCase() === state
+              )) return false;
+              const receipt = window.scalingStatusReceipt;
+              if (!receipt) return { latencyAfterResponseMs: null, serverTiming: null };
+              return {
+                latencyAfterResponseMs: performance.now() - receipt.parsedAt,
+                serverTiming: receipt.serverTiming,
+              };
+            }, states, { polling: 20 });
+            const latencyMs = performance.now() - at;
+            const timing = await observed.jsonValue();
+            await observed.dispose();
+            const serverMs = Object.fromEntries(
+              Array.from(timing.serverTiming?.matchAll(/(\w+);dur=([\d.]+)/g) ?? [], ([, name, value]) => [name, Number(value)]),
+            );
+            return { latencyMs, afterResponseMs: timing.latencyAfterResponseMs, serverMs };
           }));
           await Promise.all(pages.map(page => page.waitForFunction(snapshotsIdle, null, { polling: 50 })));
           await sleep(200);
           const byPath = await measureRequests(measured);
           measured = null;
           sample[scenario] = {
-            latency_ms: latency,
+            latency_ms: rendered.map(sample => sample.latencyMs),
+            after_response_ms: rendered.map(sample => sample.afterResponseMs),
+            server_ms: rendered.map(sample => sample.serverMs),
             requests: Object.values(byPath).reduce((sum, item) => sum + item.requests, 0),
             encoded_bytes: Object.values(byPath).reduce((sum, item) => sum + item.encoded, 0),
             by_path: byPath,

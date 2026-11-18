@@ -222,6 +222,16 @@ func syncServerStateFromJobRecord(state *serverpkg.State, record JobRecord) {
 	if status == nil {
 		return
 	}
+	if record.APTTarget != "" {
+		server, found := state.FindByNameLocked(record.ServerName)
+		if !found || server.APTTarget() != record.APTTarget {
+			return
+		}
+	} else if statusValue == runtimepkg.StatusNeedsReconciliation && status.JobID != record.ID {
+		// A legacy record can keep its live owner, but its historical name is
+		// insufficient evidence to attach a reconciliation after restart.
+		return
+	}
 	if status.JobID != record.ID && (status.JobID != "" || status.ActionGeneration != 0) {
 		return
 	}

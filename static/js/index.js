@@ -2954,15 +2954,16 @@
 
         async function repairApt(name) {
             const lifetime = lifecycle.capture();
-
-            if (!canRepairAptAction(getServerByName(name))) {
+            const server = getServerByName(name);
+            const jobID = server?.job_id;
+            if (!jobID || !canRepairAptAction(server)) {
                 statusActionAdapter.notify(
                     "APT repair is not available for the current server state.",
                 );
                 return;
             }
             const confirmed = await statusActionAdapter.confirm(
-                `Repair APT/DPKG state on ${name}?\n\nThis checks active package-manager locks, completes pending dpkg configuration, repairs dependencies, and verifies APT health. Do not continue if another maintenance session is running on the host.`,
+                `Repair APT/DPKG state on ${name} (SSH ${server.host}, port ${server.port})?\n\nThis checks active package-manager locks, completes pending dpkg configuration, repairs dependencies, and verifies APT health. Do not continue if another maintenance session is running on the host.`,
             );
             if (!lifecycle.isCurrent(lifetime)) return;
             if (!confirmed) return;
@@ -2972,7 +2973,7 @@
                     "Failed to start APT repair.",
                     {
                         headers: { "Content-Type": "application/json" },
-                        body: JSON.stringify({ confirm: true }),
+                        body: JSON.stringify({ confirm: true, job_id: jobID }),
                     },
                 ),
             );

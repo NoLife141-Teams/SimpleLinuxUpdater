@@ -120,7 +120,7 @@ func TestJobStateTransitionRejectsStaleRevision(t *testing.T) {
 	}
 }
 
-func TestEnsureSchemaAddsRevisionToExistingJobsTable(t *testing.T) {
+func TestEnsureSchemaAddsRecoveryColumnsToExistingJobsTable(t *testing.T) {
 	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "legacy-jobs.db"))
 	if err != nil {
 		t.Fatalf("sql.Open() error = %v", err)
@@ -129,12 +129,18 @@ func TestEnsureSchemaAddsRevisionToExistingJobsTable(t *testing.T) {
 	if _, err := db.Exec(`CREATE TABLE jobs (id TEXT PRIMARY KEY)`); err != nil {
 		t.Fatalf("create legacy jobs table: %v", err)
 	}
-	if err := ensureRevisionColumn(db); err != nil {
-		t.Fatalf("ensureRevisionColumn() error = %v", err)
+	if _, err := db.Exec("INSERT INTO jobs (id) VALUES ('legacy')"); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if err := ensureJobRecoveryColumns(db); err != nil {
+			t.Fatalf("ensureJobRecoveryColumns() error = %v", err)
+		}
 	}
 	var revision int64
-	if err := db.QueryRow("SELECT revision FROM jobs LIMIT 1").Scan(&revision); err != sql.ErrNoRows {
-		t.Fatalf("revision query error = %v, want sql.ErrNoRows", err)
+	var target string
+	if err := db.QueryRow("SELECT revision, apt_target FROM jobs WHERE id='legacy'").Scan(&revision, &target); err != nil || revision != 0 || target != "" {
+		t.Fatalf("legacy job revision=%d target=%q error=%v", revision, target, err)
 	}
 }
 

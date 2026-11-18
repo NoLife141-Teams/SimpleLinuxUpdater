@@ -382,6 +382,9 @@ func (s *Service) Update(name string, server Server) (Server, error) {
 			return server, EndpointConflictError{Endpoint: NormalizeServerEndpoint(server.Host, server.Port)}
 		}
 		endpointChanged := NormalizeServerEndpoint(existing.Host, existing.Port) != NormalizeServerEndpoint(server.Host, server.Port)
+		if status := state.StatusMap()[name]; endpointChanged && status != nil && status.Status == runtimepkg.StatusNeedsReconciliation {
+			return server, ActionError{Status: status.Status}
+		}
 		currentServers[i] = server
 		state.SetServers(currentServers)
 		renamedServer := server.Name != name
@@ -450,10 +453,6 @@ func (s *Service) Update(name string, server Server) (Server, error) {
 			replacement := NewIdleStatus(server)
 			if previous := prevStatusMap[name]; previous != nil {
 				replacement.ActionGeneration = previous.ActionGeneration + 1
-				if previous.Status == runtimepkg.StatusNeedsReconciliation {
-					replacement.Status = previous.Status
-					replacement.Logs = previous.Logs
-				}
 			}
 			state.StatusMap()[server.Name] = replacement
 		}

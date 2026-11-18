@@ -1835,6 +1835,7 @@
       "post": {
         "operationId": "post_api_repair_name",
         "summary": "POST /api/repair/:name",
+        "description": "Confirm the current reconciliation job. The server identity and SSH endpoint must still match the job's original target.",
         "x-slu-scope": "maintenance:write",
         "security": [
           {
@@ -1851,6 +1852,21 @@
             }
           }
         ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["confirm", "job_id"],
+                "properties": {
+                  "confirm": { "type": "boolean", "const": true },
+                  "job_id": { "type": "string", "minLength": 1 }
+                }
+              }
+            }
+          }
+        },
         "responses": {
           "200": {
             "description": "Success",

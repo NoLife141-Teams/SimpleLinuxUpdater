@@ -213,9 +213,12 @@ Host facts refresh and application-check tests run synchronously and return
 `502` if the remote operation cannot complete, including an SSH transport failure.
 
 Controlled reboot (`POST /api/reboot/{name}`) and APT repair
-(`POST /api/repair/{name}`) require a JSON body containing `{"confirm":true}`
-and `Content-Type: application/json`. Both use `maintenance:write`; omitted or
-false confirmation returns `400` before any host operation is admitted.
+(`POST /api/repair/{name}`) require `Content-Type: application/json` and
+`maintenance:write`. Reboot accepts `{"confirm":true}`. For APT repair, read
+the current server and confirm its reconciliation job with
+`{"confirm":true,"job_id":"<job_id>"}`. Omitted confirmation or job ID returns
+`400` for repair. A stale job or unverifiable target returns `409` before any
+host operation is admitted.
 
 ## CVE information for available updates
 

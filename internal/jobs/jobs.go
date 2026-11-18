@@ -90,6 +90,7 @@ type Record struct {
 	LogsExpired     bool   `json:"logs_expired"`
 	LogsTruncated   bool   `json:"logs_truncated"`
 	Revision        int64  `json:"-"`
+	APTTarget       string `json:"-"`
 	logReplacement  *string
 	logAppend       string
 }
@@ -118,6 +119,7 @@ type CreateParams struct {
 	ErrorClass      string
 	RetryPolicyJSON string
 	MetaJSON        string
+	APTTarget       string
 }
 
 // AdmissionReceipt records an operation's durable admission in the same
@@ -202,12 +204,13 @@ func EnsureSchemaConfigured(db *sql.DB, logConfig LogConfig) error {
 			logs_truncated INTEGER NOT NULL DEFAULT 0,
 			log_next_sequence INTEGER NOT NULL DEFAULT 1,
 			log_source_bytes INTEGER NOT NULL DEFAULT 0,
-			revision INTEGER NOT NULL DEFAULT 0
+			revision INTEGER NOT NULL DEFAULT 0,
+			apt_target TEXT NOT NULL DEFAULT ''
 		)
 	`); err != nil {
 		return err
 	}
-	if err := ensureRevisionColumn(db); err != nil {
+	if err := ensureJobRecoveryColumns(db); err != nil {
 		return err
 	}
 	if err := EnsureSchemaWithLogConfig(db, logConfig); err != nil {
@@ -223,6 +226,9 @@ func EnsureSchemaConfigured(db *sql.DB, logConfig LogConfig) error {
 		return err
 	}
 	if _, err := db.Exec("CREATE INDEX IF NOT EXISTS idx_jobs_kind_created_at ON jobs (kind, created_at DESC)"); err != nil {
+		return err
+	}
+	if _, err := db.Exec("CREATE INDEX IF NOT EXISTS idx_jobs_apt_target_created_at ON jobs (apt_target, created_at) WHERE apt_target <> ''"); err != nil {
 		return err
 	}
 	return nil
@@ -242,12 +248,13 @@ func RenameServerTx(tx *sql.Tx, oldServerName, newServerName string) error {
 	return err
 }
 
-func ensureRevisionColumn(db *sql.DB) error {
+func ensureJobRecoveryColumns(db *sql.DB) error {
 	rows, err := db.Query("PRAGMA table_info(jobs)")
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
+	var revision, target bool
 	for rows.Next() {
 		var cid int
 		var name, columnType string
@@ -256,14 +263,23 @@ func ensureRevisionColumn(db *sql.DB) error {
 		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
 			return err
 		}
-		if name == "revision" {
-			return rows.Err()
-		}
+		revision = revision || name == "revision"
+		target = target || name == "apt_target"
 	}
 	if err := rows.Err(); err != nil {
 		return err
 	}
-	_, err = db.Exec("ALTER TABLE jobs ADD COLUMN revision INTEGER NOT NULL DEFAULT 0")
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	if !revision {
+		if _, err := db.Exec("ALTER TABLE jobs ADD COLUMN revision INTEGER NOT NULL DEFAULT 0"); err != nil {
+			return err
+		}
+	}
+	if !target {
+		_, err = db.Exec("ALTER TABLE jobs ADD COLUMN apt_target TEXT NOT NULL DEFAULT ''")
+	}
 	return err
 }
 
@@ -340,6 +356,7 @@ func (m *Manager) CreateJobWithAdmission(params CreateParams, receipt AdmissionR
 		ErrorClass:      strings.TrimSpace(params.ErrorClass),
 		RetryPolicyJSON: params.RetryPolicyJSON,
 		MetaJSON:        params.MetaJSON,
+		APTTarget:       params.APTTarget,
 		CreatedAt:       now,
 		UpdatedAt:       now,
 	}
@@ -762,8 +779,8 @@ func (r *SQLiteRepository) createWithAdmission(record Record, receipt AdmissionR
 		INSERT INTO jobs (
 			id, kind, parent_job_id, server_name, actor, client_ip, status, phase, summary, logs_text,
 			error_class, retry_policy_json, meta_json, created_at, updated_at, started_at, finished_at,
-			logs_expired, logs_truncated, log_next_sequence, log_source_bytes, revision
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?, ?, ?, ?, ?, ?, 0, 0, 1, 0, ?)
+			logs_expired, logs_truncated, log_next_sequence, log_source_bytes, revision, apt_target
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?, ?, ?, ?, ?, ?, 0, 0, 1, 0, ?, ?)
 	`,
 		record.ID,
 		record.Kind,
@@ -782,6 +799,7 @@ func (r *SQLiteRepository) createWithAdmission(record Record, receipt AdmissionR
 		record.StartedAt,
 		record.FinishedAt,
 		record.Revision,
+		record.APTTarget,
 	)
 	if err != nil {
 		return err
@@ -809,8 +827,8 @@ func (r *SQLiteRepository) Upsert(record Record) error {
 	_, err = tx.Exec(`
 		INSERT INTO jobs (
 			id, kind, parent_job_id, server_name, actor, client_ip, status, phase, summary, logs_text,
-			error_class, retry_policy_json, meta_json, created_at, updated_at, started_at, finished_at, revision
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?, ?, ?, ?, ?, ?, ?)
+			error_class, retry_policy_json, meta_json, created_at, updated_at, started_at, finished_at, revision, apt_target
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			kind = excluded.kind,
 			parent_job_id = excluded.parent_job_id,
@@ -845,6 +863,7 @@ func (r *SQLiteRepository) Upsert(record Record) error {
 		record.StartedAt,
 		record.FinishedAt,
 		record.Revision,
+		record.APTTarget,
 	)
 	if err != nil {
 		return err
@@ -932,7 +951,7 @@ func (r *SQLiteRepository) Get(id string) (Record, error) {
 	err := r.db.QueryRow(`
 		SELECT id, kind, parent_job_id, server_name, actor, client_ip, status, phase, summary, logs_text,
 		       error_class, retry_policy_json, meta_json, created_at, updated_at, started_at, finished_at,
-		       logs_expired, logs_truncated, revision
+		       logs_expired, logs_truncated, revision, apt_target
 		  FROM jobs
 		 WHERE id = ?
 	`, id).Scan(
@@ -956,6 +975,7 @@ func (r *SQLiteRepository) Get(id string) (Record, error) {
 		&record.LogsExpired,
 		&record.LogsTruncated,
 		&record.Revision,
+		&record.APTTarget,
 	)
 	return record, err
 }
@@ -968,7 +988,7 @@ func (r *SQLiteRepository) FindLatestActiveByServerAndKind(serverName, kind stri
 	err := r.db.QueryRow(`
 		SELECT id, kind, parent_job_id, server_name, actor, client_ip, status, phase, summary, logs_text,
 		       error_class, retry_policy_json, meta_json, created_at, updated_at, started_at, finished_at,
-		       logs_expired, logs_truncated, revision
+		       logs_expired, logs_truncated, revision, apt_target
 		  FROM jobs
 		 WHERE server_name = ?
 		   AND kind = ?
@@ -996,6 +1016,7 @@ func (r *SQLiteRepository) FindLatestActiveByServerAndKind(serverName, kind stri
 		&record.LogsExpired,
 		&record.LogsTruncated,
 		&record.Revision,
+		&record.APTTarget,
 	)
 	if err == sql.ErrNoRows {
 		return nil, err
@@ -1043,7 +1064,7 @@ func (r *SQLiteRepository) ListReconciliationRequired() ([]Record, error) {
 		       candidate.actor, candidate.client_ip, candidate.status, candidate.phase, candidate.summary,
 		       candidate.logs_text, candidate.error_class, candidate.retry_policy_json, candidate.meta_json,
 		       candidate.created_at, candidate.updated_at, candidate.started_at, candidate.finished_at,
-		       candidate.logs_expired, candidate.logs_truncated, candidate.revision
+		       candidate.logs_expired, candidate.logs_truncated, candidate.revision, candidate.apt_target
 		  FROM jobs AS candidate
 		 WHERE candidate.status = ?
 		   AND candidate.error_class = ?
@@ -1051,7 +1072,8 @@ func (r *SQLiteRepository) ListReconciliationRequired() ([]Record, error) {
 		   AND NOT EXISTS (
 		       SELECT 1
 		         FROM jobs AS later_success
-		        WHERE later_success.server_name = candidate.server_name
+			        WHERE later_success.apt_target = candidate.apt_target
+			          AND (candidate.apt_target <> '' OR later_success.server_name = candidate.server_name)
 		          AND later_success.kind IN (?, ?, ?)
 		          AND later_success.status = ?
 		          AND later_success.created_at > candidate.created_at
@@ -1059,7 +1081,8 @@ func (r *SQLiteRepository) ListReconciliationRequired() ([]Record, error) {
 		   AND NOT EXISTS (
 		       SELECT 1
 		         FROM jobs AS later_reconciliation
-		        WHERE later_reconciliation.server_name = candidate.server_name
+			        WHERE later_reconciliation.apt_target = candidate.apt_target
+			          AND (candidate.apt_target <> '' OR later_reconciliation.server_name = candidate.server_name)
 		          AND later_reconciliation.status = ?
 		          AND later_reconciliation.error_class = ?
 		          AND later_reconciliation.kind IN (?, ?, ?)
@@ -1084,6 +1107,7 @@ func (r *SQLiteRepository) ListReconciliationRequired() ([]Record, error) {
 			&record.Status, &record.Phase, &record.Summary, &record.LogsText, &record.ErrorClass,
 			&record.RetryPolicyJSON, &record.MetaJSON, &record.CreatedAt, &record.UpdatedAt,
 			&record.StartedAt, &record.FinishedAt, &record.LogsExpired, &record.LogsTruncated, &record.Revision,
+			&record.APTTarget,
 		); err != nil {
 			return nil, err
 		}

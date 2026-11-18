@@ -21,6 +21,11 @@ job was interrupted retains its job link. Review the job result and any APT
 reconciliation requirement before deciding on another action. Review and
 approve a newly discovered package plan after an interrupted approval.
 
+Repair APT requires the current reconciliation job and its recorded SSH
+endpoint. A historical job without a recorded target remains available as a
+report. Verify the original machine and its package state independently before
+resuming maintenance for that history.
+
 For rollback, restore the verified pre-upgrade archive into a separate
 v0.5.8 installation as described in [Restore and rollback](#restore-and-rollback).
 Keep the candidate volume available for inspection until rollback is verified.

@@ -54,7 +54,7 @@ test("Status links an interrupted APT job to the same host after rename and pres
 
     const replaced = batch.locator("li").filter({ hasText: "replaced-host" });
     await expect(replaced.getByText("APT reconciliation required", { exact: true })).toBeVisible();
-    await expect(replaced.getByText("This host is no longer in the inventory.", { exact: false })).toBeVisible();
+    await expect(replaced.getByText("The original host or SSH endpoint could not be verified.", { exact: false })).toBeVisible();
     await expect(replaced.getByRole("link", { name: "Open host diagnostics" })).toHaveCount(0);
     await expect(replaced.getByRole("link", { name: "Job report" })).toBeVisible();
 
@@ -63,6 +63,9 @@ test("Status links an interrupted APT job to the same host after rename and pres
     await expect(page.locator("#selected-host-title")).toHaveText("renamed-host");
     const repair = page.locator("#selected-host-panel").getByRole("button", { name: "Repair APT" });
     await expect(repair).toBeEnabled();
+    await repair.click();
+    await expect(page.locator("#action-confirm-modal")).toContainText("SSH before-rename.invalid, port 22");
+    await page.locator("#action-confirm-cancel").click();
 
     const diagnosticURL = page.url();
     const headers = { Origin: baseURL };

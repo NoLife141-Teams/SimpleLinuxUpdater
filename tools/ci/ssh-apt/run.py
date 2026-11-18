@@ -414,21 +414,28 @@ class Harness:
                     host.get("diagnostic_available") and not host.get("retryable"),
                     "restart did not preserve the batch job and its reconciliation requirement")
             require(self.api.server(name)["status"] == "needs_reconciliation", "restart did not block the host")
+            self.api.request("PUT", "/api/servers/" + name, {
+                "name": name, "host": self.ssh_host, "port": self.ssh_port + 1, "user": "root",
+            }, allowed=(409,))
             for action in ("update", "autoremove"):
                 self.api.request("POST", f"/api/{action}/{name}", allowed=(409,))
 
-            locked_repair_id = self.api.request("POST", "/api/repair/" + name, {"confirm": True})["job_id"]
+            locked_repair_id = self.api.request("POST", "/api/repair/" + name,
+                                                {"confirm": True, "job_id": job_id})["job_id"]
             locked_repair, _ = self.api.wait_job(locked_repair_id, lambda j: j["status"] in TERMINAL, seconds=15)
             require(locked_repair["status"] == "failed" and locked_repair["error_class"] == "reconciliation_required" and
                     "APT/DPKG repair blocked: package-manager lock is active." in locked_repair["logs_text"] and
                     self.api.server(name)["status"] == "needs_reconciliation",
                     "repair did not respect the active lock and preserve the reconciliation requirement")
+            self.api.request("POST", "/api/repair/" + name,
+                             {"confirm": True, "job_id": job_id}, allowed=(409,))
             require(upgrades() == baseline_upgrades + 1, "APT mutation was not attempted exactly once")
         finally:
             self.target("rm", "/run/slu-hold-mutation")
 
         self.target("sh", "-c", "for i in $(seq 1 100); do fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/cache/apt/archives/lock /var/lib/apt/lists/lock >/dev/null 2>&1 || exit 0; sleep .1; done; exit 1")
-        repair_id = self.api.request("POST", "/api/repair/" + name, {"confirm": True})["job_id"]
+        repair_id = self.api.request("POST", "/api/repair/" + name,
+                                    {"confirm": True, "job_id": locked_repair_id})["job_id"]
         repaired, _ = self.api.wait_job(repair_id, lambda j: j["status"] in TERMINAL)
         require(repaired["status"] == "succeeded" and self.api.server(name)["status"] == "done",
                 "explicit repair did not reconcile the restarted host")
@@ -531,7 +538,8 @@ class Harness:
             self.api.request("POST", "/api/update/disconnect", allowed=(409,))
             self.target("rm", "/run/slu-hold-mutation")
             self.target("sh", "-c", "for i in $(seq 1 100); do fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/cache/apt/archives/lock /var/lib/apt/lists/lock >/dev/null 2>&1 || exit 0; sleep .1; done; exit 1")
-            repair_id = self.api.request("POST", "/api/repair/disconnect", {"confirm": True})["job_id"]
+            repair_id = self.api.request("POST", "/api/repair/disconnect",
+                                         {"confirm": True, "job_id": identity["job_id"]})["job_id"]
             repaired, _ = self.api.wait_job(repair_id, lambda j: j["status"] in TERMINAL)
             require(repaired["status"] == "succeeded", "controlled repair failed: " + str(repaired))
             require(self.target("dpkg", "--audit").strip() == "" and self.version() == "2.0", "repair did not reconcile dpkg")

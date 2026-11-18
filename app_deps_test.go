@@ -887,7 +887,7 @@ func TestAppDepsInitializeJobManagerRestoresReconciliationRequiredStatus(t *test
 		t.Fatalf("ensure schema: %v", err)
 	}
 
-	server := Server{Name: "srv-reconciliation", Host: "example.org", Port: 22, User: "root"}
+	server := Server{Name: "srv-reconciliation", Identity: "fixture-apt-target", Host: "example.org", Port: 22, User: "root"}
 	state := newServerState()
 	state.SetServers([]Server{server})
 	state.SetStatusMap(map[string]*ServerStatus{
@@ -902,6 +902,7 @@ func TestAppDepsInitializeJobManagerRestoresReconciliationRequiredStatus(t *test
 	if _, err := deps.NewJobManager(routeDB).CreateJob(JobCreateParams{
 		Kind:       jobKindUpdate,
 		ServerName: server.Name,
+		APTTarget:  server.APTTarget(),
 		Actor:      "admin",
 		Status:     jobStatusFailed,
 		ErrorClass: "reconciliation_required",

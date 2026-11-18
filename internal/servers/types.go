@@ -328,6 +328,27 @@ func (s *State) InventoryIdentities() map[string]struct{} {
 	return identities
 }
 
+// APTTarget binds a package operation to an inventory identity and SSH endpoint.
+func (server Server) APTTarget() string {
+	if server.Identity == "" || strings.TrimSpace(server.Host) == "" {
+		return ""
+	}
+	target, _ := json.Marshal([2]string{server.Identity, NormalizeServerEndpoint(server.Host, server.Port).String()})
+	return string(target)
+}
+
+func (s *State) InventoryAPTTargets() map[string]string {
+	s.Lock()
+	defer s.Unlock()
+	targets := make(map[string]string, len(s.Servers()))
+	for _, server := range s.Servers() {
+		if target := server.APTTarget(); target != "" {
+			targets[target] = server.Identity
+		}
+	}
+	return targets
+}
+
 func (s *State) ListStatuses() []ServerStatus {
 	return s.ListStatusesFor(nil)
 }
@@ -469,6 +490,8 @@ type ActionAdmissionOptions struct {
 	PackageMutation        bool
 	AllowedStatuses        map[string]bool
 	ExpectedServerIdentity string
+	ExpectedAPTTarget      string
+	ExpectedJobID          string
 }
 
 func (s *State) beginAction(name, newStatus string, packageMutation bool) (Server, error) {
@@ -496,6 +519,9 @@ func (s *State) BeginActionWithOptions(name, newStatus string, opts ActionAdmiss
 		return Server{}, nil, sql.ErrNoRows
 	}
 	if opts.ExpectedServerIdentity != "" && server.Identity != opts.ExpectedServerIdentity {
+		return Server{}, nil, ErrIdentityChanged
+	}
+	if opts.ExpectedAPTTarget != "" && (server.APTTarget() != opts.ExpectedAPTTarget || status.JobID != opts.ExpectedJobID) {
 		return Server{}, nil, ErrIdentityChanged
 	}
 	if server.Disabled {

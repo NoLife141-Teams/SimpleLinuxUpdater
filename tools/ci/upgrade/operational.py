@@ -26,11 +26,15 @@ VM_TOOLS = HERE.parent / "ssh-apt"
 DOCKER = ("docker", "--host=unix:///var/run/docker.sock")
 LABEL = "io.simplelinuxupdater.operational-qualification"
 PIN = json.loads((HERE / "operational-release.json").read_text())
+PYTHON_IMAGE = json.loads((HERE / "release.json").read_text())["runtime"]
 PLATFORM = "linux/amd64"
 BATCH_PATH = "/api/status/batches"
 BATCH_SERVER = "maintenance-batch-fixture"
 PROBE_PORT = 22922
 PROBE_CONTACTS = "/tmp/slu-qualification-batch-contacts"
+WEBHOOK_PORT = 22923
+WEBHOOK_CONTACTS = "/tmp/slu-qualification-webhook-contacts"
+WEBHOOK_URL = f"http://127.0.0.1:{WEBHOOK_PORT}/receive"
 UPGRADE_HOST_TOKEN = "[127.0.0.1]:9"
 
 
@@ -41,6 +45,14 @@ class PublishedBackup:
     archive: bytes
     passphrase: str
     known_host: str
+
+
+@dataclass(frozen=True)
+class MaintenanceBatchFixture:
+    source: dict
+    retry: dict
+    terminal_hosts: dict
+    other_account: dict[str, str]
 
 
 def fixture_ssh_key():
@@ -108,6 +120,14 @@ class Qualification:
                 "account_isolation": "not_executed",
                 "single_retry_admission": "not_executed",
                 "interrupted_job_recovery": "not_executed",
+            },
+            "candidate_backup_restore": {
+                "status": "not_executed",
+                "archive_export": "not_executed",
+                "isolated_batch_history": "not_executed",
+                "isolated_retry_admission": "not_executed",
+                "live_terminal_delivery": "not_executed",
+                "obsolete_approval": "not_executed",
             },
             "controlled_reboot_vm": {"status": "not_executed"},
             "cleanup": {"status": "not_executed"},
@@ -181,25 +201,32 @@ class Qualification:
                 and not policies[0]["enabled"] and policies[0]["target_servers"] == ["upgrade-fixture"]
                 and policies[0]["time_local"] == "03:00", "fixture policy was not preserved")
 
-    def restore_archive(self, name, image, volume, backup, setup_username):
-        restored = self.start_app(name, image, volume)
-        require(restored.request("GET", "/api/auth/status")["setup_required"],
-                "restore target was already initialized")
-        restored.request("POST", "/api/auth/setup", {"username": setup_username, "password": secrets.token_urlsafe(28) + "Aa1!"})
-        require(restored.upload("/api/backup/verify", backup.archive, backup.passphrase)["restore_ready"],
-                "published archive was not restore-ready")
-        # Keep the initial session independently of cookie expiration in the restore response.
+    def apply_archive(self, api, archive, passphrase, credentials):
+        require(api.upload("/api/backup/verify", archive, passphrase)["restore_ready"],
+                "qualification archive was not restore-ready")
+        # Check server-side invalidation independently of the response expiring cookies.
         initial_session = API(follow_redirects=False)
-        initial_session.base = restored.base
-        for cookie in restored.cookies:
+        initial_session.base = api.base
+        for cookie in api.cookies:
             initial_session.cookies.set_cookie(copy(cookie))
         require(initial_session.request("GET", "/api/auth/status")["authenticated"],
                 "initialization session was not established before restore")
-        restored.upload("/api/backup/restore", backup.archive, backup.passphrase)
-        require(not restored.request("GET", "/api/auth/status")["authenticated"] and
+        api.upload("/api/backup/restore", archive, passphrase)
+        require(not api.request("GET", "/api/auth/status")["authenticated"] and
                 not initial_session.request("GET", "/api/auth/status")["authenticated"],
                 "restore retained the previous session")
-        restored.request("POST", "/api/auth/login", backup.credentials)
+        api.request("POST", "/api/auth/login", credentials)
+
+    def initialize_restore_target(self, name, image, volume, username):
+        api = self.start_app(name, image, volume)
+        require(api.request("GET", "/api/auth/status")["setup_required"],
+                "restore target was already initialized")
+        api.request("POST", "/api/auth/setup", {"username": username, "password": secrets.token_urlsafe(28) + "Aa1!"})
+        return api
+
+    def restore_archive(self, name, image, volume, backup, setup_username):
+        restored = self.initialize_restore_target(name, image, volume, setup_username)
+        self.apply_archive(restored, backup.archive, backup.passphrase, backup.credentials)
         self.verify_inventory(restored, name, backup.known_host)
         docker("restart", "--timeout", "25", name)
         self.connect(name, restored)
@@ -270,6 +297,14 @@ class Qualification:
         until(lambda: f"127.0.0.1:{PROBE_PORT} " in docker("exec", name, "/bin/busybox", "netstat", "-ltn"),
               "qualification TCP probe did not start")
 
+    def probe_contacts(self, name, path):
+        return int(docker("exec", name, "/bin/sh", "-ec",
+                          'if test -f "$1"; then wc -l < "$1"; else printf "0"; fi', "probe-count", path))
+
+    def batch_update_admissions(self, api):
+        return api.request("GET", f"/api/audit-events?action=update.start&status=started&target_type=server&target_name={BATCH_SERVER}",
+                           timeout=4)
+
     def qualify_maintenance_batches(self, name, api, credentials):
         evidence = self.report["maintenance_batches"]
         api.request("POST", "/api/servers", {
@@ -338,22 +373,16 @@ class Qualification:
 
         job_id = until(running_job, "retry did not start a real job")
 
-        def contacts():
-            return int(docker("exec", name, "/bin/sh", "-c",
-                              f"if test -f {PROBE_CONTACTS}; then wc -l < {PROBE_CONTACTS}; else printf '0'; fi"))
-
-        audit_path = f"/api/audit-events?action=update.start&status=started&target_type=server&target_name={BATCH_SERVER}"
-
         def recorded_admissions():
-            result = api.request("GET", audit_path, timeout=4)
+            result = self.batch_update_admissions(api)
             return result if result["total"] else None
 
         # The runner may reach the probe before the admission audit is written.
         admissions = until(recorded_admissions, "retry job admission did not appear in the audit")
         require(admissions["total"] == 1 and json.loads(admissions["items"][0]["meta_json"])["job_id"] == job_id,
                 "concurrent and replayed retries must record exactly one admission for the running job")
-        until(contacts, "retry job did not reach the isolated peer")
-        require(contacts() == 1,
+        until(lambda: self.probe_contacts(name, PROBE_CONTACTS), "retry job did not reach the isolated peer")
+        require(self.probe_contacts(name, PROBE_CONTACTS) == 1,
                 "the isolated peer received more than one connection before interruption")
         evidence["single_retry_admission"] = "passed"
 
@@ -370,6 +399,196 @@ class Qualification:
         require(any(row["id"] == winner_id and row["terminal"] == 1 and row["needs_verification"] == 0 for row in history),
                 "owner history lost the interrupted retry")
         evidence["interrupted_job_recovery"] = "passed"
+        return MaintenanceBatchFixture(source, winner, {batch_id: read_host(batch_id), winner_id: interrupted}, operator)
+
+    def seed_pending_deliveries(self, name, job_id):
+        # The ordinary event and the superseded plan are fixture inputs. The
+        # candidate still performs every export, restore and delivery itself.
+        volume = self.prefix + "-candidate-data"
+        mount = docker("container", "inspect", "--format",
+                       '{{range .Mounts}}{{if eq .Destination "/data"}}{{.Name}}{{end}}{{end}}', name)
+        owner = docker("volume", "inspect", "--format", '{{index .Labels "' + LABEL + '"}}', volume)
+        require(mount == volume and owner == self.prefix, "refusing to seed a volume owned by another run")
+        docker("stop", "--timeout", "25", name)
+        script = """
+import hashlib
+import json
+import sqlite3
+import sys
+import uuid
+from datetime import UTC, datetime, timedelta
+
+job_id, expected_server, url = sys.argv[1:]
+fingerprint = hashlib.sha256(("webhook\\0" + url).encode()).hexdigest()
+with sqlite3.connect("file:/data/servers.db?mode=rw", uri=True) as db:
+    job = db.execute("SELECT status, server_name FROM jobs WHERE id=?", (job_id,)).fetchone()
+    if job != ("interrupted", expected_server):
+        raise ValueError("pending deliveries require the terminal batch fixture")
+    now = datetime.now(UTC)
+    for event, delay, metadata in (
+        ("update.complete", 25, {"job_id": job_id}),
+        ("approval.published", 50, {"job_id": job_id, "approval_generation": 1,
+                                   "condition_id": "approval/" + job_id, "condition_episode": 1}),
+    ):
+        due = (now + timedelta(seconds=delay)).isoformat().replace("+00:00", "Z")
+        created = now.isoformat().replace("+00:00", "Z")
+        db.execute(
+            "INSERT INTO notification_outbox (id, destination, event_type, action, target_type, target_name, "
+            "event_created_at, meta_json, destination_fingerprint, state, next_attempt_at, created_at, updated_at) "
+            "VALUES (?, 'webhook', ?, ?, 'server', ?, ?, ?, ?, 'pending', ?, ?, ?)",
+            (uuid.uuid4().hex + uuid.uuid4().hex, event, event, expected_server, created,
+             json.dumps(metadata), fingerprint, due, created, created),
+        )
+db.close()
+"""
+        docker("run", "--pull", "never", "--rm", "--label", self.label, "--name", self.prefix + "-outbox-fixture",
+               "--network", "none", "--mount", f"type=volume,src={volume},dst=/data", PYTHON_IMAGE,
+               "python3", "-c", script, job_id, BATCH_SERVER, WEBHOOK_URL)
+        docker("start", name)
+
+    def start_webhook_receiver(self, app_name, suffix):
+        # Each receiver shares only its app's network namespace and keeps
+        # request counts without persisting or logging body contents.
+        script = """
+import sys
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
+port, count_path = sys.argv[1:]
+
+class Receiver(BaseHTTPRequestHandler):
+    def do_POST(self):
+        if self.path != "/receive":
+            self.send_error(404)
+            return
+        self.rfile.read(int(self.headers["Content-Length"]))
+        with open(count_path, "a") as count:
+            count.write("received\\n")
+        self.send_response(204)
+        self.end_headers()
+
+    def log_message(self, *_):
+        pass
+
+HTTPServer(("127.0.0.1", int(port)), Receiver).serve_forever()
+"""
+        receiver = self.prefix + "-webhook-" + suffix
+        docker("run", "--pull", "never", "--detach", "--label", self.label, "--name", receiver,
+               "--network", "container:" + app_name, PYTHON_IMAGE, "python3", "-c", script, str(WEBHOOK_PORT), WEBHOOK_CONTACTS)
+        until(lambda: f"127.0.0.1:{WEBHOOK_PORT} " in docker("exec", app_name, "/bin/busybox", "netstat", "-ltn"),
+              "qualification webhook receiver did not start")
+        return receiver
+
+    def verify_restored_batches(self, name, api, fixture):
+        for request in (fixture.source, fixture.retry):
+            batch = api.request("GET", f"{BATCH_PATH}/{request['id']}")["batch"]
+            require(batch["id"] == request["id"] and batch.get("retry_of") == request.get("retry_of")
+                    and batch["hosts"] == [fixture.terminal_hosts[request["id"]]],
+                    "restore changed the batch's terminal result or retry lineage")
+        history = api.request("GET", BATCH_PATH)["batches"]
+        require({item["id"] for item in history if item["terminal"] == 1 and item["needs_verification"] == 0}
+                == {fixture.source["id"], fixture.retry["id"]}, "restore lost terminal batches from owner history")
+        job_id = fixture.terminal_hosts[fixture.retry["id"]]["job_id"]
+        job = api.request("GET", f"/api/jobs/{job_id}")["job"]
+        require(job["id"] == job_id and job["status"] == "interrupted" and job["server_name"] == BATCH_SERVER,
+                "restore lost the linked job")
+        other = self.connect(name)
+        other.request("POST", "/api/auth/login", fixture.other_account)
+        require(other.request("GET", BATCH_PATH)["batches"] == [], "restored batches appeared in another account's history")
+        for request in (fixture.source, fixture.retry):
+            require(other.request("GET", f"{BATCH_PATH}/{request['id']}", allowed=(404,)).get("batch") is None,
+                    "another account could access a restored batch")
+
+    def notification_delivery(self, api, job_id, event):
+        items = api.request("GET", f"/api/notifications/delivery-history?destination=webhook&job_id={job_id}")["items"]
+        matching = [item for item in items if item["event_type"] == event]
+        require(len(matching) == 1, "expected exactly one seeded delivery in candidate history")
+        return matching[0]
+
+    def qualify_candidate_backup_restore(self, name, api, credentials, fixture):
+        evidence = self.report["candidate_backup_restore"]
+        isolated_name = self.prefix + "-candidate-restore"
+        isolated = self.initialize_restore_target(isolated_name, self.candidate, self.create_volume("candidate-restore-data"),
+                                                  "candidate-recovery-admin")
+        require(re.fullmatch(r"python:3\.12\.\d+-slim-bookworm@sha256:[0-9a-f]{64}", PYTHON_IMAGE),
+                "qualification helpers must use the pinned Python runtime")
+        docker("pull", "--platform", PLATFORM, PYTHON_IMAGE, timeout=150)
+
+        settings = api.request("PUT", "/api/notifications/settings", {
+            "enabled": True, "webhook_url_intent": "replace", "webhook_url": WEBHOOK_URL,
+            "event_types": ["update.complete", "approval.published"],
+        })
+        require(settings["enabled"] and settings["webhook_configured"], "candidate did not configure the isolated destination")
+        job_id = fixture.terminal_hosts[fixture.retry["id"]]["job_id"]
+        self.seed_pending_deliveries(name, job_id)
+        self.connect(name, api)
+        api.request("POST", "/api/auth/login", credentials)
+        source_receiver = self.start_webhook_receiver(name, "source")
+        ordinary = self.notification_delivery(api, job_id, "update.complete")
+        stale = self.notification_delivery(api, job_id, "approval.published")
+        require(ordinary["state"] == stale["state"] == "pending" and stale["approval_generation"] == 1,
+                "candidate did not have both pending deliveries before export")
+        phrase = secrets.token_urlsafe(32)
+        archive = api.request("POST", "/api/backup/export", {"passphrase": phrase, "include_known_hosts": True}, binary=True)
+        require(len(archive) > 100 and self.probe_contacts(source_receiver, WEBHOOK_CONTACTS) == 0,
+                "candidate failed to export before delivering the pending notification")
+        evidence["archive_export"] = "passed"
+
+        self.apply_archive(isolated, archive, phrase, credentials)
+        require(self.notification_delivery(isolated, job_id, "update.complete") == ordinary
+                and self.notification_delivery(isolated, job_id, "approval.published") == stale,
+                "isolated restore lost the original pending delivery evidence")
+        self.verify_restored_batches(isolated_name, isolated, fixture)
+        docker("restart", "--timeout", "25", isolated_name)
+        self.connect(isolated_name, isolated)
+        isolated.request("POST", "/api/auth/login", credentials)
+        isolated_receiver = self.start_webhook_receiver(isolated_name, "restored")
+        self.verify_restored_batches(isolated_name, isolated, fixture)
+        evidence["isolated_batch_history"] = "passed"
+
+        self.start_batch_probe(isolated_name)
+        winner_id = fixture.retry["id"]
+        require(isolated.request("POST", BATCH_PATH, fixture.retry, allowed=(202,)) == {"id": winner_id},
+                "restored retry replay did not return the original attempt")
+        another_retry = {**fixture.retry, "id": uuid.uuid4().hex}
+        conflict = isolated.request("POST", BATCH_PATH, another_retry, allowed=(409,))
+        require(conflict.get("retry_batch_id") == winner_id, "a distinct request did not identify the existing retry")
+        require(isolated.request("GET", f"{BATCH_PATH}/{another_retry['id']}", allowed=(404,)).get("batch") is None,
+                "the rejected retry produced an unexpected batch")
+        self.verify_restored_batches(isolated_name, isolated, fixture)
+        audit = self.batch_update_admissions(isolated)
+        require(audit["total"] == 1 and json.loads(audit["items"][0]["meta_json"])["job_id"] == job_id
+                and self.probe_contacts(isolated_name, PROBE_CONTACTS) == 0,
+                "restored retry submitted another job or contacted the SSH probe")
+        evidence["isolated_retry_admission"] = "passed"
+
+        def terminal_delivery(client, event, state):
+            result = self.notification_delivery(client, job_id, event)
+            return result if result["state"] == state else None
+
+        delivered = until(lambda: terminal_delivery(api, "update.complete", "succeeded"),
+                          "source failed to deliver the archived pending notification", seconds=45)
+        require(delivered["attempts"] == 1 and self.probe_contacts(source_receiver, WEBHOOK_CONTACTS) == 1
+                and self.notification_delivery(api, job_id, "approval.published") == stale,
+                "source did not deliver exactly once with the obsolete plan still pending")
+        self.apply_archive(api, archive, phrase, credentials)
+        require(self.notification_delivery(api, job_id, "update.complete") == delivered,
+                "in-place restore lost the live terminal delivery outcome")
+        self.verify_restored_batches(name, api, fixture)
+
+        for client in (api, isolated):
+            obsoleted = until(lambda: terminal_delivery(client, "approval.published", "skipped"),
+                              "restored obsolete approval did not become ineligible", seconds=45)
+            require(obsoleted.get("reason_code") == "condition_ineligible"
+                    and obsoleted["approval_generation"] == stale["approval_generation"] and obsoleted["attempts"] == 0,
+                    "restored obsolete approval was not skipped before delivery")
+        require(self.notification_delivery(api, job_id, "update.complete") == delivered
+                and self.probe_contacts(source_receiver, WEBHOOK_CONTACTS) == 1,
+                "in-place restore replayed the delivered notification")
+        require(terminal_delivery(isolated, "update.complete", "succeeded")
+                and self.probe_contacts(isolated_receiver, WEBHOOK_CONTACTS) == 1,
+                "isolated restore did not process only the archive's eligible delivery")
+        evidence["live_terminal_delivery"] = "passed"
+        evidence["obsolete_approval"] = "passed"
 
     def controlled_reboot(self):
         build = self.work / "vm-runner"
@@ -433,6 +652,11 @@ class Qualification:
                     docker(kind, "rm", *options, resource)
                 except Exception as error:
                     errors.append(str(error))
+            try:
+                if docker(kind, "ls", *flags, "--quiet", "--filter", "label=" + self.label):
+                    errors.append(f"Owned qualification {kind} resources remain")
+            except Exception as error:
+                errors.append(str(error))
         try:
             images = docker("image", "ls", "--filter", "label=" + self.label, "--format", "{{.Repository}}:{{.Tag}}").splitlines()
             for image in images:
@@ -461,7 +685,8 @@ class Qualification:
             self.step("candidate_build", self.build_candidate)
             name, api, backup = self.step("docker_upgrade", self.docker_upgrade)
             self.step("docker_rollback", lambda: self.docker_rollback(backup))
-            self.step("maintenance_batches", lambda: self.qualify_maintenance_batches(name, api, backup.credentials))
+            fixture = self.step("maintenance_batches", lambda: self.qualify_maintenance_batches(name, api, backup.credentials))
+            self.step("candidate_backup_restore", lambda: self.qualify_candidate_backup_restore(name, api, backup.credentials, fixture))
             self.step("controlled_reboot_vm", self.controlled_reboot)
             self.report["status"] = "passed"
         except (Exception, KeyboardInterrupt) as error:

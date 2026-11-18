@@ -319,16 +319,33 @@ The scenario enables a loopback-only probe, verifies account isolation and a
 single admitted retry under concurrent submissions and replay, then abruptly
 stops the candidate while its job waits for SSH negotiation. After restart,
 it verifies the same job and its interrupted outcome. The probe holds the TCP
-connection without proceeding with SSH. The VM runs the
-same candidate binary in a container with only loopback. The guest image is
-verified by SHA-256 before boot.
+connection without proceeding with SSH. A stopped, labeled volume receives
+two undelivered notification fixtures through the pinned Python image. The
+candidate then exports a new archive containing those deliveries and batches. A fresh
+candidate volume restores that archive and retains the owner, exact job, retry
+lineage, and account isolation across restart. Replaying the accepted retry
+returns its existing attempt, and a distinct request for that retry causes no
+new admission or SSH contact.
+
+In-place restore preserves a delivery that the source completed after export,
+so the source loopback receiver counts one request. An independently restored
+archive contains only the evidence saved at export and processes its own
+eligible pending delivery. Both restored installations record the obsolete
+approval as skipped before delivery. Disposable receivers count requests
+without retaining their contents.
+
+The VM runs the same candidate binary in a container with only loopback. The
+guest image is verified by SHA-256 before boot.
 
 The CI and release gate retain `report.json` and `vm-report.json`. The reports
 record the candidate commit, image identifiers, outcomes and cleanup. The
 `docker_upgrade` result records the copied-volume migration and the separate
 candidate archive restore. `docker_rollback` records the restore to the
 published image. `maintenance_batches` records history, account isolation,
-retry admission and interrupted-job recovery. Missing
+retry admission and interrupted-job recovery. `candidate_backup_restore`
+records the new archive, restored history and retry admission, live delivery
+continuity, and obsolete approval suppression. Cleanup verifies removal of
+labeled containers, volumes, and the private network. Missing
 runner prerequisites are reported as `not_executed` and return a nonzero exit
 code. Update the published image pin after each release. The v0.4.16 migration
 qualification below covers the older schema and authentication transition.

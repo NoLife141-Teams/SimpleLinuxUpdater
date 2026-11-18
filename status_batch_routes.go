@@ -65,9 +65,6 @@ func (request *statusBatchRequest) valid() bool {
 		if target.Name == "" || target.ServerIdentity == "" || seen[target.Name] {
 			return false
 		}
-		if batchActionScope(request.Action) == "approvals:write" && (target.Approval.JobID == "" || target.Approval.Generation == 0) {
-			return false
-		}
 		seen[target.Name] = true
 	}
 	return true

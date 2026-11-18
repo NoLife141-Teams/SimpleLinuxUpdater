@@ -98,10 +98,27 @@ func TestStatusBatchSurvivesLostResponseAndTracksRunnerOutcome(t *testing.T) {
 	}
 
 	approval := approvalIdentityForTest(app.Deps.ServerState, names[0])
-	if rec := identityRequest(app, "POST", "/api/approve/"+names[0], cookie, "", approval); rec.Code != http.StatusOK {
-		t.Fatalf("runner approval: %d %s", rec.Code, rec.Body.String())
+	approvalBatchID := strings.Repeat("d", 32)
+	if rec := post(statusBatchRequest{
+		ID: approvalBatchID, Action: "approve_all",
+		Targets: []statusBatchTarget{
+			{Name: server.Name, ServerIdentity: server.Identity, Approval: approval},
+			{Name: replaced.Name, ServerIdentity: replaced.Identity},
+		},
+	}); rec.Code != http.StatusAccepted {
+		t.Fatalf("incomplete approval identity prevented admission of the valid host: %d %s", rec.Code, rec.Body.String())
 	}
 	waitForUpdateRunners()
+	approvalBatch := read("/api/status/batches/" + approvalBatchID)
+	if len(approvalBatch.Hosts) != 2 {
+		t.Fatalf("expected two independent approval outcomes: %+v", approvalBatch.Hosts)
+	}
+	if host := approvalBatch.Hosts[0]; host.State != "refused" || host.Message == "" || host.JobID != "" || !host.Retryable {
+		t.Fatalf("expected a refusal for the host without an approval identity: %+v", host)
+	}
+	if host := approvalBatch.Hosts[1]; host.State != "completed" || host.JobStatus != jobStatusSucceeded || host.JobID != approval.JobID {
+		t.Fatalf("expected the valid approval batch host to complete: %+v", host)
+	}
 	batch = read("/api/status/batches/" + id)
 	if host := batch.Hosts[1]; host.State != "completed" || host.JobStatus != jobStatusSucceeded {
 		t.Fatalf("batch did not follow completed job: %+v", host)

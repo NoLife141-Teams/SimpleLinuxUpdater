@@ -15,6 +15,7 @@ import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 
 from scenario import API, require
@@ -29,6 +30,21 @@ BATCH_PATH = "/api/status/batches"
 BATCH_SERVER = "maintenance-batch-fixture"
 PROBE_PORT = 22922
 PROBE_CONTACTS = "/tmp/slu-qualification-batch-contacts"
+UPGRADE_HOST_TOKEN = "[127.0.0.1]:9"
+
+
+@dataclass(frozen=True)
+class PublishedBackup:
+    image: str
+    credentials: dict[str, str]
+    archive: bytes
+    passphrase: str
+    known_host: str
+
+
+def fixture_ssh_key():
+    key = base64.b64encode(b"\0\0\0\x0bssh-ed25519\0\0\0\x20" + secrets.token_bytes(32)).decode()
+    return f"ssh-ed25519 {key}"
 
 
 def command(*args, timeout=90, stdin=None, stdout=subprocess.PIPE):
@@ -84,6 +100,7 @@ class Qualification:
             "status": "not_executed",
             "candidate_build": {"status": "not_executed"},
             "docker_upgrade": {"status": "not_executed"},
+            "docker_rollback": {"status": "not_executed"},
             "maintenance_batches": {
                 "status": "not_executed",
                 "history_after_restart": "not_executed",
@@ -122,6 +139,13 @@ class Qualification:
                "--mount", f"type=volume,src={volume},dst=/data", image)
         return self.connect(name)
 
+    def create_volume(self, suffix):
+        volume = self.prefix + "-" + suffix
+        docker("volume", "create", "--label", self.label, volume)
+        owner = docker("volume", "inspect", "--format", '{{index .Labels "' + LABEL + '"}}', volume)
+        require(owner == self.prefix, "refusing to mount a volume owned by another run")
+        return volume
+
     def connect(self, name, api=None):
         address = ipaddress.IPv4Address(docker("container", "inspect", "--format",
             "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}", name))
@@ -143,15 +167,37 @@ class Qualification:
             time.sleep(min(0.4, max(0, deadline - time.monotonic())))
         raise RuntimeError("application did not become ready on the private qualification bridge")
 
-    def verify_inventory(self, api):
+    def verify_inventory(self, api, container, known_host):
         servers = api.request("GET", "/api/servers")
         require(len(servers) == 1 and servers[0]["name"] == "upgrade-fixture"
                 and servers[0]["disabled"] and servers[0]["has_password"]
                 and servers[0]["tags"] == ["qualification"], "fixture inventory was not preserved")
+        require(servers[0]["host_key_status"] == "trusted" and
+                known_host in docker("exec", "--user", "app", container, "cat", "/data/known_hosts").splitlines(),
+                "fixture SSH host-key trust was not preserved")
         policies = api.request("GET", "/api/update-policies")["items"]
         require(len(policies) == 1 and policies[0]["name"] == "Upgrade fixture"
                 and not policies[0]["enabled"] and policies[0]["target_servers"] == ["upgrade-fixture"]
                 and policies[0]["time_local"] == "03:00", "fixture policy was not preserved")
+
+    def restore_archive(self, name, image, volume, backup, setup_username):
+        restored = self.start_app(name, image, volume)
+        require(restored.request("GET", "/api/auth/status")["setup_required"],
+                "restore target was already initialized")
+        restored.request("POST", "/api/auth/setup", {"username": setup_username, "password": secrets.token_urlsafe(28) + "Aa1!"})
+        require(restored.upload("/api/backup/verify", backup.archive, backup.passphrase)["restore_ready"],
+                "published archive was not restore-ready")
+        restored.upload("/api/backup/restore", backup.archive, backup.passphrase)
+        require(not restored.request("GET", "/api/auth/status")["authenticated"], "restore retained the previous session")
+        restored.request("POST", "/api/auth/login", backup.credentials)
+        self.verify_inventory(restored, name, backup.known_host)
+        docker("restart", "--timeout", "25", name)
+        self.connect(name, restored)
+        restored.request("POST", "/api/auth/login", backup.credentials)
+        self.verify_inventory(restored, name, backup.known_host)
+
+    def docker_rollback(self, backup):
+        self.restore_archive(self.prefix + "-rollback", backup.image, self.create_volume("rollback-data"), backup, "rollback-admin")
 
     def docker_upgrade(self):
         published = PIN["published_image"]
@@ -159,66 +205,55 @@ class Qualification:
                 "published image must be pinned by digest")
         docker("pull", "--platform", PLATFORM, published, timeout=150)
         docker("network", "create", "--internal", "--label", self.label, self.network)
-        volumes = [self.prefix + "-" + suffix for suffix in ("published-data", "candidate-data", "restored-data")]
-        for volume in volumes:
-            docker("volume", "create", "--label", self.label, volume)
-            owner = docker("volume", "inspect", "--format", '{{index .Labels "' + LABEL + '"}}', volume)
-            require(owner == self.prefix, "refusing to mount a volume owned by another run")
+        old_volume, new_volume, restored_volume = (
+            self.create_volume(suffix) for suffix in ("published-data", "candidate-data", "restored-data")
+        )
 
         credentials = {"username": "qualification-admin", "password": secrets.token_urlsafe(28) + "Aa1!"}
         phrase = secrets.token_urlsafe(32)
         ssh_password = secrets.token_urlsafe(32)
         old_name = self.prefix + "-published"
-        old = self.start_app(old_name, published, volumes[0])
+        old = self.start_app(old_name, published, old_volume)
         old.request("POST", "/api/auth/setup", credentials)
         old.request("POST", "/api/servers", {"name": "upgrade-fixture", "host": "127.0.0.1", "port": 9,
             "user": "fixture", "pass": ssh_password, "disabled": True, "tags": ["qualification"]}, allowed=(201,))
         old.request("POST", "/api/update-policies", {"name": "Upgrade fixture", "enabled": False,
             "target_servers": ["upgrade-fixture"], "execution_mode": "scan_only", "package_scope": "full",
             "cadence_kind": "daily", "time_local": "03:00", "rollout_mode": "immediate"}, allowed=(201,))
-        self.verify_inventory(old)
+        known_host = f"{UPGRADE_HOST_TOKEN} {fixture_ssh_key()}"
+        docker("exec", "--user", "app", old_name, "/bin/sh", "-ec",
+               'umask 077; printf "%s\\n" "$1" >> /data/known_hosts', "seed-known-host", known_host)
+        self.verify_inventory(old, old_name, known_host)
         archive = old.request("POST", "/api/backup/export", {"passphrase": phrase, "include_known_hosts": True}, binary=True)
         require(len(archive) > 100 and ssh_password.encode() not in archive, "missing or unencrypted backup archive")
+        backup = PublishedBackup(published, credentials, archive, phrase, known_host)
         docker("stop", "--timeout", "25", old_name)
         docker("run", "--pull", "never", "--rm", "--label", self.label, "--name", self.prefix + "-copy",
                "--network", "none", "--entrypoint", "/bin/sh",
-               "--mount", f"type=volume,src={volumes[0]},dst=/source,readonly",
-               "--mount", f"type=volume,src={volumes[1]},dst=/target",
+               "--mount", f"type=volume,src={old_volume},dst=/source,readonly",
+               "--mount", f"type=volume,src={new_volume},dst=/target",
                self.candidate, "-ec", "cp -a /source/. /target/")
 
         new_name = self.prefix + "-upgraded"
-        new = self.start_app(new_name, self.candidate, volumes[1])
+        new = self.start_app(new_name, self.candidate, new_volume)
         new.request("POST", "/api/auth/login", credentials)
-        self.verify_inventory(new)
+        self.verify_inventory(new, new_name, known_host)
         docker("restart", "--timeout", "25", new_name)
         self.connect(new_name, new)
         new.request("POST", "/api/auth/login", credentials)
-        self.verify_inventory(new)
+        self.verify_inventory(new, new_name, known_host)
         self.report["docker_upgrade"]["copied_volume_restart"] = "passed"
 
-        recovered_name = self.prefix + "-restored"
-        recovered = self.start_app(recovered_name, self.candidate, volumes[2])
-        recovered.request("POST", "/api/auth/setup", {"username": "recovery-admin", "password": secrets.token_urlsafe(28) + "Aa1!"})
-        require(recovered.upload("/api/backup/verify", archive, phrase)["restore_ready"],
-                "published archive was not restore-ready on candidate")
-        recovered.upload("/api/backup/restore", archive, phrase)
-        require(not recovered.request("GET", "/api/auth/status")["authenticated"], "restore retained the previous session")
-        recovered.request("POST", "/api/auth/login", credentials)
-        self.verify_inventory(recovered)
-        docker("restart", "--timeout", "25", recovered_name)
-        self.connect(recovered_name, recovered)
-        recovered.request("POST", "/api/auth/login", credentials)
-        self.verify_inventory(recovered)
+        self.restore_archive(self.prefix + "-restored", self.candidate, restored_volume, backup, "recovery-admin")
         self.report["docker_upgrade"]["separate_volume_restore"] = "passed"
-        return new_name, new, credentials
+        return new_name, new, backup
 
     def start_batch_probe(self, name):
         # The isolated peer only accepts and holds TCP connections. It does
         # not proceed with SSH or execute commands supplied over the connection.
-        key = base64.b64encode(b"\0\0\0\x0bssh-ed25519\0\0\0\x20" + secrets.token_bytes(32)).decode()
         docker("exec", "--user", "app", name, "/bin/sh", "-ec",
                'umask 077; printf "%s\n" "$1" >> /data/known_hosts; printf "%s\n" "$2" > /tmp/slu-qualification-batch-probe',
-               "probe", f"[127.0.0.1]:{PROBE_PORT} ssh-ed25519 {key}",
+               "probe", f"[127.0.0.1]:{PROBE_PORT} {fixture_ssh_key()}",
                f'printf "connected\\n" >> {PROBE_CONTACTS}\nexec /bin/sleep 60')
         docker("exec", "--detach", "--user", "app", name, "/bin/busybox", "nc", "-lk",
                "-s", "127.0.0.1", "-p", str(PROBE_PORT), "-e", "/bin/sh", "/tmp/slu-qualification-batch-probe")
@@ -414,8 +449,9 @@ class Qualification:
         self.report["status"] = "failed"
         try:
             self.step("candidate_build", self.build_candidate)
-            upgraded = self.step("docker_upgrade", self.docker_upgrade)
-            self.step("maintenance_batches", lambda: self.qualify_maintenance_batches(*upgraded))
+            name, api, backup = self.step("docker_upgrade", self.docker_upgrade)
+            self.step("docker_rollback", lambda: self.docker_rollback(backup))
+            self.step("maintenance_batches", lambda: self.qualify_maintenance_batches(name, api, backup.credentials))
             self.step("controlled_reboot_vm", self.controlled_reboot)
             self.report["status"] = "passed"
         except (Exception, KeyboardInterrupt) as error:

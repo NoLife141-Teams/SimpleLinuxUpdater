@@ -34,18 +34,20 @@ class OperationalQualificationTest(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertEqual(report["status"], "not_executed")
         self.assertEqual(report["docker_upgrade"]["status"], "not_executed")
+        self.assertEqual(report["docker_rollback"]["status"], "not_executed")
         self.assertEqual(report["maintenance_batches"]["status"], "not_executed")
         self.assertEqual(report["controlled_reboot_vm"]["status"], "not_executed")
 
     def test_batch_gate_failure_keeps_archive_result_and_marks_later_checks_unexecuted(self):
-        upgraded = ("upgraded-container", object(), {"username": "qualification-admin"})
+        backup = operational.PublishedBackup("published", {"username": "qualification-admin"}, b"archive", "phrase", "host key")
+        upgraded = ("upgraded-container", object(), backup)
 
         def run_upgrade(qualification):
             qualification.report["docker_upgrade"]["separate_volume_restore"] = "passed"
             return upgraded
 
         def fail_batch(qualification, *args):
-            self.assertEqual(args, upgraded)
+            self.assertEqual(args, (*upgraded[:2], backup.credentials))
             qualification.report["maintenance_batches"]["history_after_restart"] = "passed"
             raise AssertionError("retry admission was not unique")
 
@@ -54,6 +56,7 @@ class OperationalQualificationTest(unittest.TestCase):
                 patch.object(operational, "docker", return_value="linux/amd64"), \
                 patch.object(operational.Qualification, "build_candidate"), \
                 patch.object(operational.Qualification, "docker_upgrade", run_upgrade), \
+                patch.object(operational.Qualification, "docker_rollback") as rollback, \
                 patch.object(operational.Qualification, "qualify_maintenance_batches", fail_batch), \
                 patch.object(operational.Qualification, "controlled_reboot") as reboot, \
                 patch.object(operational.Qualification, "cleanup", return_value=True):
@@ -62,11 +65,38 @@ class OperationalQualificationTest(unittest.TestCase):
         self.assertEqual(report["reason"], "retry admission was not unique")
         self.assertEqual(report["docker_upgrade"]["status"], "passed")
         self.assertEqual(report["docker_upgrade"]["separate_volume_restore"], "passed")
+        self.assertEqual(report["docker_rollback"]["status"], "passed")
         self.assertEqual(report["maintenance_batches"]["status"], "failed")
         self.assertEqual(report["maintenance_batches"]["history_after_restart"], "passed")
         self.assertEqual(report["maintenance_batches"]["interrupted_job_recovery"], "not_executed")
         self.assertEqual(report["controlled_reboot_vm"]["status"], "not_executed")
+        rollback.assert_called_once_with(backup)
         reboot.assert_not_called()
+
+    def test_rollback_failure_keeps_migration_passed_and_cleans_up(self):
+        def run_upgrade(qualification):
+            qualification.report["docker_upgrade"]["copied_volume_restart"] = "passed"
+            qualification.report["docker_upgrade"]["separate_volume_restore"] = "passed"
+            return "upgraded-container", object(), backup
+
+        backup = operational.PublishedBackup("published", {}, b"archive", "phrase", "host key")
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(operational.shutil, "which", return_value="/usr/bin/tool"), \
+                patch.object(operational, "docker", return_value="linux/amd64"), \
+                patch.object(operational.Qualification, "build_candidate"), \
+                patch.object(operational.Qualification, "docker_upgrade", run_upgrade), \
+                patch.object(operational.Qualification, "docker_rollback", side_effect=AssertionError("fixture SSH host-key trust was not preserved")), \
+                patch.object(operational.Qualification, "qualify_maintenance_batches") as batches, \
+                patch.object(operational.Qualification, "cleanup", return_value=True) as cleanup:
+            code, report = self.invoke(Path(directory))
+        self.assertEqual(code, 1)
+        self.assertEqual(report["status"], "failed")
+        self.assertEqual(report["docker_upgrade"]["status"], "passed")
+        self.assertEqual(report["docker_rollback"]["status"], "failed")
+        self.assertEqual(report["maintenance_batches"]["status"], "not_executed")
+        self.assertEqual(report["reason"], "fixture SSH host-key trust was not preserved")
+        batches.assert_not_called()
+        cleanup.assert_called_once()
 
     def test_failed_upgrade_reports_vm_not_executed_and_cleans_up(self):
         with tempfile.TemporaryDirectory() as directory, \
@@ -80,6 +110,7 @@ class OperationalQualificationTest(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertEqual(report["status"], "failed")
         self.assertEqual(report["docker_upgrade"]["status"], "failed")
+        self.assertEqual(report["docker_rollback"]["status"], "not_executed")
         self.assertEqual(report["controlled_reboot_vm"]["status"], "not_executed")
         reboot.assert_not_called()
         cleanup.assert_called_once()

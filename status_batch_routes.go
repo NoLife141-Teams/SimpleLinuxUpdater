@@ -332,6 +332,17 @@ func (s *statusBatchService) get(c *gin.Context) {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Could not read maintenance batch"})
 		return
 	}
+	var identities map[string]struct{}
+	for i := range batch.Hosts {
+		host := &batch.Hosts[i]
+		if !host.ReconciliationRequired {
+			continue
+		}
+		if identities == nil {
+			identities = s.deps.ServerState.InventoryIdentities()
+		}
+		_, host.DiagnosticAvailable = identities[host.ServerIdentity]
+	}
 	c.JSON(http.StatusOK, gin.H{"batch": batch})
 }
 
@@ -385,7 +396,8 @@ func (s *statusBatchService) projectBatch(ctx context.Context, db *sql.DB, batch
 
 func reconcileStatusBatchHost(ctx context.Context, db *sql.DB, batch *statusBatch, host *statusBatchHost, account int64) bool {
 	query := `WITH proof AS (
-		SELECT a.status, COALESCE(j.id, '') AS job_id, COALESCE(j.status, '') AS job_status, a.message
+		SELECT a.status, COALESCE(j.id, '') AS job_id, COALESCE(j.status, '') AS job_status, a.message,
+			COALESCE(j.status = 'failed' AND j.error_class = 'reconciliation_required', 0) AS reconciliation_required
 		FROM audit_events a LEFT JOIN jobs j ON j.id = json_extract(a.meta_json, '$.job_id')
 		WHERE a.actor = ? AND a.target_type = 'server' AND a.target_name = ? AND json_valid(a.meta_json)
 		  AND json_extract(a.meta_json, '$.maintenance_batch_id') = ?
@@ -423,9 +435,10 @@ func reconcileStatusBatchHost(ctx context.Context, db *sql.DB, batch *statusBatc
 	default:
 		return false
 	}
-	query += ` LIMIT 2) SELECT status, job_id, job_status, message FROM proof WHERE (SELECT COUNT(*) FROM proof) = 1`
+	query += ` LIMIT 2) SELECT status, job_id, job_status, message, reconciliation_required FROM proof WHERE (SELECT COUNT(*) FROM proof) = 1`
 	var status, jobID, jobStatus, message string
-	if err := db.QueryRowContext(ctx, query, args...).Scan(&status, &jobID, &jobStatus, &message); err == nil {
+	var reconciliationRequired bool
+	if err := db.QueryRowContext(ctx, query, args...).Scan(&status, &jobID, &jobStatus, &message, &reconciliationRequired); err == nil {
 		state := "accepted"
 		if status == "failure" {
 			state = "failed"
@@ -438,21 +451,24 @@ func reconcileStatusBatchHost(ctx context.Context, db *sql.DB, batch *statusBatc
 		target := statusBatchTarget{Name: host.Name, ServerIdentity: host.ServerIdentity}
 		if err := recordStatusBatchOutcome(ctx, db, batch.ID, target, host.State, state, message, jobID); err == nil {
 			host.State, host.Message, host.JobID, host.JobStatus = state, message, jobID, jobStatus
+			host.ReconciliationRequired = reconciliationRequired
 			return true
 		}
 	}
 	// Another read may have persisted the result after we loaded the batch,
 	// including when audit retention removed the proof in the meantime.
 	var state string
-	err := db.QueryRowContext(ctx, `SELECT h.state, h.message, h.job_id, COALESCE(j.status, '')
+	err := db.QueryRowContext(ctx, `SELECT h.state, h.message, h.job_id, COALESCE(j.status, ''),
+		COALESCE(j.status = 'failed' AND j.error_class = 'reconciliation_required', 0)
 		FROM status_action_batch_hosts h JOIN status_action_batches b ON b.id = h.batch_id
 		LEFT JOIN jobs j ON j.id = h.job_id
 		WHERE b.account_id = ? AND h.batch_id = ? AND h.name = ? AND h.server_identity = ?
 		  AND h.state IN ('accepted', 'completed', 'failed')`, account, batch.ID, host.Name, host.ServerIdentity).
-		Scan(&state, &message, &jobID, &jobStatus)
+		Scan(&state, &message, &jobID, &jobStatus, &reconciliationRequired)
 	if err != nil {
 		return false
 	}
 	host.State, host.Message, host.JobID, host.JobStatus = state, message, jobID, jobStatus
+	host.ReconciliationRequired = reconciliationRequired
 	return true
 }

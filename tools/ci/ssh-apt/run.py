@@ -26,7 +26,8 @@ DOCKER = ["docker", "--host=unix:///var/run/docker.sock"]
 PACKAGE = "slu-ci-fixture"
 TERMINAL = {"succeeded", "failed", "cancelled", "interrupted"}
 SCENARIOS = ("root-upgrade", "operator-upgrade", "misconfigured-helper", "apt-lock",
-             "plan-drift-and-obsolete-approval", "ssh-disconnect-during-mutation-and-repair", "changed-host-key",
+             "plan-drift-and-obsolete-approval", "ssh-disconnect-during-mutation-and-repair",
+             "batch-app-interruption-during-mutation-and-repair", "changed-host-key",
              "systemd-active", "controlled-reboot", "official-provenance")
 
 
@@ -260,11 +261,7 @@ class Harness:
             "--pids-limit", "256", "--memory", "512m", "-p", "127.0.0.1::8080",
             "--mount", f"type=bind,src={self.work},dst=/work", "--workdir", "/work",
             "--entrypoint", "/work/webserver", *env_args, self.image)
-        require(self.owned("container", self.app_name), "application ownership mismatch")
-        host, port = self.docker("port", self.app_name, "8080/tcp").strip().rsplit(":", 1)
-        validate_local_endpoint(host, int(port))
-        self.api = API(int(port))
-        self.wait_for_app()
+        self.connect_app()
         self.api.request("POST", "/api/auth/setup", {"username": "fixture-admin", "password": self.password})
         self.identity = self.api.request("GET", "/api/auth/identity")["account"]
         require(self.identity["id"] == 1 and self.identity["username"] == "fixture-admin"
@@ -277,6 +274,13 @@ class Harness:
             "id": "fixture", "name": "Real fixture HTTP health", "target_servers": [], "target_tags": ["fixture"],
             "checks": [{"id": "health", "name": "Fixture responds", "kind": "http_status", "url": "http://localhost:18080/version",
                 "expected_status": 200, "timeout_seconds": 3, "interval_seconds": 1, "mode": "blocking"}]}]})
+
+    def connect_app(self):
+        require(self.owned("container", self.app_name), "application ownership mismatch")
+        host, port = self.docker("port", self.app_name, "8080/tcp").strip().rsplit(":", 1)
+        validate_local_endpoint(host, int(port))
+        self.api = API(int(port))
+        self.wait_for_app()
 
     def wait_for_app(self):
         def check_running(remaining):
@@ -317,8 +321,9 @@ class Harness:
             "user": user, "pass": self.password, "tags": ["fixture"]}, allowed=(201,))
         if user == "root": self.api.upload_key(name, (self.work / "client").read_bytes())
 
-    def start_update(self, name):
-        job_id = self.api.request("POST", "/api/update/" + name)["job_id"]
+    def start_update(self, name, job_id=None):
+        if job_id is None:
+            job_id = self.api.request("POST", "/api/update/" + name)["job_id"]
         job, transitions = self.api.wait_job(job_id, lambda j: j["status"] == "waiting_approval")
         self.transitions[job_id] = transitions
         status = self.api.server(name)
@@ -357,6 +362,81 @@ class Harness:
             record["duration_seconds"] = round(time.monotonic() - started, 3)
             self.records.append(record)
             print(name + ": " + record["status"], flush=True)
+
+    def qualify_batch_interruption(self, record):
+        name = "batch-interruption"
+        self.fixture("reset")
+        self.add_server(name)
+        server_identity = self.api.server(name)["server_identity"]
+        batch_id = uuid.uuid4().hex
+        batch_path = "/api/status/batches/" + batch_id
+        self.api.request("POST", "/api/status/batches", {"id": batch_id, "action": "update",
+            "targets": [{"name": name, "server_identity": server_identity}]}, allowed=(202,))
+
+        def batch_host():
+            batch = self.api.request("GET", batch_path)["batch"]
+            require(batch["id"] == batch_id and len(batch["hosts"]) == 1 and
+                    batch["hosts"][0]["server_identity"] == server_identity, "batch host identity changed")
+            return batch["hosts"][0]
+
+        job_id = None
+        end = time.monotonic() + 15
+        while time.monotonic() < end:
+            host = batch_host()
+            job_id = host.get("job_id")
+            if job_id or host["state"] not in ("queued", "admitting"):
+                break
+            time.sleep(.1)
+        require(job_id, "batch never admitted a job")
+        identity = self.start_update(name, job_id)
+
+        def upgrades():
+            return int(self.target("awk", '$3 == "upgrade" && $4 ~ /^slu-ci-fixture(:all)?$/ && $5 == "1.0" && $6 == "2.0" {n++} END {print n+0}',
+                                   "/var/log/dpkg.log"))
+
+        baseline_upgrades = upgrades()
+        self.target("touch", "/run/slu-hold-mutation")
+        try:
+            self.api.request("POST", "/api/approve/" + name, identity)
+            self.wait_file("/run/slu-mutation-started")
+            self.target("fuser", "/var/lib/dpkg/lock")
+            require(self.api.job(job_id)["phase"] == "apt_upgrade", "job did not persist its mutation phase")
+            require(self.owned("container", self.app_name), "application ownership mismatch")
+            self.docker("kill", self.app_name)
+            self.docker("start", self.app_name)
+            self.connect_app()
+            self.api.request("POST", "/api/auth/login", {"username": "fixture-admin", "password": self.password})
+            self.target("fuser", "/var/lib/dpkg/lock")
+            host = batch_host()
+            job = self.api.job(job_id)
+            require(job["status"] == "failed" and job["error_class"] == "reconciliation_required" and
+                    host.get("job_id") == job_id and host.get("reconciliation_required") and
+                    host.get("diagnostic_available") and not host.get("retryable"),
+                    "restart did not preserve the batch job and its reconciliation requirement")
+            require(self.api.server(name)["status"] == "needs_reconciliation", "restart did not block the host")
+            for action in ("update", "autoremove"):
+                self.api.request("POST", f"/api/{action}/{name}", allowed=(409,))
+
+            locked_repair_id = self.api.request("POST", "/api/repair/" + name, {"confirm": True})["job_id"]
+            locked_repair, _ = self.api.wait_job(locked_repair_id, lambda j: j["status"] in TERMINAL, seconds=15)
+            require(locked_repair["status"] == "failed" and locked_repair["error_class"] == "reconciliation_required" and
+                    "APT/DPKG repair blocked: package-manager lock is active." in locked_repair["logs_text"] and
+                    self.api.server(name)["status"] == "needs_reconciliation",
+                    "repair did not respect the active lock and preserve the reconciliation requirement")
+            require(upgrades() == baseline_upgrades + 1, "APT mutation was not attempted exactly once")
+        finally:
+            self.target("rm", "/run/slu-hold-mutation")
+
+        self.target("sh", "-c", "for i in $(seq 1 100); do fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/cache/apt/archives/lock /var/lib/apt/lists/lock >/dev/null 2>&1 || exit 0; sleep .1; done; exit 1")
+        repair_id = self.api.request("POST", "/api/repair/" + name, {"confirm": True})["job_id"]
+        repaired, _ = self.api.wait_job(repair_id, lambda j: j["status"] in TERMINAL)
+        require(repaired["status"] == "succeeded" and self.api.server(name)["status"] == "done",
+                "explicit repair did not reconcile the restarted host")
+        require(self.target("dpkg", "--audit").strip() == "" and self.version() == "2.0" and
+                upgrades() == baseline_upgrades + 1, "repair did not verify APT state without replaying the upgrade")
+        record.update(batch_id=batch_id, job_id=job_id, error_class=job["error_class"],
+                      mutation_attempts=1, locked_repair_job_id=locked_repair_id,
+                      repair_job_id=repair_id, final_version=self.version())
 
     def qualify(self):
         for user in ("root", "operator"):
@@ -460,6 +540,9 @@ class Harness:
             attempts = self.target("cat", "/var/lib/slu-fixture/configure-attempts").splitlines()
             require(len(attempts) <= 2, "unexpected repeated package configuration")
             record.update(error_class=job["error_class"], mutation_attempts=facts["apt_upgrade_attempts_used"], repair_job_id=repair_id, final_version=self.version())
+
+        with self.scenario("batch-app-interruption-during-mutation-and-repair") as record:
+            self.qualify_batch_interruption(record)
 
         with self.scenario("changed-host-key") as record:
             self.fixture("reset")

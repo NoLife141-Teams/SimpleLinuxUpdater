@@ -145,7 +145,7 @@ func TestStatusBatchSurvivesProcessExitAfterAdmission(t *testing.T) {
 				t.Fatalf("read recovered batch: %d %s", rec.Code, rec.Body.String())
 			}
 			host := response.Batch.Hosts[0]
-			if host.State != tc.state || host.JobStatus != tc.jobStatus || (host.JobID != "") != (tc.jobStatus != "") || host.Retryable {
+			if host.State != tc.state || host.JobStatus != tc.jobStatus || (host.JobID != "") != (tc.jobStatus != "") || host.Retryable || host.ReconciliationRequired {
 				t.Fatalf("wrong result after process exit and audit purge: %+v", host)
 			}
 			if tc.action == "refresh_facts_success" {

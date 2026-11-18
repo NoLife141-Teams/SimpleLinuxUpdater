@@ -796,6 +796,51 @@ func seedBrowserBatchHistory(t *testing.T, deps AppDeps) {
 	}
 }
 
+func seedBrowserBatchRecovery(t *testing.T, deps AppDeps) {
+	t.Helper()
+	batchID := fmt.Sprintf("%032x", 2)
+	oldNames := []string{"before-rename", "replaced-host"}
+	for i, oldName := range oldNames {
+		identity := "previous-" + oldName
+		server := Server{Name: "renamed-host", Host: oldName + ".invalid", Port: 22, User: "synthetic", Identity: identity}
+		if i == 1 {
+			server.Name, server.Identity = oldName, "replacement-identity"
+		} else {
+			server.Pass = "fixture-credential"
+			key, err := ssh.NewPublicKey(ed25519.NewKeyFromSeed(make([]byte, 32)).Public())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := serverpkg.AppendKnownHostLine(appKnownHostsDeps(deps.DBPath), serverpkg.BuildKnownHostsLine(server.Host, server.Port, key)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if _, err := deps.DB().Exec(`INSERT INTO servers(name,host,port,user,pass_enc,identity) VALUES(?,?,?,?,'',?)`,
+			server.Name, server.Host, server.Port, server.User, server.Identity); err != nil {
+			t.Fatal(err)
+		}
+		job := JobRecord{ID: "recovery-job-" + oldName, Kind: jobKindUpdate, ServerName: server.Name,
+			Status: jobStatusFailed, ErrorClass: "reconciliation_required"}
+		if err := deps.CurrentJobManager().ImportJobRecord(job); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := deps.DB().Exec(`INSERT INTO status_action_batch_hosts
+			(batch_id, name, server_identity, approval_job_id, approval_generation, deferral_revision, remediation_digest, state, job_id)
+			VALUES (?, ?, ?, '', 0, '', '', 'accepted', ?)`, batchID, oldName, identity, job.ID); err != nil {
+			t.Fatal(err)
+		}
+		state := deps.ServerState
+		state.Lock()
+		state.SetServers(append(state.Servers(), server))
+		status := serverpkg.NewIdleStatus(server)
+		if i == 0 {
+			status.Status, status.JobID = "needs_reconciliation", job.ID
+		}
+		state.StatusMap()[server.Name] = status
+		state.Unlock()
+	}
+}
+
 // Run the browser suite against the real router with owned persistence, normal
 // setup/auth and no process startup workers or SSH transport.
 func TestDashboardScalingE2EServe(t *testing.T) {
@@ -813,6 +858,7 @@ func TestDashboardScalingE2EServe(t *testing.T) {
 	}
 	if os.Getenv("SLU_E2E_BATCH_HISTORY") == "1" {
 		seedBrowserBatchHistory(t, a.deps)
+		seedBrowserBatchRecovery(t, a.deps)
 	}
 	if os.Getenv("SLU_E2E_BACKUP_CATALOG") == "1" {
 		automation := a.deps.BackupAutomation

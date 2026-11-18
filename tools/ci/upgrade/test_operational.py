@@ -1,5 +1,6 @@
 import io
 import json
+import subprocess
 import tarfile
 import tempfile
 import unittest
@@ -22,6 +23,17 @@ class OperationalQualificationTest(unittest.TestCase):
             code = operational.main()
         return code, json.loads((output / "report.json").read_text())
 
+    def test_docker_timeout_redacts_fixture_arguments_and_output(self):
+        args = ("run", "--pull", "never", "python3", "-c", "private notification body")
+        timeout = subprocess.TimeoutExpired((*operational.DOCKER, *args), 2, output=b"private output")
+        with patch.object(operational.subprocess, "run", side_effect=timeout):
+            with self.assertRaises(RuntimeError) as reported:
+                operational.docker(*args, timeout=2)
+        diagnostic = str(reported.exception)
+        self.assertIn("timed out after 2 seconds", diagnostic)
+        self.assertNotIn("private notification body", diagnostic)
+        self.assertNotIn("private output", diagnostic)
+
     def test_unavailable_docker_is_reported_without_attempting_scenarios(self):
         with tempfile.TemporaryDirectory() as directory, \
                 patch.object(operational.shutil, "which", return_value="/usr/bin/tool"), \
@@ -36,6 +48,7 @@ class OperationalQualificationTest(unittest.TestCase):
         self.assertEqual(report["docker_upgrade"]["status"], "not_executed")
         self.assertEqual(report["docker_rollback"]["status"], "not_executed")
         self.assertEqual(report["maintenance_batches"]["status"], "not_executed")
+        self.assertEqual(report["candidate_backup_restore"]["status"], "not_executed")
         self.assertEqual(report["controlled_reboot_vm"]["status"], "not_executed")
 
     def test_batch_gate_failure_keeps_archive_result_and_marks_later_checks_unexecuted(self):
@@ -69,6 +82,7 @@ class OperationalQualificationTest(unittest.TestCase):
         self.assertEqual(report["maintenance_batches"]["status"], "failed")
         self.assertEqual(report["maintenance_batches"]["history_after_restart"], "passed")
         self.assertEqual(report["maintenance_batches"]["interrupted_job_recovery"], "not_executed")
+        self.assertEqual(report["candidate_backup_restore"]["status"], "not_executed")
         self.assertEqual(report["controlled_reboot_vm"]["status"], "not_executed")
         reboot.assert_not_called()
 
@@ -155,6 +169,20 @@ class OperationalQualificationTest(unittest.TestCase):
                 patch.object(qualification, "start_app", return_value=api_with_fixture()):
             with self.assertRaisesRegex(AssertionError, "restore retained the previous session"):
                 qualification.restore_archive("rollback", backup.image, "fresh-volume", backup, "rollback-admin")
+
+    def test_cleanup_fails_when_a_labeled_volume_remains_after_removal(self):
+        qualification = operational.Qualification(Path("."), Path("."), Path("."), "a" * 40)
+
+        def docker(*args):
+            if args[:2] == ("volume", "ls"):
+                self.assertIn("label=" + qualification.label, args)
+                return qualification.prefix + "-candidate-restore-data"
+            return ""
+
+        with patch.object(operational, "docker", docker):
+            self.assertFalse(qualification.cleanup())
+        self.assertEqual(qualification.report["cleanup"]["status"], "failed")
+        self.assertIn("Owned qualification volume resources remain", qualification.report["cleanup"]["errors"])
 
     def test_failed_upgrade_reports_vm_not_executed_and_cleans_up(self):
         with tempfile.TemporaryDirectory() as directory, \

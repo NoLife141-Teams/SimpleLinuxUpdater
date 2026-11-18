@@ -973,14 +973,11 @@ func (s *Service) ProcessDueSlot(req ScheduleRequest) error {
 	}
 
 	var queueErrs []error
-	recordSkipped := func(policy Policy, server servers.Server, scheduledForUTC, reason string) {
-		candidate := ScheduledRunRequest{
+	recordSkipped := func(policy Policy, server servers.Server, scheduledForUTC, reason string, blocker maintenancepkg.Blocker) {
+		result := s.handleScheduledRun(ScheduledRunRequest{
 			Policy: policy, Server: server, ScheduledForUTC: scheduledForUTC, Outcome: reason, Admitted: req.Admitted,
-		}
-		if reason == RunReasonMaintenance {
-			candidate.MaintenanceBlocker = req.MaintenanceBlocker
-		}
-		result := s.handleScheduledRun(candidate)
+			MaintenanceBlocker: blocker,
+		})
 		if result.Err == nil {
 			return
 		}
@@ -1058,14 +1055,20 @@ func (s *Service) ProcessDueSlot(req ScheduleRequest) error {
 				if reason == "" && plan.occurrence != nil && batchIndex == 0 && rolloutSlot.Before(slotLocal) {
 					reason = RunReasonSchedulerMissed
 				}
-				if req.MaintenanceActive {
-					reason = RunReasonMaintenance
-				}
 				if reason == "" && (s.BlackoutApplies(slotLocal, globalBlackouts) || s.BlackoutApplies(slotLocal, policy.PolicyBlackouts)) {
 					reason = RunReasonBlackout
 				}
+				var blocker maintenancepkg.Blocker
+				if req.MaintenanceActive {
+					// Keep the existing maintenance outcome. A tick can only
+					// prove the blocking operation for an otherwise eligible run.
+					if reason == "" {
+						blocker = req.MaintenanceBlocker
+					}
+					reason = RunReasonMaintenance
+				}
 				if reason != "" {
-					recordSkipped(policy, server, policyScheduledForUTC, reason)
+					recordSkipped(policy, server, policyScheduledForUTC, reason, blocker)
 					continue
 				}
 				candidatesByServer[server.Name] = append(candidatesByServer[server.Name], ScheduledCandidate{Policy: policy, Server: server, ScheduledForUTC: policyScheduledForUTC})
@@ -1100,7 +1103,7 @@ func (s *Service) ProcessDueSlot(req ScheduleRequest) error {
 		})
 		winner := candidates[0]
 		for _, skipped := range candidates[1:] {
-			recordSkipped(skipped.Policy, skipped.Server, skipped.ScheduledForUTC, RunReasonSuperseded)
+			recordSkipped(skipped.Policy, skipped.Server, skipped.ScheduledForUTC, RunReasonSuperseded, maintenancepkg.Blocker{})
 		}
 
 		result := s.handleScheduledRun(ScheduledRunRequest{

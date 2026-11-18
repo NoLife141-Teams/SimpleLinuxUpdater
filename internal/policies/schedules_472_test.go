@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"debian-updater/internal/maintenance"
 	"debian-updater/internal/servers"
 )
 
@@ -514,6 +515,53 @@ func TestOccurrencePartialPersistenceRecoveryCannotLaunchLateCanary472(t *testin
 		if req.Outcome == "" {
 			t.Fatalf("late canary or wave launched: %+v", req)
 		}
+	}
+}
+
+func TestMaintenanceReplayDoesNotAttributeLateCanaryToNewBackup(t *testing.T) {
+	h := newSchedule472Harness(t, "2026-10-25T02:00:00Z")
+	earlier := h.policy(t, func(p *Policy) {
+		p.RolloutMode = RolloutCanaryWaves
+		p.CanaryMode = CanaryExplicit
+		p.CanaryServers = []string{"a", "b"}
+	})
+	current := h.policy(t, func(p *Policy) {
+		p.Name = "Current backup overlap"
+		p.TargetServers = []string{"c"}
+		p.TimeLocal = "03:05"
+	})
+	origin := h.now.Add(time.Hour)
+	occurrence := newOccurrence(h.service, earlier, origin, h.inventory, nil)
+	if _, err := h.repo.AcceptOccurrence(occurrence); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := h.repo.CreateRun(Run{
+		PolicyID: earlier.ID, ServerName: "a", ScheduledForUTC: occurrence.ScheduledForUTC, Status: RunSucceeded,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	blocker := maintenance.Blocker{Cause: maintenance.BlockBackupExport, JobID: "later-export"}
+	blockedTick := origin.Add(5 * time.Minute)
+	h.service.RememberMissedTick(blockedTick, blocker)
+	h.tick(t, blockedTick.Add(time.Minute))
+	var lateCanary, currentRun bool
+	for _, req := range h.requests {
+		switch {
+		case req.Policy.ID == earlier.ID && req.Server.Name == "b":
+			lateCanary = true
+			if req.Outcome != RunReasonMaintenance || req.MaintenanceBlocker != (maintenance.Blocker{}) {
+				t.Fatalf("late canary request = %+v, want generic maintenance skip", req)
+			}
+		case req.Policy.ID == current.ID:
+			currentRun = true
+			if req.Outcome != RunReasonMaintenance || req.MaintenanceBlocker != blocker {
+				t.Fatalf("due request = %+v, want maintenance evidence %+v", req, blocker)
+			}
+		}
+	}
+	if !lateCanary || !currentRun {
+		t.Fatalf("requests = %+v, want the late canary and the currently blocked occurrence", h.requests)
 	}
 }
 

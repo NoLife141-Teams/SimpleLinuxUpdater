@@ -151,6 +151,114 @@ func TestKnownHostsHostTokenCanonicalizesIPLiteral(t *testing.T) {
 	}
 }
 
+func TestKnownHostReadinessMatchesEndpointSpellingAndReadsFreshFiles(t *testing.T) {
+	key, err := ssh.NewPublicKey(ed25519.NewKeyFromSeed(make([]byte, 32)).Public())
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "known_hosts")
+	entry := func(hosts ...string) string { return knownhosts.Line(hosts, key) + "\n" }
+	write := func(data string) {
+		t.Helper()
+		if err := os.WriteFile(path, []byte(data), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("# managed entries\r\n\r\n" + entry("node.example") + entry("Alias.example") + entry("[custom.example]:2201") + entry("192.0.2.10"))
+	deps := KnownHostsDeps{Getenv: func(key string) string {
+		if key == "DEBIAN_UPDATER_KNOWN_HOSTS" {
+			return path
+		}
+		return ""
+	}}
+	read := func() func(string, int) (bool, error) {
+		t.Helper()
+		checker, err := newKnownHostEntryChecker(deps)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return checker
+	}
+	check := read()
+	generalCheck, err := generalKnownHostEntryChecker([]string{path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		host string
+		port int
+		want bool
+	}{
+		{"node.example", 22, true},
+		{"[node.example]", 22, true},
+		{"Alias.example", 0, true},
+		{"alias.example", 22, false},
+		{"custom.example", 2201, true},
+		{"custom.example", 22, false},
+		{"192.0.2.10", 22, true},
+		{"[192.0.2.10]", 22, true},
+		{"[::ffff:192.0.2.10]", 22, true},
+		{"missing.example", 22, false},
+	} {
+		general, err := generalCheck(tc.host, tc.port)
+		if err != nil || general != tc.want {
+			t.Errorf("general readiness for %q:%d = %v (%v), want %v", tc.host, tc.port, general, err, tc.want)
+		}
+		got, err := check(tc.host, tc.port)
+		if err != nil || got != tc.want {
+			t.Errorf("readiness for %q:%d = %v (%v), want %v", tc.host, tc.port, got, err, tc.want)
+		}
+	}
+	write(entry("next.example"))
+	changed := read()
+	if old, err := changed("node.example", 22); old || err != nil {
+		t.Fatalf("removed trust was retained: %v %v", old, err)
+	}
+	if added, err := changed("next.example", 22); !added || err != nil {
+		t.Fatalf("new trust was not observed: %v %v", added, err)
+	}
+}
+
+func TestKnownHostReadinessHandlesNonLiteralAndInvalidFiles(t *testing.T) {
+	key, err := ssh.NewPublicKey(ed25519.NewKeyFromSeed(make([]byte, 32)).Public())
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "known_hosts")
+	deps := KnownHostsDeps{Getenv: func(key string) string {
+		if key == "DEBIAN_UPDATER_KNOWN_HOSTS" {
+			return path
+		}
+		return ""
+	}}
+	for _, tc := range []struct {
+		name, line     string
+		trusted, error bool
+	}{
+		{"aliases", knownhosts.Line([]string{"node.example", "other.example"}, key), true, false},
+		{"negation", knownhosts.Line([]string{"!node.example", "*.example"}, key), false, false},
+		{"revoked", "@revoked " + knownhosts.Line([]string{"node.example"}, key), false, false},
+		{"malformed", "invalid-entry", false, true},
+		{"empty-marker", "@ " + knownhosts.Line([]string{"node.example"}, key), false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := os.WriteFile(path, []byte(tc.line+"\n"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			checker, err := newKnownHostEntryChecker(deps)
+			if (err != nil) != tc.error {
+				t.Fatalf("checker error = %v, want error %v", err, tc.error)
+			}
+			if err == nil {
+				got, err := checker("node.example", 22)
+				if err != nil || got != tc.trusted {
+					t.Fatalf("trust = %v, %v, want %v", got, err, tc.trusted)
+				}
+			}
+		})
+	}
+}
+
 func TestKnownHostsRecognizesAndReplacesEquivalentLegacyIPv6Token(t *testing.T) {
 	publicKey, _, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {

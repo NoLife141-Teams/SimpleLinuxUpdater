@@ -262,23 +262,42 @@ func (s *Service) ListStatusesFor(names map[string]struct{}) []ServerStatus {
 	if len(statuses) == 0 {
 		return statuses
 	}
-	checkKnownHostEntry, checkerErr := newKnownHostEntryChecker(s.deps.KnownHosts)
+	check := s.hostKeyStatusChecker()
 	for i := range statuses {
-		if checkerErr != nil {
-			statuses[i].HostKeyStatus = HostKeyStatusUnknown
-			continue
-		}
-		exists, err := checkKnownHostEntry(statuses[i].Host, statuses[i].Port)
-		switch {
-		case err != nil:
-			statuses[i].HostKeyStatus = HostKeyStatusUnknown
-		case exists:
-			statuses[i].HostKeyStatus = HostKeyStatusTrusted
-		default:
-			statuses[i].HostKeyStatus = HostKeyStatusMissing
-		}
+		statuses[i].HostKeyStatus = check(statuses[i].Host, statuses[i].Port)
 	}
 	return statuses
+}
+
+func (s *Service) HostKeyStatuses() map[string]HostKeyStatus {
+	endpoints := s.state().statusEndpoints()
+	statuses := make(map[string]HostKeyStatus, len(endpoints))
+	if len(endpoints) == 0 {
+		return statuses
+	}
+	check := s.hostKeyStatusChecker()
+	for name, endpoint := range endpoints {
+		statuses[name] = check(endpoint.Host, endpoint.Port)
+	}
+	return statuses
+}
+
+func (s *Service) hostKeyStatusChecker() func(string, int) HostKeyStatus {
+	checkKnownHostEntry, checkerErr := newKnownHostEntryChecker(s.deps.KnownHosts)
+	if checkerErr != nil {
+		return func(string, int) HostKeyStatus { return HostKeyStatusUnknown }
+	}
+	return func(host string, port int) HostKeyStatus {
+		exists, err := checkKnownHostEntry(host, port)
+		switch {
+		case err != nil:
+			return HostKeyStatusUnknown
+		case exists:
+			return HostKeyStatusTrusted
+		default:
+			return HostKeyStatusMissing
+		}
+	}
 }
 
 func (s *Service) Create(server Server) (Server, error) {

@@ -23,6 +23,7 @@ The format is inspired by Keep a Changelog, and this project uses Semantic Versi
 ### Changed
 
 - Send compact Status snapshots, fetch host details on demand and group event-driven refreshes. Use scoped rows for eligible changes, bound job log recovery and reduce browser work when rendering updates.
+- Reduce server work for targeted Status refreshes while keeping the fleet totals and row consistency check.
 
 ## [v0.5.8] - 2026-11-11
 

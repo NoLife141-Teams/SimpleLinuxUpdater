@@ -290,3 +290,79 @@ on this machine. CI checks that sync reads skip fleet projection and that
 adapter and consumer inputs stay isolated. Existing browser and API budgets
 still cover row consistency, permissions, reconnect behavior and transferred
 volume. Timings describe this local fixture and have no CI threshold.
+
+## Server cost of targeted Status refresh (#603)
+
+The collector needs fleet-wide health, readiness, scheduling and update facts to
+produce the current totals and detect changes to rows outside the request. It
+now reads inventory endpoints for SSH readiness without cloning full status and
+package lists a second time. A fresh index handles plain single-host trust
+entries. Files with hashed entries, patterns, aliases, markers or other complex
+syntax use the existing matcher. SSH connection verification uses its existing
+host-key callback.
+
+The compact response retains only the requested rows, uses one scratch buffer
+for row encoding and still fingerprints every compact row. The aggregate row
+version can therefore trigger a full read if an unrequested host's facts or
+schedule change. The full and targeted endpoints reproduce the same row versions,
+and the handler checks the broker revision again after projection.
+
+The reference is `df2f81f`. Run from the candidate source tree so both binaries
+serve the same browser assets. Match the manifest and browser version for each
+pair.
+
+```sh
+export GOMAXPROCS=2
+work=$(mktemp -d)
+mkdir "$work/reference"
+git archive df2f81f | tar -x -C "$work/reference"
+# The test-only benchmark and browser fixture can be shared between revisions.
+cp dashboard_scaling_test.go "$work/reference/"
+(cd "$work/reference" && go test -c -o "$work/reference.bin" .)
+go test -c -o "$work/candidate.bin" .
+for name in 1-reference 1-candidate 2-candidate 2-reference 3-reference 3-candidate; do
+  SLU_SCALING_TARGETED=1 node tools/performance/dashboard-browser.cjs \
+    "$work/${name#*-}.bin" "$work/$name"
+done
+for build in reference candidate; do
+  "$work/$build.bin" -test.run '^$' \
+    -test.bench '^BenchmarkDashboardScaling/1000/TargetedHTTP$' -test.benchtime=3s \
+    -test.cpuprofile "$work/$build.pprof" -test.memprofile "$work/$build.heap"
+  go tool pprof -top -cum "$work/$build.bin" "$work/$build.pprof"
+done
+```
+
+Each pair measures five trials after a warmup at 100 and 1,000 Servers, with one
+and three tabs, a single changed host and a burst of three. The server p95 ranks
+the sum of the five `Server-Timing` phases for each tab response. Render latency
+also includes the event, network and browser. The reference ran first in pairs
+1 and 3. All six runs on Chromium 159.0.8154.6 met the scoped request budget and
+verified full recovery after forced reconnects. Scoped samples did not request
+full fleet snapshots.
+
+The table reports the median of three run-level p95s in milliseconds. The
+request and encoded-byte medians were identical within all three pairs.
+
+| Servers | Tabs | Change | Server p95 | Collect p95 | Compact p95 | Render p95 | Requests / encoded bytes |
+| ---: | ---: | --- | ---: | ---: | ---: | ---: | ---: |
+| 100 | 1 | Single | 8.6 → 7.4 | 6.6 → 4.6 | 1.7 → 1.7 | 164.8 → 168.6 | 2 / 3,989 |
+| 100 | 1 | Burst | 8.9 → 9.2 | 6.8 → 5.9 | 2.2 → 2.1 | 176.2 → 174.8 | 2 / 4,714 |
+| 100 | 3 | Single | 16.0 → 13.1 | 10.5 → 8.2 | 5.3 → 3.6 | 229.7 → 228.3 | 6 / 11,967 |
+| 100 | 3 | Burst | 11.3 → 14.5 | 7.8 → 8.1 | 2.6 → 2.2 | 220.9 → 229.5 | 6 / 14,142 |
+| 1,000 | 1 | Single | 113.0 → 83.0 | 77.7 → 55.1 | 30.6 → 18.3 | 442.3 → 430.7 | 2 / 3,984 |
+| 1,000 | 1 | Burst | 102.9 → 73.9 | 72.0 → 49.8 | 20.4 → 18.5 | 463.9 → 412.5 | 2 / 4,714 |
+| 1,000 | 3 | Single | 160.1 → 110.0 | 108.3 → 62.5 | 37.8 → 21.8 | 943.9 → 835.0 | 6 / 11,952 |
+| 1,000 | 3 | Burst | 136.7 → 97.4 | 95.7 → 59.2 | 29.8 → 24.8 | 757.6 → 704.3 | 6 / 14,142 |
+
+At 1,000 Servers with three tabs, the server p95 fell in all three pairs for
+each scenario. For a single host, the pairs were 160.1 → 97.0, 161.0 → 114.4,
+and 141.0 → 110.0 ms. For a burst, they were 114.3 → 81.6, 136.7 → 97.4,
+and 137.9 → 102.7 ms. Smaller-fleet timings varied by scenario.
+
+The separate 1,000-Server HTTP benchmark measured 78.6 → 49.2 ms/op and
+41.4 → 28.2 MB allocated per operation. Maintenance readiness fell from
+21.6% to 1.4% of CPU samples, and the general known-host matcher disappeared
+from the candidate's profile for the literal-entry fixture. A repeat after
+matching the general parser's line-length limit measured 51.0 ms/op and
+28.0 MB/op. CI checks behavior deterministically through full/targeted parity,
+current role visibility, byte bounds and revision/reconnect coverage.

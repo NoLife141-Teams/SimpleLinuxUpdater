@@ -150,28 +150,11 @@ func newScalingRuntime(t testing.TB, n int, metered, bootstrap bool) *scalingApp
 	state.SetServers(d.Servers)
 	state.SetStatusMap(d.Statuses)
 	state.Unlock()
-	login := func(endpoint, user string) *http.Cookie {
-		req := httptest.NewRequest("POST", endpoint, strings.NewReader(fmt.Sprintf(`{"username":%q,"password":"SyntheticPass475!"}`, user)))
-		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Origin", "http://example.com")
-		rec := httptest.NewRecorder()
-		a.handler.ServeHTTP(rec, req)
-		if rec.Code != 200 {
-			t.Fatalf("scaling login: %d %s", rec.Code, rec.Body.String())
-		}
-		for _, c := range rec.Result().Cookies() {
-			if c.Name == authpkg.DefaultSessionCookieName {
-				return c
-			}
-		}
-		t.Fatal("no scaling cookie")
-		return nil
-	}
-	a.cookie = login("/api/auth/setup", "scaling-admin")
+	a.cookie = a.login(t, "/api/auth/setup", "scaling-admin")
 	if _, err = deps.AuthService.CreateAccount("scaling-viewer", "SyntheticPass475!", "reader"); err != nil {
 		t.Fatal(err)
 	}
-	a.viewer = login("/api/auth/login", "scaling-viewer")
+	a.viewer = a.login(t, "/api/auth/login", "scaling-viewer")
 	admin, err := deps.AuthService.AccountByName("scaling-admin")
 	if err != nil {
 		t.Fatal(err)
@@ -181,6 +164,25 @@ func newScalingRuntime(t testing.TB, n int, metered, bootstrap bool) *scalingApp
 		t.Fatal(err)
 	}
 	return a
+}
+
+func (a *scalingApp) login(t testing.TB, endpoint, user string) *http.Cookie {
+	t.Helper()
+	req := httptest.NewRequest("POST", endpoint, strings.NewReader(fmt.Sprintf(`{"username":%q,"password":"SyntheticPass475!"}`, user)))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Origin", "http://example.com")
+	rec := httptest.NewRecorder()
+	a.handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("scaling login: %d %s", rec.Code, rec.Body.String())
+	}
+	for _, c := range rec.Result().Cookies() {
+		if c.Name == authpkg.DefaultSessionCookieName {
+			return c
+		}
+	}
+	t.Fatal("no scaling cookie")
+	return nil
 }
 
 func (a *scalingApp) get(t testing.TB, path, credential string) *httptest.ResponseRecorder {
@@ -513,7 +515,14 @@ func BenchmarkDashboardScaling(b *testing.B) {
 	for _, n := range []int{10, 100, 1000} {
 		b.Run(strconv.Itoa(n), func(b *testing.B) {
 			a := newScalingAppMode(b, n, false)
-			for _, endpoint := range []struct{ name, path string }{{"InventoryHTTP", "/api/servers"}, {"DashboardHTTP", "/api/dashboard/summary?include_command_history=false"}} {
+			broker := a.deps.DashboardEventBroker
+			broker.PublishEvent(events.Event{Reason: "job.update", ServerName: "synthetic-0003"})
+			scoped := "/api/status/changed-hosts?server=synthetic-0003&revision=" + strconv.FormatUint(broker.Revision(), 10)
+			for _, endpoint := range []struct{ name, path string }{
+				{"InventoryHTTP", "/api/servers"},
+				{"DashboardHTTP", "/api/dashboard/summary?include_command_history=false"},
+				{"TargetedHTTP", scoped},
+			} {
 				b.Run(endpoint.name, func(b *testing.B) {
 					b.ReportAllocs()
 					b.ResetTimer()

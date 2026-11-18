@@ -332,6 +332,18 @@ func (s *State) ListStatuses() []ServerStatus {
 	return s.ListStatusesFor(nil)
 }
 
+func (s *State) statusEndpoints() map[string]ServerEndpoint {
+	s.Lock()
+	defer s.Unlock()
+	endpoints := make(map[string]ServerEndpoint, len(*s.servers))
+	for _, server := range *s.servers {
+		if (*s.statusMap)[server.Name] != nil {
+			endpoints[server.Name] = ServerEndpoint{Host: server.Host, Port: NormalizePort(server.Port)}
+		}
+	}
+	return endpoints
+}
+
 func (s *State) ListStatusesFor(names map[string]struct{}) []ServerStatus {
 	s.Lock()
 	defer s.Unlock()

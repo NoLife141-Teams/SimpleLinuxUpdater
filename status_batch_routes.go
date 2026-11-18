@@ -119,7 +119,7 @@ func (s *statusBatchService) submit(c *gin.Context) {
 	s.activeMu.Unlock()
 	if err != nil {
 		if errors.Is(err, errBatchKeyConflict) {
-			c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+			c.JSON(http.StatusConflict, gin.H{"error": "This batch identifier already belongs to a different request"})
 		} else {
 			log.Printf("persist maintenance batch %s: %v", request.ID, err)
 			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Could not record the maintenance batch"})

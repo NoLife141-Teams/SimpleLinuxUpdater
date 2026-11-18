@@ -57,7 +57,7 @@ type statusBatch struct {
 	Hosts        []statusBatchHost `json:"hosts"`
 }
 
-var errBatchKeyConflict = errors.New("This batch identifier already belongs to a different request")
+var errBatchKeyConflict = errors.New("batch identifier conflict")
 
 func storeStatusBatch(ctx context.Context, db *sql.DB, request statusBatchRequest, fingerprint string, account int64, actor, created string) (bool, error) {
 	tx, err := db.BeginTx(ctx, nil)

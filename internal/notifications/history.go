@@ -112,8 +112,11 @@ func historyReason(state, message string, httpStatus int) string {
 
 func (s *Service) DeliveryHistory(ctx context.Context, filter DeliveryHistoryQuery) (DeliveryHistoryPage, error) {
 	var args []any
-	const jobID = `CASE WHEN json_valid(meta_json) THEN json_extract(meta_json, '$.job_id') END`
-	const generation = `CASE WHEN json_valid(meta_json) THEN json_extract(meta_json, '$.approval_generation') END`
+	const metadata = `(CASE WHEN json_valid(meta_json) THEN meta_json END)`
+	const jobID = `json_extract(` + metadata + `, '$.job_id')`
+	const generation = `json_extract(` + metadata + `, '$.approval_generation')`
+	const exactGeneration = `CASE WHEN json_type(` + metadata + `, '$.approval_generation') = 'integer'
+		AND typeof(` + generation + `) = 'integer' THEN ` + generation + ` ELSE 0 END`
 	where := `WHERE destination IN ('webhook', 'discord', 'telegram')
 		AND state IN ('pending', 'claimed', 'retrying', 'succeeded', 'failed', 'skipped')`
 	if filter.Destination != "" {
@@ -152,7 +155,7 @@ func (s *Service) DeliveryHistory(ctx context.Context, filter DeliveryHistoryQue
 	}
 	rows, err := db.QueryContext(ctx, `SELECT id, destination, state, event_type, attempts,
 		created_at, attempted_at, completed_at, next_attempt_at, status_code, error,
-		COALESCE(`+jobID+`, ''), CAST(COALESCE(`+generation+`, 0) AS INTEGER)
+		COALESCE(`+jobID+`, ''), `+exactGeneration+`
 		FROM notification_outbox `+where+` ORDER BY rtrim(created_at, 'Z') DESC, id DESC LIMIT ?`, append(args, deliveryHistoryPageSize+1)...)
 	if err != nil {
 		return DeliveryHistoryPage{}, err

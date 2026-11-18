@@ -93,6 +93,23 @@ func TestNotificationDeliveryHistoryIsScopedRedactedAndPaged(t *testing.T) {
 	if err := db.QueryRow(`SELECT COUNT(*) FROM notification_outbox`).Scan(&retained); err != nil || retained != 26 {
 		t.Fatalf("read history changed the outbox: rows=%d err=%v", retained, err)
 	}
+	for _, generation := range []string{`"7unknown"`, "7.9", "true", "9223372036854775808"} {
+		metadata := fmt.Sprintf(`{"job_id":%q,"approval_generation":%s}`, job, generation)
+		if _, err := db.Exec("UPDATE notification_outbox SET meta_json = ? WHERE id = ?", metadata, fmt.Sprintf("%064x", 23)); err != nil {
+			t.Fatal(err)
+		}
+		rows := query(url.Values{"job_id": {job}, "destination": {"webhook"}}).Items
+		if len(rows) != 1 || rows[0].JobID != job || rows[0].ApprovalGeneration != 0 {
+			t.Fatalf("inexact generation %s was exposed: %+v", generation, rows)
+		}
+	}
+	if _, err := db.Exec("UPDATE notification_outbox SET meta_json = ? WHERE id = ?", `{"malformed":`, fmt.Sprintf("%064x", 23)); err != nil {
+		t.Fatal(err)
+	}
+	malformed := query(url.Values{"destination": {"webhook"}}).Items
+	if len(malformed) != 1 || malformed[0].JobID != "" || malformed[0].ApprovalGeneration != 0 {
+		t.Fatalf("malformed metadata prevented safe history: %+v", malformed)
+	}
 	for _, invalid := range []string{"destination=unknown", "state=sent", "job_id=short", "before=garbage"} {
 		if rec := identityRequest(app, "GET", endpoint+"?"+invalid, admin, "", nil); rec.Code != http.StatusBadRequest {
 			t.Fatalf("invalid filter %s: %d", invalid, rec.Code)

@@ -801,7 +801,7 @@
 
             const loadOnOpen = () => {
                 const stream = adminPageView().streams.notificationHistory;
-                if (panel.open && !stream.accepted && stream.status !== "loading") void load(retryQuery || navigation);
+                if (panel.open && stream.status !== "loading") void load(retryQuery || navigation);
             };
             lifecycle.listen(panel, "toggle", loadOnOpen);
             lifecycle.listen(filters, "submit", event => {

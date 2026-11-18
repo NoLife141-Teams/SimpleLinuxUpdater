@@ -19,12 +19,15 @@
 Use a named volume for persistence:
 
 ```bash
-docker run --env-file .env -p 8080:8080 -v debian-updater-data:/data ghcr.io/nolife141-teams/simplelinuxupdater:v0.5.8
+docker run --env-file .env -p 127.0.0.1:8080:8080 -v debian-updater-data:/data ghcr.io/nolife141-teams/simplelinuxupdater:v0.5.8
 ```
 
-The image explicitly sets `DEBIAN_UPDATER_LISTEN_ADDR=:8080`. To limit access on
-the Docker host itself, publish to a specific host address, for example
-`-p 127.0.0.1:8080:8080` behind a local reverse proxy.
+The example publishes the UI on IPv4 loopback for first-run setup and use with
+a reverse proxy on the same host. The image listens on `:8080` inside the
+container. To serve the UI directly on a trusted LAN or VPN, replace `127.0.0.1`
+in the publish flag with the Docker host’s IP on that network and restrict
+access to intended clients. Keep `/setup` private while creating the first
+administrator.
 
 ## GHCR images
 

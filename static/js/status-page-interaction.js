@@ -216,6 +216,7 @@
         let page = 1;
         let pageSize = 25;
         let primaryServerName = "";
+        let linkedServerName = normalizedString(options.linkedServerName, "", 200);
         let selectedServerNames = new Set();
         let drawer = { open: false, serverName: "", tab: "logs", logFollow: true };
         const pendingUpdatesInteraction = pendingUpdates.createStore();
@@ -800,9 +801,27 @@
                 if (requestId && (!stream.inFlight || stream.inFlight.requestId !== requestId || requestId < stream.lastAcceptedRequestId)) return [];
                 const priority = requestId && stream.inFlight ? stream.inFlight.priority : normalizedRefreshPriority(event.priority);
                 const logEffects = replaceServers(event.servers);
+                const linkedName = linkedServerName;
+                linkedServerName = "";
+                const linkedServer = linkedName ? serversByName.get(linkedName) : undefined;
+                if (linkedServer) {
+                    filters = {
+                        ...filters,
+                        availability: linkedServer.disabled ? "disabled" : "enabled",
+                        search: linkedServer.name,
+                        status: "",
+                        auth: "",
+                        quick: "",
+                        tag: ""
+                    };
+                    primaryServerName = linkedServer.name;
+                    const index = sortedVisibleServers().findIndex(server => server.name === primaryServerName);
+                    page = Math.floor(index / pageSize) + 1;
+                }
                 const persistenceChanged = reconcileNavigation();
                 return [
-                    ...stateEffects({ persist: persistenceChanged, scope: "serverState", priority }),
+                    ...stateEffects({ persist: !linkedName && persistenceChanged, scope: "serverState", priority: linkedName ? "immediate" : priority }),
+                    ...(linkedName ? [{ type: "revealLinkedServer", name: linkedName, found: Boolean(linkedServer) }] : []),
                     { type: "renderSyncState" },
                     ...(requestId ? finishRefresh("servers", requestId, event.receivedAt) : []),
                     ...logEffects,

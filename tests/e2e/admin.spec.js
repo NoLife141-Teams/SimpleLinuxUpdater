@@ -634,6 +634,68 @@ test("admin schedules independent autoremove without upgrade controls", async ({
     await expect(page.locator("#policy-approval-timeout")).toBeVisible();
 });
 
+test("a skipped Scheduled Run opens a fresh update check for the current host", async ({ page }) => {
+    const target = "srv-web + QA & staging";
+    const other = "other-server";
+    const disabled = "disabled-server";
+    const servers = [
+        makeServer(other, "idle", [], { has_password: true }),
+        makeServer(target, "idle", [], { has_password: true }),
+        makeServer(disabled, "idle", [], { has_password: true, disabled: true }),
+    ];
+    const updates = [];
+    await ensureAuthenticatedSession(page);
+    await stubDashboardApi(page, () => servers);
+    await stubAdminApi(page);
+    await page.route("**/api/update-policies/runs?*", (route) =>
+        fulfillJson(route, {
+            items: [
+                { id: 1, policy_name: "Nightly", server_name: target, status: "skipped", exact_skip_reason: "busy" },
+                { id: 2, policy_name: "Nightly", server_name: other, status: "succeeded" },
+                { id: 3, policy_name: "No matching hosts", status: "skipped" },
+            ],
+            page: 1,
+            total: 3,
+            total_pages: 1,
+        }),
+    );
+    await page.route("**/api/update/*", (route) => {
+        updates.push(decodeURIComponent(new URL(route.request().url()).pathname.split("/").at(-1)));
+        return fulfillJson(route, { job_id: "fresh-update-check" });
+    });
+    await page.evaluate((name) => {
+        localStorage.setItem(
+            "simplelinuxupdater.dashboard.filters.v1",
+            JSON.stringify({ search: name, selectedServerName: name }),
+        );
+    }, other);
+
+    await page.goto("/admin");
+    await navigateSection(page, "admin", "scheduled-runs");
+    const prepare = page.getByRole("link", { name: "Prepare a new update check" });
+    await expect(prepare).toHaveCount(1);
+    await prepare.click();
+    const heading = page.locator("#selected-host-title");
+    await expect(heading).toHaveText(target);
+    await expect(heading).toBeFocused();
+    await expect(page.locator("#search")).toHaveValue(target);
+    expect(updates).toEqual([]);
+
+    const update = page.locator("#selected-host-panel").getByRole("button", { name: "Update", exact: true });
+    await expect(update).toBeEnabled();
+    await update.click();
+    await expect.poll(() => updates).toEqual([target]);
+
+    await page.goto(`/?${new URLSearchParams({ server: disabled })}`);
+    await expect(heading).toHaveText(disabled);
+    await expect(page.locator("#availability-filter")).toHaveValue("disabled");
+    await expect(update).toHaveCount(0);
+
+    await page.goto("/?server=deleted-server");
+    await expect(page.getByText("Server “deleted-server” is no longer in the inventory.")).toBeFocused();
+    expect(updates).toEqual([target]);
+});
+
 test("admin scheduled run history filters, paginates, and exposes existing investigation details", async ({
     baseURL,
     page,

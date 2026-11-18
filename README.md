@@ -74,13 +74,15 @@ a fresh update check and renewed approval. Follow the
 ```bash
 cp .env-template .env
 docker pull ghcr.io/nolife141-teams/simplelinuxupdater:v0.5.8
-docker run --env-file .env -p 8080:8080 -v debian-updater-data:/data ghcr.io/nolife141-teams/simplelinuxupdater:v0.5.8
+docker run --env-file .env -p 127.0.0.1:8080:8080 -v debian-updater-data:/data ghcr.io/nolife141-teams/simplelinuxupdater:v0.5.8
 ```
 
-Open `http://localhost:8080`.
+Open `http://127.0.0.1:8080` on the Docker host.
 
 On first run, you will be redirected to `/setup` to create the local admin account.
 After setup, sign in at `/login`.
+
+For LAN or VPN access, see [Deployment](docs/deployment.md#docker-recommended).
 
 The container image explicitly sets `DEBIAN_UPDATER_LISTEN_ADDR=:8080` so its
 published port remains reachable. A directly launched binary defaults to

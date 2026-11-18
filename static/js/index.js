@@ -1925,7 +1925,8 @@
         }
 
         function renderDrawerLogs(serverName = "") {
-            const drawerState = getStatusView().drawer;
+            const view = getStatusView();
+            const drawerState = view.drawer;
             if (
                 !drawerState.open ||
                 drawerState.tab !== "logs" ||
@@ -1943,6 +1944,9 @@
                 !sameServer || (drawerState.logFollow && isNearBottom(logsEl));
             const detail = statusInteraction.getHostDetail("drawer");
             const logs = server.logs || detail?.snapshot?.logs;
+            const canExport = !!(view.jobLogs?.[server.name]?.rawText || logs);
+            document.getElementById("drawer-copy-logs").disabled = !canExport;
+            document.getElementById("drawer-download-logs").disabled = !canExport;
             logsEl.innerHTML = !logs && detail?.loading
                 ? miniEmpty("Loading logs…")
                 : formatLogsHtml(logs);
@@ -2459,6 +2463,7 @@
             const view = getStatusView();
             const server = getServerByName(name);
             const logs = rawLogs(view, server, name);
+            if (!logs) return;
             try {
                 await navigator.clipboard.writeText(logs);
                 if (!lifecycle.isCurrent(lifetime)) return;
@@ -2479,6 +2484,7 @@
             const view = getStatusView();
             const server = getServerByName(name);
             const logs = rawLogs(view, server, name);
+            if (!logs) return;
             const blob = new Blob([logs], { type: "text/plain;charset=utf-8" });
             const url = URL.createObjectURL(blob);
             const link = document.createElement("a");

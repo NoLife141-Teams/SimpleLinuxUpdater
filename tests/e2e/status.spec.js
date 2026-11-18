@@ -666,7 +666,7 @@ test("structured SSE job logs preserve drawer scroll and avoid server refetches"
     const servers = [
         makeServer("stream-host", "idle", [], {
             job_id: "job-live",
-            logs: "",
+            logs: "Retained log preview\n",
         }),
     ];
     let serverRequests = 0;
@@ -674,7 +674,13 @@ test("structured SSE job logs preserve drawer scroll and avoid server refetches"
         if (new URL(request.url()).pathname === "/api/servers")
             serverRequests += 1;
     });
-    await stubDashboardApi(page, () => servers);
+    await stubCompactStatus(page, () => servers);
+    let releasePreview;
+    const preview = new Promise(resolve => { releasePreview = resolve; });
+    await page.route("**/api/servers/status-detail?*", async route => {
+        await preview;
+        await route.fallback();
+    });
     await page.route("**/api/jobs/job-live/logs*", (route) => {
         const afterSequence = Number(
             new URL(route.request().url()).searchParams.get("after_seq") || 0,
@@ -698,6 +704,21 @@ test("structured SSE job logs preserve drawer scroll and avoid server refetches"
     const logs = page.locator("#drawer-logs");
     await expect(logs).toHaveAttribute("role", "log");
     await expect(logs).toHaveAttribute("aria-live", "polite");
+    const copyLogs = page.getByRole("button", { name: "Copy", exact: true });
+    const downloadLogs = page.getByRole("button", { name: "Download", exact: true });
+    try {
+        await expect(logs).toHaveText("Loading logs…");
+        await expect(copyLogs).toBeDisabled({ timeout: 1000 });
+        await expect(downloadLogs).toBeDisabled({ timeout: 1000 });
+    } finally {
+        releasePreview();
+    }
+    await expect(logs).toContainText("Retained log preview");
+    await expect(copyLogs).toBeEnabled();
+    const logDownload = page.waitForEvent("download");
+    await downloadLogs.click();
+    expect(await fs.promises.readFile(await (await logDownload).path(), "utf8"))
+        .toBe("Retained log preview\n");
     await expect
         .poll(() => page.evaluate(() => !!window.__statusEventSource))
         .toBe(true);

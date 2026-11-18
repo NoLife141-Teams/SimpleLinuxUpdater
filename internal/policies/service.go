@@ -1035,12 +1035,9 @@ func (s *Service) ProcessDueSlot(req ScheduleRequest) error {
 			if historyGate == "failed" || (gate == "ready" && historyGate == "waiting") {
 				gate = historyGate
 			}
-			var observedBlocker maintenancepkg.Blocker
-			if req.MaintenanceActive && req.MaintenanceBlocker.Cause != "" && gate == "ready" &&
+			canAttributeMaintenance := req.MaintenanceActive && req.MaintenanceBlocker.Cause != "" && gate == "ready" &&
 				elapsedMinutes >= batch.ReleaseDelayMinutes &&
-				s.rolloutGateStateAt(policy.ID, policyScheduledForUTC, batches[:batchIndex], runByKey, req.Now) == "ready" {
-				observedBlocker = req.MaintenanceBlocker
-			}
+				s.rolloutGateStateAt(policy.ID, policyScheduledForUTC, batches[:batchIndex], runByKey, req.Now) == "ready"
 			for _, serverName := range batch.Servers {
 				server := plan.servers[serverName]
 				key := rolloutRunKey(policy.ID, policyScheduledForUTC, serverName)
@@ -1064,17 +1061,13 @@ func (s *Service) ProcessDueSlot(req ScheduleRequest) error {
 				if reason == "" && (s.BlackoutApplies(slotLocal, globalBlackouts) || s.BlackoutApplies(slotLocal, policy.PolicyBlackouts)) {
 					reason = RunReasonBlackout
 				}
-				var blocker maintenancepkg.Blocker
-				if req.MaintenanceActive {
-					// Keep the existing maintenance outcome. Attribute the
-					// operation only when the run was eligible at the denied tick.
-					if reason == "" {
-						blocker = observedBlocker
-					}
+				if req.MaintenanceActive && (reason != "" || !canAttributeMaintenance) {
+					// Keep generic maintenance skips for runs whose eligibility
+					// at the denied tick cannot be established.
 					reason = RunReasonMaintenance
 				}
 				if reason != "" {
-					recordSkipped(policy, server, policyScheduledForUTC, reason, blocker)
+					recordSkipped(policy, server, policyScheduledForUTC, reason, maintenancepkg.Blocker{})
 					continue
 				}
 				candidatesByServer[server.Name] = append(candidatesByServer[server.Name], ScheduledCandidate{Policy: policy, Server: server, ScheduledForUTC: policyScheduledForUTC})
@@ -1108,6 +1101,13 @@ func (s *Service) ProcessDueSlot(req ScheduleRequest) error {
 			return s.ComparePolicyCandidates(candidates[i], candidates[j])
 		})
 		winner := candidates[0]
+		if req.MaintenanceActive {
+			recordSkipped(winner.Policy, winner.Server, winner.ScheduledForUTC, RunReasonMaintenance, req.MaintenanceBlocker)
+			for _, skipped := range candidates[1:] {
+				recordSkipped(skipped.Policy, skipped.Server, skipped.ScheduledForUTC, RunReasonMaintenance, maintenancepkg.Blocker{})
+			}
+			continue
+		}
 		for _, skipped := range candidates[1:] {
 			recordSkipped(skipped.Policy, skipped.Server, skipped.ScheduledForUTC, RunReasonSuperseded, maintenancepkg.Blocker{})
 		}

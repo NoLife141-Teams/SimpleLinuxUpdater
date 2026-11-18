@@ -620,6 +620,36 @@ func TestMaintenanceReplayAttributesOnlyWavesReadyAtDenial(t *testing.T) {
 	}
 }
 
+func TestMaintenanceReplayAttributesOnlyWinningPolicyForServer(t *testing.T) {
+	h := newSchedule472Harness(t, "2026-10-25T02:00:00Z")
+	cleanup := h.policy(t, func(p *Policy) {
+		p.Name = "Cleanup"
+		p.TargetTag = ""
+		p.TargetServers = []string{"a"}
+		p.ExecutionMode = ExecutionAutoremove
+	})
+	scan := h.policy(t, func(p *Policy) {
+		p.Name = "Scan"
+		p.TargetTag = ""
+		p.TargetServers = []string{"a"}
+	})
+	blocker := maintenance.Blocker{Cause: maintenance.BlockBackupExport, JobID: "observed-export"}
+	blockedTick := h.now.Add(time.Hour)
+	h.service.RememberMissedTick(blockedTick, blocker)
+	h.tick(t, blockedTick.Add(time.Minute))
+	if len(h.requests) != 2 {
+		t.Fatalf("requests = %+v, want both maintenance skips", h.requests)
+	}
+	want := map[int64]maintenance.Blocker{cleanup.ID: {}, scan.ID: blocker}
+	for _, req := range h.requests {
+		expected, ok := want[req.Policy.ID]
+		if !ok || req.Outcome != RunReasonMaintenance || req.MaintenanceBlocker != expected {
+			t.Fatalf("request = %+v, want maintenance skip with blocker %+v", req, expected)
+		}
+		delete(want, req.Policy.ID)
+	}
+}
+
 func TestFutureExplicitCanaryRenameFollowsIdentityButNotAcceptedMembers472(t *testing.T) {
 	h := newSchedule472Harness(t, "2026-10-25T02:00:00Z")
 	p := h.policy(t, func(p *Policy) {

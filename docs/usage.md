@@ -558,7 +558,8 @@ The policy preview warns when an eligible occurrence falls in the same minute
 as the next active automatic backup or its scheduled retry. The warning shows
 the application timezone and UTC offset. Use it to adjust either schedule
 before saving. Scheduled Runs records the observed cause when a backup export,
-restore, or required recovery blocks an eligible run.
+restore, or required recovery blocks an eligible run. When policies compete for
+the same server, the operation is attributed to the policy that takes priority.
 **Blocking job details** opens the associated backup job when it is still
 available and you can read job history. Historical entries with no observed
 cause keep their existing reason. Observed skips remain terminal.

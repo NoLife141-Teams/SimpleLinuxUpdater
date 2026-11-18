@@ -401,50 +401,67 @@ class Qualification:
         evidence["interrupted_job_recovery"] = "passed"
         return MaintenanceBatchFixture(source, winner, {batch_id: read_host(batch_id), winner_id: interrupted}, operator)
 
-    def seed_pending_deliveries(self, name, job_id):
-        # The ordinary event and the superseded plan are fixture inputs. The
-        # candidate still performs every export, restore and delivery itself.
-        volume = self.prefix + "-candidate-data"
+    def edit_fixture_database(self, name, volume_suffix, task, script, *args):
+        volume = self.prefix + "-" + volume_suffix
         mount = docker("container", "inspect", "--format",
                        '{{range .Mounts}}{{if eq .Destination "/data"}}{{.Name}}{{end}}{{end}}', name)
         owner = docker("volume", "inspect", "--format", '{{index .Labels "' + LABEL + '"}}', volume)
-        require(mount == volume and owner == self.prefix, "refusing to seed a volume owned by another run")
+        require(mount == volume and owner == self.prefix, "refusing to edit a volume owned by another run")
+        docker("run", "--pull", "never", "--rm", "--label", self.label, "--name", self.prefix + "-" + task,
+               "--network", "none", "--mount", f"type=volume,src={volume},dst=/data", PYTHON_IMAGE,
+               "python3", "-c", script, *args)
+
+    def seed_pending_deliveries(self, name, job_id):
+        # The ordinary event and the superseded plan are fixture inputs. The
+        # candidate still performs every export, restore and delivery itself.
+        ordinary_id, stale_id = (secrets.token_hex(32) for _ in range(2))
         docker("stop", "--timeout", "25", name)
         script = """
 import hashlib
 import json
 import sqlite3
 import sys
-import uuid
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 
-job_id, expected_server, url = sys.argv[1:]
+job_id, expected_server, url, ordinary_id, stale_id = sys.argv[1:]
 fingerprint = hashlib.sha256(("webhook\\0" + url).encode()).hexdigest()
 with sqlite3.connect("file:/data/servers.db?mode=rw", uri=True) as db:
     job = db.execute("SELECT status, server_name FROM jobs WHERE id=?", (job_id,)).fetchone()
     if job != ("interrupted", expected_server):
         raise ValueError("pending deliveries require the terminal batch fixture")
-    now = datetime.now(UTC)
-    for event, delay, metadata in (
-        ("update.complete", 25, {"job_id": job_id}),
-        ("approval.published", 50, {"job_id": job_id, "approval_generation": 1,
-                                   "condition_id": "approval/" + job_id, "condition_episode": 1}),
+    created = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+    for delivery_id, event, metadata in (
+        (ordinary_id, "update.complete", {"job_id": job_id}),
+        (stale_id, "approval.published", {"job_id": job_id, "approval_generation": 1,
+                                       "condition_id": "approval/" + job_id, "condition_episode": 1}),
     ):
-        due = (now + timedelta(seconds=delay)).isoformat().replace("+00:00", "Z")
-        created = now.isoformat().replace("+00:00", "Z")
         db.execute(
             "INSERT INTO notification_outbox (id, destination, event_type, action, target_type, target_name, "
             "event_created_at, meta_json, destination_fingerprint, state, next_attempt_at, created_at, updated_at) "
-            "VALUES (?, 'webhook', ?, ?, 'server', ?, ?, ?, ?, 'pending', ?, ?, ?)",
-            (uuid.uuid4().hex + uuid.uuid4().hex, event, event, expected_server, created,
-             json.dumps(metadata), fingerprint, due, created, created),
+            "VALUES (?, 'webhook', ?, ?, 'server', ?, ?, ?, ?, 'pending', '9999-01-01T00:00:00Z', ?, ?)",
+            (delivery_id, event, event, expected_server, created, json.dumps(metadata), fingerprint, created, created),
         )
 db.close()
 """
-        docker("run", "--pull", "never", "--rm", "--label", self.label, "--name", self.prefix + "-outbox-fixture",
-               "--network", "none", "--mount", f"type=volume,src={volume},dst=/data", PYTHON_IMAGE,
-               "python3", "-c", script, job_id, BATCH_SERVER, WEBHOOK_URL)
+        self.edit_fixture_database(name, "candidate-data", "outbox-fixture", script,
+                                   job_id, BATCH_SERVER, WEBHOOK_URL, ordinary_id, stale_id)
         docker("start", name)
+        return ordinary_id, stale_id
+
+    def release_fixture_deliveries(self, name, volume_suffix, *delivery_ids):
+        # Only release the fixture's due time. The application's periodic
+        # condition monitor wakes delivery and still records its own outcome.
+        script = """
+import sqlite3
+import sys
+
+with sqlite3.connect("file:/data/servers.db?mode=rw", uri=True, timeout=15) as db:
+    for delivery_id in sys.argv[1:]:
+        db.execute("UPDATE notification_outbox SET next_attempt_at='' "
+                   "WHERE id=? AND state='pending' AND next_attempt_at='9999-01-01T00:00:00Z'", (delivery_id,))
+db.close()
+"""
+        self.edit_fixture_database(name, volume_suffix, "outbox-release", script, *delivery_ids)
 
     def start_webhook_receiver(self, app_name, suffix):
         # Each receiver shares only its app's network namespace and keeps
@@ -507,7 +524,8 @@ HTTPServer(("127.0.0.1", int(port)), Receiver).serve_forever()
     def qualify_candidate_backup_restore(self, name, api, credentials, fixture):
         evidence = self.report["candidate_backup_restore"]
         isolated_name = self.prefix + "-candidate-restore"
-        isolated = self.initialize_restore_target(isolated_name, self.candidate, self.create_volume("candidate-restore-data"),
+        isolated_suffix = "candidate-restore-data"
+        isolated = self.initialize_restore_target(isolated_name, self.candidate, self.create_volume(isolated_suffix),
                                                   "candidate-recovery-admin")
         require(re.fullmatch(r"python:3\.12\.\d+-slim-bookworm@sha256:[0-9a-f]{64}", PYTHON_IMAGE),
                 "qualification helpers must use the pinned Python runtime")
@@ -519,7 +537,7 @@ HTTPServer(("127.0.0.1", int(port)), Receiver).serve_forever()
         })
         require(settings["enabled"] and settings["webhook_configured"], "candidate did not configure the isolated destination")
         job_id = fixture.terminal_hosts[fixture.retry["id"]]["job_id"]
-        self.seed_pending_deliveries(name, job_id)
+        ordinary_id, stale_id = self.seed_pending_deliveries(name, job_id)
         self.connect(name, api)
         api.request("POST", "/api/auth/login", credentials)
         source_receiver = self.start_webhook_receiver(name, "source")
@@ -565,8 +583,9 @@ HTTPServer(("127.0.0.1", int(port)), Receiver).serve_forever()
             result = self.notification_delivery(client, job_id, event)
             return result if result["state"] == state else None
 
+        self.release_fixture_deliveries(name, "candidate-data", ordinary_id)
         delivered = until(lambda: terminal_delivery(api, "update.complete", "succeeded"),
-                          "source failed to deliver the archived pending notification", seconds=45)
+                          "source failed to deliver the archived pending notification")
         require(delivered["attempts"] == 1 and self.probe_contacts(source_receiver, WEBHOOK_CONTACTS) == 1
                 and self.notification_delivery(api, job_id, "approval.published") == stale,
                 "source did not deliver exactly once with the obsolete plan still pending")
@@ -575,17 +594,20 @@ HTTPServer(("127.0.0.1", int(port)), Receiver).serve_forever()
                 "in-place restore lost the live terminal delivery outcome")
         self.verify_restored_batches(name, api, fixture)
 
+        self.release_fixture_deliveries(name, "candidate-data", stale_id)
+        self.release_fixture_deliveries(isolated_name, isolated_suffix, ordinary_id, stale_id)
         for client in (api, isolated):
             obsoleted = until(lambda: terminal_delivery(client, "approval.published", "skipped"),
-                              "restored obsolete approval did not become ineligible", seconds=45)
+                              "restored obsolete approval did not become ineligible")
             require(obsoleted.get("reason_code") == "condition_ineligible"
                     and obsoleted["approval_generation"] == stale["approval_generation"] and obsoleted["attempts"] == 0,
                     "restored obsolete approval was not skipped before delivery")
         require(self.notification_delivery(api, job_id, "update.complete") == delivered
                 and self.probe_contacts(source_receiver, WEBHOOK_CONTACTS) == 1,
                 "in-place restore replayed the delivered notification")
-        require(terminal_delivery(isolated, "update.complete", "succeeded")
-                and self.probe_contacts(isolated_receiver, WEBHOOK_CONTACTS) == 1,
+        until(lambda: terminal_delivery(isolated, "update.complete", "succeeded"),
+              "isolated restore did not deliver the archived pending notification")
+        require(self.probe_contacts(isolated_receiver, WEBHOOK_CONTACTS) == 1,
                 "isolated restore did not process only the archive's eligible delivery")
         evidence["live_terminal_delivery"] = "passed"
         evidence["obsolete_approval"] = "passed"

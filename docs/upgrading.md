@@ -321,18 +321,19 @@ stops the candidate while its job waits for SSH negotiation. After restart,
 it verifies the same job and its interrupted outcome. The probe holds the TCP
 connection without proceeding with SSH. A stopped, labeled volume receives
 two undelivered notification fixtures through the pinned Python image. The
-candidate then exports a new archive containing those deliveries and batches. A fresh
-candidate volume restores that archive and retains the owner, exact job, retry
-lineage, and account isolation across restart. Replaying the accepted retry
-returns its existing attempt, and a distinct request for that retry causes no
-new admission or SSH contact.
+candidate then exports a new archive containing those deliveries and batches.
+A fresh candidate volume restores that archive and retains the owner, exact
+job, retry lineage, and account isolation across restart. Replaying the accepted
+retry returns its existing attempt, and a distinct request for that retry causes
+no new admission or SSH contact.
 
 In-place restore preserves a delivery that the source completed after export,
 so the source loopback receiver counts one request. An independently restored
 archive contains only the evidence saved at export and processes its own
 eligible pending delivery. Both restored installations record the obsolete
-approval as skipped before delivery. Disposable receivers count requests
-without retaining their contents.
+approval as skipped before delivery. The scenario makes each fixture due at its
+checkpoint, and the application's worker records the result. Disposable receivers
+count requests without retaining their contents.
 
 The VM runs the same candidate binary in a container with only loopback. The
 guest image is verified by SHA-256 before boot.

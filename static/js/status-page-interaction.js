@@ -254,6 +254,7 @@
         let streams = {
             servers: createStreamState(),
             dashboard: createStreamState(),
+            hosts: createStreamState(),
             commandHistory: createStreamState(),
             audit: createStreamState(),
             observability: createStreamState(),
@@ -699,7 +700,18 @@
             return { ...server, ...detail.snapshot };
         }
 
+        function refreshFleet(priority, reason) {
+            streams.hosts.inFlight = null;
+            return [
+                ...startRefresh("servers", priority, reason),
+                ...startRefresh("dashboard", priority, reason)
+            ];
+        }
+
         function startRefresh(streamName, priority, reason, context = {}) {
+            if ((streamName === "servers" || streamName === "dashboard") && streams.hosts.inFlight) {
+                return refreshFleet(priority, reason);
+            }
             const stream = streams[streamName];
             if (!stream) return [];
             const normalizedPriority = normalizedRefreshPriority(priority);
@@ -922,7 +934,40 @@
             if (interaction.releasePending && ["filtersChanged", "sortChanged", "pageChanged", "selectionChanged", "pageSelectionChanged", "primaryServerSelected"].includes(event.type)) {
                 interaction.actionContext = null;
             }
-            if (event.type === "serversSnapshotReceived") {
+            if (event.type === "targetedRefreshRequested") {
+                const { names, revision } = event;
+                const canPatch = !streams.hosts.inFlight
+                    && [streams.servers, streams.dashboard].every(stream => stream.lastAcceptedRequestId && !stream.inFlight)
+                    && names.every(name => serversByName.has(name) && dashboardByName.has(name));
+                return canPatch
+                    ? startRefresh("hosts", "immediate", "sse", { names, revision })
+                    : refreshFleet("immediate", "host snapshot unavailable");
+            } else if (event.type === "hostsSnapshotReceived") {
+                const request = streams.hosts.inFlight;
+                if (!request || request.requestId !== event.requestId) return [];
+                const { snapshot, receivedAt } = event;
+                const hostRows = new Map(normalizeNamedItems(snapshot?.servers).map(row => [row.name, row]));
+                const dashboardRows = new Map(normalizeNamedItems(snapshot?.dashboard?.servers).map(row => [row.name, row]));
+                if (!snapshot?.dashboard?.fleet || hostRows.size !== request.names.length || dashboardRows.size !== request.names.length
+                    || request.names.some(name => !hostRows.has(name) || !dashboardRows.has(name)
+                        || !hostRows.get(name).server_identity || hostRows.get(name).server_identity !== serversByName.get(name)?.server_identity)) {
+                    return refreshFleet(request.priority, "host snapshot changed");
+                }
+                finishRefresh("hosts", request.requestId, receivedAt);
+                for (const stream of [streams.servers, streams.dashboard]) {
+                    stream.lastSuccessfulAt = receivedAt;
+                    stream.lastError = "";
+                }
+                replaceDashboard({
+                    ...snapshot.dashboard,
+                    servers: dashboardServers.map(row => dashboardRows.get(row.name) ?? row)
+                });
+                return dispatch({
+                    type: "serversSnapshotReceived",
+                    priority: request.priority,
+                    servers: servers.map(row => hostRows.get(row.name) ?? row)
+                });
+            } else if (event.type === "serversSnapshotReceived") {
                 const requestId = Number(event.requestId || 0);
                 const stream = streams.servers;
                 if (requestId && (!stream.inFlight || stream.inFlight.requestId !== requestId || requestId < stream.lastAcceptedRequestId)) return [];
@@ -1051,6 +1096,10 @@
                     ...finishRefresh(streamName, requestId, event.receivedAt)
                 ];
             } else if (event.type === "snapshotFailed") {
+                if (event.stream === "hosts") {
+                    const request = streams.hosts.inFlight;
+                    return request?.requestId === event.requestId ? refreshFleet(request.priority, "host snapshot failed") : [];
+                }
                 return failRefresh(String(event.stream || ""), Number(event.requestId || 0), event.error);
             } else if (event.type === "jobLogReceived") {
                 return receiveJobLogEvent(event.event || event);

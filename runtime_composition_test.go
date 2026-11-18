@@ -346,6 +346,35 @@ func TestRuntimeCompositionMapsJobLogResetToBroker(t *testing.T) {
 	}
 }
 
+func TestRuntimeCompositionScopesOnlyStandaloneUpdateTransitions(t *testing.T) {
+	broker := events.NewBroker()
+	deps := composeRuntimeForTest(t, newRuntimeComposition(AppDeps{
+		DashboardEventBroker: broker,
+	}))
+	ch := broker.Subscribe()
+	defer broker.Unsubscribe(ch)
+
+	for i, tc := range []struct {
+		job  JobRecord
+		host string
+	}{
+		{JobRecord{ServerName: "alpha", Kind: jobKindUpdate, Actor: "operator"}, "alpha"},
+		{JobRecord{ServerName: "alpha", Kind: jobKindUpdate, Actor: "system"}, ""},
+		{JobRecord{ServerName: "alpha", Kind: jobKindUpdate, Actor: "operator", ParentJobID: "scheduled"}, ""},
+		{JobRecord{ServerName: "alpha", Kind: jobKindScheduledScan, Actor: "operator"}, ""},
+	} {
+		deps.NotifyDashboardJob("job.update", tc.job)
+		select {
+		case got := <-ch:
+			if got.Reason != "job.update" || got.Revision != uint64(i+1) || got.ServerName != tc.host {
+				t.Fatalf("transition for %+v produced event %+v", tc.job, got)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("transition didn't publish a dashboard invalidation")
+		}
+	}
+}
+
 func TestRuntimeCompositionInjectsDBPathIntoRuntimeServices(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "runtime-services.db")
 	db, err := sql.Open("sqlite", dbPath)

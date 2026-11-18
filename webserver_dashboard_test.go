@@ -8,10 +8,15 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"path/filepath"
+	"reflect"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
+	"debian-updater/internal/events"
 	healthpkg "debian-updater/internal/health"
 	observabilitypkg "debian-updater/internal/observability"
 
@@ -740,4 +745,63 @@ func TestBuildDashboardSummaryProjectsFuturePolicyRun(t *testing.T) {
 			t.Fatalf("NextRun.State = %q, want none", got)
 		}
 	})
+}
+
+func TestStatusChangedHostsMatchesFleetProjectionWithinByteBudget(t *testing.T) {
+	a := newScalingApp(t, 1000)
+	broker := a.deps.DashboardEventBroker
+	names := []string{"synthetic-0000", "synthetic-0001", "synthetic-0003"}
+	for _, name := range names {
+		broker.PublishEvent(events.Event{Reason: "job.update", ServerName: name})
+	}
+	query := url.Values{"server": names, "revision": {strconv.FormatUint(broker.Revision(), 10)}}
+	decode := func(rec *httptest.ResponseRecorder, destination any) {
+		t.Helper()
+		if rec.Code != http.StatusOK {
+			t.Fatalf("HTTP %d: %.200s", rec.Code, rec.Body.String())
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), destination); err != nil {
+			t.Fatal(err)
+		}
+	}
+	path := "/api/status/changed-hosts?"
+	for _, credential := range []string{"admin", "viewer"} {
+		t.Run(credential, func(t *testing.T) {
+			inventory := a.request("/api/servers", credential, true)
+			dashboard := a.request("/api/dashboard/summary?window=7d", credential, true)
+			changed := a.request(path+query.Encode(), credential, false)
+			var fullRows []statusServerRow
+			var fullDashboard statusDashboardSummary
+			var patch statusChangedHosts
+			decode(inventory, &fullRows)
+			decode(dashboard, &fullDashboard)
+			decode(changed, &patch)
+			if changed.Header().Get("Cache-Control") != "no-store" || changed.Body.Len() > 16384 ||
+				changed.Body.Len()*20 >= inventory.Body.Len()+dashboard.Body.Len() {
+				t.Fatalf("targeted body %d bytes, fleet bodies %d and %d bytes", changed.Body.Len(), inventory.Body.Len(), dashboard.Body.Len())
+			}
+			if len(patch.Servers) != len(names) || len(patch.Dashboard.Servers) != len(names) || !reflect.DeepEqual(patch.Dashboard.Fleet, fullDashboard.Fleet) {
+				t.Fatal("patch must contain exactly the requested rows and the global fleet totals")
+			}
+			for i, name := range names {
+				index, err := strconv.Atoi(strings.TrimPrefix(name, "synthetic-"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !reflect.DeepEqual(patch.Servers[i], fullRows[index]) || !reflect.DeepEqual(patch.Dashboard.Servers[i], fullDashboard.Servers[index]) {
+					t.Fatalf("targeted %s for %s differs from its fleet projections", name, credential)
+				}
+			}
+		})
+	}
+	if rec := a.request(path+query.Encode(), "pat", false); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("browser-only patch accepted PAT: HTTP %d", rec.Code)
+	}
+	if rec := a.request(path+"revision="+query.Get("revision")+"&server=unknown", "admin", false); rec.Code != http.StatusConflict {
+		t.Fatalf("patch for a missing host: HTTP %d", rec.Code)
+	}
+	broker.Publish("servers-bulk-updated")
+	if rec := a.request(path+query.Encode(), "admin", false); rec.Code != http.StatusConflict {
+		t.Fatalf("patch with stale revision: HTTP %d", rec.Code)
+	}
 }

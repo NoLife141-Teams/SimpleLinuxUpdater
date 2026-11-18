@@ -189,6 +189,8 @@
                 return executeServersSnapshotFetch(effect);
             if (effect.stream === "dashboard")
                 return executeDashboardSnapshotFetch(effect);
+            if (effect.stream === "hosts")
+                return executeChangedHostsFetch(effect);
             if (effect.stream === "commandHistory")
                 return executeCommandHistoryFetch(effect);
             if (effect.stream === "audit")
@@ -200,6 +202,36 @@
             if (effect.stream === "globalKey")
                 return executeGlobalKeyStatusFetch(effect);
             return Promise.resolve();
+        }
+
+        async function executeChangedHostsFetch(effect) {
+            const lifetime = lifecycle.capture();
+            const query = new URLSearchParams({ revision: effect.revision });
+            effect.names.forEach(name => query.append("server", name));
+            try {
+                const response = await fetch(`/api/status/changed-hosts?${query}`);
+                if (!lifecycle.isCurrent(lifetime)) return;
+                if (!response.ok) {
+                    lifecycle.discardResponse(response);
+                    throw new Error(`Status hosts: HTTP ${response.status}`);
+                }
+                const snapshot = await response.json();
+                if (!lifecycle.isCurrent(lifetime)) return;
+                await dispatchStatusInteraction({
+                    type: "hostsSnapshotReceived",
+                    requestId: effect.requestId,
+                    snapshot,
+                    receivedAt: new Date().toISOString(),
+                });
+            } catch (error) {
+                if (!lifecycle.isCurrent(lifetime) || error?.name === "AbortError") return;
+                await dispatchStatusInteraction({
+                    type: "snapshotFailed",
+                    stream: "hosts",
+                    requestId: effect.requestId,
+                    error: error?.message || String(error),
+                });
+            }
         }
 
         async function executeDashboardSnapshotFetch(effect) {

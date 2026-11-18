@@ -96,3 +96,44 @@ test("approval link distinguishes stale plans and closes the drawer when the lin
     await expect(drawer).toHaveAttribute("aria-hidden", "true");
     await expect(notice).toBeFocused();
 });
+
+test("a targeted host refresh retires a replaced notification plan", async ({ page }) => {
+    await page.addInitScript(() => {
+        window.EventSource = class extends EventTarget {
+            constructor() {
+                super();
+                window.approvalFixtureEvents = this;
+                setTimeout(() => this.dispatchEvent(new Event("open")), 0);
+            }
+            close() {}
+        };
+    });
+    await ensureAuthenticatedSession(page);
+    const read = pathname => page.waitForResponse(response => new URL(response.url()).pathname === pathname);
+    const initial = Promise.all([read("/api/servers"), read("/api/dashboard/summary")]);
+    await page.goto(approvalLink());
+    const [inventory, dashboard] = await Promise.all((await initial).map(response => response.json()));
+    await expect(page.locator("#drawer-panel-pending")).toContainText("openssl");
+    await expect.poll(() => page.evaluate(() => Boolean(
+        window.statusPageInteraction.getView().sync.streams.dashboard.lastAcceptedRequestId,
+    ))).toBe(true);
+    await page.route("**/api/status/changed-hosts?*", route => {
+        const params = new URL(route.request().url()).searchParams;
+        expect(params.getAll("server")).toEqual(["renamed-edge"]);
+        return route.fulfill({
+            json: {
+                servers: [{ ...inventory.find(row => row.name === "renamed-edge"), approval_generation: 5 }],
+                dashboard: { ...dashboard, servers: dashboard.servers.filter(row => row.name === "renamed-edge") },
+            },
+        });
+    });
+    const updated = read("/api/status/changed-hosts");
+    await page.evaluate(() => window.approvalFixtureEvents.dispatchEvent(new MessageEvent("dashboard", {
+        data: JSON.stringify({ reason: "job.update", server_name: "renamed-edge", revision: 1 }),
+    })));
+    expect((await updated).ok()).toBe(true);
+    const notice = page.locator("#linked-server-message");
+    await expect(notice).toContainText("This approval plan was replaced.");
+    await expect(notice).toBeFocused();
+    await expect(page.locator("#status-drawer")).toHaveAttribute("aria-hidden", "true");
+});

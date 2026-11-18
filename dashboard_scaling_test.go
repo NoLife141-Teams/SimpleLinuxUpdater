@@ -580,6 +580,31 @@ func TestDashboardScalingServe(t *testing.T) {
 			w.WriteHeader(204)
 			return
 		}
+		if r.URL.Path == "/__scaling/hosts" && r.Method == http.MethodPost {
+			names := []string{"synthetic-0003"}
+			if r.URL.Query().Get("burst") == "1" {
+				names = append(names, "synthetic-0004", "synthetic-0005")
+			}
+			state := a.deps.ServerState
+			changed := make(map[string]string, len(names))
+			state.Lock()
+			for _, name := range names {
+				host := state.StatusMap()[name]
+				if host.Status == "idle" {
+					host.Status = "done"
+				} else {
+					host.Status = "idle"
+				}
+				changed[name] = host.Status
+			}
+			state.Unlock()
+			for _, name := range names {
+				a.deps.DashboardEventBroker.PublishEvent(events.Event{Reason: "job.update", ServerName: name})
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(changed)
+			return
+		}
 		if r.URL.Path == "/__scaling/burst" {
 			state := a.deps.ServerState
 			state.Lock()

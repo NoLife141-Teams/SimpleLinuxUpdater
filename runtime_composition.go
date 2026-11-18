@@ -217,6 +217,17 @@ func (c *runtimeComposition) Compose() AppDeps {
 				broker.Publish(reason)
 			}
 		}
+		if deps.NotifyDashboardJob == nil {
+			deps.NotifyDashboardJob = func(reason string, job JobRecord) {
+				// A scheduled transition can also release or stop another rollout
+				// stage. Only standalone, operator-initiated updates are local.
+				if job.Kind != jobKindUpdate || job.Actor == "system" || job.ParentJobID != "" || job.ServerName == "" {
+					broker.Publish(reason)
+					return
+				}
+				broker.PublishEvent(events.Event{Reason: reason, ServerName: job.ServerName})
+			}
+		}
 	}
 	if deps.NotifyDashboardLogEvent == nil {
 		broker := deps.DashboardEventBroker
@@ -294,8 +305,9 @@ func (c *runtimeComposition) Compose() AppDeps {
 	if deps.NewJobManager == nil {
 		notify := deps.NotifyDashboardEvent
 		notifyLog := deps.NotifyDashboardLogEvent
+		notifyJob := deps.NotifyDashboardJob
 		deps.NewJobManager = func(db *sql.DB) *JobManager {
-			return newJobManagerWithRuntimeLogConfig(db, notify, notifyLog, deps.ServerState, loadJobLogConfigFromEnv(), deps.Now)
+			return newJobManagerWithRuntimeLogConfig(db, notify, notifyLog, notifyJob, deps.ServerState, loadJobLogConfigFromEnv(), deps.Now)
 		}
 	}
 	if deps.CurrentJobManager == nil {

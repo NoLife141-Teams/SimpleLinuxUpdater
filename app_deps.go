@@ -74,6 +74,7 @@ type AppDeps struct {
 	StartScheduledRunReconciliation   func(int64, string)
 	ScheduledRunReconciliationContext context.Context
 	NotifyDashboardEvent              func(string)
+	NotifyDashboardJob                func(string, JobRecord)
 	NotifyDashboardLogEvent           func(internaljobs.LogEvent)
 	DashboardEventBroker              *events.Broker
 }

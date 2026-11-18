@@ -26,6 +26,8 @@
         ]);
         const dashboardBurstWindowMs = 125;
         const initialStreamWaitMs = 125;
+        const fleetStreams = ["servers", "dashboard"];
+        const maxChangedHosts = 16;
 
         function createController(options = {}) {
             const timers = options.timers || globalThis;
@@ -41,6 +43,9 @@
             let initialRefreshStarted = false;
             let dashboardRefreshTimer = null;
             const pendingStreams = new Set();
+            const pendingHosts = new Set();
+            let pendingRevision = 0;
+            let pendingLogRecovery = false;
 
             function startInitialRefresh() {
                 if (initialRefreshStarted) return false;
@@ -53,16 +58,34 @@
                 return true;
             }
 
-            function queueDashboardRefresh(streams) {
+            function queueDashboardRefresh(streams, { host, revision, recoverLogs = false } = {}) {
                 streams.forEach(stream => pendingStreams.add(stream));
+                pendingLogRecovery ||= recoverLogs;
+                if (host) {
+                    pendingHosts.add(host);
+                    pendingRevision = revision;
+                }
                 if (dashboardRefreshTimer !== null) return;
                 const ticket = generation;
                 dashboardRefreshTimer = timers.setTimeout(() => {
                     if (!started || ticket !== generation) return;
                     dashboardRefreshTimer = null;
-                    const streams = [...pendingStreams];
+                    const recoverLogs = pendingLogRecovery;
+                    pendingLogRecovery = false;
+                    const names = [...pendingHosts];
+                    const revision = pendingRevision;
+                    const needsFullFleet = fleetStreams.some(stream => pendingStreams.has(stream));
+                    if (names.length && (needsFullFleet || names.length > maxChangedHosts || !options.onHostsRefresh)) {
+                        fleetStreams.forEach(stream => pendingStreams.add(stream));
+                    } else if (names.length) {
+                        options.onHostsRefresh(names, revision);
+                    }
+                    const requestedStreams = [...pendingStreams];
                     pendingStreams.clear();
-                    options.onDashboardRefresh?.(streams);
+                    pendingHosts.clear();
+                    pendingRevision = 0;
+                    if (recoverLogs) options.onReconnect?.();
+                    if (requestedStreams.length) options.onDashboardRefresh?.(requestedStreams);
                 }, dashboardBurstWindowMs);
             }
 
@@ -116,6 +139,7 @@
                 }
                 if (source) source.close();
                 const candidate = new EventSourceType("/api/dashboard/events");
+                let receivedRevision = 0;
                 const ticket = generation;
                 const current = () =>
                     started && ticket === generation && source === candidate;
@@ -139,7 +163,21 @@
                         options.onJobLogEvent?.(payload);
                         return;
                     }
-                    queueDashboardRefresh(refreshStreamsByReason.get(payload.reason) ?? allRefreshStreams);
+                    const revision = payload.revision;
+                    if (Number.isSafeInteger(revision) && revision > 0) {
+                        const gap = receivedRevision && revision !== receivedRevision + 1;
+                        receivedRevision = revision;
+                        if (gap) {
+                            queueDashboardRefresh(allRefreshStreams, { recoverLogs: true });
+                            return;
+                        }
+                        if (payload.reason === "job.update" && typeof payload.server_name === "string" && payload.server_name) {
+                            queueDashboardRefresh([], { host: payload.server_name, revision });
+                            return;
+                        }
+                    }
+                    const streams = refreshStreamsByReason.get(payload.reason);
+                    queueDashboardRefresh(streams ?? allRefreshStreams, { recoverLogs: !streams });
                 });
                 candidate.addEventListener("error", () => {
                     if (!current()) return;
@@ -183,6 +221,9 @@
                 if (dashboardRefreshTimer !== null) timers.clearTimeout(dashboardRefreshTimer);
                 serverPoll = extrasPoll = reconnectTimer = initialRefreshTimer = dashboardRefreshTimer = null;
                 pendingStreams.clear();
+                pendingHosts.clear();
+                pendingRevision = 0;
+                pendingLogRecovery = false;
                 initialRefreshStarted = false;
                 reconnectDelay = 1000;
             }

@@ -175,6 +175,71 @@ type statusDashboardSummary struct {
 	Servers []statusDashboardRow `json:"servers"`
 }
 
+type statusChangedHosts struct {
+	Servers   []statusServerRow      `json:"servers"`
+	Dashboard statusDashboardSummary `json:"dashboard"`
+}
+
+const statusChangedHostLimit = 16
+
+func handleStatusChangedHosts(c *gin.Context, deps AppDeps) {
+	c.Header("Cache-Control", "no-store")
+	revision, err := strconv.ParseUint(c.Query("revision"), 10, 64)
+	requested := c.QueryArray("server")
+	if err != nil || revision == 0 || len(requested) == 0 || len(requested) > statusChangedHostLimit {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid Status host refresh"})
+		return
+	}
+	names := make(map[string]struct{}, len(requested))
+	for _, name := range requested {
+		if name == "" || len(name) > 255 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid Status host name"})
+			return
+		}
+		names[name] = struct{}{}
+	}
+	stale := func() {
+		c.JSON(http.StatusConflict, gin.H{"error": "Status changed during the host refresh"})
+	}
+	broker := deps.DashboardEventBroker
+	if broker.Revision() != revision {
+		stale()
+		return
+	}
+	statuses := deps.ServerInventoryService.ListStatusesFor(names)
+	if len(statuses) != len(names) {
+		stale()
+		return
+	}
+	ctx := c.Request.Context()
+	summary, err := deps.ObservabilityService.BuildDashboardSummaryContextWithOptions(ctx, "7d", deps.Now(), observabilitypkg.DashboardSummaryOptions{
+		OmitCommandHistory: true, OmitVulnerabilityFindings: true,
+	})
+	if err != nil {
+		if ctx.Err() == nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "could not refresh Status hosts"})
+		}
+		return
+	}
+	selected := make([]observabilitypkg.DashboardServerSummary, 0, len(names))
+	for _, server := range summary.Servers {
+		if _, ok := names[server.Name]; ok {
+			selected = append(selected, server)
+		}
+	}
+	// Apply inventory, dashboard rows, and fleet totals together or read a
+	// fresh full snapshot when another dashboard invalidation raced this read.
+	if len(selected) != len(names) || broker.Revision() != revision {
+		stale()
+		return
+	}
+	summary.Servers = selected
+	writeDashboardSummaryResponse(c, statusChangedHosts{
+		Servers:   projectStatusRows(statuses, contextAllows(c, "logs:read")),
+		Dashboard: projectStatusDashboard(summary),
+	})
+}
+
 func projectStatusDashboard(summary dashboardSummaryResponse) statusDashboardSummary {
 	rows := make([]statusDashboardRow, 0, len(summary.Servers))
 	for _, server := range summary.Servers {

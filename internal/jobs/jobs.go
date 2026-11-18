@@ -139,6 +139,7 @@ type SQLiteRepository struct {
 
 type ManagerOptions struct {
 	Notify                func(string)
+	NotifyJob             func(string, Record)
 	NotifyLog             func(LogEvent)
 	SyncRuntime           func(Record)
 	SyncInterruptedServer func([]string)
@@ -580,7 +581,7 @@ func (m *Manager) transition(id string, intent Intent, activeOnly bool) (bool, e
 		m.syncRuntime(id)
 	}
 	m.notifyLogResult(id, logResult)
-	m.notify("job.update")
+	m.notifyJobUpdate(next)
 	return true, nil
 }
 
@@ -716,6 +717,14 @@ func (m *Manager) notify(reason string) {
 	if m != nil && m.opts.Notify != nil {
 		m.opts.Notify(reason)
 	}
+}
+
+func (m *Manager) notifyJobUpdate(job Record) {
+	if m.opts.NotifyJob == nil {
+		m.notify("job.update")
+		return
+	}
+	m.opts.NotifyJob("job.update", job)
 }
 
 func (r *SQLiteRepository) Create(record Record) error {

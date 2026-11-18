@@ -419,7 +419,7 @@ shows whether an automatic refresh succeeded, was deferred, returned incomplete
 health data, or failed. The manual refresh action remains available for immediate
 recovery and verification.
 
-Status bulk update, standard approval, security approval, kept-back security approval, cancel, autoremove, and facts-refresh actions execute immediately for eligible selected hosts; there is no application review modal. Ineligible hosts are skipped, and completion feedback separates successful, skipped, and failed hosts. Verify the selection before clicking a destructive bulk action.
+Status bulk update, standard approval, security approval, kept-back security approval, cancel, autoremove, and facts-refresh actions execute immediately for eligible selected hosts. For kept-back security approval, hosts whose plan would remove packages are listed for individual review. Use the review button for each affected host to see the package removals and confirm the displayed plan. Other ineligible hosts are skipped. Completion feedback separates successful, skipped, and failed hosts.
 
 ### Passwordless apt toggle
 

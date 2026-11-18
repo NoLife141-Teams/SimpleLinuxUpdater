@@ -118,6 +118,11 @@
         return `${count} ${count === 1 ? singular : `${singular}s`}`;
     }
 
+    function keptBackApprovalHasRemovals(server) {
+        const plan = server?.upgrade_plan;
+        return Boolean(plan?.kept_back_security_has_removals || plan?.kept_back_security_removed_packages?.length);
+    }
+
     function defaultActionReason(key, server, action, approvalCounts) {
         if (action && action.reason) return action.reason;
         if (!server) return "Host is no longer loaded";
@@ -129,8 +134,8 @@
             if (key === "approve_all") return `${pluralized(counts.standard, "standard update")} ready for approval.`;
             if (key === "approve_security") return `${pluralized(counts.standardSecurity, "standard security update")} ready for approval.`;
             if (key === "approve_security_kept_back") {
-                const removalNote = (server.upgrade_plan?.kept_back_security_has_removals || counts.keptBackSecurityRemovedPackages.length > 0)
-                    ? " Package removals will be confirmed from the previewed plan."
+                const removalNote = keptBackApprovalHasRemovals(server)
+                    ? " Package removals require individual confirmation."
                     : "";
                 return `${pluralized(counts.keptBackSecurity, "kept-back security update")} ready for targeted approval.${removalNote}`;
             }
@@ -1275,7 +1280,6 @@
             return {
                 serverIdentity: String(server?.server_identity || ""),
                 detailsDeferred: Boolean(server?.package_counts),
-                keptBackSecurityHasRemovals: Boolean(server?.upgrade_plan?.kept_back_security_has_removals || counts.keptBackSecurityRemovedPackages.length > 0),
                 counts,
                 approvalIdentity: approvalIdentity(server),
                 pendingUpdates: cloneValue(server?.pending_updates || [])
@@ -1313,15 +1317,23 @@
             const eligibleNames = [];
             const eligibleHosts = [];
             const ineligible = [];
+            const removalReviews = [];
             visibleSelectedNames.forEach(name => {
                 const server = actionServer(name);
                 const action = getAction(name, actionKey) || { enabled: false, reason: "Action is unavailable", readiness: "blocked" };
+                const auth = canonicalAuthFacts(server, globalKeyAvailable).label;
+                if (actionKey === "approve_security_kept_back" && keptBackApprovalHasRemovals(server)
+                    && (action.enabled || (action.readiness === "in_progress" && getAction(name, actionKey, { ignoreInFlight: true })?.enabled))) {
+                    ineligible.push({ name, auth, reason: "Package removals require individual confirmation" });
+                    removalReviews.push({ name, serverIdentity: String(server.server_identity || "") });
+                    return;
+                }
                 const reason = defaultActionReason(actionKey, server, action, canonicalApprovalCounts);
                 if (action.enabled) {
                     eligibleNames.push(name);
-                    eligibleHosts.push({ name, auth: canonicalAuthFacts(server, globalKeyAvailable).label, readiness: reason });
+                    eligibleHosts.push({ name, auth, readiness: reason });
                 } else {
-                    ineligible.push({ name, auth: canonicalAuthFacts(server, globalKeyAvailable).label, reason });
+                    ineligible.push({ name, auth, reason });
                 }
             });
             const hiddenHosts = hiddenSelectedNames.map(name => ({
@@ -1341,6 +1353,7 @@
                 serverNames: cloneValue(eligibleNames),
                 eligibleHosts,
                 ineligible,
+                removalReviews,
                 skippedHosts: [...hiddenHosts, ...ineligible],
                 payloadFacts: Object.fromEntries(eligibleNames.map(name => [name, actionPayloadFacts(actionServer(name))]))
             };

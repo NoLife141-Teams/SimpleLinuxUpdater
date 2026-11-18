@@ -11,6 +11,9 @@
             scheduleSelectPageStateUpdate,
             pendingApprovalRequestOptions,
             dispatchStatusInteraction,
+            escapeHtml,
+            renderHTML,
+            reviewKeptBackApproval,
         } = options;
         function bulkDashboardActionKey(actionPath) {
             if (actionPath === "update") return "update";
@@ -60,6 +63,7 @@
                 approveSecurityPlan.eligibleNames.length;
             const approveKeptSecurityCount =
                 approveKeptSecurityPlan.eligibleNames.length;
+            const removalReviews = approveKeptSecurityPlan.removalReviews;
             const cancelCount = cancelPlan.eligibleNames.length;
             const autoremoveCount = autoremovePlan.eligibleNames.length;
             const bulk = view.actions.bulk;
@@ -154,8 +158,20 @@
                 bulkDisabledTitle ||
                     (selectedCount === 0
                         ? "Select visible hosts first"
-                        : "No selected host has kept-back security updates eligible for approval"),
+                        : removalReviews.length > 0
+                          ? "Review package removals for each affected host"
+                          : "No selected host has kept-back security updates eligible for approval"),
             );
+            const review = document.getElementById("bulk-removal-review");
+            review.hidden = removalReviews.length === 0;
+            renderHTML(review, removalReviews.length ? `
+                <p class="bulk-hint warning" id="bulk-removal-review-hint">Package removals require individual confirmation.</p>
+                <ul>${removalReviews.map(({ name, serverIdentity }) => `
+                    <li data-render-key="${escapeHtml(serverIdentity || name)}">
+                        <button type="button" class="inline-btn btn-ghost" data-action="review-kept-back-removals"
+                            data-name="${escapeHtml(name)}" data-server-identity="${escapeHtml(serverIdentity)}"
+                            aria-describedby="bulk-removal-review-hint">Review ${escapeHtml(name)}</button>
+                    </li>`).join("")}</ul>` : "");
             setBulkButtonState(
                 "bulk-cancel",
                 "Cancel",
@@ -196,13 +212,7 @@
                 return { headers: { "X-SLU-Server-Identity": facts.serverIdentity } };
             if (!actionPath.startsWith("approve") && actionPath !== "cancel")
                 return {};
-            const confirmRemovals =
-                actionPath === "approve-security-kept-back" &&
-                facts.keptBackSecurityHasRemovals;
-            return pendingApprovalRequestOptions(
-                facts.approvalIdentity,
-                confirmRemovals,
-            );
+            return pendingApprovalRequestOptions(facts.approvalIdentity);
         }
         async function runBulkAction(actionPath, actionLabel) {
             const lifetime = lifecycle.capture();
@@ -453,6 +463,10 @@
         function init() {
             if (lifecycle.active) return;
             lifecycle.init();
+            lifecycle.listen(document.getElementById("bulk-removal-review"), "click", (event) => {
+                const button = event.target.closest("button[data-action='review-kept-back-removals']");
+                if (button) reviewKeptBackApproval(button.dataset.name, button.dataset.serverIdentity);
+            });
             lifecycle.listen(
                 document.getElementById("bulk-update"),
                 "click",

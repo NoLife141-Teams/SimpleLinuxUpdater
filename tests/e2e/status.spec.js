@@ -1028,7 +1028,7 @@ test("bulk actions execute immediately, skip ineligible hosts, and report partia
         }),
     ];
     const state = {};
-    const detailRequests = await stubCompactStatus(page, () => servers);
+    await stubCompactStatus(page, () => servers);
     await page.route("**/api/update/idle-host", (route) => {
         state.updateIdle = (state.updateIdle || 0) + 1;
         state.updateIdentity = route.request().headers()["x-slu-server-identity"];
@@ -1038,14 +1038,6 @@ test("bulk actions execute immediately, skip ineligible hosts, and report partia
         state.approveStandard = (state.approveStandard || 0) + 1;
         return fulfillJson(route, { ok: true });
     });
-    await page.route(
-        "**/api/approve-security-kept-back/ok-sec-host",
-        (route) => {
-            state.approveKept = (state.approveKept || 0) + 1;
-            state.keptDecision = route.request().postDataJSON();
-            return fulfillJson(route, { ok: true });
-        },
-    );
     await page.route("**/api/approve-security/ok-sec-host", (route) => {
         state.approveSecurityOk = (state.approveSecurityOk || 0) + 1;
         return fulfillJson(route, { ok: true });
@@ -1113,11 +1105,6 @@ test("bulk actions execute immediately, skip ineligible hosts, and report partia
     await page.locator("#bulk-approve").click();
     await expect.poll(() => state.approveStandard || 0).toBe(1);
 
-    await page.locator("#bulk-approve-kept-security").click();
-    await expect.poll(() => state.approveKept || 0).toBe(1);
-    expect(state.keptDecision).toEqual({ job_id: "job-ok-sec-host", approval_generation: 1, confirm_removals: true });
-    expect(detailRequests).toEqual([]);
-
     await page
         .locator(
             '#servers-table tbody tr[data-name="fail-sec-host"] .row-select',
@@ -1160,6 +1147,76 @@ test("bulk actions execute immediately, skip ineligible hosts, and report partia
 
     await page.locator("#refresh-all-facts").click();
     await expect.poll(() => state.refreshIdle || 0).toBe(1);
+});
+
+test("bulk kept-back approval requires individual consent for packages that will be removed", async ({ page }) => {
+    const revision = "a".repeat(64);
+    const plan = {
+        standard_package_count: 2,
+        kept_back_package_count: 1,
+        standard_security_count: 1,
+        total_security_count: 2,
+        kept_back_security_package_count: 1,
+        kept_back_security_plan_available: true,
+    };
+    const servers = [
+        makeServer("safe-host", "pending_approval", makePendingUpdates(3), {
+            has_password: true,
+            upgrade_plan: plan,
+        }),
+        makeServer("removal-host", "pending_approval", makePendingUpdates(3), {
+            has_password: true,
+            upgrade_plan: {
+                ...plan,
+                kept_back_security_removed_packages: ["old-sec-lib"],
+                package_deferrals: { revision, rules: [] },
+            },
+        }),
+    ];
+    const detailRequests = await stubCompactStatus(page, () => servers);
+    const requests = [];
+    await page.route("**/api/approve-security-kept-back/*", (route) => {
+        const name = new URL(route.request().url()).pathname.split("/").at(-1);
+        const body = route.request().postDataJSON();
+        requests.push({ name, body });
+        if (name === "removal-host" && body.approval_generation !== servers[1].approval_generation) {
+            return fulfillJson(route, { error: "The pending update changed. Refresh the package plan and confirm again." }, 409);
+        }
+        return fulfillJson(route, { ok: true });
+    });
+
+    await ensureAuthenticatedSession(page);
+    const row = (name) => page.locator(`#servers-table tr[data-name="${name}"] .row-select`);
+    const bulk = page.locator("#bulk-approve-kept-security");
+    const review = page.getByRole("button", { name: "Review removal-host", exact: true });
+    await row("removal-host").check();
+    await expect(bulk).toBeDisabled();
+    await expect(review).toBeVisible();
+    await row("safe-host").check();
+    await expect(bulk).toHaveText("Approve kept-back security (1)");
+    await bulk.click();
+    await expect(page.locator("#bulk-action-hint")).toHaveText("2 selected · 1 executed · 1 skipped");
+    expect(requests).toEqual([{ name: "safe-host", body: { job_id: "job-safe-host", approval_generation: 1 } }]);
+    expect(detailRequests).toEqual([]);
+
+    await review.click();
+    const dialog = page.locator("#action-confirm-message");
+    await expect(dialog).toContainText("old-sec-lib");
+    expect(requests).toHaveLength(1);
+    servers[1] = { ...servers[1], approval_generation: 2 };
+    await page.evaluate(() => fetchServers(true, "removal-approval-changed"));
+    await page.locator("#action-confirm-submit").click();
+    await expect(page.locator(".app-feedback")).toContainText("pending update changed");
+    expect(requests[1]).toEqual({
+        name: "removal-host",
+        body: { job_id: "job-removal-host", approval_generation: 1, deferral_revision: revision, confirm_removals: true },
+    });
+    await review.click();
+    await expect(dialog).toContainText("old-sec-lib");
+    await page.locator("#action-confirm-submit").click();
+    await expect.poll(() => requests[2]?.body).toEqual({
+        job_id: "job-removal-host", approval_generation: 2, deferral_revision: revision, confirm_removals: true,
+    });
 });
 
 test("auto refresh defers table replacement while an update action is being clicked", async ({

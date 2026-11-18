@@ -1,5 +1,6 @@
 import io
 import json
+import subprocess
 import tarfile
 import tempfile
 import unittest
@@ -21,6 +22,17 @@ class OperationalQualificationTest(unittest.TestCase):
         with patch("sys.argv", args), patch.object(operational.signal, "signal"):
             code = operational.main()
         return code, json.loads((output / "report.json").read_text())
+
+    def test_docker_timeout_redacts_fixture_arguments_and_output(self):
+        args = ("run", "--pull", "never", "python3", "-c", "private notification body")
+        timeout = subprocess.TimeoutExpired((*operational.DOCKER, *args), 2, output=b"private output")
+        with patch.object(operational.subprocess, "run", side_effect=timeout):
+            with self.assertRaises(RuntimeError) as reported:
+                operational.docker(*args, timeout=2)
+        diagnostic = str(reported.exception)
+        self.assertIn("timed out after 2 seconds", diagnostic)
+        self.assertNotIn("private notification body", diagnostic)
+        self.assertNotIn("private output", diagnostic)
 
     def test_unavailable_docker_is_reported_without_attempting_scenarios(self):
         with tempfile.TemporaryDirectory() as directory, \

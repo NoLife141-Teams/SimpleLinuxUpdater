@@ -61,11 +61,15 @@ def fixture_ssh_key():
 
 
 def command(*args, timeout=90, stdin=None, stdout=subprocess.PIPE):
-    result = subprocess.run(args, stdin=stdin, stdout=stdout, stderr=subprocess.PIPE, timeout=timeout)
+    # Report the failing operation without storing application logs, request
+    # bodies, environment values or raw subprocess output in evidence.
+    operation = ' '.join(map(str, args[:4]))
+    try:
+        result = subprocess.run(args, stdin=stdin, stdout=stdout, stderr=subprocess.PIPE, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(f"{operation} timed out after {timeout} seconds") from None
     if result.returncode:
-        # Report the failing operation without storing application logs, request
-        # bodies, environment values or raw subprocess output in evidence.
-        raise RuntimeError(f"{' '.join(map(str, args[:4]))} exited {result.returncode}")
+        raise RuntimeError(f"{operation} exited {result.returncode}")
     return result.stdout.decode().strip() if result.stdout is not None else ""
 
 
@@ -469,7 +473,7 @@ db.close()
         docker("start", name)
         return ordinary_id, stale_id
 
-    def release_fixture_deliveries(self, name, volume_suffix, *delivery_ids):
+    def release_fixture_delivery(self, name, volume_suffix, delivery_id):
         # Only release the fixture's due time. The application's periodic
         # condition monitor wakes delivery and still records its own outcome.
         script = """
@@ -477,12 +481,11 @@ import sqlite3
 import sys
 
 with sqlite3.connect("file:/data/servers.db?mode=rw", uri=True, timeout=15) as db:
-    for delivery_id in sys.argv[1:]:
-        db.execute("UPDATE notification_outbox SET next_attempt_at='' "
-                   "WHERE id=? AND state='pending' AND next_attempt_at='9999-01-01T00:00:00Z'", (delivery_id,))
+    db.execute("UPDATE notification_outbox SET next_attempt_at='' "
+               "WHERE id=? AND state='pending' AND next_attempt_at='9999-01-01T00:00:00Z'", (sys.argv[1],))
 db.close()
 """
-        self.edit_fixture_database(name, volume_suffix, "outbox-release", script, *delivery_ids)
+        self.edit_fixture_database(name, volume_suffix, "outbox-release", script, delivery_id)
 
     def start_webhook_receiver(self, app_name, suffix):
         # Each receiver shares only its app's network namespace and keeps
@@ -567,11 +570,13 @@ HTTPServer(("127.0.0.1", int(port)), Receiver).serve_forever()
         require(ordinary["state"] == stale["state"] == "pending" and stale["approval_generation"] == 1,
                 "candidate did not have both pending deliveries before export")
         phrase = secrets.token_urlsafe(32)
+        evidence["archive_export"] = "failed"
         archive = api.request("POST", "/api/backup/export", {"passphrase": phrase, "include_known_hosts": True}, binary=True)
         require(len(archive) > 100 and self.probe_contacts(source_receiver, WEBHOOK_CONTACTS) == 0,
                 "candidate failed to export before delivering the pending notification")
         evidence["archive_export"] = "passed"
 
+        evidence["isolated_batch_history"] = "failed"
         self.apply_archive(isolated, archive, phrase, credentials)
         require(self.notification_delivery(isolated, job_id, "update.complete") == ordinary
                 and self.notification_delivery(isolated, job_id, "approval.published") == stale,
@@ -585,6 +590,7 @@ HTTPServer(("127.0.0.1", int(port)), Receiver).serve_forever()
         evidence["isolated_batch_history"] = "passed"
 
         self.start_batch_probe(isolated_name)
+        evidence["isolated_retry_admission"] = "failed"
         winner_id = fixture.retry["id"]
         require(isolated.request("POST", BATCH_PATH, fixture.retry, allowed=(202,)) == {"id": winner_id},
                 "restored retry replay did not return the original attempt")
@@ -604,7 +610,8 @@ HTTPServer(("127.0.0.1", int(port)), Receiver).serve_forever()
             result = self.notification_delivery(client, job_id, event)
             return result if result["state"] == state else None
 
-        self.release_fixture_deliveries(name, "candidate-data", ordinary_id)
+        evidence["live_terminal_delivery"] = "failed"
+        self.release_fixture_delivery(name, "candidate-data", ordinary_id)
         delivered = until(lambda: terminal_delivery(api, "update.complete", "succeeded"),
                           "source failed to deliver the archived pending notification")
         require(delivered["attempts"] == 1 and self.probe_contacts(source_receiver, WEBHOOK_CONTACTS) == 1
@@ -615,22 +622,28 @@ HTTPServer(("127.0.0.1", int(port)), Receiver).serve_forever()
                 "in-place restore lost the live terminal delivery outcome")
         self.verify_restored_batches(name, api, fixture)
 
-        self.release_fixture_deliveries(name, "candidate-data", stale_id)
-        self.release_fixture_deliveries(isolated_name, isolated_suffix, ordinary_id, stale_id)
+        self.release_fixture_delivery(isolated_name, isolated_suffix, ordinary_id)
+        until(lambda: terminal_delivery(isolated, "update.complete", "succeeded"),
+              "isolated restore did not deliver the archived pending notification")
+        require(self.notification_delivery(api, job_id, "update.complete") == delivered
+                and self.probe_contacts(source_receiver, WEBHOOK_CONTACTS) == 1,
+                "in-place restore replayed the delivered notification")
+        require(self.probe_contacts(isolated_receiver, WEBHOOK_CONTACTS) == 1,
+                "isolated restore did not deliver the archived notification exactly once")
+        evidence["live_terminal_delivery"] = "passed"
+
+        evidence["obsolete_approval"] = "failed"
+        self.release_fixture_delivery(name, "candidate-data", stale_id)
+        self.release_fixture_delivery(isolated_name, isolated_suffix, stale_id)
         for client in (api, isolated):
             obsoleted = until(lambda: terminal_delivery(client, "approval.published", "skipped"),
                               "restored obsolete approval did not become ineligible")
             require(obsoleted.get("reason_code") == "condition_ineligible"
                     and obsoleted["approval_generation"] == stale["approval_generation"] and obsoleted["attempts"] == 0,
                     "restored obsolete approval was not skipped before delivery")
-        require(self.notification_delivery(api, job_id, "update.complete") == delivered
-                and self.probe_contacts(source_receiver, WEBHOOK_CONTACTS) == 1,
-                "in-place restore replayed the delivered notification")
-        until(lambda: terminal_delivery(isolated, "update.complete", "succeeded"),
-              "isolated restore did not deliver the archived pending notification")
-        require(self.probe_contacts(isolated_receiver, WEBHOOK_CONTACTS) == 1,
-                "isolated restore did not process only the archive's eligible delivery")
-        evidence["live_terminal_delivery"] = "passed"
+        require(self.probe_contacts(source_receiver, WEBHOOK_CONTACTS) == 1
+                and self.probe_contacts(isolated_receiver, WEBHOOK_CONTACTS) == 1,
+                "restored obsolete approval contacted a receiver")
         evidence["obsolete_approval"] = "passed"
 
     def controlled_reboot(self):
@@ -717,7 +730,7 @@ HTTPServer(("127.0.0.1", int(port)), Receiver).serve_forever()
             return 2
         try:
             platform = docker("version", "--format", "{{.Server.Os}}/{{.Server.Arch}}", timeout=15)
-        except (OSError, RuntimeError, subprocess.TimeoutExpired):
+        except (OSError, RuntimeError):
             self.report["reason"] = "Local Docker daemon is unavailable"
             return 2
         if platform != PLATFORM:

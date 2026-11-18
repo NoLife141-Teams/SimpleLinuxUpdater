@@ -1069,11 +1069,12 @@ func (r *SQLiteRepository) ListReconciliationRequired() ([]Record, error) {
 		 WHERE candidate.status = ?
 		   AND candidate.error_class = ?
 		   AND candidate.kind IN (?, ?, ?)
+		   AND candidate.apt_target <> ''
 		   AND NOT EXISTS (
 		       SELECT 1
 		         FROM jobs AS later_success
-			        WHERE later_success.apt_target = candidate.apt_target
-			          AND (candidate.apt_target <> '' OR later_success.server_name = candidate.server_name)
+		        WHERE later_success.apt_target = candidate.apt_target
+		          AND later_success.apt_target <> ''
 		          AND later_success.kind IN (?, ?, ?)
 		          AND later_success.status = ?
 		          AND later_success.created_at > candidate.created_at
@@ -1081,8 +1082,8 @@ func (r *SQLiteRepository) ListReconciliationRequired() ([]Record, error) {
 		   AND NOT EXISTS (
 		       SELECT 1
 		         FROM jobs AS later_reconciliation
-			        WHERE later_reconciliation.apt_target = candidate.apt_target
-			          AND (candidate.apt_target <> '' OR later_reconciliation.server_name = candidate.server_name)
+		        WHERE later_reconciliation.apt_target = candidate.apt_target
+		          AND later_reconciliation.apt_target <> ''
 		          AND later_reconciliation.status = ?
 		          AND later_reconciliation.error_class = ?
 		          AND later_reconciliation.kind IN (?, ?, ?)

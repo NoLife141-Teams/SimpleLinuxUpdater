@@ -364,9 +364,9 @@ func TestJobManagerMarksInterruptedAptMutationsForReconciliation(t *testing.T) {
 		Now: func() time.Time { return time.Date(2026, 5, 17, 16, 0, 0, 0, time.UTC) },
 	})
 	records := []Record{
-		{ID: "update-mutation", Kind: KindUpdate, ServerName: "srv-update", Actor: "admin", Status: StatusRunning, Phase: PhaseAptUpgrade},
-		{ID: "autoremove-mutation", Kind: KindAutoremove, ServerName: "srv-autoremove", Actor: "admin", Status: StatusRunning, Phase: PhaseAutoremove},
-		{ID: "repair-mutation", Kind: KindAptRepair, ServerName: "srv-repair", Actor: "admin", Status: StatusRunning, Phase: PhaseReconcile},
+		{ID: "update-mutation", Kind: KindUpdate, ServerName: "srv-update", Actor: "admin", Status: StatusRunning, Phase: PhaseAptUpgrade, APTTarget: "update-target"},
+		{ID: "autoremove-mutation", Kind: KindAutoremove, ServerName: "srv-autoremove", Actor: "admin", Status: StatusRunning, Phase: PhaseAutoremove, APTTarget: "autoremove-target"},
+		{ID: "repair-mutation", Kind: KindAptRepair, ServerName: "srv-repair", Actor: "admin", Status: StatusRunning, Phase: PhaseReconcile, APTTarget: "repair-target"},
 		{ID: "metadata-refresh", Kind: KindUpdate, ServerName: "srv-update-metadata", Actor: "admin", Status: StatusRunning, Phase: PhaseAptUpdate},
 	}
 	for _, record := range records {
@@ -413,9 +413,12 @@ func TestJobManagerRestoresOnlyUnresolvedReconciliationRequiredJobs(t *testing.T
 		},
 	})
 	records := []Record{
-		{ID: "unresolved", Kind: KindUpdate, ServerName: "srv-unresolved", Actor: "admin", Status: StatusFailed, ErrorClass: "reconciliation_required", CreatedAt: "2026-05-17T14:00:00.000000000Z"},
-		{ID: "resolved-failure", Kind: KindUpdate, ServerName: "srv-resolved", Actor: "admin", Status: StatusFailed, ErrorClass: "reconciliation_required", CreatedAt: "2026-05-17T14:00:00.000000000Z"},
-		{ID: "resolved-repair", Kind: KindAptRepair, ServerName: "srv-resolved", Actor: "admin", Status: StatusSucceeded, CreatedAt: "2026-05-17T15:00:00.000000000Z"},
+		{ID: "superseded", Kind: KindUpdate, ServerName: "srv-unresolved", Actor: "admin", Status: StatusFailed, ErrorClass: "reconciliation_required", APTTarget: "unresolved-target", CreatedAt: "2026-05-17T13:00:00.000000000Z"},
+		{ID: "unresolved", Kind: KindAptRepair, ServerName: "srv-unresolved", Actor: "admin", Status: StatusFailed, ErrorClass: "reconciliation_required", APTTarget: "unresolved-target", CreatedAt: "2026-05-17T14:00:00.000000000Z"},
+		{ID: "name-reused", Kind: KindUpdate, ServerName: "srv-unresolved", Actor: "admin", Status: StatusSucceeded, APTTarget: "different-target", CreatedAt: "2026-05-17T15:00:00.000000000Z"},
+		{ID: "resolved-failure", Kind: KindUpdate, ServerName: "srv-resolved", Actor: "admin", Status: StatusFailed, ErrorClass: "reconciliation_required", APTTarget: "resolved-target", CreatedAt: "2026-05-17T14:00:00.000000000Z"},
+		{ID: "resolved-repair", Kind: KindAptRepair, ServerName: "srv-resolved-renamed", Actor: "admin", Status: StatusSucceeded, APTTarget: "resolved-target", CreatedAt: "2026-05-17T15:00:00.000000000Z"},
+		{ID: "legacy", Kind: KindUpdate, ServerName: "srv-legacy", Actor: "admin", Status: StatusFailed, ErrorClass: "reconciliation_required", CreatedAt: "2026-05-17T14:00:00.000000000Z"},
 	}
 	for _, record := range records {
 		if err := manager.ImportJobRecord(record); err != nil {
@@ -429,6 +432,9 @@ func TestJobManagerRestoresOnlyUnresolvedReconciliationRequiredJobs(t *testing.T
 	}
 	if len(restored) != 1 || restored[0].ID != "unresolved" {
 		t.Fatalf("restored = %+v, want only unresolved reconciliation job", restored)
+	}
+	if legacy, err := manager.GetJob("legacy"); err != nil || legacy.ErrorClass != "reconciliation_required" {
+		t.Fatalf("legacy job = %+v, err = %v, want preserved historical outcome", legacy, err)
 	}
 }
 

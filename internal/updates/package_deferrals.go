@@ -11,6 +11,7 @@ import (
 
 	"debian-updater/internal/deferrals"
 	"debian-updater/internal/helperprotocol"
+	"debian-updater/internal/jobs"
 	"debian-updater/internal/servers"
 )
 
@@ -269,7 +270,12 @@ func (r *withActorRunner) guardUnplannedPackageMutation() (func(), bool) {
 	if len(r.deferralBlockReason) > 120 {
 		r.deferralBlockReason = r.deferralBlockReason[:120]
 	}
+	logs := r.currentLogs() + "\n" + reason
+	if r.jobKind == jobs.KindAptRepair {
+		r.setReconciliationRequired(logs)
+		return release, false
+	}
 	r.lastErrClass = "package_deferral_conflict"
-	r.setErrorLogs(r.currentLogs() + "\n" + reason)
+	r.setErrorLogs(logs)
 	return release, false
 }

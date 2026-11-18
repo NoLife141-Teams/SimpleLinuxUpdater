@@ -447,10 +447,12 @@ func TestServerInventoryServiceRenamePreservesReconciliationAndMigratesJobs(t *t
 		return nil
 	}
 
+	commands := NewCommandService(svc)
 	for _, endpoint := range []ServerEndpoint{{Host: "new.example", Port: 22}, {Host: "old.example", Port: 2222}} {
-		_, err := svc.Update("srv-old", Server{Name: "srv-new", Host: endpoint.Host, Port: endpoint.Port, User: "admin"})
-		if !errors.Is(err, ErrActionInProgress) || repo.saveCalls != 0 {
-			t.Fatalf("changed endpoint %v during reconciliation: %v", endpoint, err)
+		result := commands.UpdateServer("srv-old", Server{Name: "srv-new", Host: endpoint.Host, Port: endpoint.Port, User: "admin"})
+		if result.Outcome != CommandOutcomeConflict || result.Audit.Meta["status"] != "needs_reconciliation" ||
+			!strings.Contains(result.Error, "Repair APT on the original host") || repo.saveCalls != 0 {
+			t.Fatalf("changing endpoint %v during reconciliation: %+v", endpoint, result)
 		}
 	}
 	updated, err := svc.Update("srv-old", Server{Name: "srv-new", Host: "old.example", User: "admin"})

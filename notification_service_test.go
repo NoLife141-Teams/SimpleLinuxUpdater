@@ -140,6 +140,110 @@ func TestNotificationDeliveryHistoryIsScopedRedactedAndPaged(t *testing.T) {
 	}
 }
 
+func TestDeliveryHistoryLinksRetainedJobsAndRevalidatesTheExactPlan(t *testing.T) {
+	const endpoint = "/api/notifications/delivery-history"
+	app := newIsolatedTestApp(t)
+	admin := app.authenticate(t)
+	server, err := app.Deps.ServerInventoryService.Create(Server{Name: "old-name", Host: "approval-fixture.invalid", User: "root"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldName := server.Name
+	server.Name = "renamed"
+	server, err = app.Deps.ServerInventoryService.Update(oldName, server)
+	if err != nil {
+		t.Fatal(err)
+	}
+	planID := strings.Repeat("a", 32)
+	completedID := "job-1700000000000000000"
+	planMeta := func(generation int) string {
+		return marshalJobJSON(map[string]any{"server_identity": server.Identity, "approval_generation": generation})
+	}
+	jm := app.Deps.CurrentJobManager()
+	if err := jm.ImportJobRecord(JobRecord{ID: planID, Kind: jobKindUpdate, ServerName: server.Name,
+		Status: jobStatusWaitingApproval, Phase: jobPhaseApprovalWait, MetaJSON: planMeta(7)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := jm.ImportJobRecord(JobRecord{ID: completedID, Kind: jobKindUpdate, Status: jobStatusSucceeded}); err != nil {
+		t.Fatal(err)
+	}
+	state := app.Deps.ServerState
+	status := state.CurrentStatusSnapshot(server.Name)
+	status.Status, status.JobID, status.ApprovalGeneration = "pending_approval", planID, 7
+	state.RestoreStatusSnapshot(server.Name, status)
+
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	seed := func(id int, event, job string, generation int) {
+		t.Helper()
+		metadata := marshalJobJSON(map[string]any{
+			"job_id": job, "approval_generation": generation, "approval_url": "https://destination.invalid/?token=redacted",
+		})
+		if _, err := app.Deps.DB().Exec(`INSERT INTO notification_outbox
+			(id,destination,event_type,action,meta_json,state,attempts,created_at,updated_at,completed_at)
+			VALUES (?, 'webhook', ?, ?, ?, 'succeeded', 1, ?, ?, ?)`,
+			fmt.Sprintf("%064x", id), event, event, metadata, now, now, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	seed(5, notificationpkg.EventApprovalPublished, planID, 7)
+	seed(4, notificationpkg.EventApprovalPublished, planID, 6)
+	seed(3, notificationpkg.EventApprovalExpired, planID, 7)
+	seed(2, notificationpkg.EventUpdateComplete, completedID, 0)
+	seed(1, notificationpkg.EventUpdateComplete, "//destination.invalid/path", 0)
+	read := func() []notificationpkg.DeliveryHistoryItem {
+		t.Helper()
+		rec := identityRequest(app, "GET", endpoint, admin, "", nil)
+		var page notificationpkg.DeliveryHistoryPage
+		if rec.Code != http.StatusOK || json.Unmarshal(rec.Body.Bytes(), &page) != nil || len(page.Items) != 5 {
+			t.Fatalf("delivery history: %d %s", rec.Code, rec.Body.String())
+		}
+		if strings.Contains(rec.Body.String(), "destination.invalid") {
+			t.Fatal("delivery history exposed a raw destination URL")
+		}
+		return page.Items
+	}
+	items := read()
+	link := (approvalLink{ServerIdentity: server.Identity, JobID: planID, Generation: 7}).url(url.URL{})
+	if items[0].ApprovalPlanURL != link || items[0].JobReportURL != "/api/reports/jobs/"+planID ||
+		items[1].ApprovalPlanURL != "" || items[2].ApprovalPlanURL != "" ||
+		items[3].JobReportURL != "/api/reports/jobs/"+completedID || items[4].JobReportURL != "" {
+		t.Fatalf("invalid links in retained deliveries: %+v", items)
+	}
+	page := identityRequest(app, "GET", link, admin, "", nil)
+	if page.Code != http.StatusOK || !strings.Contains(page.Body.String(), `data-linked-approval-generation="7"`) {
+		t.Fatalf("current approval link did not open after rename, status %d", page.Code)
+	}
+
+	// A link may already be in the browser when the persisted plan changes.
+	// Keep the runtime projection stale to verify that opening checks the job again.
+	for _, tt := range []struct {
+		status     string
+		generation int
+		wantNotice string
+	}{
+		{jobStatusWaitingApproval, 8, approvalLinkReplaced},
+		{jobStatusCancelled, 7, approvalLinkExpired},
+	} {
+		if _, err := app.Deps.DB().Exec("UPDATE jobs SET status = ?, meta_json = ? WHERE id = ?", tt.status, planMeta(tt.generation), planID); err != nil {
+			t.Fatal(err)
+		}
+		page := identityRequest(app, "GET", link, admin, "", nil)
+		if page.Code != http.StatusOK || !strings.Contains(page.Body.String(), tt.wantNotice) ||
+			strings.Contains(page.Body.String(), "data-linked-approval-generation=") {
+			t.Fatalf("obsolete link was not rejected for %s generation %d", tt.status, tt.generation)
+		}
+		if item := read()[0]; item.ApprovalPlanURL != "" || item.JobReportURL != "/api/reports/jobs/"+planID {
+			t.Fatalf("resolved plan still linked or report lost: %+v", item)
+		}
+	}
+	if _, err := app.Deps.DB().Exec("DELETE FROM jobs WHERE id = ?", planID); err != nil {
+		t.Fatal(err)
+	}
+	if item := read()[0]; item.JobID != planID || item.State != "succeeded" || item.JobReportURL != "" || item.ApprovalPlanURL != "" {
+		t.Fatalf("purged job suppressed delivery evidence or stayed linked: %+v", item)
+	}
+}
+
 func TestNotificationSettingsAPIAndAuditDelivery(t *testing.T) {
 	received := make(chan notificationpkg.WebhookPayload, 4)
 	webhook := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

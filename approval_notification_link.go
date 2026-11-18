@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"net/netip"
 	"net/url"
@@ -14,6 +15,12 @@ import (
 
 const applicationURLEnv = "DEBIAN_UPDATER_PUBLIC_URL"
 
+const (
+	approvalLinkExpired     = "This approval has expired or is no longer pending."
+	approvalLinkReplaced    = "This approval plan was replaced. Select the host in Status to review the current plan."
+	approvalLinkMissingHost = "The linked host was removed or replaced in the inventory."
+)
+
 var approvalLinkID = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,128}$`)
 var applicationOriginIDNA = idna.New(idna.MapForLookup(), idna.StrictDomainName(false), idna.CheckHyphens(false), idna.BidiRule(), idna.VerifyDNSLength(true))
 var applicationOriginDNSName = regexp.MustCompile(`^[a-z0-9_-]+(\.[a-z0-9_-]+)*$`)
@@ -23,6 +30,21 @@ type approvalLink struct {
 	ServerIdentity string
 	JobID          string
 	Generation     uint64
+}
+
+func waitingJobApprovalLink(job JobRecord) (approvalLink, bool) {
+	if job.Kind != jobKindUpdate || job.Status != jobStatusWaitingApproval {
+		return approvalLink{}, false
+	}
+	var plan struct {
+		ServerIdentity string `json:"server_identity"`
+		Generation     uint64 `json:"approval_generation"`
+	}
+	if err := json.Unmarshal([]byte(job.MetaJSON), &plan); err != nil {
+		return approvalLink{}, false
+	}
+	link := approvalLink{ServerIdentity: plan.ServerIdentity, JobID: job.ID, Generation: plan.Generation}
+	return link, link.valid()
 }
 
 func parseApplicationOrigin(raw string) (*url.URL, error) {
@@ -139,12 +161,37 @@ func approvalLinkProblem(state *serverpkg.State, link approvalLink) string {
 		status := state.StatusMap()[server.Name]
 		switch {
 		case status == nil || status.Status != "pending_approval" || status.JobID != link.JobID:
-			return "This approval has expired or is no longer pending."
+			return approvalLinkExpired
 		case status.ApprovalGeneration != link.Generation:
-			return "This approval plan was replaced. Select the host in Status to review the current plan."
+			return approvalLinkReplaced
 		default:
 			return ""
 		}
 	}
-	return "The linked host was removed or replaced in the inventory."
+	return approvalLinkMissingHost
+}
+
+func approvalLinkProblemAtOpen(deps AppDeps, link approvalLink) string {
+	if problem := approvalLinkProblem(deps.ServerState, link); problem != "" {
+		return problem
+	}
+	jm := deps.CurrentJobManager()
+	if jm == nil {
+		return approvalLinkExpired
+	}
+	job, err := jm.GetJob(link.JobID)
+	if err != nil {
+		return approvalLinkExpired
+	}
+	current, valid := waitingJobApprovalLink(job)
+	if !valid || current.JobID != link.JobID {
+		return approvalLinkExpired
+	}
+	if current.ServerIdentity != link.ServerIdentity {
+		return approvalLinkMissingHost
+	}
+	if current.Generation != link.Generation {
+		return approvalLinkReplaced
+	}
+	return ""
 }

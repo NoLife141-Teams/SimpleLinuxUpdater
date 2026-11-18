@@ -758,11 +758,20 @@ func seedBrowserApprovalLink(t *testing.T, deps AppDeps) {
 		t.Fatal(err)
 	}
 	job := JobRecord{
-		ID: "notification-job", Kind: jobKindUpdate, ServerName: server.Name, Actor: "synthetic",
+		ID: "6383ba6587c34f1190c2d906396a1d3e", Kind: jobKindUpdate, ServerName: server.Name, Actor: "synthetic",
 		Status: jobStatusWaitingApproval, Phase: jobPhaseApprovalWait,
 		MetaJSON: `{"approval_generation":4,"server_identity":"stable-notification-host"}`,
 	}
 	if err := deps.CurrentJobManager().ImportJobRecord(job); err != nil {
+		t.Fatal(err)
+	}
+	created := deps.Now().UTC().Format(time.RFC3339Nano)
+	if _, err := deps.DB().Exec(`INSERT INTO notification_outbox
+		(id,destination,event_type,action,meta_json,state,attempts,created_at,updated_at,completed_at)
+		VALUES (?, 'webhook', 'approval.published', 'approval.published', ?, 'succeeded', 1, ?, ?, ?),
+		       (?, 'discord', 'update.complete', 'update.complete', ?, 'succeeded', 1, ?, ?, ?)`,
+		fmt.Sprintf("%064x", 2), marshalJobJSON(map[string]any{"job_id": job.ID, "approval_generation": 4}), created, created, created,
+		fmt.Sprintf("%064x", 1), marshalJobJSON(map[string]any{"job_id": strings.Repeat("f", 32)}), created, created, created); err != nil {
 		t.Fatal(err)
 	}
 	state := deps.ServerState

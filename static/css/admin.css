@@ -466,6 +466,12 @@
     overflow-wrap: anywhere;
 }
 
+.notification-history-links {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 8px;
+}
+
 .notification-history-item [data-state="succeeded"] {
     color: var(--success);
 }

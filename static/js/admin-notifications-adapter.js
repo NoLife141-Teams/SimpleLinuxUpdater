@@ -716,6 +716,14 @@
                 addText(event, "span", events[item.event_type] || item.event_type);
                 if (item.job_id) addText(event, "code", item.job_id, "muted");
                 if (item.approval_generation) addText(event, "small", `Plan generation ${item.approval_generation}`, "muted");
+                if (item.job_id && !item.job_report_url) addText(event, "small", "Job report unavailable", "muted");
+                if (item.job_report_url || item.approval_plan_url) {
+                    const links = document.createElement("div");
+                    links.className = "notification-history-links";
+                    if (item.job_report_url) addText(links, "a", "Job report", "btn-ghost inline-btn").href = item.job_report_url;
+                    if (item.approval_plan_url) addText(links, "a", "Review approval plan", "btn-ghost inline-btn").href = item.approval_plan_url;
+                    event.append(links);
+                }
 
                 addText(delivery, "strong", states[item.state] || "Unknown").dataset.state = item.state;
                 addText(delivery, "small", `${item.attempts} ${item.attempts === 1 ? "attempt" : "attempts"}`, "muted");

@@ -8,10 +8,11 @@ import secrets
 import shutil
 import signal
 import subprocess
+import tarfile
 import tempfile
 import time
-import urllib.error
 import uuid
+from contextlib import contextmanager
 from pathlib import Path
 
 from scenario import API, require
@@ -24,17 +25,28 @@ PIN = json.loads((HERE / "operational-release.json").read_text())
 PLATFORM = "linux/amd64"
 
 
-def command(*args, timeout=90, stdin=None):
-    result = subprocess.run(args, stdin=stdin, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout)
+def command(*args, timeout=90, stdin=None, stdout=subprocess.PIPE):
+    result = subprocess.run(args, stdin=stdin, stdout=stdout, stderr=subprocess.PIPE, timeout=timeout)
     if result.returncode:
         # Report the failing operation without storing application logs, request
         # bodies, environment values or raw subprocess output in evidence.
         raise RuntimeError(f"{' '.join(map(str, args[:4]))} exited {result.returncode}")
-    return result.stdout.decode().strip()
+    return result.stdout.decode().strip() if result.stdout is not None else ""
 
 
 def docker(*args, **kwargs):
     return command(*DOCKER, *args, **kwargs)
+
+
+@contextmanager
+def container_archive(source):
+    # Docker can run through an elevated wrapper. Extract as the harness user
+    # so the resulting tree can always be removed by its owner.
+    with tempfile.TemporaryFile() as stream:
+        docker("cp", source, "-", stdout=stream)
+        stream.seek(0)
+        with tarfile.open(fileobj=stream) as archive:
+            yield archive
 
 
 class Qualification:
@@ -92,15 +104,19 @@ class Qualification:
         require(address.is_private and not address.is_loopback and not address.is_unspecified,
                 "expected an app address on the private qualification bridge")
         if api is None:
-            api = API()
+            api = API(follow_redirects=False)
         api.base = f"http://{address}:8080"
         deadline = time.monotonic() + 40
-        while time.monotonic() < deadline:
+        while (remaining := deadline - time.monotonic()) > 0:
             try:
-                api.request("GET", "/api/auth/status")
+                api.request("GET", "/api/auth/status", timeout=min(30, remaining))
                 return api
-            except (OSError, AssertionError):
-                time.sleep(0.4)
+            except OSError:
+                pass
+            except AssertionError as error:
+                if str(error) != "GET /api/auth/status: HTTP 503":
+                    raise
+            time.sleep(min(0.4, max(0, deadline - time.monotonic())))
         raise RuntimeError("application did not become ready on the private qualification bridge")
 
     def verify_inventory(self, api):
@@ -187,7 +203,8 @@ class Qualification:
         docker("create", "--pull", "never", "--label", self.label, "--name", asset_container, "--network", "none", self.candidate)
         app = self.work / "app"
         app.mkdir(mode=0o755)
-        docker("cp", f"{asset_container}:/app/.", app)
+        with container_archive(f"{asset_container}:/app/.") as archive:
+            archive.extractall(app, filter="data")
         name = self.prefix + "-reboot"
         docker("run", "--pull", "never", "--detach", "--label", self.label, "--name", name,
                "--network", "none", "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
@@ -195,12 +212,26 @@ class Qualification:
                "--mount", f"type=bind,src={guest},dst=/guest.img,readonly",
                self.vm_runner, "--isolated-app-directory", "/candidate", "--image", "/guest.img",
                "--sha256", PIN["vm_image_sha256"], "--output", "/tmp/report")
-        exit_code = docker("wait", name, timeout=600)
-        evidence = self.output / "vm-report.json"
-        docker("cp", f"{name}:/tmp/report/report.json", evidence)
-        proof = json.loads(evidence.read_text())
-        if exit_code != "0" or proof.get("status") != "passed":
-            self.report["controlled_reboot_vm"]["status"] = proof.get("status", "failed")
+        self.collect_vm_evidence(name, docker("wait", name, timeout=600))
+
+    def collect_vm_evidence(self, name, exit_code):
+        with container_archive(f"{name}:/tmp/report/report.json") as archive:
+            member = archive.getmember("report.json")
+            require(member.isfile() and member.size <= 64 * 1024, "invalid VM evidence file")
+            with archive.extractfile(member) as data:
+                proof = json.load(data)
+        if exit_code == "2" and proof.get("status") == "not_executed":
+            status = "not_executed"
+        elif (exit_code == "0" and proof.get("status") == "passed"
+              and proof.get("cleanup", {}).get("status") == "passed"
+              and proof.get("image_sha256") == PIN["vm_image_sha256"]):
+            status = "passed"
+        else:
+            status = "failed"
+        proof["status"] = status
+        (self.output / "vm-report.json").write_text(json.dumps(proof, indent=2) + "\n")
+        if status != "passed":
+            self.report["controlled_reboot_vm"]["status"] = status
             raise RuntimeError(f"VM qualification exited {exit_code}; see vm-report.json")
         self.report["controlled_reboot_vm"]["guest_sha256"] = proof["image_sha256"]
 
@@ -228,6 +259,32 @@ class Qualification:
         self.report["cleanup"] = {"status": "failed" if errors else "passed", "errors": errors}
         return not errors
 
+    def run(self):
+        missing = [name for name in ("git", "docker", "curl") if not shutil.which(name)]
+        if missing:
+            self.report["reason"] = "Missing qualification tools: " + ", ".join(missing)
+            return 2
+        try:
+            platform = docker("version", "--format", "{{.Server.Os}}/{{.Server.Arch}}", timeout=15)
+        except (OSError, RuntimeError, subprocess.TimeoutExpired):
+            self.report["reason"] = "Local Docker daemon is unavailable"
+            return 2
+        if platform != PLATFORM:
+            self.report["reason"] = f"Qualification requires a {PLATFORM} Docker runner"
+            return 2
+        self.report["status"] = "failed"
+        try:
+            self.step("candidate_build", self.build_candidate)
+            self.step("docker_upgrade", self.docker_upgrade)
+            self.step("controlled_reboot_vm", self.controlled_reboot)
+            self.report["status"] = "passed"
+        except (Exception, KeyboardInterrupt) as error:
+            self.report["reason"] = str(error) or type(error).__name__
+        finally:
+            if not self.cleanup():
+                self.report["status"] = "failed"
+        return 0 if self.report["status"] == "passed" else 1
+
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
@@ -239,38 +296,24 @@ def main():
         parser.error("--candidate-sha requires a full commit SHA")
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=True)
+    (output / "vm-report.json").unlink(missing_ok=True)
     signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt()))
-    with tempfile.TemporaryDirectory(prefix="slu-operational-qualification-") as work:
-        qualification = Qualification(Path(work), output, args.candidate_source.resolve(), args.candidate_sha)
-        report = qualification.report
+    work = tempfile.TemporaryDirectory(prefix="slu-operational-qualification-")
+    qualification = Qualification(Path(work.name), output, args.candidate_source.resolve(), args.candidate_sha)
+    report = qualification.report
+    try:
+        code = qualification.run()
+    finally:
         try:
-            missing = [name for name in ("git", "docker", "curl") if not shutil.which(name)]
-            if missing:
-                report["reason"] = "Missing qualification tools: " + ", ".join(missing)
-                return 2
-            try:
-                platform = docker("version", "--format", "{{.Server.Os}}/{{.Server.Arch}}", timeout=15)
-            except (OSError, RuntimeError, subprocess.TimeoutExpired):
-                report["reason"] = "Local Docker daemon is unavailable"
-                return 2
-            if platform != PLATFORM:
-                report["reason"] = f"Qualification requires a {PLATFORM} Docker runner"
-                return 2
+            work.cleanup()
+        except OSError:
+            code = 1
             report["status"] = "failed"
-            try:
-                qualification.step("candidate_build", qualification.build_candidate)
-                qualification.step("docker_upgrade", qualification.docker_upgrade)
-                qualification.step("controlled_reboot_vm", qualification.controlled_reboot)
-                report["status"] = "passed"
-            except (Exception, KeyboardInterrupt) as error:
-                report["reason"] = str(error) or type(error).__name__
-            finally:
-                if not qualification.cleanup():
-                    report["status"] = "failed"
-            return 0 if report["status"] == "passed" else 1
-        finally:
-            (output / "report.json").write_text(json.dumps(report, indent=2) + "\n")
-            print(report["status"] + (": " + report["reason"] if "reason" in report else ""), flush=True)
+            report["cleanup"]["status"] = "failed"
+            report["cleanup"].setdefault("errors", []).append("Could not remove the private qualification directory")
+        (output / "report.json").write_text(json.dumps(report, indent=2) + "\n")
+        print(report["status"] + (": " + report["reason"] if "reason" in report else ""), flush=True)
+    return code
 
 
 if __name__ == "__main__":

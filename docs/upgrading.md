@@ -271,7 +271,7 @@ from target hosts until policy and credential review is complete.
 ### Qualify a Docker volume upgrade and VM reboot
 
 Run on a Linux amd64 runner with Git, Docker using the local UNIX socket,
-Python 3 and curl. Use a checked-out candidate commit. The tracked contents of
+Python 3.12+ and curl. Use a checked-out candidate commit. The tracked contents of
 that commit become the image build context.
 
 ```bash

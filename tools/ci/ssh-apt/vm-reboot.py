@@ -104,7 +104,8 @@ def main():
         while float(ssh("cut -d' ' -f1 /proc/uptime").strip()) < 60:
             require(time.monotonic() < end, "VM uptime did not progress")
             time.sleep(2)
-        port = loopback_port(); api = API(port)
+        port = loopback_port()
+        api = API(port, include_error_body=not args.isolated_app_directory)
         (work / "known_hosts").touch(mode=0o600)
         if args.isolated_app_directory:
             app_log = (work / "app.log").open("wb")
@@ -185,6 +186,8 @@ def main():
         try: shutil.rmtree(work)
         except OSError as error: cleanup_errors.append(str(error))
         report["cleanup"] = {"status": "failed" if cleanup_errors else "passed", "errors": cleanup_errors}
+        if cleanup_errors:
+            report["status"] = "failed"
         (args.output / "report.json").write_text(json.dumps(report, indent=2) + "\n")
     return 0 if report["status"] == "passed" and not cleanup_errors else 1
 

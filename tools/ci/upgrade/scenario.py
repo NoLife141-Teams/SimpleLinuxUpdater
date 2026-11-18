@@ -39,22 +39,29 @@ def require(value, label):
         raise AssertionError(label)
 
 
-class API:
-    def __init__(self):
-        self.base = 'http://127.0.0.1:8080'
-        self.client = urllib.request.build_opener(urllib.request.ProxyHandler({}),
-            urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
+class RefuseRedirects(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
 
-    def request(self, method, path, data=None, allowed=(200,), raw=None, mime='application/json', binary=False):
+
+class API:
+    def __init__(self, *, follow_redirects=True):
+        self.base = 'http://127.0.0.1:8080'
+        redirect_handlers = () if follow_redirects else (RefuseRedirects(),)
+        self.client = urllib.request.build_opener(urllib.request.ProxyHandler({}),
+            urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()), *redirect_handlers)
+
+    def request(self, method, path, data=None, allowed=(200,), raw=None, mime='application/json', binary=False, timeout=30):
         body = raw if raw is not None else (json.dumps(data).encode() if data is not None else None)
         request = urllib.request.Request(self.base + path, method=method, data=body,
             headers={'Origin': self.base, 'Content-Type': mime})
         try:
-            response = self.client.open(request, timeout=30)
+            response = self.client.open(request, timeout=timeout)
         except urllib.error.HTTPError as error:
             response = error
-        content = response.read(64 * 1024 * 1024)
-        require(response.code in allowed, f'{method} {path}: HTTP {response.code}')
+        with response:
+            content = response.read(64 * 1024 * 1024)
+            require(response.code in allowed, f'{method} {path}: HTTP {response.code}')
         return content if binary else json.loads(content)
 
     def upload(self, path, archive, phrase):

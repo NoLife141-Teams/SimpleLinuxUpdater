@@ -13,6 +13,15 @@ import run
 
 
 class HarnessSafetyTests(unittest.TestCase):
+    def test_published_vm_evidence_omits_candidate_http_error_bodies(self):
+        api = run.API(30000, include_error_body=False)
+        response = mock.Mock(code=500)
+        response.read.return_value = b'{"error":"reflected-fixture-key"}'
+        with mock.patch.object(api.client, 'open', return_value=response), self.assertRaises(AssertionError) as failure:
+            api.request('POST', '/api/servers/reboot-vm/key')
+        self.assertIn('HTTP 500', str(failure.exception))
+        self.assertNotIn('reflected-fixture-key', str(failure.exception))
+
     def test_api_request_uses_the_callers_remaining_timeout(self):
         api = run.API(30000)
         response = mock.Mock(code=200)

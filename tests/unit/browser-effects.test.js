@@ -328,7 +328,7 @@ test("Status log recovery bounds reads, starts the open job first and drops supe
     adapter.destroy();
 });
 
-test("Status recovers the exact batch after lost responses and follows a waiting job", async () => {
+test("Status recovers the exact batch after a lost response and rate-limited replay", async () => {
     const vm = require("node:vm"), fs = require("node:fs");
     const environment = clock(), previousLoaded = deferred(), outcomeLoaded = deferred();
     const buttons = new Map(), signals = [], completed = deferred();
@@ -349,9 +349,7 @@ test("Status recovers the exact batch after lost responses and follows a waiting
                     const { id } = JSON.parse(options.body);
                     submissionIDs.push(id);
                     if (submissionIDs.length === 1) return new Response("gateway timeout", { status: 504 });
-                    return new Response(new ReadableStream({
-                        start(controller) { controller.error(new TypeError("response body lost")); },
-                    }), { status: 202 });
+                    return Response.json({ error: "Too many requests" }, { status: 429 });
                 }
                 if (url.endsWith(`/${submissionIDs[0]}`)) return Response.json({
                     batch: {
@@ -393,7 +391,7 @@ test("Status recovers the exact batch after lost responses and follows a waiting
         },
         escapeHtml: String,
         dispatchStatusInteraction: (event) => {
-            if (event.type === "actionCompleted") completed.resolve();
+            if (event.type === "actionCompleted" || event.type === "actionFailed") completed.resolve(event);
         },
     });
     const runNextRead = () => {
@@ -408,7 +406,7 @@ test("Status recovers the exact batch after lost responses and follows a waiting
     runNextRead();
     await previousLoaded.promise;
     buttons.get("bulk-update").dispatchEvent(new Event("click"));
-    await completed.promise;
+    assert.equal((await completed.promise).type, "actionCompleted");
     assert.match(rendered, />Accepted</);
     assert.match(rendered, />Waiting for approval</);
     assert.equal(environment.pending.size, 0);

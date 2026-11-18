@@ -1193,6 +1193,7 @@ test("a stale batch links to the recorded retry after another tab claims the hos
     const originalID = "a".repeat(32);
     const retryID = "b".repeat(32);
     let conflict = false;
+    const submittedIDs = [];
     await stubCompactStatus(page, () => [server]);
     await page.route(`**/api/status/batches/${originalID}`, route => fulfillJson(route, {
         batch: {
@@ -1209,8 +1210,11 @@ test("a stale batch links to the recorded retry after another tab claims the hos
         },
     }));
     await page.route("**/api/status/batches", route => {
-        expect(route.request().postDataJSON().retry_of).toBe(originalID);
+        const request = route.request().postDataJSON();
+        expect(request.retry_of).toBe(originalID);
+        submittedIDs.push(request.id);
         conflict = true;
+        if (submittedIDs.length === 1) return fulfillJson(route, { error: "Gateway timeout" }, 504);
         return fulfillJson(route, { error: "This host already has a retry attempt.", retry_batch_id: retryID }, 409);
     });
     await ensureAuthenticatedSession(page);
@@ -1222,6 +1226,8 @@ test("a stale batch links to the recorded retry after another tab claims the hos
     await retry.click();
     const attempt = panel.getByRole("link", { name: "Open retry attempt for retry-host" });
     await expect(attempt).toBeVisible();
+    expect(submittedIDs).toHaveLength(2);
+    expect(submittedIDs[0]).toBe(submittedIDs[1]);
     await expect(retry).toHaveCount(0);
     await attempt.click();
     await expect(page).toHaveURL(url => url.searchParams.get("maintenance_batch") === retryID);

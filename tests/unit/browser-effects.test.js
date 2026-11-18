@@ -328,47 +328,99 @@ test("Status log recovery bounds reads, starts the open job first and drops supe
     adapter.destroy();
 });
 
-test("successful bulk commands release ignored response bodies before destruction", async () => {
+test("Status recovers the exact batch after lost responses and follows a waiting job", async () => {
     const vm = require("node:vm"), fs = require("node:fs");
-    for (const buttonID of ["bulk-update", "refresh-all-facts"]) {
-        const buttons = new Map(), signals = [], completed = deferred();
-        const names = Array.from({ length: 20 }, (_, index) => `host-${index}`);
-        const context = {
-            BrowserEffects: {
-                create: () => create({ fetch: async (_url, options) => {
-                    signals.push(options.signal);
-                    return new Response('{"ok":true}');
-                } }),
-            },
-            window: { notifyApp() {} },
-            document: { getElementById(id) {
-                if (!buttons.has(id)) buttons.set(id, new EventTarget());
-                return buttons.get(id);
-            } },
-            console,
-        };
-        vm.runInNewContext(fs.readFileSync(
-            require.resolve("../../static/js/index-bulk-actions.js"), "utf8",
-        ), context);
-        const adapter = context.StatusBulkActions.create({
-            getStatusView: () => ({ actions: { bulk: null, inFlight: [{ operationId: "bulk" }] } }),
-            statusInteraction: { planBulkAction: () => ({
-                id: "bulk", selectedNames: names, visibleNames: names,
-                eligibleNames: names, hiddenNames: [], ineligible: [], skippedHosts: [],
-                payloadFacts: {},
-            }) },
-            dispatchStatusInteraction: (event) => {
-                if (event.type === "actionCompleted") completed.resolve();
-            },
-        });
-        adapter.init();
-        buttons.get(buttonID).dispatchEvent(new Event("click"));
-        await completed.promise;
-        adapter.destroy();
-        assert.equal(signals.length, 20);
-        assert.equal(signals.filter((signal) => signal.aborted).length, 0,
-            `${buttonID} must release completed command responses`);
-    }
+    const environment = clock(), previousLoaded = deferred(), outcomeLoaded = deferred();
+    const buttons = new Map(), signals = [], completed = deferred();
+    let jobStatus = "waiting_approval", rendered;
+    let latestAvailable = false;
+    const submissionIDs = [];
+    const context = {
+        BrowserEffects: {
+            create: () => create({ ...environment, fetch: async (url, options) => {
+                signals.push(options.signal);
+                if (url.endsWith("/latest")) {
+                    if (!latestAvailable) return new Response(null, { status: 503 });
+                    return Response.json({
+                        batch: { id: "previous", hosts: [{ name: "previous", state: "running" }] },
+                    });
+                }
+                if (options.method === "POST") {
+                    const { id } = JSON.parse(options.body);
+                    submissionIDs.push(id);
+                    if (submissionIDs.length === 1) return new Response("gateway timeout", { status: 504 });
+                    return new Response(new ReadableStream({
+                        start(controller) { controller.error(new TypeError("response body lost")); },
+                    }), { status: 202 });
+                }
+                if (url.endsWith(`/${submissionIDs[0]}`)) return Response.json({
+                    batch: {
+                        id: submissionIDs[0], hosts: [{
+                            name: "synthetic", job_id: "job",
+                            state: jobStatus === "succeeded" ? "completed" : jobStatus, job_status: jobStatus,
+                        }],
+                    },
+                });
+                return new Response(null, { status: 404 });
+            } }),
+        },
+        window: {
+            notifyApp() {}, canUseScope() { return true; }, location: { search: "" },
+            crypto: require("node:crypto").webcrypto,
+        },
+        URLSearchParams,
+        encodeURIComponent,
+        document: { getElementById(id) {
+            if (!buttons.has(id)) buttons.set(id, new EventTarget());
+            return buttons.get(id);
+        } },
+        console,
+    };
+    vm.runInNewContext(fs.readFileSync(
+        require.resolve("../../static/js/index-bulk-actions.js"), "utf8",
+    ), context);
+    const adapter = context.StatusBulkActions.create({
+        getStatusView: () => ({ actions: { bulk: null, inFlight: [{ operationId: "bulk" }] } }),
+        statusInteraction: { planBulkAction: () => ({
+            id: "bulk", actionKey: "update", selectedNames: ["synthetic"],
+            eligibleNames: ["synthetic"], skippedHosts: [],
+            payloadFacts: { synthetic: { serverIdentity: "identity" } },
+        }) },
+        renderHTML(_, markup) {
+            rendered = markup;
+            if (markup.includes("previous")) previousLoaded.resolve();
+            if (markup.includes("Succeeded")) outcomeLoaded.resolve();
+        },
+        escapeHtml: String,
+        dispatchStatusInteraction: (event) => {
+            if (event.type === "actionCompleted") completed.resolve();
+        },
+    });
+    const runNextRead = () => {
+        const [timer, callback] = environment.pending.entries().next().value;
+        environment.pending.delete(timer);
+        callback();
+    };
+    adapter.init();
+    await new Promise(setImmediate);
+    latestAvailable = true;
+    assert.equal(environment.pending.size, 1, "reopening the latest batch retries a transient failure");
+    runNextRead();
+    await previousLoaded.promise;
+    buttons.get("bulk-update").dispatchEvent(new Event("click"));
+    await completed.promise;
+    assert.match(rendered, />Accepted</);
+    assert.match(rendered, />Waiting for approval</);
+    assert.equal(environment.pending.size, 0);
+    jobStatus = "succeeded";
+    adapter.refreshWaitingBatch();
+    assert.equal(environment.pending.size, 1);
+    runNextRead();
+    await outcomeLoaded.promise;
+    adapter.destroy();
+    assert.equal(submissionIDs.length, 2);
+    assert.equal(submissionIDs[0], submissionIDs[1]);
+    assert.equal(signals.filter(signal => signal.aborted).length, 0);
 });
 
 test("discarding an unused response preserves cancellation and stale rejection for a pending JSON body", async () => {

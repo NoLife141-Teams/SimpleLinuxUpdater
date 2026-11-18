@@ -419,7 +419,17 @@ shows whether an automatic refresh succeeded, was deferred, returned incomplete
 health data, or failed. The manual refresh action remains available for immediate
 recovery and verification.
 
-Status bulk update, standard approval, security approval, kept-back security approval, cancel, autoremove, and facts-refresh actions execute immediately for eligible selected hosts. For kept-back security approval, hosts whose plan would remove packages are listed for individual review. Use the review button for each affected host to see the package removals and confirm the displayed plan. Other ineligible hosts are skipped. Completion feedback separates successful, skipped, and failed hosts.
+Status records bulk update, standard approval, security approval, kept-back
+security approval, cancel, autoremove and facts-refresh commands in a
+**Maintenance batch** before admitting eligible hosts on the current page.
+The batch survives reloading or closing the page. The panel shows the latest
+batch for your account and provides a link to reopen that batch later. Each host
+has an admission status and, when available, a job outcome and report. For
+kept-back security plans with package removals, use the individual review button
+to see and confirm the displayed plan. Ineligible selections are skipped.
+Retrying a refused or interrupted command requires an eligible host and plan
+on the current Status page. If the application cannot determine whether a command
+started, check the job and audit history before taking another action.
 
 ### Passwordless apt toggle
 

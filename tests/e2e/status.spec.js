@@ -1149,6 +1149,9 @@ test("bulk actions execute immediately, skip ineligible hosts, and report partia
     const failureNotice = page.locator('#app-feedback-region[role="alert"]');
     await expect(failureNotice).toContainText("fail-sec-host: backend down");
     await expect(failureNotice).not.toContainText("no-sec-host: backend down");
+    const batchPanel = page.locator("#status-batch-panel");
+    await expect(batchPanel).toContainText("backend down");
+    const savedBatchURL = await batchPanel.getByRole("link", { name: "Link to this batch" }).getAttribute("href");
 
     await page
         .locator(
@@ -1176,6 +1179,66 @@ test("bulk actions execute immediately, skip ineligible hosts, and report partia
 
     await page.locator("#refresh-all-facts").click();
     await expect.poll(() => state.refreshIdle || 0).toBe(1);
+
+    await page.goto(savedBatchURL);
+    await expect(batchPanel).toContainText("Approve security updates");
+    await expect(batchPanel.locator("li").filter({ hasText: "fail-sec-host" })).toContainText("Refused");
+    await expect(batchPanel.locator("li").filter({ hasText: "ok-sec-host" })).toContainText("Completed");
+    await expect(batchPanel.getByRole("button", { name: "Retry fail-sec-host", exact: true })).toBeVisible();
+    await expect(batchPanel).not.toContainText("no-sec-host");
+});
+
+test("a host awaiting approval can be handled while a maintenance batch is still queued", async ({ page }) => {
+    const first = makeServer("ready-host", "idle", [], { has_key: true });
+    const second = makeServer("queued-host", "idle", [], { has_key: true });
+    let batch;
+    let servers = [first, second];
+    await stubCompactStatus(page, () => servers);
+    await page.addInitScript(() => {
+        window.EventSource = class extends EventTarget {
+            constructor() {
+                super();
+                window.__batchStatusStream = this;
+            }
+            close() {}
+        };
+    });
+    await page.route("**/api/status/batches/*", (route) => fulfillJson(route, { batch: batch || null }));
+    await page.route("**/api/status/batches", (route) => {
+        const { id, targets } = route.request().postDataJSON();
+        servers = [{ ...first, status: "pending_approval", pending_updates: makePendingUpdates(1) }, second];
+        batch = {
+            id, action: "update", skipped_count: 0,
+            hosts: targets.map(target => target.name === first.name
+                ? { name: target.name, server_identity: target.server_identity, state: "waiting_approval", job_id: "job-ready-host", job_status: "waiting_approval" }
+                : { name: target.name, server_identity: target.server_identity, state: "queued" }),
+        };
+        return fulfillJson(route, { id }, 202);
+    });
+
+    await ensureAuthenticatedSession(page);
+    const readyRow = page.locator('#servers-table tr[data-name="ready-host"]');
+    const queuedRow = page.locator('#servers-table tr[data-name="queued-host"]');
+    const queuedUpdate = queuedRow.locator('button[data-action="update-server"]:enabled');
+    await expect(queuedUpdate).toHaveCount(1);
+    await readyRow.locator(".row-select").check();
+    await queuedRow.locator(".row-select").check();
+    await page.locator("#bulk-update").click();
+    await expect(page.locator("#status-batch-rows li").filter({ hasText: "queued-host" })).toContainText("Queued");
+    await page.evaluate(() => window.__batchStatusStream.dispatchEvent(new MessageEvent("dashboard", {
+        data: '{"reason":"job.update"}',
+    })));
+    await expect(readyRow.locator('button[data-action="cancel-upgrade"]')).toBeEnabled();
+    await expect(queuedUpdate).toHaveCount(0);
+    await expect(page.locator("#bulk-update")).toBeDisabled();
+
+    await page.reload();
+    await expect(page.locator("#status-batch-label")).toHaveText("Update checks");
+    await expect(readyRow.locator('button[data-action="cancel-upgrade"]')).toBeEnabled();
+    await expect(queuedUpdate).toHaveCount(0);
+
+    batch.hosts.find(host => host.name === second.name).state = "refused";
+    await expect(queuedUpdate).toHaveCount(1);
 });
 
 test("bulk kept-back approval requires individual consent for packages that will be removed", async ({ page }) => {

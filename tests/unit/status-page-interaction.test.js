@@ -1023,7 +1023,7 @@ test("bulk plans classify visible eligible, visible ineligible, and hidden selec
         servers: [
             { name: "alpha", status: "idle", has_key: true },
             { name: "beta", status: "updating", has_password: true },
-            { name: "hidden", status: "idle" }
+            { name: "hidden", server_identity: "stable-hidden-host", status: "idle" }
         ]
     });
     ["alpha", "beta", "hidden"].forEach(name => store.dispatch({ type: "selectionChanged", name, selected: true }));
@@ -1034,6 +1034,9 @@ test("bulk plans classify visible eligible, visible ineligible, and hidden selec
     assert.deepEqual(plan.ineligible.map(item => item.name), ["beta"]);
     assert.deepEqual(plan.hiddenNames, ["hidden"]);
     assert.equal(plan.skippedHosts.find(item => item.name === "hidden").reason, "Hidden by current filter or page");
+    assert.equal(store.planBatchRetry("update", "hidden", "stable-hidden-host"), null);
+    store.dispatch({ type: "filtersChanged", patch: { search: "hidden" } });
+    assert.equal(store.planBatchRetry("update", "hidden", "stable-hidden-host")?.serverIdentity, "stable-hidden-host");
 });
 
 test("action completion clears in-flight state and emits refresh and announcement effects", () => {

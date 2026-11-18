@@ -2018,6 +2018,42 @@ body.status-page .head-meta {
     padding: 0;
 }
 
+#status-batch-panel:not([hidden]) summary {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+}
+
+#status-batch-panel .supporting-details-body {
+    padding: 0 10px 10px;
+}
+
+#status-batch-rows {
+    list-style: none;
+    display: grid;
+    gap: 6px;
+    margin: 0;
+    padding: 0;
+}
+
+#status-batch-rows li {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    padding: 8px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    overflow-wrap: anywhere;
+}
+
+#status-batch-rows li p {
+    flex-basis: 100%;
+    color: var(--muted);
+    margin: 0;
+}
+
 #bulk-removal-review .inline-btn {
     height: auto;
     overflow-wrap: anywhere;

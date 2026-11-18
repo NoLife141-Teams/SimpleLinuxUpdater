@@ -264,6 +264,8 @@
         };
         let nextActionPlanId = 1;
         let inFlightActions = new Map();
+        let batchAdmissions = new Map();
+        let observedBulkAction = null;
         let bulkAction = null;
         let lastBulkResult = null;
         let jobLogsByServer = new Map();
@@ -1111,6 +1113,31 @@
                     };
                 }
                 return [{ type: "render", scope: "serverState", priority: "immediate" }];
+            } else if (event.type === "bulkAdmissionsObserved") {
+                const admissions = new Map(event.pendingHosts.map(host => [host.name, host.server_identity]));
+                const batchID = admissions.size ? event.batch.id : undefined;
+                if (admissions.size === batchAdmissions.size && batchID === observedBulkAction?.operationId &&
+                    [...admissions].every(([name, identity]) => batchAdmissions.get(name) === identity)) return [];
+                batchAdmissions = admissions;
+                observedBulkAction = admissions.size ? {
+                    operationId: event.batch.id,
+                    actionKey: event.batch.action,
+                    actionLabel: event.actionLabel,
+                    selectedCount: event.batch.hosts.length + event.batch.skipped_count,
+                    eligibleCount: event.batch.hosts.length,
+                    skippedCount: event.batch.skipped_count,
+                } : null;
+                return [{ type: "render", scope: "serverState", priority: "immediate" }];
+            } else if (event.type === "bulkHostAdmissionsResolved") {
+                if (!bulkAction || bulkAction.operationId !== event.operationId) return [];
+                let changed = false;
+                for (const name of event.serverNames) {
+                    if (inFlightActions.get(name)?.operationId === event.operationId) {
+                        inFlightActions.delete(name);
+                        changed = true;
+                    }
+                }
+                return changed ? [{ type: "render", scope: "serverState", priority: "immediate" }] : [];
             } else if (event.type === "actionCompleted" || event.type === "actionFailed") {
                 const operationId = String(event.operationId || "");
                 Array.from(inFlightActions.entries()).forEach(([name, action]) => {
@@ -1277,7 +1304,9 @@
             if (server?.disabled) {
                 return { ...cloneValue(action), enabled: false, reason: "Server is disabled; enable it in Manage Servers to resume maintenance.", readiness: "unavailable", blocking_status: "server_disabled" };
             }
-            if (!options.ignoreInFlight && inFlightActions.has(normalizedName)) {
+            const pendingIdentity = batchAdmissions.get(normalizedName);
+            if (!options.ignoreInFlight && (inFlightActions.has(normalizedName) ||
+                (pendingIdentity && serversByName.get(normalizedName)?.server_identity === pendingIdentity))) {
                 return {
                     ...cloneValue(action),
                     enabled: false,
@@ -1378,6 +1407,16 @@
             };
         }
 
+        function planBatchRetry(actionKey, name, expectedIdentity) {
+            const server = projectNavigation().pageServers.find(item => item.name === name);
+            if (!server || !expectedIdentity || server.server_identity !== expectedIdentity
+                || (actionKey === "approve_security_kept_back" && keptBackApprovalHasRemovals(server))) {
+                return null;
+            }
+            const plan = planAction(name, actionKey);
+            return plan.enabled && plan.payloadFacts.serverIdentity === expectedIdentity ? plan.payloadFacts : null;
+        }
+
         function actionLifecycleEffects(event, status) {
             const effects = [{ type: "render", scope: "serverState", priority: "immediate" }];
             const refreshStreams = Array.isArray(event.refreshStreams) ? event.refreshStreams : ["servers"];
@@ -1471,7 +1510,7 @@
                 actions: {
                     inFlightServerNames: Array.from(inFlightActions.keys()),
                     inFlight: Array.from(inFlightActions.entries()).map(([serverName, action]) => ({ serverName, ...cloneValue(action) })),
-                    bulk: cloneValue(bulkAction),
+                    bulk: cloneValue(bulkAction || observedBulkAction),
                     lastBulkResult: cloneValue(lastBulkResult)
                 },
                 persistence: persistenceValue()
@@ -1506,6 +1545,7 @@
             isCurrentJobLog,
             isOpenJobLog,
             planAction,
+            planBatchRetry,
             planBulkAction
         });
     }

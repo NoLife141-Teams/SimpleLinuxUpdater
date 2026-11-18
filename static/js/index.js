@@ -117,8 +117,6 @@
                 updateRefreshAllFactsState(...args),
             scheduleSelectPageStateUpdate: (...args) =>
                 scheduleSelectPageStateUpdate(...args),
-            pendingApprovalRequestOptions: (...args) =>
-                pendingApprovalRequestOptions(...args),
             dispatchStatusInteraction: (...args) =>
                 dispatchStatusInteraction(...args),
             escapeHtml: (...args) => escapeHtml(...args),
@@ -1332,12 +1330,16 @@
 
         const statusTransport = window.StatusTransport.createController({
             EventSourceType: window.EventSource,
-            onServersPoll: () => fetchServers(false, "poll"),
+            onServersPoll: () => {
+                statusBulk.refreshWaitingBatch();
+                return fetchServers(false, "poll");
+            },
             onExtrasPoll: () => fetchDashboardExtras("poll"),
             onJobLogEvent: (event) => {
                 dispatchStatusInteraction({ type: "jobLogReceived", event });
             },
             onDashboardRefresh: (streams) => {
+                if (streams.includes("servers")) statusBulk.refreshWaitingBatch();
                 requestStatusRefresh(
                     streams,
                     "immediate",

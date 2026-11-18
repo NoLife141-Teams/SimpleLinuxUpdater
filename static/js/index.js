@@ -46,6 +46,7 @@
         let activePhaseTooltipTarget = null;
         let drawerLogScrollTop = 0;
         let drawerPendingScrollTop = 0;
+        let drawerPendingRefresh = null;
         let passwordResolve = null;
         let passwordReject = null;
         let passwordModalPreviousFocus = null;
@@ -158,7 +159,14 @@
                 } else if (effect.type === "fetchHostDetail") {
                     tasks.push(executeHostDetailFetch(effect));
                 } else if (effect.type === "renderHostDetail") {
-                    statusViewScope.run(effect.surface === "drawer" ? renderDrawer : renderSelectedHostPanel);
+                    if (effect.surface === "drawer") {
+                        statusViewScope.run(renderDrawer);
+                    } else {
+                        const displayedServer = dashboardPresentation.selectedHost?.server;
+                        if (displayedServer && statusInteraction.getHostDetail("inspector", displayedServer)) {
+                            statusViewScope.run(renderSelectedHostPanel);
+                        }
+                    }
                 } else if (
                     effect.type === "render" &&
                     effect.scope === "serverState"
@@ -557,10 +565,10 @@
             return `${enabled ? "" : "disabled"} title="${escapeHtml(title)}"`;
         }
 
-        function renderPendingUpdatesHtml(server, detail) {
-            const pending = getStatusView().pendingUpdates;
+        function renderPendingUpdatesHtml(server, detail, pending) {
             if (!pending) {
-                return miniEmpty(detail?.loading ? "Loading package details…" : "Package details unavailable. Reopen this panel to retry.");
+                const message = detail?.loading ? "Loading package details…" : "Package details unavailable. Reopen this panel to retry.";
+                return `<p class="drawer-empty" data-pending-status tabindex="-1" role="status">${message}</p>`;
             }
             return window.PendingUpdatesView.render(pending, {
                 deferrals: window.PackageDeferrals.approvalHTML(detail?.snapshot?.upgrade_plan || server.upgrade_plan),
@@ -1190,7 +1198,7 @@
                     ${repeatsRuntimeStatus ? "" : `<span class="stage-chip phase-${escapeHtml(timeline.state || "idle")}">${escapeHtml(phaseLabel)}</span>`}
                 </div>
                 ${updateSecuritySummaryHtml(selected, safeDataName)}
-                ${applicationPostchecksHtml(server, statusInteraction.getHostDetail("inspector")?.snapshot)}
+                ${applicationPostchecksHtml(server, statusInteraction.getHostDetail("inspector", server)?.snapshot)}
                 ${
                     recommendedAction.key !== "healthy"
                         ? `<section class="recommended-action recommended-${escapeHtml(recommendedAction.key || "healthy")}">
@@ -1956,6 +1964,20 @@
                 : "Auto-scroll paused";
         }
 
+        function restorePendingFocus(panel, focus, useHeading = false) {
+            const { element, start, end } = focus;
+            const action = element.dataset.pendingAction;
+            const position = element.closest("[data-pending-pagination]")?.dataset.pendingPagination;
+            const control = element.id ? document.getElementById(element.id)
+                : action ? Array.from(panel.querySelectorAll("button[data-pending-action]:enabled")).find(button =>
+                    button.dataset.pendingAction === action && button.dataset.pendingValue === element.dataset.pendingValue
+                    && button.closest("[data-pending-pagination]")?.dataset.pendingPagination === position)
+                : null;
+            const target = control || (useHeading ? panel.querySelector("[data-pending-heading]") : null);
+            target?.focus({ preventScroll: true });
+            if (control && typeof start === "number") control.setSelectionRange(start, end);
+        }
+
         function renderDrawer() {
             const drawerState = getStatusView().drawer;
             const drawer = document.getElementById("status-drawer");
@@ -1988,6 +2010,7 @@
             );
 
             if (!drawerState.open) {
+                drawerPendingRefresh = null;
                 drawer.classList.remove("open");
                 backdrop.classList.remove("open");
                 drawer.setAttribute("aria-hidden", "true");
@@ -2069,23 +2092,39 @@
             }
 
             if (drawerState.tab === "pending") {
-                const samePendingServer = pendingPanel.dataset.serverName === server.name;
-                const pendingScrollTop = samePendingServer
-                    ? (pendingPanel.childElementCount ? pendingPanel.scrollTop : drawerPendingScrollTop) : 0;
-                const focusedInput = pendingPanel.contains(document.activeElement) && document.activeElement.matches("input[data-pending-input]")
-                    ? { id: document.activeElement.id, start: document.activeElement.selectionStart, end: document.activeElement.selectionEnd } : null;
-                if (!samePendingServer) pendingPanel.replaceChildren();
-                statusRendering.html(pendingPanel, renderPendingUpdatesHtml(server, detail));
-                if (focusedInput) {
-                    const input = document.getElementById(focusedInput.id);
-                    input?.focus({ preventScroll: true });
-                    if (input && focusedInput.start !== null) input.setSelectionRange(focusedInput.start, focusedInput.end);
+                const samePendingServer = pendingPanel.dataset.serverName === server.name
+                    && pendingPanel.dataset.serverIdentity === (server.server_identity || "");
+                const pending = getStatusView().pendingUpdates;
+                const active = document.activeElement;
+                const statusFocused = samePendingServer && pendingPanel.contains(active) && active.matches("[data-pending-status]");
+                const focusedControl = samePendingServer && pendingPanel.contains(active)
+                    && active.matches("input[data-pending-input], button[data-pending-action], [data-pending-heading]")
+                    ? { element: active, start: active.selectionStart, end: active.selectionEnd } : null;
+                if (!samePendingServer) {
+                    drawerPendingRefresh = null;
+                    pendingPanel.replaceChildren();
                 }
-                // Restore before another refresh can observe the replacement at scrollTop 0.
+                const pendingScrollTop = samePendingServer
+                    ? drawerPendingRefresh?.scrollTop ?? (pendingPanel.childElementCount ? pendingPanel.scrollTop : drawerPendingScrollTop) : 0;
+                if (!pending && !drawerPendingRefresh) {
+                    // A new plan cannot reuse the previous package controls.
+                    drawerPendingRefresh = { focus: focusedControl, scrollTop: pendingScrollTop };
+                }
+                statusRendering.html(pendingPanel, renderPendingUpdatesHtml(server, detail, pending));
+                if (!pending && focusedControl) {
+                    pendingPanel.querySelector("[data-pending-status]")?.focus({ preventScroll: true });
+                }
+                if (pending) {
+                    const focus = statusFocused ? drawerPendingRefresh?.focus : focusedControl;
+                    if (focus) restorePendingFocus(pendingPanel, focus, statusFocused);
+                    drawerPendingRefresh = null;
+                    pendingPanel.scrollTop = Math.min(pendingScrollTop, Math.max(0, pendingPanel.scrollHeight - pendingPanel.clientHeight));
+                    drawerPendingScrollTop = pendingPanel.scrollTop;
+                }
                 pendingPanel.dataset.serverName = server.name;
-                pendingPanel.scrollTop = Math.min(pendingScrollTop, Math.max(0, pendingPanel.scrollHeight - pendingPanel.clientHeight));
-                drawerPendingScrollTop = pendingPanel.scrollTop;
+                pendingPanel.dataset.serverIdentity = server.server_identity || "";
             } else {
+                drawerPendingRefresh = null;
                 pendingPanel.innerHTML = "";
             }
 
@@ -2335,7 +2374,7 @@
 	                                ${keptBackSecurityButton}
 	                                ${fullApprovalButton}
 	                                ${cancelButton}
-                                <button type="button" class="btn-ghost" data-action="open-drawer" data-name="${safeDataName}" data-tab="pending">Packages</button>
+                                <button type="button" class="btn-ghost" data-action="open-drawer" data-name="${safeDataName}" data-tab="pending">${server.has_application_postchecks ? "Packages &amp; checks" : "Packages"}</button>
                             </div>
                           `
                                   : isBusy

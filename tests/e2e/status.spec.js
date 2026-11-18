@@ -2399,14 +2399,13 @@ test("live refresh preserves host action nodes, focus and updated eligibility", 
     await expect(page.locator('#status-drawer-title')).toHaveText('other-host');
 });
 
-test("pending package controls and search selection survive enrichment refresh", async ({ page }) => {
+test("pending package controls and search selection survive enrichment and plan refresh", async ({ page }) => {
     let servers = [makeServer("demo-host", "pending_approval", makePendingUpdates(3), { has_key: true })];
-    const detailRequests = await stubCompactStatus(page, () => servers);
+    await stubCompactStatus(page, () => servers);
     await ensureAuthenticatedSession(page);
     await page.locator('#servers-table button[data-select-host="demo-host"]').click();
     await page.locator('#selected-host-panel button[data-tab="pending"]').click();
     const panel = page.locator('#drawer-panel-pending');
-    await expect.poll(() => detailRequests.length).toBeGreaterThan(0);
     const details = await panel.getByRole('button', { name: 'Details for pkg-01', exact: true }).elementHandle();
     const search = panel.getByRole('searchbox', { name: 'Filter packages', exact: true });
     await search.fill('pkg');
@@ -2416,6 +2415,62 @@ test("pending package controls and search selection survive enrichment refresh",
     expect(await details.evaluate(el => el.isConnected)).toBe(true);
     await expect(search).toBeFocused();
     expect(await search.evaluate(el => [el.selectionStart, el.selectionEnd])).toEqual([1, 2]);
-    await details.click();
-    await expect(panel.getByRole('heading', { name: 'pkg-01', exact: true })).toBeVisible();
+
+    let releasePlan;
+    const nextPlan = new Promise(resolve => { releasePlan = resolve; });
+    await page.route("**/api/servers/demo-host/status-detail?*", async route => {
+        if (new URL(route.request().url()).searchParams.get("approval_generation") === "2") await nextPlan;
+        await route.fallback();
+    });
+    try {
+        servers = [makeServer("demo-host", "pending_approval", makePendingUpdates(2).map(p => ({
+            ...p, package: `pkg-next-${p.package}`
+        })), { has_key: true, approval_generation: 2 })];
+        await page.evaluate(() => { void window.fetchServers(true, "new-approval-identity"); });
+        const loading = panel.getByRole("status").filter({ hasText: "Loading package details…" });
+        await expect(loading).toBeFocused();
+        await expect(panel.getByRole('button', { name: 'Details for pkg-01', exact: true })).toHaveCount(0);
+    } finally {
+        releasePlan();
+    }
+    await expect(search).toBeFocused();
+    await expect(search).toHaveValue("pkg");
+    expect(await search.evaluate(el => [el.selectionStart, el.selectionEnd])).toEqual([1, 2]);
+    await panel.getByRole('button', { name: 'Details for pkg-next-pkg-01', exact: true }).click();
+    await expect(panel.getByRole('heading', { name: 'pkg-next-pkg-01', exact: true })).toBeVisible();
+});
+
+test("compact rows expose application checks and keep the inspector bound to the displayed host", async ({ page }) => {
+    const idle = makeServer("idle-host");
+    const pendingHost = (name, profile) => makeServer(name, "pending_approval", makePendingUpdates(1), {
+        application_postcheck_profile: { name: profile, revision: 1, checks: [{
+            name: "App", kind: "systemd_active", unit: `${name}.service`, mode: "blocking", timeout_seconds: 15,
+        }] },
+    });
+    const previous = pendingHost("previous-host", "Previous expectations");
+    const replacement = pendingHost("replacement-host", "Replacement expectations");
+    let servers = [idle, previous];
+    await stubCompactStatus(page, () => servers);
+    await ensureAuthenticatedSession(page);
+
+    const oldRow = page.locator('#servers-table tr[data-name="previous-host"]');
+    await oldRow.getByRole("button", { name: "Packages & checks", exact: true }).click();
+    await expect(page.locator("#status-drawer-status")).toContainText("Previous expectations");
+    await page.locator("#status-drawer-close").click();
+    await oldRow.getByRole("button", { name: "previous-host", exact: true }).click();
+    const inspector = page.locator("#selected-host-panel");
+    await expect(inspector).toContainText("Previous expectations");
+
+    const update = page.locator('#servers-table tr[data-name="idle-host"] [data-action="update-server"]');
+    await update.dispatchEvent("pointerdown");
+    try {
+        servers = [replacement];
+        await page.evaluate(() => window.fetchServers(false, "deferred-inspector-test"));
+        await expect(page.locator("#selected-host-title")).toHaveText("previous-host");
+        await expect(inspector).toContainText("Previous expectations");
+    } finally {
+        await page.dispatchEvent("body", "pointercancel");
+    }
+    await expect(page.locator("#selected-host-title")).toHaveText("replacement-host");
+    await expect(inspector).toContainText("Replacement expectations");
 });

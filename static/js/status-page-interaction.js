@@ -421,6 +421,9 @@
                     jobLogsByServer.delete(serverName);
                     disconnectedJobLogs.delete(serverName);
                 }
+                const drawerNeedsFullLogs = drawer.open && drawer.tab === "logs"
+                    && drawer.serverName === serverName
+                    && (!drawer.serverIdentity || drawer.serverIdentity === server.server_identity);
                 const current = jobLogsByServer.get(serverName);
                 if (!jobId) {
                     if (jobLogTransportLive && current?.jobId) {
@@ -439,19 +442,16 @@
                         : [];
                     const next = createJobLogState(jobId, preview, superseded);
                     jobLogsByServer.set(serverName, next);
-                    if (jobLogTransportLive && shouldRecoverServer(serverName, server)) {
+                    if ((jobLogTransportLive && shouldRecoverServer(serverName, server)) || drawerNeedsFullLogs) {
                         effects.push(...logRecoveryEffect(serverName, next));
                     }
-                } else if (!jobLogTransportLive && !server.package_counts) {
-                    const drawerNeedsFullLogs = drawer.open
-                        && drawer.tab === "logs"
-                        && drawer.serverName === serverName;
+                } else if (!jobLogTransportLive) {
                     if (drawerNeedsFullLogs) {
                         if (current.previewOnly && !current.recovering) {
                             jobLogsByServer.set(serverName, createJobLogState(jobId, preview, current.supersededJobIds));
                         }
                         effects.push(...logRecoveryEffect(serverName, jobLogsByServer.get(serverName)));
-                    } else if (disconnectedJobLogs.get(serverName) !== jobId) {
+                    } else if (!server.package_counts && disconnectedJobLogs.get(serverName) !== jobId) {
                         // Retain followed jobs' cursors and in-flight requests
                         // through offline polls, including terminal snapshots.
                         jobLogsByServer.set(serverName, createJobLogState(jobId, preview, current.supersededJobIds));
@@ -622,8 +622,12 @@
             if (view === "overview" && (server.status !== "pending_approval" || !server.has_application_postchecks)) return null;
             if (view === "logs" && options.canReadLogs === false) return null;
             const identity = approvalIdentity(server);
-            const key = JSON.stringify([name, server.server_identity, server.status, view, identity]);
+            const key = hostDetailKey(server, view, identity);
             return { name, view, key, serverIdentity: server.server_identity, approvalIdentity: identity };
+        }
+
+        function hostDetailKey(server, view, identity = approvalIdentity(server)) {
+            return JSON.stringify([server.name, server.server_identity, server.status, view, identity]);
         }
 
         function requestHostDetails(refresh) {
@@ -644,10 +648,11 @@
             return effects;
         }
 
-        function getHostDetail(surface) {
+        function getHostDetail(surface, displayedServer) {
             const detail = hostDetails[surface];
-            if (detail?.key !== hostDetailRequest(surface)?.key) return null;
-            return detail ? { loading: detail.loading, snapshot: cloneValue(detail.snapshot) } : null;
+            if (!detail || detail.key !== hostDetailRequest(surface)?.key) return null;
+            if (displayedServer && detail.key !== hostDetailKey(displayedServer, detail.view)) return null;
+            return { loading: detail.loading, snapshot: cloneValue(detail.snapshot) };
         }
 
         function drawerPendingServer() {

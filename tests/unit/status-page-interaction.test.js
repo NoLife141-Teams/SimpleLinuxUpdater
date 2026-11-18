@@ -522,33 +522,39 @@ test("polling fallback refreshes the compatible bounded preview", () => {
     assert.equal(store.getServer("alpha").logs, "new polling preview");
 });
 
-test("polling keeps recovered drawer logs and requests incremental updates", () => {
-    const store = createStore();
-    store.dispatch({
-        type: "serversSnapshotReceived",
-        servers: [{ name: "alpha", status: "updating", job_id: "job-1", logs: "preview" }]
-    });
-    store.dispatch({ type: "drawerOpened", name: "alpha", tab: "logs" });
-    store.dispatch({
-        type: "jobLogRecoveryReceived",
-        serverName: "alpha",
-        jobId: "job-1",
-        page: {
-            fragments: [
-                { sequence: 1, stream: "stdout", data: "full one\n" },
-                { sequence: 2, stream: "stdout", data: "full two\n" }
-            ],
-            has_more: false
-        }
-    });
+for (const compact of [false, true]) {
+    test(`polling keeps recovered drawer logs with ${compact ? "compact" : "legacy"} inventory`, () => {
+        const store = createStore();
+        const snapshot = (jobId, preview) => store.dispatch({
+            type: "serversSnapshotReceived",
+            servers: [{
+                name: "alpha", status: "updating", job_id: jobId, server_identity: "alpha-identity",
+                ...(compact ? { package_counts: { pending: 0 } } : { logs: preview })
+            }]
+        });
+        const logRequests = effects => effects.filter(effect => effect.type === "fetchJobLogs")
+            .map(effect => [effect.jobId, effect.afterSequence]);
+        snapshot("job-1", "preview");
+        store.dispatch({ type: "drawerOpened", name: "alpha", tab: "logs" });
+        store.dispatch({
+            type: "jobLogRecoveryReceived",
+            serverName: "alpha",
+            jobId: "job-1",
+            page: {
+                fragments: [
+                    { sequence: 1, stream: "stdout", data: "full one\n" },
+                    { sequence: 2, stream: "stdout", data: "full two\n" }
+                ],
+                has_more: false
+            }
+        });
 
-    const effects = store.dispatch({
-        type: "serversSnapshotReceived",
-        servers: [{ name: "alpha", status: "updating", job_id: "job-1", logs: "new bounded preview" }]
+        const effects = snapshot("job-1", "new bounded preview");
+        assert.equal(store.getView().jobLogs.alpha.rawText, "full one\nfull two\n");
+        assert.deepEqual(logRequests(effects), [["job-1", 2]]);
+        assert.deepEqual(logRequests(snapshot("job-2", "another job")), [["job-2", 0]]);
     });
-    assert.equal(store.getView().jobLogs.alpha.rawText, "full one\nfull two\n");
-    assert.deepEqual(effects.filter(effect => effect.type === "fetchJobLogs").map(effect => effect.afterSequence), [2]);
-});
+}
 
 test("canonical and legacy dashboard action data produce the same action view", () => {
     const canonicalStore = createStore();

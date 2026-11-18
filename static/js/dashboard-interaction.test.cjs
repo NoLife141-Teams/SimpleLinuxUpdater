@@ -42,13 +42,24 @@ test("Status transport groups targeted invalidations and keeps log events separa
         }
         close() {}
     }
-    const timeouts = [];
+    const timeouts = new Map();
+    let nextTimer = 1;
     const timers = {
         setInterval() { return 1; },
         clearInterval() {},
-        setTimeout(callback) { timeouts.push(callback); return timeouts.length; },
-        clearTimeout() {}
+        setTimeout(callback) {
+            const id = nextTimer++;
+            timeouts.set(id, callback);
+            return id;
+        },
+        clearTimeout(id) { timeouts.delete(id); }
     };
+    const runTimeout = () => {
+        const [id, callback] = timeouts.entries().next().value;
+        timeouts.delete(id);
+        callback();
+    };
+    const allStreams = new Set(["servers", "dashboard", "globalKey", "audit", "observability", "policies"]);
     const logEvents = [];
     const refreshes = [];
     const controller = StatusTransport.createController({
@@ -58,6 +69,10 @@ test("Status transport groups targeted invalidations and keeps log events separa
         onDashboardRefresh: streams => refreshes.push(streams)
     });
     controller.start();
+    assert.deepEqual(refreshes, []);
+    listeners.get("open")();
+    assert.equal(refreshes.length, 1);
+    assert.deepEqual(new Set(refreshes.pop()), allStreams);
 
     listeners.get("dashboard")({ data: '{"reason":"connected"}' });
     listeners.get("dashboard")({ data: JSON.stringify({
@@ -68,7 +83,7 @@ test("Status transport groups targeted invalidations and keeps log events separa
         stream: "stderr",
         data: "warning\n"
     }) });
-    assert.equal(timeouts.length, 0);
+    assert.equal(timeouts.size, 0);
     for (const reason of ["job.update", "job.update"]) {
         listeners.get("dashboard")({ data: JSON.stringify({ reason }) });
     }
@@ -81,27 +96,28 @@ test("Status transport groups targeted invalidations and keeps log events separa
         stream: "stderr",
         data: "warning\n"
     }]);
-    assert.equal(timeouts.length, 1);
+    assert.equal(timeouts.size, 1);
     assert.deepEqual(refreshes, []);
-    timeouts.shift()();
-    assert.deepEqual(refreshes, [["servers", "dashboard"]]);
+    runTimeout();
+    assert.equal(refreshes.length, 1);
+    assert.deepEqual(new Set(refreshes.at(-1)), new Set(["servers", "dashboard"]));
 
     for (const reason of ["update_policy.update", "job.create"]) {
         listeners.get("dashboard")({ data: JSON.stringify({ reason }) });
     }
-    assert.equal(timeouts.length, 1);
-    timeouts.shift()();
-    assert.deepEqual(refreshes.at(-1), ["dashboard", "policies", "audit", "servers"]);
+    assert.equal(timeouts.size, 1);
+    runTimeout();
+    assert.deepEqual(new Set(refreshes.at(-1)), new Set(["dashboard", "policies", "audit", "servers"]));
 
     listeners.get("dashboard")({ data: JSON.stringify({ reason: "unrecognized.event" }) });
-    timeouts.shift()();
-    assert.deepEqual(refreshes.at(-1), ["servers", "dashboard", "globalKey", "audit", "observability", "policies"]);
+    runTimeout();
+    assert.deepEqual(new Set(refreshes.pop()), allStreams);
 
     listeners.get("error")();
-    timeouts.shift()();
+    runTimeout();
     listeners.get("open")();
-    timeouts.shift()();
-    assert.deepEqual(refreshes.at(-1), ["servers", "dashboard", "globalKey", "audit", "observability", "policies"]);
+    runTimeout();
+    assert.deepEqual(new Set(refreshes.at(-1)), allStreams);
 });
 
 test("Status table and action adapters preserve operator preferences and decision facts", () => {

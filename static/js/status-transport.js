@@ -25,6 +25,7 @@
             ["update_policy.settings", ["dashboard", "audit"]],
         ]);
         const dashboardBurstWindowMs = 125;
+        const initialStreamWaitMs = 125;
 
         function createController(options = {}) {
             const timers = options.timers || globalThis;
@@ -36,9 +37,21 @@
             let extrasPoll = null;
             let started = false;
             let generation = 0;
-            let disconnected = false;
+            let initialRefreshTimer = null;
+            let initialRefreshStarted = false;
             let dashboardRefreshTimer = null;
             const pendingStreams = new Set();
+
+            function startInitialRefresh() {
+                if (initialRefreshStarted) return false;
+                initialRefreshStarted = true;
+                if (initialRefreshTimer !== null) {
+                    timers.clearTimeout(initialRefreshTimer);
+                    initialRefreshTimer = null;
+                }
+                options.onDashboardRefresh?.(allRefreshStreams);
+                return true;
+            }
 
             function queueDashboardRefresh(streams) {
                 streams.forEach(stream => pendingStreams.add(stream));
@@ -98,6 +111,7 @@
                 if (!EventSourceType) {
                     configurePolling(5000, 30000);
                     options.onConnectionChanged?.(false);
+                    startInitialRefresh();
                     return;
                 }
                 if (source) source.close();
@@ -112,10 +126,9 @@
                     configurePolling(10000, 60000);
                     options.onConnectionChanged?.(true);
                     options.onReconnect?.();
-                    if (disconnected) {
-                        disconnected = false;
-                        queueDashboardRefresh(allRefreshStreams);
-                    }
+                    // The server subscribes before sending the first stream bytes.
+                    // Reconcile when we already fell back to an earlier snapshot.
+                    if (!startInitialRefresh()) queueDashboardRefresh(allRefreshStreams);
                 });
                 candidate.addEventListener("dashboard", (event) => {
                     if (!current()) return;
@@ -132,9 +145,9 @@
                     if (!current()) return;
                     if (source === candidate) source = null;
                     candidate.close();
-                    disconnected = true;
                     configurePolling(5000, 30000);
                     options.onConnectionChanged?.(false);
+                    startInitialRefresh();
                     scheduleReconnect();
                 });
             }
@@ -144,6 +157,12 @@
                 started = true;
                 generation++;
                 configurePolling(5000, 30000);
+                if (EventSourceType) {
+                    const ticket = generation;
+                    initialRefreshTimer = timers.setTimeout(() => {
+                        if (started && ticket === generation) startInitialRefresh();
+                    }, initialStreamWaitMs);
+                }
                 connect();
             }
 
@@ -160,10 +179,11 @@
                 if (extrasPoll !== null) timers.clearInterval(extrasPoll);
                 if (reconnectTimer !== null)
                     timers.clearTimeout(reconnectTimer);
+                if (initialRefreshTimer !== null) timers.clearTimeout(initialRefreshTimer);
                 if (dashboardRefreshTimer !== null) timers.clearTimeout(dashboardRefreshTimer);
-                serverPoll = extrasPoll = reconnectTimer = dashboardRefreshTimer = null;
+                serverPoll = extrasPoll = reconnectTimer = initialRefreshTimer = dashboardRefreshTimer = null;
                 pendingStreams.clear();
-                disconnected = false;
+                initialRefreshStarted = false;
                 reconnectDelay = 1000;
             }
 

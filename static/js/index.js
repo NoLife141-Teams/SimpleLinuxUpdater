@@ -3867,8 +3867,6 @@
         initColumnResizing();
         lifecycle.setInterval(renderSyncState, 5000);
         statusTransport.start();
-        fetchDashboardExtras();
-        fetchServers();
 
         lifecycle.own(statusTransport.destroy);
         lifecycle.own(() => {

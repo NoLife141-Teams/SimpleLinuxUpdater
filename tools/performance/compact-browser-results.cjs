@@ -15,10 +15,10 @@ const samples = input.samples.map(sample => {
   const maxConcurrent = {};
   for (const [key, value] of Object.entries(sample.max_concurrent_by_path)) maxConcurrent[route(key)] = Math.max(maxConcurrent[route(key)] || 0, value);
   return {
-    ...Object.fromEntries(['initial', 'filter', 'select', 'detail', 'refresh', 'reconnects', 'sse_connections', 'hidden_selection_hint', 'metrics', 'dom_nodes', 'rows'].map(key => [key, sample[key]])),
+    ...Object.fromEntries(['initial', 'filter', 'select', 'detail', 'refresh', 'burstRender', 'burstRequests', 'reconnects', 'sse_connections', 'hidden_selection_hint', 'metrics', 'dom_nodes', 'rows'].map(key => [key, sample[key]])),
     requests: countByRoute(sample.requests), bytes, max_concurrent_by_path: maxConcurrent,
     long_tasks: { count: sample.long_tasks_ms.length, total_ms: sample.long_tasks_ms.reduce((sum, value) => sum + value, 0), max_ms: Math.max(0, ...sample.long_tasks_ms) },
-    reconnect_samples: sample.reconnect_samples.map(cycle => ({ requests: countByRoute(cycle.requests), target_count: cycle.targets.length, targets_sha256: crypto.createHash('sha256').update(JSON.stringify(cycle.targets)).digest('hex'), first_targets: cycle.targets.slice(0, 3) })),
+    reconnect_samples: sample.reconnect_samples.map(cycle => ({ requests: countByRoute(cycle.requests), target_count: cycle.targets.length, peak_log_requests: cycle.peak_log_requests, targets_sha256: crypto.createHash('sha256').update(JSON.stringify(cycle.targets)).digest('hex'), first_targets: cycle.targets.slice(0, 3) })),
   };
 });
 console.log(JSON.stringify({ ...input, samples, source_json_sha256: crypto.createHash('sha256').update(fs.readFileSync(process.argv[2])).digest('hex'), scope: 'Compact numeric evidence; all five measured samples retained. Raw traces and complete per-request records remain local.' }, null, 2));

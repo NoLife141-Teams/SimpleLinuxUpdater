@@ -170,9 +170,7 @@ test("Status transport starts once, closes each stream, clears polling and rejec
     controller.start();
     controller.start();
     assert.equal(sources.length, 1);
-    assert.equal(timers.pending.size, 2);
     sources[0].listeners.get("error")();
-    assert.equal(timers.pending.size, 3);
     const reconnect = [...timers.pending.values()].at(-1);
     controller.destroy();
     assert.equal(timers.pending.size, 0);

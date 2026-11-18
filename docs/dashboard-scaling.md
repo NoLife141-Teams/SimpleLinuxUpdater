@@ -118,9 +118,12 @@ continue to run alongside the compact assertions.
 The browser fixture emits 12 `job.update` events at 8 ms intervals after
 changing one visible host. Status groups invalidations within a 125 ms window.
 Job changes invalidate inventory and Dashboard Projection. Policy changes can
-also invalidate the policy summary and recent audit. The first connection uses
-the initial page reads, and a reconnect or an unknown event refreshes the full
-snapshot set. Structured job log events continue to bypass snapshot refreshes.
+also invalidate the policy summary and recent audit. Initial page reads wait
+briefly for the subscription so a fast connection needs no extra startup refresh.
+If the initial reads start before the stream opens, another set reconciles
+changes missed during startup. A reconnect or an unknown event also refreshes
+the full snapshot set. Structured job log events continue to bypass snapshot
+refreshes.
 
 Reference `941f880` and candidate were measured on Chromium 159.0.8154.6 with
 five measured trials per size. Counts and transferred body bytes are medians.

@@ -174,10 +174,18 @@ async function measureRequests(requests) {
                 await reopened;
                 // Wait until the log burst has drained before another cycle.
                 await sleep(300);
-                for(let attempts=0; attempts<600 && logRequestsInFlight > 0; attempts++) await sleep(100);
+                const expectedTargets = fixture.manifest.active + fixture.manifest.approvals;
+                let reconnectRequests, targets;
+                for (let attempts = 0; attempts < 600; attempts++) {
+                  reconnectRequests = requests.slice(before);
+                  targets = [...new Set(reconnectRequests.filter(url => url.includes('/logs?')).map(url => url.split('/logs?')[0]))];
+                  if (logRequestsInFlight === 0 && targets.length >= expectedTargets) break;
+                  await sleep(100);
+                }
                 assert.equal(logRequestsInFlight, 0, 'reconnect log requests timed out');
+                assert.ok(targets.length >= expectedTargets, 'reconnect missed active or approval log targets');
                 measureReconnect = false;
-                reconnectSamples.push({ requests: requests.slice(before), targets: [...new Set(requests.slice(before).filter(url => url.includes('/logs?')).map(url => url.split('/logs?')[0]))], peak_log_requests: reconnectPeak });
+                reconnectSamples.push({ requests: reconnectRequests, targets, peak_log_requests: reconnectPeak });
                 reconnects++;
               }
             }

@@ -6,7 +6,7 @@
     <title>SimpleLinuxUpdater - Admin</title>
     <link rel="icon" type="image/png" href="/static/logo.png">
     <link rel="stylesheet" href="/static/css/base.css?v=select-spacing-global-20261104">
-    <link rel="stylesheet" href="/static/css/admin.css?v=section-spacing-20261104">
+    <link rel="stylesheet" href="/static/css/admin.css?v=notification-history-594">
     <link rel="stylesheet" href="/static/css/application-postchecks.css?v=1">
 <link rel="stylesheet" href="/static/css/package-deferrals.css?v=ui-components-515-20261029">
     <link rel="stylesheet" href="/static/css/reauthentication.css?v=account-commands-20261027">
@@ -312,6 +312,44 @@
                     </dl>
                 </div>
             </div>
+            <details class="notification-history" id="notification-history">
+                <summary>Delivery history</summary>
+                <div class="notification-history-content">
+                    <form id="notification-history-filters" class="notification-history-filters">
+                        <label>Destination
+                            <select name="destination">
+                                <option value="">All destinations</option>
+                                <option value="webhook">Webhook</option>
+                                <option value="discord">Discord</option>
+                                <option value="telegram">Telegram</option>
+                            </select>
+                        </label>
+                        <label>Delivery state
+                            <select name="state">
+                                <option value="">All states</option>
+                                <option value="pending">Pending</option>
+                                <option value="claimed">Sending</option>
+                                <option value="retrying">Retry scheduled</option>
+                                <option value="succeeded">Delivered</option>
+                                <option value="failed">Failed</option>
+                                <option value="skipped">Skipped</option>
+                            </select>
+                        </label>
+                        <label>Job ID
+                            <input type="search" name="job_id" maxlength="32" autocomplete="off" spellcheck="false">
+                        </label>
+                        <button class="btn-ghost inline-btn" type="submit">Apply filters</button>
+                    </form>
+                    <p id="notification-history-retention" class="muted" hidden></p>
+                    <p id="notification-history-status" class="muted" role="status" tabindex="-1"></p>
+                    <button class="btn-ghost inline-btn" type="button" id="notification-history-retry" hidden>Retry history</button>
+                    <ul id="notification-history-items" class="notification-history-items" aria-label="Delivery results" tabindex="-1" hidden></ul>
+                    <div class="notification-history-pages" id="notification-history-pages" hidden>
+                        <button class="btn-ghost inline-btn" type="button" id="notification-history-newer">Newer</button>
+                        <button class="btn-ghost inline-btn" type="button" id="notification-history-older">Older</button>
+                    </div>
+                </div>
+            </details>
             </div>
         </section>
 
@@ -1185,11 +1223,11 @@
     <script src="/static/js/scheduled-policy-administration-interaction.js?v=scheduled-autoremove-20261020"></script>
     <script src="/static/js/section-navigation.js?v=section-navigation-20261029"></script>
     <script src="/static/js/section-navigation-adapter.js?v=admin-horizontal-20261104"></script>
-    <script src="/static/js/admin-page-interaction.js?v=admin-explicit-profile-20261029"></script>
+    <script src="/static/js/admin-page-interaction.js?v=notification-history-594"></script>
     <script src="/static/js/admin-session-ip-reveal.js?v=frontend-isolation-20261027"></script>
     <script src="/static/js/application-postcheck-adapter.js?v=admin-profile-test-eligibility-20261029"></script>
     <script src="/static/js/package-deferrals.js?v=frontend-isolation-20261027"></script>
-<script src="/static/js/admin-notifications-adapter.js?v=frontend-isolation-20261027"></script>
+<script src="/static/js/admin-notifications-adapter.js?v=notification-history-594"></script>
 <script src="/static/js/admin-account-adapter.js?v=frontend-isolation-20261027"></script>
 <script src="/static/js/admin-backup-adapter.js?v=backup-catalog-20261028"></script>
 <script src="/static/js/admin-policies-adapter.js?v=scheduled-run-identity-566"></script>

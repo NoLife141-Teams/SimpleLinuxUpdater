@@ -3,8 +3,10 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -12,6 +14,103 @@ import (
 
 	notificationpkg "debian-updater/internal/notifications"
 )
+
+func TestNotificationDeliveryHistoryIsScopedRedactedAndPaged(t *testing.T) {
+	const endpoint = "/api/notifications/delivery-history"
+	job := strings.Repeat("a", 32)
+	now := time.Date(2026, 10, 25, 12, 0, 0, 0, time.UTC)
+	app := newTestAppWithDeps(t, filepath.Join(t.TempDir(), "notification-history.db"), AppDeps{
+		Now: func() time.Time { return now },
+	})
+	admin := app.authenticate(t)
+	db := app.Deps.DB()
+	seed := func(id int, destination, state, jobID, reason string) {
+		t.Helper()
+		metadata, err := json.Marshal(map[string]any{
+			"job_id": jobID, "approval_generation": 7, "approval_url": "https://secret.example/?token=secret-value",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		created := now.Format(time.RFC3339Nano)
+		next := now.Add(time.Hour).Format(time.RFC3339Nano)
+		if _, err := db.Exec(`INSERT INTO notification_outbox
+			(id,destination,event_type,action,message,destination_fingerprint,meta_json,state,attempts,created_at,updated_at,
+			next_attempt_at,claimed_at,attempted_at,completed_at,status_code,error)
+			VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, fmt.Sprintf("%064x", id), destination, "approval.published", "approval.published",
+			"secret-value", "secret-fingerprint", string(metadata), state, id, created, created, next, next, created, created, 503, reason); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i := 1; i <= 22; i++ {
+		seed(i, "telegram", "succeeded", "", "")
+	}
+	seed(23, "webhook", "retrying", job, "webhook returned HTTP 503 https://secret.example/?token=secret-value")
+	seed(24, "discord", "succeeded", job, "")
+	seed(25, "telegram", "skipped", job, "destination configuration changed after notification admission")
+	query := func(filters url.Values) notificationpkg.DeliveryHistoryPage {
+		t.Helper()
+		rec := identityRequest(app, "GET", endpoint+"?"+filters.Encode(), admin, "", nil)
+		var result notificationpkg.DeliveryHistoryPage
+		if rec.Code != http.StatusOK || !strings.Contains(rec.Header().Get("Cache-Control"), "no-store") || json.Unmarshal(rec.Body.Bytes(), &result) != nil {
+			t.Fatalf("read delivery history: %d %s", rec.Code, rec.Body.String())
+		}
+		for _, secret := range []string{"secret.example", "secret-value", "secret-fingerprint", "meta_json", "approval_url"} {
+			if strings.Contains(rec.Body.String(), secret) {
+				t.Fatalf("history exposed %q", secret)
+			}
+		}
+		return result
+	}
+	byJob := query(url.Values{"job_id": {job}})
+	if len(byJob.Items) != 3 || byJob.RetentionSeconds != int64(30*24*time.Hour/time.Second) {
+		t.Fatalf("unexpected result for the job: %+v", byJob)
+	}
+	skipped, delivered, retrying := byJob.Items[0], byJob.Items[1], byJob.Items[2]
+	if skipped.State != "skipped" || skipped.Reason != "Destination configuration changed after admission." ||
+		delivered.State != "succeeded" || delivered.Destination != "discord" || delivered.ApprovalGeneration != 7 ||
+		retrying.State != "retrying" || retrying.Reason != "Destination returned HTTP 503." || retrying.NextAttemptAt == "" {
+		t.Fatalf("delivery states or evidence were lost: %+v", byJob.Items)
+	}
+	filtered := query(url.Values{"job_id": {job}, "state": {"retrying"}, "destination": {"webhook"}})
+	if len(filtered.Items) != 1 || filtered.Items[0] != retrying {
+		t.Fatalf("combined filters failed: %+v", filtered)
+	}
+	first := query(url.Values{})
+	if len(first.Items) != 20 || first.NextCursor == "" {
+		t.Fatalf("unexpected first page: %+v", first)
+	}
+	seed(26, "telegram", "succeeded", "", "")
+	if _, err := db.Exec(`UPDATE notification_outbox SET created_at = ? WHERE id = ?`,
+		now.Add(100*time.Millisecond).Format(time.RFC3339Nano), fmt.Sprintf("%064x", 26)); err != nil {
+		t.Fatal(err)
+	}
+	older := query(url.Values{"before": {first.NextCursor}})
+	if len(older.Items) != 5 || older.NextCursor != "" || older.Items[0].Attempts != 5 || older.Items[4].Attempts != 1 {
+		t.Fatalf("pagination drifted after a new delivery: %+v", older)
+	}
+	var retained int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM notification_outbox`).Scan(&retained); err != nil || retained != 26 {
+		t.Fatalf("read history changed the outbox: rows=%d err=%v", retained, err)
+	}
+	for _, invalid := range []string{"destination=unknown", "state=sent", "job_id=short", "before=garbage"} {
+		if rec := identityRequest(app, "GET", endpoint+"?"+invalid, admin, "", nil); rec.Code != http.StatusBadRequest {
+			t.Fatalf("invalid filter %s: %d", invalid, rec.Code)
+		}
+	}
+	for _, role := range []string{"operator", "reader"} {
+		if _, err := app.Deps.AuthService.CreateAccount(role, testPasswordStrong, role); err != nil {
+			t.Fatal(err)
+		}
+		cookie := identityLogin(t, app, role)
+		if rec := identityRequest(app, "GET", endpoint, cookie, "", nil); rec.Code != http.StatusForbidden {
+			t.Fatalf("%s could read delivery history: %d", role, rec.Code)
+		}
+	}
+	if rec := identityRequest(app, "GET", endpoint, nil, "", nil); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("anonymous delivery history access: %d", rec.Code)
+	}
+}
 
 func TestNotificationSettingsAPIAndAuditDelivery(t *testing.T) {
 	received := make(chan notificationpkg.WebhookPayload, 4)

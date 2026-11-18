@@ -1998,6 +1998,62 @@ test("application post-check profiles edit, persist and test with bounded expect
     }
 });
 
+test("delivery history opens on demand, filters by job and navigates retained results", async ({ page }) => {
+    await ensureAuthenticatedSession(page);
+    await stubAdminApi(page, {});
+    const job = "6383ba6587c34f1190c2d906396a1d3e";
+    const item = {
+        destination: "webhook", state: "retrying", event_type: "approval.published",
+        job_id: job, approval_generation: 7, attempts: 2, created_at: "2026-11-18T18:00:00Z",
+        next_attempt_at: "2026-11-18T18:05:00Z", reason: "Destination returned HTTP 503.",
+    };
+    const requests = [];
+    let failOnce = true;
+    await page.route("**/api/notifications/delivery-history*", route => {
+        expect(route.request().method()).toBe("GET");
+        const params = Object.fromEntries(new URL(route.request().url()).searchParams);
+        requests.push(params);
+        if (failOnce) {
+            failOnce = false;
+            return fulfillJson(route, { error: "Delivery history is temporarily unavailable." }, 503);
+        }
+        if (params.before) return fulfillJson(route, { retention_seconds: 2592000, items: [
+            { ...item, destination: "telegram", state: "skipped", next_attempt_at: "", reason: "Delivery was no longer eligible." },
+        ] });
+        if (params.job_id) return fulfillJson(route, { retention_seconds: 2592000, items: [] });
+        return fulfillJson(route, { retention_seconds: 2592000, next_cursor: "older-cursor", items: [
+            item, { ...item, destination: "discord", state: "succeeded", next_attempt_at: "", reason: "" },
+        ] });
+    });
+    await page.goto("/admin#admin-section-notifications");
+    await navigateSection(page, "admin", "notifications");
+    await expect(page.locator('[data-admin-section-lifecycle="notifications"]')).toHaveAttribute("data-status", "current");
+    expect(requests).toEqual([]);
+    const history = page.locator("#notification-history");
+    await history.getByText("Delivery history", { exact: true }).click();
+    await expect(history.getByRole("status")).toHaveText("Delivery history is temporarily unavailable.");
+    await history.getByRole("button", { name: "Retry history" }).click();
+    await expect(history.getByRole("list", { name: "Delivery results" }).getByRole("listitem")).toHaveCount(2);
+    await expect(history).toContainText("Completed deliveries are kept for 30 days.");
+    await expect(history).toContainText("Plan generation 7");
+    await expect(history.getByText("Next retry ·", { exact: false })).toBeVisible();
+    await expect(history.getByRole("list", { name: "Delivery results" }).getByText("Delivered", { exact: true })).toBeVisible();
+    await page.setViewportSize({ width: 390, height: 840 });
+    expect(await history.evaluate(panel => panel.scrollWidth <= panel.clientWidth)).toBe(true);
+    await history.getByRole("button", { name: "Older" }).click();
+    await expect(history.getByText("Delivery was no longer eligible.", { exact: true })).toBeVisible();
+    expect(requests.at(-1)).toEqual({ before: "older-cursor" });
+    await history.getByRole("button", { name: "Newer" }).click();
+    await expect(history.getByText("Destination returned HTTP 503.", { exact: true })).toBeVisible();
+    expect(requests.at(-1)).toEqual({});
+    await history.getByLabel("Destination").selectOption("webhook");
+    await history.getByLabel("Delivery state").selectOption("retrying");
+    await history.getByRole("searchbox", { name: "Job ID" }).fill(job);
+    await history.getByRole("button", { name: "Apply filters" }).click();
+    await expect(history.getByRole("status")).toHaveText("No matching deliveries.");
+    expect(requests.at(-1)).toEqual({ destination: "webhook", state: "retrying", job_id: job });
+});
+
 test("notification conditions stay opt-in and grouped reminders validate and save", async ({
     baseURL,
     page,

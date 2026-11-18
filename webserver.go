@@ -2015,6 +2015,9 @@ func registerProtectedAuthAndSettingsRoutes(r *gin.Engine, deps AppDeps) {
 	r.GET("/api/notifications/delivery-diagnostics", func(c *gin.Context) {
 		handleNotificationDeliveryDiagnostics(c, deps.NotificationService)
 	})
+	r.GET("/api/notifications/delivery-history", func(c *gin.Context) {
+		handleNotificationDeliveryHistory(c, deps.NotificationService)
+	})
 	r.POST("/api/notifications/test", func(c *gin.Context) {
 		handleNotificationTest(c, deps.NotificationService)
 	})

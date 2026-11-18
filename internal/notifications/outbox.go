@@ -240,6 +240,12 @@ func EnsureSchema(db *sql.DB) error {
 		ON notification_outbox (state, completed_at)`); err != nil {
 		return fmt.Errorf("index notification outbox terminal rows: %w", err)
 	}
+	// RFC3339Nano omits trailing fractional zeroes. Removing the final Z
+	// preserves chronological ordering for both whole and fractional seconds.
+	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_notification_outbox_history
+		ON notification_outbox (rtrim(created_at, 'Z') DESC, id DESC)`); err != nil {
+		return fmt.Errorf("index notification outbox history: %w", err)
+	}
 	return nil
 }
 

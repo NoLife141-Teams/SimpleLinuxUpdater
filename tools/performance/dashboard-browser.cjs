@@ -23,6 +23,18 @@ const quantiles = values => {
 };
 async function settledPaint(page) { await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))); }
 async function timed(page, run) { const at = performance.now(); await run(); await settledPaint(page); return performance.now() - at; }
+const fleetPaths = ['/api/servers', '/api/dashboard/summary'];
+function fleetResponses(page) {
+  return fleetPaths.map(path => page.waitForResponse(response => new URL(response.url()).pathname === path));
+}
+async function fleetBytes(responses) {
+  return Object.fromEntries(await Promise.all(responses.map(async (pending, index) => {
+    const response = await pending;
+    const [{ responseBodySize }, body] = await Promise.all([response.request().sizes(), response.body()]);
+    assert.ok(responseBodySize > 0 && body.length > 0, `missing body size for ${fleetPaths[index]}`);
+    return [fleetPaths[index], { encoded: responseBodySize, decoded: body.length }];
+  })));
+}
 
 (async () => {
   await fs.mkdir(output, { recursive: true });
@@ -63,11 +75,14 @@ async function timed(page, run) { const at = performance.now(); await run(); awa
           page.on('requestfinished', finished); page.on('requestfailed', finished);
           page.on('response', res => { if (res.status() >= 400) errors.push(`HTTP ${res.status()} ${res.url()}`); });
           try {
+            const initialResponses = fleetResponses(page);
             const initial = await timed(page, async () => {
               await page.goto(fixture.url, { waitUntil: 'domcontentloaded' });
               await page.locator('#metric-total-hosts').filter({ hasText: String(size) }).waitFor();
               await page.locator('#servers-table tbody tr[data-name]').first().waitFor();
             });
+            await Promise.all(initialResponses.map(async response => (await response).finished()));
+            const initialBytes = await fleetBytes(initialResponses);
             assert.equal(await page.locator('#metric-total-hosts').innerText(), String(size));
             const filter = await timed(page, async () => {
               await page.locator('#search').fill('synthetic-0001');
@@ -84,15 +99,17 @@ async function timed(page, run) { const at = performance.now(); await run(); awa
             const detail = await timed(page, async () => {
               await page.locator('#servers-table button[data-action="open-drawer"][data-name="synthetic-0001"][data-tab="pending"]').click();
               await page.locator('#status-drawer[aria-hidden="false"]').waitFor();
+              await page.getByText('synthetic-pkg-00', { exact: true }).first().waitFor();
               await page.locator('#drawer-tab-logs').click();
               await page.waitForFunction(() => document.querySelector('#drawer-logs')?.textContent.includes('D'.repeat(100)));
             });
             await page.locator('#status-drawer-close').click();
+            const changed = fleetResponses(page);
             const refresh = await timed(page, async () => {
-              const changed = page.waitForResponse(res => new URL(res.url()).pathname === '/api/servers');
               await context.request.get(fixture.url + '/__scaling/event');
-              await (await changed).finished();
+              await Promise.all(changed.map(async response => (await response).finished()));
             });
+            const refreshBytes = await fleetBytes(changed);
             let reconnects = 0;
             const reconnectSamples = [];
             if (iteration === 4) {
@@ -111,7 +128,7 @@ async function timed(page, run) { const at = performance.now(); await run(); awa
             }
             const metrics = Object.fromEntries((await cdp.send('Performance.getMetrics')).metrics.map(m => [m.name, m.value]));
             const browserFacts = await page.evaluate(() => ({ dom_nodes: document.getElementsByTagName('*').length, rows: document.querySelectorAll('#servers-table tbody tr[data-name]').length, long_tasks_ms: window.scalingLongTasks, resources: performance.getEntriesByType('resource').filter(r => r.name.includes('/api/')).map(r => ({ path: new URL(r.name).pathname, encoded_bytes: r.encodedBodySize, decoded_bytes: r.decodedBodySize, duration_ms: r.duration })) }));
-            if (iteration >= 0) samples.push({ initial, filter, select, detail, refresh, reconnects, sse_connections: sseConnections, reconnect_samples: reconnectSamples, requests, max_concurrent_by_path: Object.fromEntries(maxActive), hidden_selection_hint: hiddenSelectionHint, metrics, ...browserFacts });
+            if (iteration >= 0) samples.push({ initial, filter, select, detail, refresh, initial_bytes: initialBytes, refresh_bytes: refreshBytes, reconnects, sse_connections: sseConnections, reconnect_samples: reconnectSamples, requests, max_concurrent_by_path: Object.fromEntries(maxActive), hidden_selection_hint: hiddenSelectionHint, metrics, ...browserFacts });
           } catch (error) {
             await page.screenshot({ path: path.join(output, `failure-${size}.png`) });
             throw error;

@@ -30,6 +30,7 @@
         const statusInteraction = window.StatusPageInteraction.createStore({
             presentationFacts: dashboardConsumption.presentationFacts,
             linkedServerIdentity: document.body.dataset.linkedServerIdentity,
+            canReadLogs: window.canUseScope("logs:read"),
         });
         window.statusPageInteraction = statusInteraction;
         const statusViewScope = window.StatusRendering.createSnapshotScope(() =>
@@ -101,7 +102,7 @@
                 dispatchStatusInteraction(...args),
             encodeURIComponent: (...args) => encodeURIComponent(...args),
         });
-        const { executeStatusSnapshotFetch, executeJobLogFetch } =
+        const { executeStatusSnapshotFetch, executeJobLogFetch, executeHostDetailFetch, fetchHostDetail } =
             statusSnapshots;
         statusSnapshots.init();
         lifecycle.own(statusSnapshots.destroy);
@@ -154,6 +155,10 @@
                     tasks.push(executeStatusSnapshotFetch(effect));
                 } else if (effect.type === "fetchJobLogs") {
                     tasks.push(executeJobLogFetch(effect));
+                } else if (effect.type === "fetchHostDetail") {
+                    tasks.push(executeHostDetailFetch(effect));
+                } else if (effect.type === "renderHostDetail") {
+                    statusViewScope.run(effect.surface === "drawer" ? renderDrawer : renderSelectedHostPanel);
                 } else if (
                     effect.type === "render" &&
                     effect.scope === "serverState"
@@ -531,14 +536,6 @@
             );
         }
 
-        function getLatestLogLines(server, limit = 5) {
-            const lines = statusFormatting
-                .logLines(server?.logs)
-                .map((line) => line.trim())
-                .filter(Boolean);
-            return lines.slice(-limit);
-        }
-
         function renderDashboardMetrics() {
             statusRendering.metrics(
                 dashboardPresentation,
@@ -560,9 +557,13 @@
             return `${enabled ? "" : "disabled"} title="${escapeHtml(title)}"`;
         }
 
-        function renderPendingUpdatesHtml(server) {
-            return window.PendingUpdatesView.render(getStatusView().pendingUpdates, {
-                deferrals: window.PackageDeferrals.approvalHTML(server.upgrade_plan),
+        function renderPendingUpdatesHtml(server, detail) {
+            const pending = getStatusView().pendingUpdates;
+            if (!pending) {
+                return miniEmpty(detail?.loading ? "Loading package details…" : "Package details unavailable. Reopen this panel to retry.");
+            }
+            return window.PendingUpdatesView.render(pending, {
+                deferrals: window.PackageDeferrals.approvalHTML(detail?.snapshot?.upgrade_plan || server.upgrade_plan),
                 driftReason: pendingApprovalDriftReason(server),
             });
         }
@@ -1075,8 +1076,8 @@
 
         function updateSecuritySummaryHtml(selected, safeDataName) {
             const info = selected.updateCVEs || {};
-            const updates = selected.server.pending_updates || [];
-            const count = Number(selected.triage.pending_packages || updates.length || 0);
+            const pending = selected.server.package_counts?.pending ?? selected.server.pending_updates?.length ?? 0;
+            const count = Number(selected.triage.pending_packages || pending);
             const security = Number(selected.triage.security_updates || 0);
             const fixes = Number(info.correctable || 0);
             const incomplete = info.state !== "ready";
@@ -1086,7 +1087,7 @@
                 <h3>Available updates</h3><p><strong>${escapeHtml(summary)}</strong></p>
                 ${count > 0 ? `<p>${incomplete ? "CVE lookup incomplete" : `${fixes} verified CVE fix${fixes === 1 ? "" : "es"}`}</p>` : ""}
                 ${info.checked_at ? `<p class="subtle">Checked ${escapeHtml(formatRelativeTimestamp(info.checked_at))}</p>` : ""}
-                ${updates.length ? `<button type="button" class="inline-btn" data-action="open-drawer" data-name="${safeDataName}" data-tab="pending">Review updates</button>` : ""}
+                ${selected.hasPendingUpdates ? `<button type="button" class="inline-btn" data-action="open-drawer" data-name="${safeDataName}" data-tab="pending">Review updates</button>` : ""}
             </section>`;
         }
 
@@ -1189,7 +1190,7 @@
                     ${repeatsRuntimeStatus ? "" : `<span class="stage-chip phase-${escapeHtml(timeline.state || "idle")}">${escapeHtml(phaseLabel)}</span>`}
                 </div>
                 ${updateSecuritySummaryHtml(selected, safeDataName)}
- ${applicationPostchecksHtml(server)}
+                ${applicationPostchecksHtml(server, statusInteraction.getHostDetail("inspector")?.snapshot)}
                 ${
                     recommendedAction.key !== "healthy"
                         ? `<section class="recommended-action recommended-${escapeHtml(recommendedAction.key || "healthy")}">
@@ -1932,7 +1933,11 @@
                 logsEl.dataset.serverName === drawerState.serverName;
             const follow =
                 !sameServer || (drawerState.logFollow && isNearBottom(logsEl));
-            logsEl.innerHTML = formatLogsHtml(server.logs || "");
+            const detail = statusInteraction.getHostDetail("drawer");
+            const logs = server.logs || detail?.snapshot?.logs;
+            logsEl.innerHTML = !logs && detail?.loading
+                ? miniEmpty("Loading logs…")
+                : formatLogsHtml(logs);
             logsEl.dataset.serverName = drawerState.serverName;
             if (follow) {
                 logsEl.scrollTop = logsEl.scrollHeight;
@@ -1994,6 +1999,7 @@
                 closeDrawer();
                 return;
             }
+            const detail = statusInteraction.getHostDetail("drawer");
 
             const safeStatus = safeStatusClass(server.status);
             const safeStatusText = escapeHtml(statusLabel(server.status));
@@ -2020,7 +2026,7 @@
             title.textContent = server.name || "Server details";
             statusContainer.innerHTML = `
 	                <span class="status-pill status-${safeStatus}">${safeStatusText}</span>
-	                ${applicationPostchecksHtml(server)}
+	                ${applicationPostchecksHtml(server, detail?.snapshot)}
  ${driftReason ? `<span class="drawer-status-note pending-drift-note" title="${escapeHtml(driftReason)}">${escapeHtml(driftReason)}</span>` : ""}
 	            `;
             approvalActions.classList.toggle("hidden", !isPendingApproval);
@@ -2069,7 +2075,7 @@
                 const focusedInput = pendingPanel.contains(document.activeElement) && document.activeElement.matches("input[data-pending-input]")
                     ? { id: document.activeElement.id, start: document.activeElement.selectionStart, end: document.activeElement.selectionEnd } : null;
                 if (!samePendingServer) pendingPanel.replaceChildren();
-                statusRendering.html(pendingPanel, renderPendingUpdatesHtml(server));
+                statusRendering.html(pendingPanel, renderPendingUpdatesHtml(server, detail));
                 if (focusedInput) {
                     const input = document.getElementById(focusedInput.id);
                     input?.focus({ preventScroll: true });
@@ -2413,9 +2419,7 @@
             name = name || getStatusView().drawer.serverName;
             const view = getStatusView();
             const server = getServerByName(name);
-            const logs = String(
-                view.jobLogs?.[name]?.rawText ?? server?.logs ?? "",
-            );
+            const logs = rawLogs(view, server, name);
             try {
                 await navigator.clipboard.writeText(logs);
                 if (!lifecycle.isCurrent(lifetime)) return;
@@ -2435,9 +2439,7 @@
             name = name || getStatusView().drawer.serverName;
             const view = getStatusView();
             const server = getServerByName(name);
-            const logs = String(
-                view.jobLogs?.[name]?.rawText ?? server?.logs ?? "",
-            );
+            const logs = rawLogs(view, server, name);
             const blob = new Blob([logs], { type: "text/plain;charset=utf-8" });
             const url = URL.createObjectURL(blob);
             const link = document.createElement("a");
@@ -2451,6 +2453,14 @@
             link.click();
             link.remove();
             URL.revokeObjectURL(url);
+        }
+
+        function rawLogs(view, server, name) {
+            const raw = view.jobLogs?.[name]?.rawText ?? server?.logs ?? "";
+            if (!raw && server?.package_counts && view.drawer.open && view.drawer.serverName === name) {
+                return statusInteraction.getHostDetail("drawer")?.snapshot?.logs || "";
+            }
+            return String(raw);
         }
 
         function applyHoverClass() {
@@ -2784,8 +2794,8 @@
             },
         );
 
-        function applicationPostchecksHtml(server) {
-            const profile = server.application_postcheck_profile;
+        function applicationPostchecksHtml(server, detail) {
+            const profile = detail?.application_postcheck_profile || server.application_postcheck_profile;
             if (server.status !== "pending_approval" || !profile) return "";
             return `<section class="inspector-note"><strong>Application checks: ${escapeHtml(profile.name)} · revision ${Number(profile.revision)}</strong><ul>${(profile.checks || []).map((check) => `<li>${escapeHtml(check.name)}: ${escapeHtml(check.kind === "systemd_active" ? check.unit : `${check.url} → HTTP ${check.expected_status}`)} · ${escapeHtml(check.mode)}, up to ${Number(check.timeout_seconds)}s</li>`).join("")}</ul></section>`;
         }
@@ -3498,7 +3508,9 @@
                         );
                         return false;
                     }
-                    const pendingUpdates = plan.payloadFacts.pendingUpdates;
+                    const details = await approvalPackageDetails(name, plan.payloadFacts);
+                    if (!lifecycle.isCurrent(lifetime) || !details) return false;
+                    const { pendingUpdates, counts: detailedCounts } = details;
                     const packages = pendingUpdates
                         .filter(
                             (update) =>
@@ -3511,8 +3523,8 @@
                                 update?.install_package || update?.package,
                         )
                         .filter(Boolean);
-                    const removed = counts.keptBackSecurityRemovedPackages;
-                    const newPackages = counts.keptBackSecurityNewPackages;
+                    const removed = detailedCounts.keptBackSecurityRemovedPackages;
+                    const newPackages = detailedCounts.keptBackSecurityNewPackages;
                     const impact = [];
                     if (packages.length)
                         impact.push(`Packages: ${packages.join(", ")}`);
@@ -3581,8 +3593,9 @@
                         );
                         return false;
                     }
-                    const removed = counts.removedPackages;
-                    const newPackages = counts.newPackages;
+                    const details = await approvalPackageDetails(name, plan.payloadFacts);
+                    if (!lifecycle.isCurrent(lifetime) || !details) return false;
+                    const { removedPackages: removed, newPackages } = details.counts;
                     const impact = [];
                     if (newPackages.length)
                         impact.push(`New packages: ${newPackages.join(", ")}`);
@@ -3609,6 +3622,29 @@
                 },
             );
             if (!lifecycle.isCurrent(lifetime)) return;
+        }
+
+        async function approvalPackageDetails(name, facts) {
+            if (!facts.detailsDeferred) return facts;
+            const lifetime = lifecycle.capture();
+            try {
+                const detail = await fetchHostDetail(name, facts.serverIdentity, facts.approvalIdentity, "packages");
+                if (!lifecycle.isCurrent(lifetime)) return null;
+                if (!detail?.upgrade_plan) throw new Error("Missing upgrade plan");
+                return {
+                    pendingUpdates: detail.pending_updates || [],
+                    counts: dashboardConsumption.presentationFacts.approvalCounts(detail),
+                };
+            } catch (error) {
+                if (!lifecycle.isCurrent(lifetime) || error?.name === "AbortError") return null;
+                if (error?.status === 409) {
+                    statusActionAdapter.notify("Host plan changed. Review the current plan before approving.");
+                    await fetchServers(true, "approval-detail-conflict");
+                } else {
+                    statusActionAdapter.notify("Unable to load the package plan. Try again before approving.");
+                }
+                return null;
+            }
         }
 
         async function cancelUpgrade(name) {

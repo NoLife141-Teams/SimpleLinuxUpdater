@@ -359,6 +359,20 @@ func (s *State) CurrentStatusSnapshot(name string) *ServerStatus {
 	return CloneServerStatus((*s.statusMap)[name])
 }
 
+func (s *State) InventoryStatusSnapshot(name string) *ServerStatus {
+	s.Lock()
+	defer s.Unlock()
+	server, exists := s.FindByNameLocked(name)
+	if !exists {
+		return nil
+	}
+	status := CloneServerStatus((*s.statusMap)[name])
+	if status != nil {
+		status.ServerIdentity = server.Identity
+	}
+	return status
+}
+
 func (s *State) RestoreStatusSnapshot(name string, snapshot *ServerStatus) {
 	s.Lock()
 	defer s.Unlock()

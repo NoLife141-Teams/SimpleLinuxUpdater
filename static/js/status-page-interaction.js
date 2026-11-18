@@ -49,6 +49,16 @@
     const activeStatuses = new Set(["updating", "upgrading", "autoremove", "repairing", "rebooting", "sudoers", "facts_refresh", "vulnerability_scan", "postchecks_test"]);
     const refreshPriority = Object.freeze({ deferable: 1, immediate: 2 });
 
+    function approvalIdentity(server) {
+        const revision = server?.upgrade_plan?.package_deferrals?.revision;
+        return {
+            job_id: String(server?.job_id || ""),
+            approval_generation: Number(server?.approval_generation) || 0,
+            ...(server?.remediation_digest ? { remediation_digest: server.remediation_digest } : {}),
+            ...(revision ? { deferral_revision: revision } : {})
+        };
+    }
+
     function cloneValue(value) {
         if (Array.isArray(value)) {
             return value.map(cloneValue);
@@ -119,7 +129,7 @@
             if (key === "approve_all") return `${pluralized(counts.standard, "standard update")} ready for approval.`;
             if (key === "approve_security") return `${pluralized(counts.standardSecurity, "standard security update")} ready for approval.`;
             if (key === "approve_security_kept_back") {
-                const removalNote = counts.keptBackSecurityRemovedPackages.length > 0
+                const removalNote = (server.upgrade_plan?.kept_back_security_has_removals || counts.keptBackSecurityRemovedPackages.length > 0)
                     ? " Package removals will be confirmed from the previewed plan."
                     : "";
                 return `${pluralized(counts.keptBackSecurity, "kept-back security update")} ready for targeted approval.${removalNote}`;
@@ -221,6 +231,8 @@
         let selectedServerNames = new Set();
         let drawer = { open: false, serverName: "", serverIdentity: "", tab: "logs", logFollow: true };
         const pendingUpdatesInteraction = pendingUpdates.createStore();
+        const hostDetails = { inspector: null, drawer: null };
+        let nextHostDetailRequestId = 1;
         function createStreamState() {
             return {
                 nextRequestId: 1,
@@ -355,7 +367,7 @@
         function updateServerLogProjection(serverName, state) {
             const server = serversByName.get(serverName);
             if (!server) return;
-            if (state.jobId || Object.hasOwn(server, "job_id")) server.job_id = state.jobId;
+            if (!server.package_counts && (state.jobId || Object.hasOwn(server, "job_id"))) server.job_id = state.jobId;
             if (state.fragments.length > 0 || Object.hasOwn(server, "logs")) server.logs = terminalText(state.terminal);
         }
 
@@ -404,6 +416,11 @@
                 const serverName = server.name;
                 const jobId = String(server.job_id || "");
                 const preview = String(server.logs || "");
+                const previousIdentity = previousServersByName.get(serverName)?.server_identity;
+                if (previousIdentity && previousIdentity !== server.server_identity) {
+                    jobLogsByServer.delete(serverName);
+                    disconnectedJobLogs.delete(serverName);
+                }
                 const current = jobLogsByServer.get(serverName);
                 if (!jobId) {
                     if (jobLogTransportLive && current?.jobId) {
@@ -425,7 +442,7 @@
                     if (jobLogTransportLive && shouldRecoverServer(serverName, server)) {
                         effects.push(...logRecoveryEffect(serverName, next));
                     }
-                } else if (!jobLogTransportLive) {
+                } else if (!jobLogTransportLive && !server.package_counts) {
                     const drawerNeedsFullLogs = drawer.open
                         && drawer.tab === "logs"
                         && drawer.serverName === serverName;
@@ -482,7 +499,7 @@
         }
 
         function hasPendingUpdates(server) {
-            return Array.isArray(server && server.pending_updates) && server.pending_updates.length > 0;
+            return (server?.package_counts?.pending ?? server?.pending_updates?.length ?? 0) > 0;
         }
 
         function matchesAvailability(server) {
@@ -512,7 +529,7 @@
             }
             if (filters.quick === "high_risk") {
                 const dashboardCVECount = dashboardServer && dashboardServer.approval_triage && dashboardServer.approval_triage.cve_count;
-                const fallbackCVECount = (Array.isArray(server.pending_updates) ? server.pending_updates : [])
+                const fallbackCVECount = server.package_counts?.cves ?? (Array.isArray(server.pending_updates) ? server.pending_updates : [])
                     .reduce((sum, update) => sum + (Array.isArray(update && update.cves) ? update.cves.length : 0), 0);
                 const cveCount = dashboardCVECount === undefined || dashboardCVECount === null
                     ? fallbackCVECount
@@ -590,10 +607,55 @@
         }
 
         function stateEffects(options = {}) {
-            const effects = [];
+            const effects = options.render === false ? [] : requestHostDetails(options.refreshHostDetails);
             if (options.persist) effects.push({ type: "persistFilters", value: persistenceValue() });
             if (options.render !== false) effects.push(...renderEffects(options));
             return effects;
+        }
+
+        function hostDetailRequest(surface) {
+            const isDrawer = surface === "drawer";
+            const name = isDrawer ? (drawer.open ? drawer.serverName : "") : primaryServerName;
+            const server = serversByName.get(name);
+            if (!server?.package_counts) return null;
+            const view = isDrawer ? (drawer.tab === "pending" ? "packages" : "logs") : "overview";
+            if (view === "overview" && (server.status !== "pending_approval" || !server.has_application_postchecks)) return null;
+            if (view === "logs" && options.canReadLogs === false) return null;
+            const identity = approvalIdentity(server);
+            const key = JSON.stringify([name, server.server_identity, server.status, view, identity]);
+            return { name, view, key, serverIdentity: server.server_identity, approvalIdentity: identity };
+        }
+
+        function requestHostDetails(refresh) {
+            const effects = [];
+            for (const surface of Object.keys(hostDetails)) {
+                const request = hostDetailRequest(surface);
+                const current = hostDetails[surface];
+                if (!request) {
+                    hostDetails[surface] = null;
+                    continue;
+                }
+                const same = current?.key === request.key;
+                if (same && (current.loading || !refresh)) continue;
+                const requestId = nextHostDetailRequestId++;
+                hostDetails[surface] = { ...request, requestId, loading: true, snapshot: same ? current.snapshot : null };
+                effects.push({ type: "fetchHostDetail", surface, requestId, ...request });
+            }
+            return effects;
+        }
+
+        function getHostDetail(surface) {
+            const detail = hostDetails[surface];
+            if (detail?.key !== hostDetailRequest(surface)?.key) return null;
+            return detail ? { loading: detail.loading, snapshot: cloneValue(detail.snapshot) } : null;
+        }
+
+        function drawerPendingServer() {
+            const server = serversByName.get(drawer.serverName);
+            if (!server?.package_counts) return server;
+            const detail = hostDetails.drawer;
+            if (detail?.key !== hostDetailRequest("drawer")?.key || !detail?.snapshot?.upgrade_plan) return null;
+            return { ...server, ...detail.snapshot };
         }
 
         function startRefresh(streamName, priority, reason, context = {}) {
@@ -838,13 +900,20 @@
                 }
                 const persistenceChanged = reconcileNavigation();
                 return [
-                    ...stateEffects({ persist: !linkedServerIdentity && persistenceChanged, scope: "serverState", priority: linkedServerChanged ? "immediate" : priority }),
+                    ...stateEffects({ persist: !linkedServerIdentity && persistenceChanged, scope: "serverState", priority: linkedServerChanged ? "immediate" : priority, refreshHostDetails: true }),
                     ...(linkedServerChanged ? [{ type: "revealLinkedServer", found: Boolean(linkedServer) }] : []),
                     { type: "renderSyncState" },
                     ...(requestId ? finishRefresh("servers", requestId, event.receivedAt) : []),
                     ...logEffects,
                     ...requestPrimaryCommandHistory(priority, "server-selection")
                 ];
+            } else if (event.type === "hostDetailReceived") {
+                const current = hostDetails[event.surface];
+                if (!current?.loading || current.requestId !== event.requestId
+                    || current.key !== hostDetailRequest(event.surface)?.key) return [];
+                current.loading = false;
+                current.snapshot = event.stale ? null : (event.snapshot ?? current.snapshot);
+                return [{ type: "renderHostDetail", surface: event.surface }];
             } else if (event.type === "dashboardSnapshotReceived") {
                 const requestId = Number(event.requestId || 0);
                 const stream = streams.dashboard;
@@ -1116,7 +1185,8 @@
                     ...(tab === "logs" ? logRecoveryEffect(drawer.serverName, jobLogsByServer.get(drawer.serverName)) : [])
                 ];
             } else if (event.type === "pendingUpdatesChanged") {
-                pendingUpdatesInteraction.dispatch(event.intent, serversByName.get(drawer.serverName));
+                const server = drawerPendingServer();
+                if (server) pendingUpdatesInteraction.dispatch(event.intent, server);
                 return stateEffects({ scope: "pendingUpdates", priority: "immediate" });
             } else if (event.type === "drawerLogFollowChanged") {
                 drawer = { ...drawer, logFollow: !!event.value };
@@ -1183,15 +1253,13 @@
         }
 
         function actionPayloadFacts(server) {
+            const counts = canonicalApprovalCounts(server);
             return {
                 serverIdentity: String(server?.server_identity || ""),
-                counts: canonicalApprovalCounts(server),
-                approvalIdentity: {
-                    job_id: String(server?.job_id || ""),
-                    approval_generation: Number(server?.approval_generation) || 0,
-                    ...(server?.remediation_digest ? {remediation_digest:String(server.remediation_digest)} : {}),
- ...(server?.upgrade_plan?.package_deferrals?.revision ? {deferral_revision:server.upgrade_plan.package_deferrals.revision} : {})
-                },
+                detailsDeferred: Boolean(server?.package_counts),
+                keptBackSecurityHasRemovals: Boolean(server?.upgrade_plan?.kept_back_security_has_removals || counts.keptBackSecurityRemovedPackages.length > 0),
+                counts,
+                approvalIdentity: approvalIdentity(server),
                 pendingUpdates: cloneValue(server?.pending_updates || [])
             };
         }
@@ -1332,7 +1400,7 @@
                     tab: drawer.tab,
                     logFollow: drawer.logFollow
                 },
-                pendingUpdates: cloneValue(pendingUpdatesInteraction.view(serversByName.get(drawer.serverName))),
+                pendingUpdates: pendingUpdatesView(),
                 jobLogs: Object.fromEntries(Array.from(jobLogsByServer.entries()).map(([name, state]) => [name, {
                     jobId: state.jobId,
                     lastSequence: state.lastSequence,
@@ -1365,6 +1433,12 @@
             return projectView();
         }
 
+        function pendingUpdatesView() {
+            const server = drawerPendingServer();
+            if (!server && serversByName.get(drawer.serverName)?.package_counts) return null;
+            return cloneValue(pendingUpdatesInteraction.view(server));
+        }
+
         function getPersistence() {
             return {
                 ...persistenceValue()
@@ -1375,6 +1449,7 @@
             dispatch,
             getAction,
             getDashboardServer,
+            getHostDetail,
             getPersistence,
             getServer,
             getView,

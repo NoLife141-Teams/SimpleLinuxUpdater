@@ -1164,6 +1164,7 @@ func handleDashboardSummaryWithService(c *gin.Context, service *ObservabilitySer
 		}
 		omitFindings = !v
 	}
+	compact := c.GetHeader(statusProjectionHeader) == "compact"
 	includeCommandHistory := contextAllows(c, "logs:read")
 	if raw := strings.TrimSpace(c.Query("include_command_history")); raw != "" {
 		parsed, err := strconv.ParseBool(raw)
@@ -1174,8 +1175,8 @@ func handleDashboardSummaryWithService(c *gin.Context, service *ObservabilitySer
 		includeCommandHistory = parsed && contextAllows(c, "logs:read")
 	}
 	summary, err := service.BuildDashboardSummaryContextWithOptions(ctx, c.Query("window"), now(), observabilitypkg.DashboardSummaryOptions{
-		OmitCommandHistory:        !includeCommandHistory,
-		OmitVulnerabilityFindings: omitFindings,
+		OmitCommandHistory:        compact || !includeCommandHistory,
+		OmitVulnerabilityFindings: compact || omitFindings,
 	})
 	if err != nil {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
@@ -1189,11 +1190,16 @@ func handleDashboardSummaryWithService(c *gin.Context, service *ObservabilitySer
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to build dashboard summary"})
 		return
 	}
+	c.Writer.Header().Add("Vary", statusProjectionHeader)
+	if compact {
+		writeDashboardSummaryResponse(c, projectStatusDashboard(summary))
+		return
+	}
 	writeDashboardSummaryResponse(c, summary)
 }
 
-func writeDashboardSummaryResponse(c *gin.Context, summary dashboardSummaryResponse) {
-	c.Header("Vary", "Accept-Encoding")
+func writeDashboardSummaryResponse(c *gin.Context, summary any) {
+	c.Writer.Header().Add("Vary", "Accept-Encoding")
 	if c.Request == nil || !acceptsGzipEncoding(c.Request.Header.Get("Accept-Encoding")) {
 		c.JSON(http.StatusOK, summary)
 		return
@@ -2153,16 +2159,24 @@ func registerServerAndActionRoutes(r *gin.Engine, deps AppDeps) {
 	}
 
 	r.GET("/api/servers", func(c *gin.Context) {
-		serverState()
+		c.Writer.Header().Add("Vary", statusProjectionHeader)
 		statuses := inventoryService.ListStatuses()
+		canReadLogs := contextAllows(c, "logs:read")
+		if c.GetHeader(statusProjectionHeader) == "compact" {
+			c.JSON(http.StatusOK, projectStatusRows(statuses, canReadLogs))
+			return
+		}
 		for i := range statuses {
 			statuses[i].Logs = jobsPkg.BoundedLogPreview(statuses[i].Logs)
-			if !contextAllows(c, "logs:read") {
+			if !canReadLogs {
 				statuses[i].Logs = ""
 				statuses[i].ApplicationPostcheckProfile = nil
 			}
 		}
 		c.JSON(http.StatusOK, statuses)
+	})
+	r.GET("/api/servers/:name/status-detail", func(c *gin.Context) {
+		handleStatusHostDetail(c, serverState())
 	})
 
 	r.POST("/api/servers", func(c *gin.Context) {

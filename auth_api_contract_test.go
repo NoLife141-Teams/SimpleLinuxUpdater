@@ -2,10 +2,14 @@ package main
 
 import (
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -254,7 +258,32 @@ func TestPersonalAPIRealDiscoveryPlanApprovalRunnerAndAudit(t *testing.T) {
 	if plan.JobID != jobID || plan.ApprovalGeneration == 0 || len(plan.PendingUpdates) != 1 {
 		t.Fatalf("incomplete plan identity: %+v", plan)
 	}
-	decision := gin.H{"job_id": plan.JobID, "approval_generation": plan.ApprovalGeneration, "deferral_revision": plan.UpgradePlan.PackageDeferrals.Revision}
+	compactRequest := httptest.NewRequest(http.MethodGet, "/api/servers", nil)
+	compactRequest.AddCookie(cookie)
+	compactRequest.Header.Set(statusProjectionHeader, "compact")
+	compactResponse := httptest.NewRecorder()
+	app.Handler.ServeHTTP(compactResponse, compactRequest)
+	var rows []statusServerRow
+	if err := json.Unmarshal(compactResponse.Body.Bytes(), &rows); err != nil || compactResponse.Code != http.StatusOK || len(rows) != 1 {
+		t.Fatalf("compact inventory: HTTP %d, rows=%d, err=%v", compactResponse.Code, len(rows), err)
+	}
+	row := rows[0]
+	revision := row.UpgradePlan.PackageDeferrals.Revision
+	if row.JobID != plan.JobID || row.ApprovalGeneration != plan.ApprovalGeneration || revision != plan.UpgradePlan.PackageDeferrals.Revision {
+		t.Fatal("compact and public inventory disagree on the pending decision")
+	}
+	query := url.Values{
+		"view": {"packages"}, "server_identity": {row.ServerIdentity},
+		"job_id": {row.JobID}, "approval_generation": {strconv.FormatUint(row.ApprovalGeneration, 10)},
+		"deferral_revision": {revision}, "remediation_digest": {row.RemediationDigest},
+	}
+	detailResponse := identityRequest(app, "GET", "/api/servers/synthetic/status-detail?"+query.Encode(), cookie, "", nil)
+	var detail statusHostDetail
+	if err := json.Unmarshal(detailResponse.Body.Bytes(), &detail); err != nil || detailResponse.Code != http.StatusOK ||
+		len(detail.PendingUpdates) != 1 || detail.PendingUpdates[0].Package != plan.PendingUpdates[0].Package {
+		t.Fatalf("detail lost the runner's plan: HTTP %d, err=%v", detailResponse.Code, err)
+	}
+	decision := gin.H{"job_id": row.JobID, "approval_generation": row.ApprovalGeneration, "deferral_revision": revision}
 	_, readSecret, err := app.Deps.AuthService.CreatePersonalToken(account.ID, "read only", []string{"operational:read"}, time.Now().Add(time.Hour))
 	if err != nil {
 		t.Fatal(err)
@@ -286,6 +315,15 @@ func TestPersonalAPIRealDiscoveryPlanApprovalRunnerAndAudit(t *testing.T) {
 	}
 	if !strings.Contains(meta, `"account_id":`+formatAccountID(account.ID)) || !strings.Contains(meta, `"personal_token_id":"`+tokenID+`"`) {
 		t.Fatalf("audit identity metadata %s", meta)
+	}
+	var approvedJob string
+	var approvedGeneration uint64
+	if err := app.Deps.DB().QueryRow(`SELECT json_extract(meta_json, '$.job_id'), json_extract(meta_json, '$.approval_generation')
+		FROM audit_events WHERE action='update.approve' AND status='success' AND target_name='synthetic'`).Scan(&approvedJob, &approvedGeneration); err != nil {
+		t.Fatal(err)
+	}
+	if approvedJob != row.JobID || approvedGeneration != row.ApprovalGeneration {
+		t.Fatalf("approval audit read job %s generation %d", approvedJob, approvedGeneration)
 	}
 	if rec := identityRequest(app, "GET", "/api/servers", nil, readSecret, nil); strings.Contains(rec.Body.String(), "Starting Linux Updater") {
 		t.Fatal("read-only token leaked logs")

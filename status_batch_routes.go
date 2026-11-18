@@ -229,7 +229,7 @@ func (s *statusBatchService) processHost(ctx context.Context, db *sql.DB, reques
 	if err := setStatusBatchHost(db, request.ID, target.Name, "admitting", state, "", jobID); err != nil {
 		log.Printf("record accepted maintenance batch %s host: %v", request.ID, err)
 	}
-	s.waitForHostJob(ctx, jobID)
+	waitForBatchHostJob(ctx, db, jobID)
 }
 
 func (s *statusBatchService) apply(ctx context.Context, action string, target statusBatchTarget, actor, clientIP string, recordAudit func(string, string, string, string, string, map[string]any)) serverActionLifecycleResult {
@@ -259,19 +259,16 @@ func (s *statusBatchService) apply(ctx context.Context, action string, target st
 	}
 }
 
-func (s *statusBatchService) waitForHostJob(ctx context.Context, jobID string) {
+func waitForBatchHostJob(ctx context.Context, db *sql.DB, jobID string) {
 	if jobID == "" {
-		return
-	}
-	manager := s.deps.CurrentJobManager()
-	if manager == nil {
 		return
 	}
 	ticker := time.NewTicker(300 * time.Millisecond)
 	defer ticker.Stop()
 	for {
-		job, err := manager.GetJob(jobID)
-		if errors.Is(err, sql.ErrNoRows) || (err == nil && job.Status != jobStatusQueued && job.Status != jobStatusRunning) {
+		var status string
+		err := db.QueryRowContext(ctx, `SELECT status FROM jobs WHERE id = ?`, jobID).Scan(&status)
+		if errors.Is(err, sql.ErrNoRows) || (err == nil && status != jobStatusQueued && status != jobStatusRunning) {
 			return
 		}
 		select {
@@ -352,19 +349,9 @@ func (s *statusBatchService) projectBatch(db *sql.DB, batch *statusBatch, active
 		if host.JobID == "" || host.State != "accepted" {
 			continue
 		}
-		manager := s.deps.CurrentJobManager()
-		if manager == nil {
-			continue
-		}
-		job, err := manager.GetJob(host.JobID)
-		if err != nil {
-			if errors.Is(err, sql.ErrNoRows) {
-				host.State, host.Message = "uncertain", "The associated job is unavailable. Check the audit history."
-			}
-			continue
-		}
-		host.JobStatus = job.Status
-		switch job.Status {
+		switch host.JobStatus {
+		case "":
+			host.State, host.Message = "uncertain", "The associated job is unavailable. Check the audit history."
 		case jobStatusRunning:
 			host.State = "running"
 		case jobStatusWaitingApproval:
@@ -376,12 +363,13 @@ func (s *statusBatchService) projectBatch(db *sql.DB, batch *statusBatch, active
 }
 
 func (s *statusBatchService) reconcileHostFromAudit(db *sql.DB, batch *statusBatch, host *statusBatchHost) {
-	var status, jobID, message string
-	err := db.QueryRow(`SELECT status, COALESCE(json_extract(meta_json, '$.job_id'), ''), message FROM audit_events
-		WHERE actor = ? AND target_type = 'server' AND target_name = ? AND json_valid(meta_json)
-		  AND json_extract(meta_json, '$.maintenance_batch_id') = ?
-		  AND (status IN ('started', 'success') OR (action = ? AND status = 'failure' AND json_extract(meta_json, '$.collection_attempted') = 1))
-		ORDER BY id DESC LIMIT 1`, batch.Actor, host.Name, batch.ID, serverFactsRefreshAction).Scan(&status, &jobID, &message)
+	var status, jobID, jobStatus, message string
+	err := db.QueryRow(`SELECT a.status, COALESCE(json_extract(a.meta_json, '$.job_id'), ''), COALESCE(j.status, ''), a.message
+		FROM audit_events a LEFT JOIN jobs j ON j.id = json_extract(a.meta_json, '$.job_id')
+		WHERE a.actor = ? AND a.target_type = 'server' AND a.target_name = ? AND json_valid(a.meta_json)
+		  AND json_extract(a.meta_json, '$.maintenance_batch_id') = ?
+		  AND (a.status IN ('started', 'success') OR (a.action = ? AND a.status = 'failure' AND json_extract(a.meta_json, '$.collection_attempted') = 1))
+		ORDER BY a.id DESC LIMIT 1`, batch.Actor, host.Name, batch.ID, serverFactsRefreshAction).Scan(&status, &jobID, &jobStatus, &message)
 	if err == nil {
 		if status == "failure" {
 			host.State, host.Message = "failed", message
@@ -389,6 +377,7 @@ func (s *statusBatchService) reconcileHostFromAudit(db *sql.DB, batch *statusBat
 		}
 		host.Message = ""
 		host.JobID = jobID
+		host.JobStatus = jobStatus
 		host.State = "accepted"
 		if jobID == "" && status == "success" {
 			host.State = "completed"

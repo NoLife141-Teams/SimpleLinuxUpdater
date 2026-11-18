@@ -1210,8 +1210,8 @@ test("a host awaiting approval can be handled while a maintenance batch is still
         batch = {
             id, action: "update", skipped_count: 0,
             hosts: targets.map(target => target.name === first.name
-                ? { name: target.name, state: "waiting_approval", job_id: "job-ready-host", job_status: "waiting_approval" }
-                : { name: target.name, state: "queued" }),
+                ? { name: target.name, server_identity: target.server_identity, state: "waiting_approval", job_id: "job-ready-host", job_status: "waiting_approval" }
+                : { name: target.name, server_identity: target.server_identity, state: "queued" }),
         };
         return fulfillJson(route, { id }, 202);
     });
@@ -1231,6 +1231,14 @@ test("a host awaiting approval can be handled while a maintenance batch is still
     await expect(readyRow.locator('button[data-action="cancel-upgrade"]')).toBeEnabled();
     await expect(queuedUpdate).toHaveCount(0);
     await expect(page.locator("#bulk-update")).toBeDisabled();
+
+    await page.reload();
+    await expect(page.locator("#status-batch-label")).toHaveText("Update checks");
+    await expect(readyRow.locator('button[data-action="cancel-upgrade"]')).toBeEnabled();
+    await expect(queuedUpdate).toHaveCount(0);
+
+    batch.hosts.find(host => host.name === second.name).state = "refused";
+    await expect(queuedUpdate).toHaveCount(1);
 });
 
 test("bulk kept-back approval requires individual consent for packages that will be removed", async ({ page }) => {

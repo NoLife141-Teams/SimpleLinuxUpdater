@@ -264,6 +264,8 @@
         };
         let nextActionPlanId = 1;
         let inFlightActions = new Map();
+        let batchAdmissions = new Map();
+        let observedBulkAction = null;
         let bulkAction = null;
         let lastBulkResult = null;
         let jobLogsByServer = new Map();
@@ -1111,6 +1113,21 @@
                     };
                 }
                 return [{ type: "render", scope: "serverState", priority: "immediate" }];
+            } else if (event.type === "bulkAdmissionsObserved") {
+                const admissions = new Map(event.pendingHosts.map(host => [host.name, host.server_identity]));
+                const batchID = admissions.size ? event.batch.id : undefined;
+                if (admissions.size === batchAdmissions.size && batchID === observedBulkAction?.operationId &&
+                    [...admissions].every(([name, identity]) => batchAdmissions.get(name) === identity)) return [];
+                batchAdmissions = admissions;
+                observedBulkAction = admissions.size ? {
+                    operationId: event.batch.id,
+                    actionKey: event.batch.action,
+                    actionLabel: event.actionLabel,
+                    selectedCount: event.batch.hosts.length + event.batch.skipped_count,
+                    eligibleCount: event.batch.hosts.length,
+                    skippedCount: event.batch.skipped_count,
+                } : null;
+                return [{ type: "render", scope: "serverState", priority: "immediate" }];
             } else if (event.type === "bulkHostAdmissionsResolved") {
                 if (!bulkAction || bulkAction.operationId !== event.operationId) return [];
                 let changed = false;
@@ -1287,7 +1304,9 @@
             if (server?.disabled) {
                 return { ...cloneValue(action), enabled: false, reason: "Server is disabled; enable it in Manage Servers to resume maintenance.", readiness: "unavailable", blocking_status: "server_disabled" };
             }
-            if (!options.ignoreInFlight && inFlightActions.has(normalizedName)) {
+            const pendingIdentity = batchAdmissions.get(normalizedName);
+            if (!options.ignoreInFlight && (inFlightActions.has(normalizedName) ||
+                (pendingIdentity && serversByName.get(normalizedName)?.server_identity === pendingIdentity))) {
                 return {
                     ...cloneValue(action),
                     enabled: false,
@@ -1491,7 +1510,7 @@
                 actions: {
                     inFlightServerNames: Array.from(inFlightActions.keys()),
                     inFlight: Array.from(inFlightActions.entries()).map(([serverName, action]) => ({ serverName, ...cloneValue(action) })),
-                    bulk: cloneValue(bulkAction),
+                    bulk: cloneValue(bulkAction || observedBulkAction),
                     lastBulkResult: cloneValue(lastBulkResult)
                 },
                 persistence: persistenceValue()

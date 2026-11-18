@@ -112,15 +112,16 @@ func readStatusBatch(ctx context.Context, db *sql.DB, id string, account int64) 
 	if err := row.Scan(&batch.ID, &batch.Actor, &batch.Action, &batch.CreatedAt, &batch.SkippedCount, &batch.RetryOf); err != nil {
 		return statusBatch{}, err
 	}
-	rows, err := db.QueryContext(ctx, `SELECT name, server_identity, state, message, job_id
-		FROM status_action_batch_hosts WHERE batch_id = ? ORDER BY name`, batch.ID)
+	rows, err := db.QueryContext(ctx, `SELECT h.name, h.server_identity, h.state, h.message, h.job_id, COALESCE(j.status, '')
+		FROM status_action_batch_hosts h LEFT JOIN jobs j ON j.id = h.job_id
+		WHERE h.batch_id = ? ORDER BY h.name`, batch.ID)
 	if err != nil {
 		return statusBatch{}, err
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var host statusBatchHost
-		if err := rows.Scan(&host.Name, &host.ServerIdentity, &host.State, &host.Message, &host.JobID); err != nil {
+		if err := rows.Scan(&host.Name, &host.ServerIdentity, &host.State, &host.Message, &host.JobID, &host.JobStatus); err != nil {
 			return statusBatch{}, err
 		}
 		batch.Hosts = append(batch.Hosts, host)

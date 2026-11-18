@@ -231,7 +231,9 @@
             return { name, server_identity: facts.serverIdentity, approval: facts.approvalIdentity };
         }
 
-        function renderBatch() {
+        const admissionPending = host => host.state === "queued" || host.state === "admitting";
+
+        function renderBatch(admissionsPending = false) {
             const panel = document.getElementById("status-batch-panel");
             if (!panel) return;
             panel.hidden = !batch;
@@ -262,6 +264,7 @@
                     ${host.message ? `<p>${escapeHtml(host.message)}</p>` : ""}
                     ${host.job_id ? `<a href="/api/reports/jobs/${encodeURIComponent(host.job_id)}">Job report</a>` : ""}
                     ${host.retryable ? `<button type="button" class="inline-btn btn-ghost" data-action="retry-batch-host"
+                        ${admissionsPending ? 'disabled title="Wait for the remaining hosts to be admitted"' : ""}
                         data-name="${escapeHtml(host.name)}">Retry ${escapeHtml(host.name)}</button>` : ""}
                 </li>`;
             }).join(""));
@@ -302,6 +305,7 @@
                         const message = "This maintenance batch is unavailable.";
                         const plan = pendingPlan;
                         pendingPlan = null;
+                        void dispatchStatusInteraction({ type: "bulkAdmissionsObserved", pendingHosts: [] });
                         if (plan) await dispatchStatusInteraction({
                             type: "actionFailed", operationId: plan.id, refreshStreams: [], message,
                             bulkResult: { executedCount: 0 },
@@ -313,10 +317,17 @@
                 const data = await response.json();
                 if (!lifecycle.isCurrent(lifetime) || sequence !== batchRead) return;
                 batch = data.batch;
-                renderBatch();
+                const pendingHosts = (batch?.hosts || []).filter(admissionPending);
+                const admissionsPending = pendingHosts.length > 0;
+                renderBatch(admissionsPending);
+                void dispatchStatusInteraction({
+                    type: "bulkAdmissionsObserved",
+                    batch,
+                    actionLabel: batchLabels[batch?.action],
+                    pendingHosts,
+                });
                 if (!batch) return;
-                const resolvedHosts = batch.hosts.filter(host => !["queued", "admitting"].includes(host.state));
-                const admissionsPending = resolvedHosts.length < batch.hosts.length;
+                const resolvedHosts = batch.hosts.filter(host => !admissionPending(host));
                 if (pendingPlan && admissionsPending && resolvedHosts.length) {
                     void dispatchStatusInteraction({
                         type: "bulkHostAdmissionsResolved",
@@ -417,7 +428,7 @@
         }
 
         async function retryBatchHost(name) {
-            if (submitting || pendingPlan || !batch) return;
+            if (submitting || !batch || getStatusView().actions.bulk) return;
             const host = batch.hosts.find(item => item.name === name && item.retryable);
             if (!host) return;
             const facts = statusInteraction.planBatchRetry(batch.action, host.name, host.server_identity);

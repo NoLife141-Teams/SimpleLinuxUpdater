@@ -565,6 +565,61 @@ func TestMaintenanceReplayDoesNotAttributeLateCanaryToNewBackup(t *testing.T) {
 	}
 }
 
+func TestMaintenanceReplayAttributesOnlyWavesReadyAtDenial(t *testing.T) {
+	for _, tt := range []struct {
+		name      string
+		finished  string
+		wantCause bool
+	}{
+		{name: "predecessor succeeds before denial in the same minute", finished: "2026-10-25T03:05:10Z", wantCause: true},
+		{name: "predecessor succeeds after denial in the same minute", finished: "2026-10-25T03:05:40Z"},
+		{name: "predecessor success has no timestamp"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			h := newSchedule472Harness(t, "2026-10-25T02:00:00Z")
+			policy := h.policy(t, func(p *Policy) {
+				p.TargetTag = ""
+				p.TargetServers = []string{"a", "b"}
+				p.RolloutMode = RolloutCanaryWaves
+				p.CanaryMode = CanaryExplicit
+				p.CanaryServers = []string{"a"}
+				p.WaveDelayMinutes = 5
+			})
+			origin := h.now.Add(time.Hour)
+			occurrence := newOccurrence(h.service, policy, origin, h.inventory, nil)
+			if _, err := h.repo.AcceptOccurrence(occurrence); err != nil {
+				t.Fatal(err)
+			}
+			if _, _, err := h.repo.CreateRun(Run{
+				PolicyID: policy.ID, ServerName: "a", ScheduledForUTC: occurrence.ScheduledForUTC,
+				Status: RunSucceeded, FinishedAt: tt.finished,
+			}); err != nil {
+				t.Fatal(err)
+			}
+
+			blocker := maintenance.Blocker{Cause: maintenance.BlockBackupExport, JobID: "observed-export"}
+			blockedTick := origin.Add(5*time.Minute + 20*time.Second)
+			h.service.RememberMissedTick(blockedTick, blocker)
+			store := SchedulerWatermarkStore{
+				Load: func() (time.Time, bool, error) { return origin.Add(4 * time.Minute), true, nil },
+				Save: func(time.Time) error { return nil },
+			}
+			h.now = blockedTick.Add(30 * time.Second)
+			if err := h.service.ProcessDueWithRecovery(h.now, store); err != nil {
+				t.Fatal(err)
+			}
+			wantBlocker := maintenance.Blocker{}
+			if tt.wantCause {
+				wantBlocker = blocker
+			}
+			if len(h.requests) != 1 || h.requests[0].Server.Name != "b" ||
+				h.requests[0].Outcome != RunReasonMaintenance || h.requests[0].MaintenanceBlocker != wantBlocker {
+				t.Fatalf("Scheduled Run requests = %+v, want a maintenance skip for b with blocker %+v", h.requests, wantBlocker)
+			}
+		})
+	}
+}
+
 func TestFutureExplicitCanaryRenameFollowsIdentityButNotAcceptedMembers472(t *testing.T) {
 	h := newSchedule472Harness(t, "2026-10-25T02:00:00Z")
 	p := h.policy(t, func(p *Policy) {

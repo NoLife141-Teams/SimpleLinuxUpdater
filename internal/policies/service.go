@@ -912,7 +912,7 @@ func (s *Service) RememberMissedTick(now time.Time, blocker maintenancepkg.Block
 	if _, exists := s.missedTicks[key]; exists {
 		return
 	}
-	s.missedTicks[key] = ScheduleRequest{Now: slotUTC, MaintenanceActive: true, MaintenanceBlocker: blocker, Admitted: true}
+	s.missedTicks[key] = ScheduleRequest{Now: now.UTC(), MaintenanceActive: true, MaintenanceBlocker: blocker, Admitted: true}
 }
 
 func (s *Service) PendingMissedTicks() []ScheduleRequest {
@@ -1035,6 +1035,12 @@ func (s *Service) ProcessDueSlot(req ScheduleRequest) error {
 			if historyGate == "failed" || (gate == "ready" && historyGate == "waiting") {
 				gate = historyGate
 			}
+			var observedBlocker maintenancepkg.Blocker
+			if req.MaintenanceActive && req.MaintenanceBlocker.Cause != "" && gate == "ready" &&
+				elapsedMinutes >= batch.ReleaseDelayMinutes &&
+				s.rolloutGateStateAt(policy.ID, policyScheduledForUTC, batches[:batchIndex], runByKey, req.Now) == "ready" {
+				observedBlocker = req.MaintenanceBlocker
+			}
 			for _, serverName := range batch.Servers {
 				server := plan.servers[serverName]
 				key := rolloutRunKey(policy.ID, policyScheduledForUTC, serverName)
@@ -1060,10 +1066,10 @@ func (s *Service) ProcessDueSlot(req ScheduleRequest) error {
 				}
 				var blocker maintenancepkg.Blocker
 				if req.MaintenanceActive {
-					// Keep the existing maintenance outcome. A tick can only
-					// prove the blocking operation for an otherwise eligible run.
+					// Keep the existing maintenance outcome. Attribute the
+					// operation only when the run was eligible at the denied tick.
 					if reason == "" {
-						blocker = req.MaintenanceBlocker
+						blocker = observedBlocker
 					}
 					reason = RunReasonMaintenance
 				}

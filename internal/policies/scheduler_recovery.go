@@ -199,7 +199,7 @@ func (s *Service) ProcessDueWithRecovery(now time.Time, store SchedulerWatermark
 		// otherwise their per-server historical outcome cannot be reconstructed
 		// safely from the current inventory/overrides/blackouts/timezone.
 		for _, tick := range pending {
-			tickUTC := tick.Now
+			tickUTC := tick.Now.Truncate(time.Minute)
 			if tickUTC.After(currentUTC) {
 				continue
 			}
@@ -244,7 +244,7 @@ func (s *Service) ProcessDueWithRecovery(now time.Time, store SchedulerWatermark
 	for _, tick := range pending {
 		key := MissedTickKey(tick.Now, deps.TimestampLayout)
 		_, processed := processedPending[key]
-		if processed || (!historicalStateKnown && !tick.Now.After(currentUTC)) {
+		if processed || (!historicalStateKnown && !tick.Now.Truncate(time.Minute).After(currentUTC)) {
 			s.ForgetMissedTick(tick.Now)
 		}
 	}

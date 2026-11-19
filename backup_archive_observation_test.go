@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -71,6 +70,12 @@ func TestBackupArchiveObservationsDistinguishLossFromUnavailableStorage(t *testi
 	}
 	t.Cleanup(func() { _ = os.Chmod(directory, 0700) })
 	check("unknown", "unavailable", 0, 0)
+	cookie := app.authenticate(t)
+	for _, item := range catalogFacts(t, app, cookie).Archives {
+		if item.Availability != "unavailable" || item.ReverifyPossible {
+			t.Fatalf("catalog reported an archive as accessible on unavailable storage: %+v", item)
+		}
+	}
 	if err := os.Chmod(directory, 0700); err != nil {
 		t.Fatal(err)
 	}
@@ -184,6 +189,9 @@ func TestBackupArchiveLossNotifiesOnceAcrossWorkerRestartAndReverification(t *te
 	if err := os.Chtimes(path, modified, modified); err != nil {
 		t.Fatal(err)
 	}
+	if item := catalogFacts(t, app, cookie).Archives[0]; item.Availability != "changed" || !item.ReverifyPossible {
+		t.Fatalf("catalog did not allow reverification after an mtime change: %+v", item)
+	}
 	if rec := catalogRequest(app, cookie, archive.ID, "verify"); rec.Code != 200 {
 		t.Fatalf("reverification = %d %s", rec.Code, rec.Body.String())
 	}
@@ -264,7 +272,7 @@ func TestBackupArchiveLossRemainsObservableAcrossPublication(t *testing.T) {
 }
 
 func TestBackupArchiveObserverDoesNotWaitOnPublication(t *testing.T) {
-	app, a, _ := newBackupAutomationTest(t)
+	_, a, _ := newBackupAutomationTest(t)
 	verify := a.verify
 	reached, release := make(chan struct{}), make(chan struct{})
 	a.verify = func(ctx context.Context, file internalbackup.TemporaryFile, pass string) (internalbackup.VerifyResult, error) {
@@ -290,12 +298,8 @@ func TestBackupArchiveObserverDoesNotWaitOnPublication(t *testing.T) {
 	if err := a.observeArchiveAvailability(ctx); !errors.Is(err, errBackupArchiveObservationDeferred) || ctx.Err() != nil {
 		t.Fatalf("observer waited on publication: %v %v", err, ctx.Err())
 	}
-	var raw string
-	if err := app.Deps.DB().QueryRow("SELECT value FROM settings WHERE key = ?", backupAutomationSettingsKey).Scan(&raw); err != nil {
-		t.Fatal(err)
-	}
-	var state backupAutomationState
-	if err := json.Unmarshal([]byte(raw), &state); err != nil || state.Observation.CheckedAt != "" {
+	state, err := a.readState(t.Context())
+	if err != nil || state.Observation.CheckedAt != "" {
 		t.Fatalf("observer persisted stale results during publication: %+v, %v", state.Observation, err)
 	}
 }

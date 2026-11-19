@@ -18,7 +18,11 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-const backupCatalogLimit = 100
+const (
+	backupHealthyRetentionLimit = 100
+	backupLossRetentionLimit    = 100
+	backupCatalogLimit          = backupHealthyRetentionLimit + backupLossRetentionLimit
+)
 
 // A catalog ID is an independent random lookup key, never a fingerprint of
 // ownership, a filename or a deployment credential. It grants no authority:
@@ -92,6 +96,7 @@ type backupArchiveView struct {
 	LastVerifiedAt     string `json:"last_verified_at,omitempty"`
 	Verification       string `json:"verification"`
 	Availability       string `json:"availability"`
+	ReverifyPossible   bool   `json:"reverify_possible"`
 	JobID              string `json:"job_id,omitempty"`
 }
 
@@ -100,36 +105,39 @@ func backupArchiveOwned(archive ownedBackupArchive, owner string) bool {
 		strings.HasPrefix(archive.Name, "slu-auto-"+owner+"-") && strings.HasSuffix(archive.Name, internalbackup.FileExtension)
 }
 
-func backupArchiveAvailability(root *os.Root, archive ownedBackupArchive, owner string) string {
+func backupArchiveAvailabilityAt(root *os.Root, archive ownedBackupArchive, owner, directory string) (availability string, reverifyPossible bool) {
 	if owner == "" {
-		return "unavailable"
+		return "unavailable", false
 	}
 	if !backupArchiveOwned(archive, owner) {
-		return "foreign"
+		return "foreign", false
 	}
-	if root == nil {
-		return "unavailable"
+	if root == nil || (archive.DirectoryIdentity != "" && archive.DirectoryIdentity != directory) {
+		return "unavailable", false
 	}
 	info, err := root.Lstat(archive.Name)
-	if os.IsNotExist(err) {
-		return "missing"
+	switch {
+	case os.IsNotExist(err):
+		availability = "missing"
+	case err != nil:
+		availability = "unavailable"
+	case !info.Mode().IsRegular() || info.Size() <= 0 || info.Size() > internalbackup.MaxUploadBytes:
+		availability = "invalid"
+	case archive.SizeBytes != nil && *archive.SizeBytes != info.Size():
+		availability = "changed"
+	case archive.FileIdentity != "" && archive.FileIdentity != backupCatalogFileIdentity(info):
+		availability = "changed"
+	case archive.FileModifiedAt != "" && !parseBackupStamp(archive.FileModifiedAt).Equal(info.ModTime()):
+		// Full verification can check the digest when only the mtime changed.
+		availability, reverifyPossible = "changed", true
+	default:
+		availability, reverifyPossible = "present", true
 	}
-	if err != nil {
-		return "unavailable"
+	if archive.DirectoryIdentity == "" && archiveAvailabilityLost(availability) {
+		// A missing or changed legacy file cannot establish mount identity.
+		availability = "unavailable"
 	}
-	if !info.Mode().IsRegular() || info.Size() <= 0 || info.Size() > internalbackup.MaxUploadBytes {
-		return "invalid"
-	}
-	if archive.SizeBytes != nil && *archive.SizeBytes != info.Size() {
-		return "changed"
-	}
-	if archive.FileIdentity != "" && archive.FileIdentity != backupCatalogFileIdentity(info) {
-		return "changed"
-	}
-	if archive.FileModifiedAt != "" && !parseBackupStamp(archive.FileModifiedAt).Equal(info.ModTime()) {
-		return "changed"
-	}
-	return "present"
+	return availability, reverifyPossible
 }
 
 func (a *backupAutomation) catalogLocked(ctx context.Context, s *backupAutomationState, root *os.Root, owner string) (backupArchiveCatalog, error) {
@@ -139,7 +147,7 @@ func (a *backupAutomation) catalogLocked(ctx context.Context, s *backupAutomatio
 	directory := backupArchiveDirectoryIdentity(root)
 	for i := len(s.Archives) - 1; i >= 0 && len(catalog.Archives) < backupCatalogLimit; i-- {
 		archive := &s.Archives[i]
-		availability := backupArchiveAvailabilityAt(root, *archive, owner, directory)
+		availability, reverifyPossible := backupArchiveAvailabilityAt(root, *archive, owner, directory)
 		// Mere presence is not a new verification. Only observed damage changes
 		// existing recovery/notification evidence; repeated listing is deduplicated.
 		if archiveAvailabilityLost(availability) && archive.Availability != availability {
@@ -155,7 +163,7 @@ func (a *backupAutomation) catalogLocked(ctx context.Context, s *backupAutomatio
 		catalog.Archives = append(catalog.Archives, backupArchiveView{
 			ID: archive.ID, PublishedAt: archive.PublishedAt, SizeBytes: archive.SizeBytes,
 			KnownHostsIncluded: archive.KnownHostsIncluded, SHA256: archive.SHA256, LastVerifiedAt: archive.LastVerifiedAt,
-			Verification: verification, Availability: availability, JobID: archive.JobID,
+			Verification: verification, Availability: availability, ReverifyPossible: reverifyPossible, JobID: archive.JobID,
 		})
 	}
 	if changed {
@@ -217,10 +225,7 @@ type backupCatalogSnapshot struct {
 func snapshotBackupArchive(ctx context.Context, root *os.Root, archive ownedBackupArchive, owner, directoryIdentity string) (backupCatalogSnapshot, func(), error) {
 	empty := backupCatalogSnapshot{}
 	noop := func() {}
-	// The metadata-only observer cannot tell whether a changed mtime also
-	// changed the contents. The pinned snapshot can prove the original digest.
-	archive.FileModifiedAt = ""
-	if backupArchiveAvailabilityAt(root, archive, owner, directoryIdentity) != "present" {
+	if _, reverifyPossible := backupArchiveAvailabilityAt(root, archive, owner, directoryIdentity); !reverifyPossible {
 		return empty, noop, errBackupCatalogUnavailable
 	}
 	before, err := root.Lstat(archive.Name)
@@ -333,7 +338,7 @@ func handleBackupCatalogOperation(c *gin.Context, a *backupAutomation, verify bo
 	defer cleanup()
 	if err != nil {
 		if ctx.Err() == nil && errors.Is(err, errBackupCatalogUnavailable) {
-			availability := backupArchiveAvailabilityAt(root, *archive, owner, directory)
+			availability, _ := backupArchiveAvailabilityAt(root, *archive, owner, directory)
 			var evidenceErr error
 			var events []AuditEvent
 			if archiveAvailabilityLost(availability) {

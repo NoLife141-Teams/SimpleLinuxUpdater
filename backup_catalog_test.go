@@ -327,14 +327,25 @@ func TestBackupCatalogLegacyMetadataAndForeignOwnershipRemainUnknown(t *testing.
 	if persisted.Archives[0].Owner != archive.Owner || persisted.Archives[0].Name != archive.Name || persisted.Archives[0].SHA256 != archive.SHA256 {
 		t.Fatal("legacy ownership changed")
 	}
-	for i := 0; i < 120; i++ {
+	state = persisted
+	for len(state.Archives) <= backupHealthyRetentionLimit {
+		state.Archives = append(state.Archives, ownedBackupArchive{Name: "foreign", Owner: "foreign"})
+	}
+	if err := a.save(t.Context(), state); err != nil {
+		t.Fatal(err)
+	}
+	extended := catalogFacts(t, app, cookie)
+	if extended.Truncated || len(extended.Archives) != len(state.Archives) || extended.Archives[len(extended.Archives)-1].ID != firstID {
+		t.Fatal("catalog omitted older registrations alongside a full healthy retention allowance")
+	}
+	for len(state.Archives) <= backupCatalogLimit {
 		state.Archives = append(state.Archives, ownedBackupArchive{Name: "foreign", Owner: "foreign"})
 	}
 	if err := a.save(context.Background(), state); err != nil {
 		t.Fatal(err)
 	}
 	bounded := catalogFacts(t, app, cookie)
-	if len(bounded.Archives) != 100 || !bounded.Truncated {
+	if len(bounded.Archives) != backupCatalogLimit || !bounded.Truncated {
 		t.Fatal("unbounded catalog")
 	}
 }

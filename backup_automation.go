@@ -137,7 +137,7 @@ func (c backupScheduleConfig) validate() error {
 	if c.Weekday < 0 || c.Weekday > 6 {
 		return errors.New("weekday must be between 0 (Sunday) and 6")
 	}
-	if c.Retain < 1 || c.Retain > 100 {
+	if c.Retain < 1 || c.Retain > backupHealthyRetentionLimit {
 		return errors.New("retain must be between 1 and 100")
 	}
 	return nil
@@ -393,8 +393,8 @@ func (a *backupAutomation) destination(createIdentity bool) (*os.Root, string, s
 		return fail("Backup secret must be outside the archive directory.")
 	}
 	info, err := os.Stat(dir)
-	if err != nil || !info.IsDir() || info.Mode().Perm()&0022 != 0 {
-		return fail("Backup destination must be a directory without group or world write access.")
+	if err != nil || !backupArchiveDirectoryAccessible(info) {
+		return fail("Backup destination must be an accessible directory without group or world write access.")
 	}
 	info, err = os.Stat(secretPath)
 	if err != nil || !info.Mode().IsRegular() || info.Size() > 4096 || info.Mode().Perm()&0077 != 0 {
@@ -910,8 +910,9 @@ func (a *backupAutomation) publish(ctx context.Context, root *os.Root, source in
 	if err == nil {
 		err = dst.Sync()
 	}
+	staged, statErr := dst.Stat()
 	closeErr := dst.Close()
-	if err != nil || closeErr != nil {
+	if err != nil || statErr != nil || closeErr != nil || staged.Size() != written {
 		return archive, errors.New("backup destination write or sync failed")
 	}
 	if err = ctx.Err(); err != nil {
@@ -923,6 +924,13 @@ func (a *backupAutomation) publish(ctx context.Context, root *os.Root, source in
 	}
 	if err = ctx.Err(); err != nil {
 		return archive, err
+	}
+	// Keep the file identity and mtime of the bytes we wrote and verified.
+	// A later replacement at the published name must not set their baseline.
+	current, err := root.Lstat(temp)
+	if err != nil || !current.Mode().IsRegular() || !os.SameFile(staged, current) ||
+		current.Size() != staged.Size() || !current.ModTime().Equal(staged.ModTime()) {
+		return archive, errors.New("automated archive changed during restore readiness verification")
 	}
 	// Link provides atomic no-replace publication on the same filesystem. Unlike
 	// Rename it cannot overwrite a foreign file that already has the target name.
@@ -949,12 +957,10 @@ func (a *backupAutomation) publish(ctx context.Context, root *os.Root, source in
 	archive.KnownHostsIncluded = &result.KnownHostsIncluded
 	archive.Verification = "verified"
 	archive.Availability = "present"
+	archive.FileIdentity = backupCatalogFileIdentity(staged)
+	archive.FileModifiedAt = backupStamp(staged.ModTime())
 	if info, err := root.Lstat("."); err == nil {
 		archive.DirectoryIdentity = backupCatalogFileIdentity(info)
-	}
-	if info, err := root.Lstat(name); err == nil {
-		archive.FileIdentity = backupCatalogFileIdentity(info)
-		archive.FileModifiedAt = backupStamp(info.ModTime())
 	}
 	return archive, nil
 }
@@ -993,10 +999,11 @@ func (a *backupAutomation) retain(root *os.Root, s *backupAutomationState) error
 		if !backupArchiveOwned(archive, owner) {
 			continue
 		}
-		if archive.LossActive || backupArchiveAvailabilityAt(root, archive, owner, directory) != "present" || !backupArchiveMatches(root, archive) {
+		availability, _ := backupArchiveAvailabilityAt(root, archive, owner, directory)
+		if archive.LossActive || availability != "present" || !backupArchiveMatches(root, archive) {
 			// Keep genuine registrations available for the observer and for full
 			// re-verification. A new publication is not evidence of an old loss.
-			if len(archive.SHA256) == 2*sha256.Size && unavailable < backupCatalogLimit {
+			if len(archive.SHA256) == 2*sha256.Size && unavailable < backupLossRetentionLimit {
 				retained = append(retained, archive)
 				unavailable++
 			}

@@ -14,7 +14,6 @@ import (
 
 const backupArchiveObservationInterval = 5 * time.Minute
 const backupArchiveObservationBudget = 2 * time.Second
-const backupArchiveObservationLimit = 2 * backupCatalogLimit
 const backupArchiveLossConditionPrefix = "backup/archive-loss/"
 
 var errBackupArchiveObservationDeferred = errors.New("backup archive observation deferred while catalog changes")
@@ -199,19 +198,19 @@ func (a *backupAutomation) scanBackupArchives(ctx context.Context, archives []ow
 	}
 	defer root.Close()
 	info, err := root.Lstat(".")
-	if err != nil || !info.IsDir() || info.Mode().Perm()&0022 != 0 || info.Mode().Perm()&0111 == 0 {
+	if err != nil || !backupArchiveDirectoryAccessible(info) {
 		return observation, nil
 	}
 	observation.DirectoryIdentity = backupCatalogFileIdentity(info)
 	probes := make(map[int]string)
 	tracked, comparable := 0, 0
-	for i := len(archives) - 1; i >= 0 && len(probes) < backupArchiveObservationLimit && ctx.Err() == nil; i-- {
+	for i := len(archives) - 1; i >= 0 && len(probes) < backupCatalogLimit && ctx.Err() == nil; i-- {
 		archive := archives[i]
 		if !backupArchiveOwned(archive, owner) {
 			continue
 		}
 		tracked++
-		value := backupArchiveAvailabilityAt(root, archive, owner, observation.DirectoryIdentity)
+		value, _ := backupArchiveAvailabilityAt(root, archive, owner, observation.DirectoryIdentity)
 		if archive.DirectoryIdentity == "" && archive.FileIdentity == "" {
 			// Full verification establishes identity for archives registered before
 			// the catalog recorded file metadata.
@@ -241,16 +240,8 @@ func backupArchiveDirectoryIdentity(root *os.Root) string {
 	return ""
 }
 
-func backupArchiveAvailabilityAt(root *os.Root, archive ownedBackupArchive, owner, directory string) string {
-	if backupArchiveOwned(archive, owner) && archive.DirectoryIdentity != "" && archive.DirectoryIdentity != directory {
-		return "unavailable"
-	}
-	availability := backupArchiveAvailability(root, archive, owner)
-	if archive.DirectoryIdentity == "" && archiveAvailabilityLost(availability) {
-		// A missing or changed legacy file cannot establish mount identity.
-		return "unavailable"
-	}
-	return availability
+func backupArchiveDirectoryAccessible(info os.FileInfo) bool {
+	return info.IsDir() && info.Mode().Perm()&0022 == 0 && info.Mode().Perm()&0111 != 0
 }
 
 func (a *backupAutomation) observeArchive(archive *ownedBackupArchive, availability, observedAt, actor, ip string) *AuditEvent {

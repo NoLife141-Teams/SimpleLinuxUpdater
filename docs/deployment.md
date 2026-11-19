@@ -219,8 +219,9 @@ exists or that it is stored off host. Unknown storage observations are nullable.
 
 **Local backup archives** reports the last availability observation of registered
 automated archives. The worker checks at startup and every five minutes, up to
-200 registrations per pass. Retention preserves up to 100 unavailable archive
-registrations alongside the configured number of healthy archives. The worker
+200 registrations per pass. The backup catalog shows up to 200 registrations,
+including up to 100 unavailable archives preserved by retention alongside the
+configured number of healthy archives. The worker
 compares directory and file metadata without reading the passphrase or hashing
 archives. Each confirmed loss opens one delivery episode under the existing
 backup verification failure event. Successful full re-verification restores the

@@ -266,6 +266,9 @@ class Harness:
         env_args = []
         container_env = app_environment(Path("/work"), 8080)
         container_env["DEBIAN_UPDATER_LISTEN_ADDR"] = ":8080"
+        # Keep startup facts refresh from reserving the fixture while the
+        # scenario verifies the recovered APT status and starts its repair.
+        container_env["DEBIAN_UPDATER_HOST_FACTS_AUTO_REFRESH_ENABLED"] = "false"
         for key, value in container_env.items():
             env_args.extend(["--env", key + "=" + value])
         self.docker("run", "-d", "--name", self.app_name, "--network", self.network,
@@ -455,14 +458,16 @@ class Harness:
                     and self.api.job(job_id)["error_class"] == "reconciliation_required",
                     "restore with a reused name did not preserve the live installation and incident")
             restore(pre_incident_archive)
-            require(self.api.server(name)["status"] == "needs_reconciliation"
-                    and self.api.server(name).get("job_id") == job_id
+            status = self.api.server(name)
+            require(status["status"] == "needs_reconciliation" and status.get("job_id") == job_id
                     and self.api.job(job_id)["error_class"] == "reconciliation_required",
                     "restore of a pre-incident archive lost the live APT reconciliation job")
             self.docker("restart", "--timeout", "25", self.app_name)
             self.connect_app()
             self.api.request("POST", "/api/auth/login", {"username": "fixture-admin", "password": self.password})
-            require(self.api.server(name).get("job_id") == job_id and self.api.job(job_id)["status"] == "failed",
+            status = self.api.server(name)
+            require(status["status"] == "needs_reconciliation" and status.get("job_id") == job_id
+                    and self.api.job(job_id)["status"] == "failed",
                     "restart after restore lost the live APT reconciliation job")
             require(self.api.request("GET", log_tail_path) == log_tail,
                     "restart after restore changed the interrupted job's log fragments or cursor")
@@ -470,7 +475,9 @@ class Harness:
                 "name": name, "host": self.ssh_host, "port": self.ssh_port + 1, "user": "root",
             }, allowed=(409,))
             for action in ("update", "autoremove"):
-                self.api.request("POST", f"/api/{action}/{name}", allowed=(409,))
+                rejection = self.api.request("POST", f"/api/{action}/{name}", allowed=(409,))
+                require("APT reconciliation is required" in rejection["error"],
+                        f"{action} was not blocked by the recovered APT reconciliation requirement")
 
             locked_repair_id = self.api.request("POST", "/api/repair/" + name,
                                                 {"confirm": True, "job_id": job_id})["job_id"]

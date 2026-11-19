@@ -19,7 +19,7 @@ const restoreIsolationMessage = "Installation is isolated after restore. Review 
 func isolateHostMaintenanceSessions(isolation *internalbackup.RestoreIsolation, factory HostMaintenanceSessionFactory) HostMaintenanceSessionFactory {
 	return HostMaintenanceSessionFactoryFunc(func(ctx context.Context, req HostMaintenanceSessionRequest) (HostMaintenanceSession, error) {
 		if isolation.BlocksExternalWork() {
-			return nil, errors.New(restoreIsolationMessage)
+			return nil, errors.New("installation is isolated after restore")
 		}
 		return factory.Open(ctx, req)
 	})

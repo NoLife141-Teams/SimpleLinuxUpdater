@@ -524,6 +524,7 @@ func (s *Service) applyArchiveFiles(ctx context.Context, files map[string]string
 			return incomplete(fmt.Errorf("rollback reload runtime state: %w", err))
 		}
 		if err := fs.removeFile(markerPath); err != nil {
+			_, _ = fs.publishRecoveryMarker(markerPath, marker)
 			return incomplete(fmt.Errorf("clear restore recovery marker after rollback: %w", err))
 		}
 		return cause
@@ -551,6 +552,7 @@ func (s *Service) applyArchiveFiles(ctx context.Context, files map[string]string
 		return rollback(err)
 	}
 	if err := fs.removeFile(markerPath); err != nil {
+		_, _ = fs.publishRecoveryMarker(markerPath, marker)
 		keepSnapshots = true
 		return &IncompleteRecoveryError{
 			Cause: fmt.Errorf("clear restore recovery marker: %w", err), Recovery: err, SnapshotDir: snapshotDir,

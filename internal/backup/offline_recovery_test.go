@@ -134,6 +134,14 @@ func TestOfflineRecoveryRejectsInvalidManifestAndKeepsLatch(t *testing.T) {
 func TestOfflineRecoveryUsesSealedRollbackWithUnreadableSQLite(t *testing.T) {
 	f, root, id := interruptedRecoveryFixture(t)
 	corrupt := []byte("fixture with an invalid SQLite header")
+	// This restore stopped before replacing trust. A read-only deployment
+	// mount containing the original bytes must not need to be replaced.
+	f.service.syncRestoreFile = func(file *os.File) error {
+		if filepath.Dir(file.Name()) == filepath.Dir(f.hosts) && strings.HasPrefix(filepath.Base(file.Name()), ".restore-") {
+			return syscall.EROFS
+		}
+		return file.Sync()
+	}
 	for _, path := range []string{f.db, f.db + "-wal"} {
 		if err := os.WriteFile(path, corrupt, 0600); err != nil {
 			t.Fatal(err)
@@ -259,6 +267,15 @@ func TestOfflineRecoveryMarkerRemovalSyncFailureKeepsSQLiteLatch(t *testing.T) {
 		t.Fatalf("failed marker sync = %+v, %v", report, err)
 	}
 	requireDurableRestoreState(t, f.db, f.hosts, originalRestoreServer, originalRestoreTrust, true)
+	f.service.syncRestoreFile = nil
+	if err := os.WriteFile(f.db, []byte("damaged SQLite after interrupted recovery"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	report, err = f.service.OfflineRestoreRecovery(t.Context(), "", offlineRecoveryMergeFixtureJobs)
+	if err != nil || !report.RecoveryRequired || len(report.Sets) != 1 || !report.Sets[0].Ready ||
+		report.Sets[0].EvidenceSource != "sealed_rollback" {
+		t.Fatalf("retry inspection lost the sealed relationship: %+v, %v", report, err)
+	}
 }
 
 func TestOfflineRecoveryCanRetryAfterMarkerWriteFailure(t *testing.T) {

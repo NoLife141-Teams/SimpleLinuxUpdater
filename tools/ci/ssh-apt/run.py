@@ -806,6 +806,7 @@ class Harness:
             for method, path in (("GET", report_path), ("POST", f"/api/update/{name}"), ("POST", f"/api/autoremove/{name}")):
                 blocked = self.api.request(method, path, allowed=(503,))
                 require(blocked.get("recovery_required"), "runtime bypassed the recovery latch")
+            paused.unlink(missing_ok=True)
             until(paused.is_file, "notification worker did not reach the restore delivery gate")
             current_incident, current_chunks, current_delivery, _, admitted, _ = persistence()
             require(admitted and not poll.exists(), "notification worker passed the restore delivery gate")

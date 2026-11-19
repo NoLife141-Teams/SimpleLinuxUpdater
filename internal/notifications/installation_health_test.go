@@ -3,6 +3,8 @@ package notifications
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -11,36 +13,80 @@ import (
 func TestRestoreDeliveryGateKeepsQueuedNotificationsUntilRelease(t *testing.T) {
 	db := openOutboxTestDB(t, "restore-delivery-gate.db")
 	db.SetMaxOpenConns(1)
-	server, receipts := newOutboxHTTPServer(t)
+	firstAttempt := make(chan struct{})
+	finishFirst := make(chan struct{})
+	var receipts atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if receipts.Add(1) == 1 {
+			close(firstAttempt)
+			select {
+			case <-finishFirst:
+			case <-req.Context().Done():
+			}
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(server.Close)
 	prepareOutboxSettings(t, db, server.URL, true)
-	insertPendingOutboxIntent(t, db, DeliveryIntent{ID: "held-for-restore", Action: EventUpdateComplete}, time.Now())
+	now := time.Now()
+	insertPendingOutboxIntent(t, db, DeliveryIntent{ID: "held-for-restore", Action: EventUpdateComplete}, now.Add(-time.Minute))
+	insertPendingOutboxIntent(t, db, DeliveryIntent{ID: "held-between-claims", Action: EventUpdateComplete}, now)
 	var blocked atomic.Bool
 	blocked.Store(true)
 	checked := make(chan struct{}, 1)
 	deps := outboxTestDeps(db, 5*time.Millisecond)
 	deps.RestoreDeliveryBlocked = func() bool {
-		select {
-		case checked <- struct{}{}:
-		default:
+		if blocked.Load() {
+			select {
+			case checked <- struct{}{}:
+			default:
+			}
+			return true
 		}
-		return blocked.Load()
+		return false
 	}
 	service := NewService(deps)
 	t.Cleanup(func() { closeOutboxService(t, service) })
-	for range 2 {
+	defer func() {
+		select {
+		case <-finishFirst:
+		default:
+			close(finishFirst)
+		}
+	}()
+	awaitBlocked := func() {
+		t.Helper()
 		select {
 		case <-checked:
 		case <-time.After(2 * time.Second):
 			t.Fatal("worker did not reach the restore gate")
 		}
 	}
+	awaitBlocked()
 	waitForLatestOutboxState(t, db, outboxStatePending)
-	if got := atomic.LoadInt32(receipts); got != 0 {
+	if got := receipts.Load(); got != 0 {
 		t.Fatalf("webhook called during restore: %d", got)
 	}
 	blocked.Store(false)
+	select {
+	case <-firstAttempt:
+	case <-time.After(2 * time.Second):
+		t.Fatal("worker did not deliver after recovery")
+	}
+	select {
+	case <-checked:
+	default:
+	}
+	blocked.Store(true)
+	close(finishFirst)
+	awaitBlocked()
+	waitForLatestOutboxState(t, db, outboxStatePending)
+	if got := receipts.Load(); got != 1 {
+		t.Fatalf("worker delivered another row after restore began: %d", got)
+	}
+	blocked.Store(false)
 	waitForLatestOutboxState(t, db, outboxStateSucceeded)
-	if got := atomic.LoadInt32(receipts); got != 1 {
+	if got := receipts.Load(); got != 2 {
 		t.Fatalf("webhook calls after recovery: %d", got)
 	}
 }

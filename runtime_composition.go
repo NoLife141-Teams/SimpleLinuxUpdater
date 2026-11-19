@@ -275,9 +275,13 @@ func (c *runtimeComposition) Compose() AppDeps {
 			ReadConditions: newNotificationConditionSource(deps.DB, deps.Now, deps.PublicOrigin),
 			DB:             deps.DB,
 			RestoreDeliveryBlocked: func() bool {
+				// Initialization publishes the persisted maintenance state
+				// before readiness. Check the phase before reading that state.
+				if deps.InstallationHealth.Phase() == "initializing" {
+					return true
+				}
 				state := deps.MaintenanceCoordinator.Snapshot()
-				if deps.InstallationHealth.Phase() == "initializing" || state.RecoveryRequired ||
-					(state.Active && state.Kind == string(maintenancepkg.OperationBackupRestore)) {
+				if state.RecoveryRequired || (state.Active && state.Kind == string(maintenancepkg.OperationBackupRestore)) {
 					return true
 				}
 				pending, err := internalbackup.RestoreRecoveryPending(deps.DBPath())

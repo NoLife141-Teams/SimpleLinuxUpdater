@@ -170,6 +170,12 @@ func (s *Service) OfflineRestoreRecovery(ctx context.Context, selection string, 
 			fs.syncPath(diagnosis) != nil || fs.syncPath(dir) != nil {
 			return report, errors.New("could not persist the diagnosis copy; recovery remains locked")
 		}
+		currentHosts := entries[len(targets)]
+		if stagedHosts != nil && stagedHosts.Exists == currentHosts.Exists && stagedHosts.SHA256 == currentHosts.SHA256 {
+			// A restore that left trust unchanged can recover even when
+			// its deployed known_hosts file cannot be replaced.
+			stagedHosts = nil
+		}
 		if !marked {
 			if _, err := fs.publishRecoveryMarker(marker, chosen); err != nil {
 				return report, errors.New("could not persist restore recovery marker")
@@ -218,6 +224,7 @@ func (s *Service) prepareOfflineRecoverySet(ctx context.Context, rootPath, work 
 		if err != nil || (sealed && digest != entry.SHA256) {
 			return fail("invalid_snapshot")
 		}
+		entry.SHA256 = digest
 		entry.BackupPath = destination
 	}
 	if err := s.ValidateDatabaseFile(ctx, reconstructed, key); err != nil {
@@ -386,6 +393,7 @@ func (s *Service) applyOfflineRecovery(ctx context.Context, fs restoreFiles, sta
 		return fail
 	}
 	if err := fs.removeFile(marker); err != nil {
+		_, _ = fs.publishRecoveryMarker(marker, recorded)
 		return fail
 	}
 	store := maintenance.SQLiteStore{DB: func() *sql.DB { return db }}

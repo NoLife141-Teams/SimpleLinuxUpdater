@@ -11,6 +11,8 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+
+	"debian-updater/internal/maintenance"
 )
 
 func interruptedRecoveryFixture(t *testing.T) (durabilityFixture, string, string) {
@@ -91,6 +93,43 @@ func TestOfflineRecoveryRejectsUnrelatedSnapshotAndKeepsLatch(t *testing.T) {
 		t.Fatalf("apply = %+v, %v", report, err)
 	}
 	requireDurableRestoreState(t, f.db, f.hosts, archivedRestoreServer, originalRestoreTrust, true)
+}
+
+func TestOfflineRecoveryReleasesOnlyThePhysicalInstallation(t *testing.T) {
+	f, root, id := interruptedRecoveryFixture(t)
+	child := filepath.Join(root, "child")
+	if err := os.Mkdir(child, 0700); err != nil {
+		t.Fatal(err)
+	}
+	otherDir := t.TempDir()
+	aliasDir := filepath.Join(otherDir, "child-alias")
+	if err := os.Symlink(child, aliasDir); err != nil {
+		t.Skip("directory symlinks unavailable", err)
+	}
+	otherDB := filepath.Join(otherDir, "servers.db")
+	if err := (restoreFiles{}).copySnapshot(otherDB, f.db); err != nil {
+		t.Fatal(err)
+	}
+	other, err := openRecoveryCopy(t.Context(), otherDB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer other.Close()
+	store := maintenance.SQLiteStore{DB: func() *sql.DB { return other }}
+	if err := store.Save(t.Context(), maintenance.State{Active: true, RecoveryRequired: true, Kind: string(maintenance.OperationBackupRestore)}); err != nil {
+		t.Fatal(err)
+	}
+	f.service.deps.DBPath = func() string {
+		return aliasDir + string(filepath.Separator) + ".." + string(filepath.Separator) + "servers.db"
+	}
+	report, err := f.service.OfflineRestoreRecovery(t.Context(), id, offlineRecoveryMergeFixtureJobs)
+	if err != nil || report.RecoveryRequired || report.Applied != id {
+		t.Fatalf("apply = %+v, %v", report, err)
+	}
+	requireDurableRestoreState(t, f.db, f.hosts, originalRestoreServer, originalRestoreTrust, false)
+	if state, err := store.Load(t.Context()); err != nil || !state.RecoveryRequired {
+		t.Fatalf("unrelated installation lost its recovery state: %+v, %v", state, err)
+	}
 }
 
 func TestOfflineRecoveryMarkerRemovalSyncFailureKeepsSQLiteLatch(t *testing.T) {

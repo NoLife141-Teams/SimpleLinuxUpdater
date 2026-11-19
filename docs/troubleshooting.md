@@ -247,12 +247,12 @@ Stop the application before running either mode. Use the same working directory,
 ./webserver backup recover --apply <recovery-set-id>
 ```
 
-For Docker Compose, use your existing service name so the one-shot command receives the same volume, user and path configuration.
+For Docker Compose, use your existing service name so the one-shot command receives the same volumes and path configuration. The packaged image runs the application as `app:app` by default. If you configured another application user, use that user in the commands below.
 
 ```sh
 docker compose stop <service>
-docker compose run --rm --no-deps -T --entrypoint /app/webserver <service> backup recover --inspect
-docker compose run --rm --no-deps -T --entrypoint /app/webserver <service> backup recover --apply <recovery-set-id>
+docker compose run --rm --no-deps -T --user app:app --entrypoint /app/webserver <service> backup recover --inspect
+docker compose run --rm --no-deps -T --user app:app --entrypoint /app/webserver <service> backup recover --apply <recovery-set-id>
 docker compose start <service>
 ```
 

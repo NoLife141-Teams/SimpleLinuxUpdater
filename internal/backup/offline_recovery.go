@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 
+	"debian-updater/internal/installationlock"
 	"debian-updater/internal/jobs"
 	"debian-updater/internal/maintenance"
 	"debian-updater/internal/notifications"
@@ -42,11 +43,11 @@ type OfflineRecoveryReport struct {
 // mergeJobs uses the same policy as a normal in-place restore.
 func (s *Service) OfflineRestoreRecovery(ctx context.Context, selection string, mergeJobs func(context.Context, *sql.DB, *sql.DB) error) (OfflineRecoveryReport, error) {
 	report := OfflineRecoveryReport{Sets: []OfflineRecoverySet{}}
-	database := s.deps.DBPath()
-	dir, err := filepath.EvalSymlinks(restoreEntryDirectory(database))
+	database, err := installationlock.ResolveDatabasePath(s.deps.DBPath())
 	if err != nil {
 		return report, errors.New("could not resolve installation directory")
 	}
+	dir := filepath.Dir(database)
 	marker := RestoreRecoveryMarkerPath(database)
 	fs := restoreFiles{sync: s.syncRestoreFile}
 	marked, err := RestoreRecoveryPending(database)
@@ -223,9 +224,11 @@ func (s *Service) prepareOfflineRecoverySet(ctx context.Context, rootPath, work 
 		return fail("invalid_database")
 	}
 	defer db.Close()
-	if mergeJobs == nil || mergeJobs(ctx, live, db) != nil ||
-		notifications.MergeOfflineAPTDeliveryEvidence(ctx, live, db, s.deps.Now()) != nil {
+	if mergeJobs == nil || mergeJobs(ctx, live, db) != nil {
 		return fail("apt_evidence_conflict")
+	}
+	if notifications.MergeOfflineDeliveryEvidence(ctx, live, db, s.deps.Now()) != nil {
+		return fail("delivery_evidence_conflict")
 	}
 	if err := db.QueryRowContext(ctx, "SELECT count(*) FROM servers").Scan(&result.Servers); err != nil {
 		return fail("invalid_database")
@@ -341,14 +344,18 @@ func cloneRecoveryDatabase(ctx context.Context, fs restoreFiles, dest, source st
 }
 
 func openRecoveryCopy(ctx context.Context, path string) (*sql.DB, error) {
-	if info, err := os.Lstat(path); err != nil || !info.Mode().IsRegular() {
-		return nil, errors.New("SQLite recovery file is unavailable")
-	}
-	absolute, err := filepath.Abs(path)
+	absolute, err := installationlock.ResolveDatabasePath(path)
 	if err != nil {
 		return nil, err
 	}
-	dsn := url.URL{Scheme: "file", Path: filepath.ToSlash(absolute), RawQuery: "mode=rw"}
+	if info, err := os.Lstat(absolute); err != nil || !info.Mode().IsRegular() {
+		return nil, errors.New("SQLite recovery file is unavailable")
+	}
+	uriPath := filepath.ToSlash(absolute)
+	if !strings.HasPrefix(uriPath, "/") {
+		uriPath = "/" + uriPath
+	}
+	dsn := url.URL{Scheme: "file", Path: uriPath, RawQuery: "mode=rw"}
 	db, err := sql.Open("sqlite", dsn.String())
 	if err != nil {
 		return nil, err

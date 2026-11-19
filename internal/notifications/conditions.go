@@ -209,8 +209,19 @@ func readConditionState(row *sql.Row) (conditionState, error) {
 	if err != nil {
 		return state, err
 	}
-	err = json.Unmarshal([]byte(raw), &state)
-	return state, err
+	if err := json.Unmarshal([]byte(raw), &state); err != nil {
+		return state, err
+	}
+	if state.Conditions == nil {
+		state.Conditions = map[string]Condition{}
+	}
+	if state.Admissions == nil {
+		state.Admissions = map[string]bool{}
+	}
+	if state.Reminders == nil {
+		state.Reminders = map[string]string{}
+	}
+	return state, nil
 }
 
 func conditionList(state conditionState) []Condition {

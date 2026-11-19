@@ -581,21 +581,7 @@ func (s *Service) PreparePersistenceReplacement(ctx context.Context) error {
 	if alreadyPrepared {
 		return nil
 	}
-	conditions, err := loadAndMigrateConditionState(ctx, s.database())
-	if err != nil {
-		s.resumePersistence()
-		return err
-	}
-	if err := migrateApprovalOutboxHistory(ctx, s.database(), &conditions); err != nil {
-		s.resumePersistence()
-		return err
-	}
-	rows, err := loadCurrentOutboxRows(ctx, s.database())
-	if err != nil {
-		s.resumePersistence()
-		return err
-	}
-	rows.APTAdmissions, err = loadAPTAdmissions(ctx, s.database())
+	conditions, rows, err := loadPersistenceEvidence(ctx, s.database())
 	if err != nil {
 		s.resumePersistence()
 		return err
@@ -617,23 +603,6 @@ func (s *Service) StageAPTDeliveryEvidence(ctx context.Context, staged *sql.DB) 
 		return errors.New("notification persistence replacement was not prepared")
 	}
 	return stageAPTDeliveryEvidence(ctx, staged, replacement, s.deps.Now())
-}
-
-// MergeOfflineAPTDeliveryEvidence carries the same evidence during a local
-// recovery without instantiating a delivery worker. Both databases are copies.
-func MergeOfflineAPTDeliveryEvidence(ctx context.Context, live, staged *sql.DB, now time.Time) error {
-	if err := PrepareArchivedPersistence(ctx, live); err != nil {
-		return err
-	}
-	replacement, err := loadCurrentOutboxRows(ctx, live)
-	if err != nil {
-		return err
-	}
-	replacement.APTAdmissions, err = loadAPTAdmissions(ctx, live)
-	if err != nil {
-		return err
-	}
-	return stageAPTDeliveryEvidence(ctx, staged, &replacement, now)
 }
 
 func stageAPTDeliveryEvidence(ctx context.Context, staged *sql.DB, replacement *outboxReplacement, now time.Time) error {

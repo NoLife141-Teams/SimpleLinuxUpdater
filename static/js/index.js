@@ -2962,8 +2962,12 @@
                 );
                 return;
             }
+            let verifiedHostKey = "";
             const confirmed = await statusActionAdapter.confirm(
-                `Repair APT/DPKG state on ${name} (SSH ${server.host}, port ${server.port})?\n\nThis checks active package-manager locks, completes pending dpkg configuration, repairs dependencies, and verifies APT health. Do not continue if another maintenance session is running on the host.`,
+                `Repair APT/DPKG state on ${name} (SSH ${server.host}, port ${server.port})?\n\nThe connection must match the SSH host key confirmed for this job before any repair command runs. Repair checks package-manager locks, completes pending dpkg configuration, repairs dependencies, and verifies APT health.`,
+                document.body.dataset.accountRole === "admin"
+                    ? { onVerifiedHostKey: value => { verifiedHostKey = value; } }
+                    : {},
             );
             if (!lifecycle.isCurrent(lifetime)) return;
             if (!confirmed) return;
@@ -2973,7 +2977,11 @@
                     "Failed to start APT repair.",
                     {
                         headers: { "Content-Type": "application/json" },
-                        body: JSON.stringify({ confirm: true, job_id: jobID }),
+                        body: JSON.stringify({
+                            confirm: true,
+                            job_id: jobID,
+                            ...(verifiedHostKey ? { verified_host_key: verifiedHostKey } : {}),
+                        }),
                     },
                 ),
             );

@@ -65,6 +65,12 @@ test("Status links an interrupted APT job to the same host after rename and pres
     await expect(repair).toBeEnabled();
     await repair.click();
     await expect(page.locator("#action-confirm-modal")).toContainText("SSH before-rename.invalid, port 22");
+    const confirmation = page.locator("#action-confirm-modal");
+    await confirmation.getByText("Confirm an independently verified SSH key", { exact: true }).click();
+    await expect(confirmation.getByLabel("Verified SSH host key fingerprint")).toBeVisible();
+    await confirmation.getByLabel("Verified SSH host key fingerprint").fill("invalid-key");
+    await confirmation.getByRole("button", { name: "Confirm", exact: true }).click();
+    await expect(confirmation).toBeVisible();
     await page.locator("#action-confirm-cancel").click();
 
     const diagnosticURL = page.url();

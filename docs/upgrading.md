@@ -22,7 +22,10 @@ reconciliation requirement before deciding on another action. Review and
 approve a newly discovered package plan after an interrupted approval.
 
 Repair APT requires the current reconciliation job and its recorded SSH
-endpoint. A historical job without a recorded target remains available as a
+endpoint. The repair connection verifies the SSH host key captured during
+mutation. After confirming the original machine through a trusted console,
+an administrator can enter an independently verified key fingerprint in the
+repair dialog. This confirmation is audited. A historical job without a recorded target remains available as a
 report. Verify the original machine and its package state independently before
 resuming maintenance for that history.
 

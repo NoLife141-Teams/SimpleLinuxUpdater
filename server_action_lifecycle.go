@@ -2,7 +2,9 @@ package main
 
 import (
 	"database/sql"
+	"encoding/base64"
 	"errors"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -22,6 +24,7 @@ type serverActionLifecycle struct {
 	startJobRunner         func(func() *JobManager, string, func(), ...func())
 	loadRetryPolicy        func() RetryPolicy
 	audit                  func(action, targetType, targetName, status, message string, meta map[string]any)
+	auditVerifiedRepair    func(targetName, message string, meta map[string]any) error
 	maintenanceReadiness   func(Server) serverpkg.MaintenanceReadiness
 }
 
@@ -33,6 +36,8 @@ type serverActionLifecycleResult struct {
 type serverActionStartSpec struct {
 	expectedServerIdentity string
 	expectedAPTTarget      string
+	previousAPTKey         string
+	verifiedAPTKey         string
 	expectedJobID          string
 	status                 string
 	jobKind                string
@@ -127,7 +132,7 @@ func (l *serverActionLifecycle) startAutoremove(name, actor, clientIP, expectedI
 	})
 }
 
-func (l *serverActionLifecycle) StartAptRepair(name, actor, clientIP string, confirmed bool, jobID string) serverActionLifecycleResult {
+func (l *serverActionLifecycle) StartAptRepair(name, actor, clientIP string, confirmed bool, jobID, verifiedHostKey string) serverActionLifecycleResult {
 	reject := func(code int, outcome, message string) serverActionLifecycleResult {
 		l.recordAudit("apt_repair.start", name, outcome, message, retryPolicyMeta(l.retryPolicy()))
 		return jsonResult(code, message)
@@ -149,8 +154,21 @@ func (l *serverActionLifecycle) StartAptRepair(name, actor, clientIP string, con
 	if err != nil || job.Status != jobStatusFailed || job.ErrorClass != "reconciliation_required" || job.APTTarget == "" {
 		return reject(http.StatusConflict, "ignored", "The original APT repair target could not be verified. Review the job report.")
 	}
+	expectedKey := job.APTMutationHostKey
+	if verifiedHostKey != "" {
+		if !validHostKeyFingerprint(verifiedHostKey) {
+			return reject(http.StatusBadRequest, "failure", "Enter the independently verified SHA256 SSH host key fingerprint")
+		}
+		expectedKey = verifiedHostKey
+	}
+	if !validHostKeyFingerprint(expectedKey) {
+		return reject(http.StatusConflict, "ignored", "The original SSH host key was not recorded. Verify the host independently and follow the documented APT repair confirmation for a verified key.")
+	}
+
 	return l.startAction(name, actor, clientIP, "", serverActionStartSpec{
 		expectedAPTTarget: job.APTTarget,
+		previousAPTKey:    job.APTMutationHostKey,
+		verifiedAPTKey:    verifiedHostKey,
 		expectedJobID:     job.ID,
 		status:            runtimepkg.StatusRepairing,
 		jobKind:           jobKindAptRepair,
@@ -164,11 +182,12 @@ func (l *serverActionLifecycle) StartAptRepair(name, actor, clientIP string, con
 		invalidStatus: "Server does not require APT repair",
 		runWithJob: func(service *UpdateService, server Server, actor, clientIP string, policy RetryPolicy, jobID, _ string) {
 			service.RunAptRepairJob(AptRepairRunRequest{
-				Server:   server,
-				Actor:    actor,
-				ClientIP: clientIP,
-				Policy:   policy,
-				JobID:    jobID,
+				ExpectedHostKey: expectedKey,
+				Server:          server,
+				Actor:           actor,
+				ClientIP:        clientIP,
+				Policy:          policy,
+				JobID:           jobID,
 			})
 		},
 	})
@@ -334,7 +353,7 @@ func (l *serverActionLifecycle) startAction(name, actor, clientIP, sudoPassword 
 	}
 	preStartStatus = admittedSnapshot
 	admittedGeneration := admittedSnapshot.ActionGeneration + 1
-	job, err := createServerActionJobWithAdmission(l.currentJobManager(), l.serverState, spec.jobKind, name, actor, clientIP, policy, l.admissionReceipt)
+	job, err := createServerActionJobWithAdmission(l.currentJobManager(), l.serverState, spec.jobKind, name, actor, clientIP, policy, spec.previousAPTKey, l.admissionReceipt)
 	if err != nil {
 		l.serverState.RestoreAdmittedAction(name, admittedGeneration, preStartStatus)
 		retryMeta["error"] = err.Error()
@@ -342,6 +361,24 @@ func (l *serverActionLifecycle) startAction(name, actor, clientIP, sudoPassword 
 		return jsonResult(http.StatusInternalServerError, spec.createFailure)
 	}
 	preserveReconciliation := spec.preserveReconciliation && preStartStatus != nil && strings.EqualFold(strings.TrimSpace(preStartStatus.Status), runtimepkg.StatusNeedsReconciliation)
+	retryMeta["job_id"] = job.ID
+	if spec.verifiedAPTKey != "" {
+		retryMeta["reconciliation_job_id"] = spec.expectedJobID
+		retryMeta["independently_verified_host_fingerprint"] = spec.verifiedAPTKey
+		retryMeta["previous_host_fingerprint"] = spec.previousAPTKey
+		if err := l.recordVerifiedRepair(name, spec.successMessage, retryMeta); err != nil {
+			l.serverState.RestoreAdmittedAction(name, admittedGeneration, preStartStatus)
+			log.Printf("cannot audit verified SSH key for APT repair job %q: %v", job.ID, err)
+			status := jobStatusCancelled
+			summary := "APT repair cancelled before SSH because verification could not be audited"
+			if err := l.currentJobManager().Transition(job.ID, jobspkg.Intent{Status: &status, Summary: &summary}); err != nil {
+				log.Printf("cannot cancel undispatched APT repair job %q: %v", job.ID, err)
+			}
+			return jsonResult(http.StatusServiceUnavailable, "Unable to audit SSH host key verification. APT repair was not started.")
+		}
+	} else {
+		l.recordAudit(spec.auditAction, name, "started", spec.successMessage, retryMeta)
+	}
 	l.startJobRunner(l.currentJobManager, job.ID, func() {
 		if preserveReconciliation {
 			defer l.serverState.RestoreAdmittedAction(name, admittedGeneration, preStartStatus)
@@ -350,12 +387,26 @@ func (l *serverActionLifecycle) startAction(name, actor, clientIP, sudoPassword 
 	}, func() {
 		l.serverState.RestoreAdmittedAction(name, admittedGeneration, preStartStatus)
 	})
-	retryMeta["job_id"] = job.ID
-	l.recordAudit(spec.auditAction, name, "started", spec.successMessage, retryMeta)
 	return serverActionLifecycleResult{
 		statusCode: http.StatusOK,
 		body:       map[string]any{"message": spec.successMessage, "job_id": job.ID},
 	}
+}
+
+func (l *serverActionLifecycle) recordVerifiedRepair(name, message string, meta map[string]any) error {
+	if l.auditVerifiedRepair == nil {
+		return errors.New("verification audit is unavailable")
+	}
+	return l.auditVerifiedRepair(name, message, meta)
+}
+
+func validHostKeyFingerprint(value string) bool {
+	encoded, ok := strings.CutPrefix(value, "SHA256:")
+	if !ok || len(encoded) != 43 {
+		return false
+	}
+	decoded, err := base64.RawStdEncoding.Strict().DecodeString(encoded)
+	return err == nil && len(decoded) == 32
 }
 
 func (l *serverActionLifecycle) retryPolicy() RetryPolicy {

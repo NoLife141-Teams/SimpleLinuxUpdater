@@ -316,6 +316,8 @@ type AutoremoveRunRequest struct {
 }
 
 type AptRepairRunRequest struct {
+	ExpectedHostKey string
+
 	Server   servers.Server
 	Actor    string
 	ClientIP string

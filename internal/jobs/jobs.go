@@ -91,11 +91,16 @@ type Record struct {
 	LogsTruncated   bool   `json:"logs_truncated"`
 	Revision        int64  `json:"-"`
 	APTTarget       string `json:"-"`
-	logReplacement  *string
-	logAppend       string
+
+	APTMutationHostKey string `json:"-"`
+
+	logReplacement *string
+	logAppend      string
 }
 
 type Intent struct {
+	APTMutationHostKey *string
+
 	Kind       IntentKind
 	Status     *string
 	Phase      *string
@@ -120,6 +125,8 @@ type CreateParams struct {
 	RetryPolicyJSON string
 	MetaJSON        string
 	APTTarget       string
+
+	APTMutationHostKey string
 }
 
 // AdmissionReceipt records an operation's durable admission in the same
@@ -205,7 +212,8 @@ func EnsureSchemaConfigured(db *sql.DB, logConfig LogConfig) error {
 			log_next_sequence INTEGER NOT NULL DEFAULT 1,
 			log_source_bytes INTEGER NOT NULL DEFAULT 0,
 			revision INTEGER NOT NULL DEFAULT 0,
-			apt_target TEXT NOT NULL DEFAULT ''
+			apt_target TEXT NOT NULL DEFAULT '',
+			apt_mutation_host_key TEXT NOT NULL DEFAULT ''
 		)
 	`); err != nil {
 		return err
@@ -254,7 +262,7 @@ func ensureJobRecoveryColumns(db *sql.DB) error {
 		return err
 	}
 	defer rows.Close()
-	var revision, target bool
+	var revision, target, mutationKey bool
 	for rows.Next() {
 		var cid int
 		var name, columnType string
@@ -265,6 +273,7 @@ func ensureJobRecoveryColumns(db *sql.DB) error {
 		}
 		revision = revision || name == "revision"
 		target = target || name == "apt_target"
+		mutationKey = mutationKey || name == "apt_mutation_host_key"
 	}
 	if err := rows.Err(); err != nil {
 		return err
@@ -278,7 +287,12 @@ func ensureJobRecoveryColumns(db *sql.DB) error {
 		}
 	}
 	if !target {
-		_, err = db.Exec("ALTER TABLE jobs ADD COLUMN apt_target TEXT NOT NULL DEFAULT ''")
+		if _, err := db.Exec("ALTER TABLE jobs ADD COLUMN apt_target TEXT NOT NULL DEFAULT ''"); err != nil {
+			return err
+		}
+	}
+	if !mutationKey {
+		_, err = db.Exec("ALTER TABLE jobs ADD COLUMN apt_mutation_host_key TEXT NOT NULL DEFAULT ''")
 	}
 	return err
 }
@@ -357,8 +371,11 @@ func (m *Manager) CreateJobWithAdmission(params CreateParams, receipt AdmissionR
 		RetryPolicyJSON: params.RetryPolicyJSON,
 		MetaJSON:        params.MetaJSON,
 		APTTarget:       params.APTTarget,
-		CreatedAt:       now,
-		UpdatedAt:       now,
+
+		APTMutationHostKey: params.APTMutationHostKey,
+
+		CreatedAt: now,
+		UpdatedAt: now,
 	}
 	if record.Status == StatusRunning {
 		record.StartedAt = now
@@ -636,6 +653,9 @@ func (m *Manager) applyIntent(current Record, intent Intent) (Record, bool, erro
 	next.Status = target
 	next.UpdatedAt = now
 	next.Revision = current.Revision + 1
+	if intent.APTMutationHostKey != nil {
+		next.APTMutationHostKey = *intent.APTMutationHostKey
+	}
 	if intent.Phase != nil {
 		next.Phase = strings.TrimSpace(*intent.Phase)
 	}
@@ -779,8 +799,8 @@ func (r *SQLiteRepository) createWithAdmission(record Record, receipt AdmissionR
 		INSERT INTO jobs (
 			id, kind, parent_job_id, server_name, actor, client_ip, status, phase, summary, logs_text,
 			error_class, retry_policy_json, meta_json, created_at, updated_at, started_at, finished_at,
-			logs_expired, logs_truncated, log_next_sequence, log_source_bytes, revision, apt_target
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?, ?, ?, ?, ?, ?, 0, 0, 1, 0, ?, ?)
+			logs_expired, logs_truncated, log_next_sequence, log_source_bytes, revision, apt_target, apt_mutation_host_key
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?, ?, ?, ?, ?, ?, 0, 0, 1, 0, ?, ?, ?)
 	`,
 		record.ID,
 		record.Kind,
@@ -800,6 +820,7 @@ func (r *SQLiteRepository) createWithAdmission(record Record, receipt AdmissionR
 		record.FinishedAt,
 		record.Revision,
 		record.APTTarget,
+		record.APTMutationHostKey,
 	)
 	if err != nil {
 		return err
@@ -827,8 +848,8 @@ func (r *SQLiteRepository) Upsert(record Record) error {
 	_, err = tx.Exec(`
 		INSERT INTO jobs (
 			id, kind, parent_job_id, server_name, actor, client_ip, status, phase, summary, logs_text,
-			error_class, retry_policy_json, meta_json, created_at, updated_at, started_at, finished_at, revision, apt_target
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			error_class, retry_policy_json, meta_json, created_at, updated_at, started_at, finished_at, revision, apt_target, apt_mutation_host_key
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			kind = excluded.kind,
 			parent_job_id = excluded.parent_job_id,
@@ -864,6 +885,7 @@ func (r *SQLiteRepository) Upsert(record Record) error {
 		record.FinishedAt,
 		record.Revision,
 		record.APTTarget,
+		record.APTMutationHostKey,
 	)
 	if err != nil {
 		return err
@@ -893,9 +915,9 @@ func (r *SQLiteRepository) applyTransitionWithAdmission(record Record, expectedR
 	}
 	defer tx.Rollback()
 	query := `UPDATE jobs SET status=?, phase=?, summary=?, error_class=?, meta_json=?,
-		updated_at=?, started_at=?, finished_at=?, revision=? WHERE id=? AND revision=?`
+		updated_at=?, started_at=?, finished_at=?, revision=?, apt_mutation_host_key=? WHERE id=? AND revision=?`
 	args := []any{record.Status, record.Phase, record.Summary, record.ErrorClass, record.MetaJSON,
-		record.UpdatedAt, record.StartedAt, record.FinishedAt, record.Revision, record.ID, expectedRevision}
+		record.UpdatedAt, record.StartedAt, record.FinishedAt, record.Revision, record.APTMutationHostKey, record.ID, expectedRevision}
 	if activeOnly {
 		query += " AND status IN (?, ?, ?)"
 		args = append(args, StatusQueued, StatusRunning, StatusWaitingApproval)
@@ -951,7 +973,7 @@ func (r *SQLiteRepository) Get(id string) (Record, error) {
 	err := r.db.QueryRow(`
 		SELECT id, kind, parent_job_id, server_name, actor, client_ip, status, phase, summary, logs_text,
 		       error_class, retry_policy_json, meta_json, created_at, updated_at, started_at, finished_at,
-		       logs_expired, logs_truncated, revision, apt_target
+		       logs_expired, logs_truncated, revision, apt_target, apt_mutation_host_key
 		  FROM jobs
 		 WHERE id = ?
 	`, id).Scan(
@@ -975,7 +997,7 @@ func (r *SQLiteRepository) Get(id string) (Record, error) {
 		&record.LogsExpired,
 		&record.LogsTruncated,
 		&record.Revision,
-		&record.APTTarget,
+		&record.APTTarget, &record.APTMutationHostKey,
 	)
 	return record, err
 }
@@ -988,7 +1010,7 @@ func (r *SQLiteRepository) FindLatestActiveByServerAndKind(serverName, kind stri
 	err := r.db.QueryRow(`
 		SELECT id, kind, parent_job_id, server_name, actor, client_ip, status, phase, summary, logs_text,
 		       error_class, retry_policy_json, meta_json, created_at, updated_at, started_at, finished_at,
-		       logs_expired, logs_truncated, revision, apt_target
+		       logs_expired, logs_truncated, revision, apt_target, apt_mutation_host_key
 		  FROM jobs
 		 WHERE server_name = ?
 		   AND kind = ?
@@ -1016,7 +1038,7 @@ func (r *SQLiteRepository) FindLatestActiveByServerAndKind(serverName, kind stri
 		&record.LogsExpired,
 		&record.LogsTruncated,
 		&record.Revision,
-		&record.APTTarget,
+		&record.APTTarget, &record.APTMutationHostKey,
 	)
 	if err == sql.ErrNoRows {
 		return nil, err
@@ -1064,7 +1086,7 @@ func (r *SQLiteRepository) ListReconciliationRequired() ([]Record, error) {
 		       candidate.actor, candidate.client_ip, candidate.status, candidate.phase, candidate.summary,
 		       candidate.logs_text, candidate.error_class, candidate.retry_policy_json, candidate.meta_json,
 		       candidate.created_at, candidate.updated_at, candidate.started_at, candidate.finished_at,
-		       candidate.logs_expired, candidate.logs_truncated, candidate.revision, candidate.apt_target
+		       candidate.logs_expired, candidate.logs_truncated, candidate.revision, candidate.apt_target, candidate.apt_mutation_host_key
 		  FROM jobs AS candidate
 		 WHERE candidate.status = ?
 		   AND candidate.error_class = ?
@@ -1108,7 +1130,7 @@ func (r *SQLiteRepository) ListReconciliationRequired() ([]Record, error) {
 			&record.Status, &record.Phase, &record.Summary, &record.LogsText, &record.ErrorClass,
 			&record.RetryPolicyJSON, &record.MetaJSON, &record.CreatedAt, &record.UpdatedAt,
 			&record.StartedAt, &record.FinishedAt, &record.LogsExpired, &record.LogsTruncated, &record.Revision,
-			&record.APTTarget,
+			&record.APTTarget, &record.APTMutationHostKey,
 		); err != nil {
 			return nil, err
 		}

@@ -239,8 +239,9 @@ admission boundary and prevents credential reload/usage writes while persistence
 is being replaced. Use `/readyz` for monitoring these controlled windows.
 The compatibility `vulnerabilities` worker label is always disabled; standalone scanning has been retired.
 Worker labels are bounded to `scheduler`, `host_facts`, `vulnerabilities`, `backup`
-`notifications`, `audit_pruner` and `job_log_pruner`; no accounts, jobs, Servers, tokens, destinations or paths
-are added as labels. Timestamps and observed error counts come from service
+`notifications`, `audit_pruner` and `job_log_pruner`. Notification destination labels are limited
+to the integration types `webhook`, `discord` and `telegram`. Accounts, jobs, Servers, tokens,
+endpoint identities and paths are excluded from labels. Timestamps and observed error counts come from service
 owners using their injected clocks. Missing timestamps, unavailable counts and
 unavailable storage are omitted; the `_available` gauges identify unknown backup
 and notification observations. The panel and metrics do not estimate queue depth
@@ -261,6 +262,16 @@ tracks persisted HTTP success.
 `slu_installation_notifications_oldest_pending_age_seconds` is present when
 a nonterminal row has an observed creation time.
 
+Installation Health and the `slu_installation_notifications_destination_*` series
+report delivery separately for Webhook, Discord and Telegram. The last queued
+attempt and HTTP success refer to the current destination configuration. The last
+success for a different configuration is reported as historical. The queued success
+survives a restart and history pruning. A manual test has its own result and timestamp.
+The age by destination includes pending, claimed and retrying rows. A terminal-only
+queue has no age sample. Unknown results have state `unknown` and omit their timestamps.
+Upgrades can recover per-configuration evidence from retained, bound delivery rows.
+Older results without that binding remain unknown at destination scope.
+
 Example alert expressions (tune windows to deployment cadence):
 
 ```promql
@@ -269,6 +280,7 @@ slu_installation_storage_available_bytes < 1024 * 1024 * 1024
 slu_installation_notifications_retrying > 0
 slu_installation_notifications_failed > 0
 slu_installation_notifications_condition_evaluation_degraded == 1
+slu_installation_notifications_destination_oldest_pending_age_seconds > 1800
 slu_installation_backup_verified_age_seconds > 7 * 24 * 3600
 (time() - slu_installation_worker_last_tick_timestamp_seconds{worker="scheduler"} > 180)
   and on(worker) slu_installation_worker_enabled{worker="scheduler"} == 1

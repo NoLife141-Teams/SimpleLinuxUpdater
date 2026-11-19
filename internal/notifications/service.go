@@ -89,6 +89,7 @@ type Settings struct {
 	EventTypes              []string
 	LastDelivery            *DeliveryStatus
 	LastDeliveries          map[string]*DeliveryStatus
+	lastManualTests         map[string]destinationManualTest
 }
 
 type SettingsResponse struct {
@@ -144,19 +145,21 @@ type TelegramUpdate struct {
 }
 
 type persistedSettings struct {
-	RemindersEnabled        bool                       `json:"reminders_enabled"`
-	ReminderIntervalMinutes int                        `json:"reminder_interval_minutes"`
-	Enabled                 bool                       `json:"enabled"`
-	LegacyWebhookURL        string                     `json:"webhook_url,omitempty"`
-	EncryptedWebhookURL     string                     `json:"webhook_url_enc,omitempty"`
-	DiscordEnabled          bool                       `json:"discord_enabled,omitempty"`
-	DiscordWebhookURL       string                     `json:"discord_webhook_url_enc,omitempty"`
-	TelegramEnabled         bool                       `json:"telegram_enabled,omitempty"`
-	TelegramBotToken        string                     `json:"telegram_bot_token_enc,omitempty"`
-	TelegramChatID          string                     `json:"telegram_chat_id_enc,omitempty"`
-	EventTypes              []string                   `json:"event_types"`
-	LastDelivery            *DeliveryStatus            `json:"last_delivery,omitempty"`
-	LastDeliveries          map[string]*DeliveryStatus `json:"last_deliveries,omitempty"`
+	RemindersEnabled        bool                             `json:"reminders_enabled"`
+	ReminderIntervalMinutes int                              `json:"reminder_interval_minutes"`
+	Enabled                 bool                             `json:"enabled"`
+	LegacyWebhookURL        string                           `json:"webhook_url,omitempty"`
+	EncryptedWebhookURL     string                           `json:"webhook_url_enc,omitempty"`
+	DiscordEnabled          bool                             `json:"discord_enabled,omitempty"`
+	DiscordWebhookURL       string                           `json:"discord_webhook_url_enc,omitempty"`
+	TelegramEnabled         bool                             `json:"telegram_enabled,omitempty"`
+	TelegramBotToken        string                           `json:"telegram_bot_token_enc,omitempty"`
+	TelegramChatID          string                           `json:"telegram_chat_id_enc,omitempty"`
+	EventTypes              []string                         `json:"event_types"`
+	LastDelivery            *DeliveryStatus                  `json:"last_delivery,omitempty"`
+	LastDeliveries          map[string]*DeliveryStatus       `json:"last_deliveries,omitempty"`
+	DestinationFingerprints map[string]string                `json:"destination_fingerprints"`
+	LastManualTests         map[string]destinationManualTest `json:"last_manual_tests,omitempty"`
 }
 
 type ValidationError struct {
@@ -361,6 +364,7 @@ func NewService(deps ServiceDeps) *Service {
 		db := deps.DB()
 		s.initErr = EnsureSchema(db)
 		if s.initErr == nil {
+			s.backfillDestinationFingerprints(ctx, db)
 			s.initErr = recoverExpiredOutboxClaims(ctx, db, deps.Now(), deps.ClaimTTL)
 		}
 		if s.initErr == nil {
@@ -643,13 +647,14 @@ func stageAPTDeliveryEvidence(ctx context.Context, staged *sql.DB, replacement *
 	if err := PrepareArchivedPersistence(ctx, staged); err != nil {
 		return err
 	}
-	if len(replacement.APTAdmissions) == 0 && replacement.LastSuccessfulDelivery == "" {
+	if len(replacement.APTAdmissions) == 0 && replacement.LastSuccessfulDelivery == "" && len(replacement.DestinationHealth) == 0 {
 		return nil
 	}
 	aptRows := outboxReplacement{
 		RetainedRows:           make(map[string]outboxSnapshot),
 		APTAdmissions:          replacement.APTAdmissions,
 		LastSuccessfulDelivery: replacement.LastSuccessfulDelivery,
+		DestinationHealth:      replacement.DestinationHealth,
 	}
 	for id, snapshot := range replacement.RetainedRows {
 		if snapshot.Row.EventType == EventAPTReconciliationRequired {
@@ -683,6 +688,7 @@ func (s *Service) ReloadPersistence(ctx context.Context) error {
 	if err := ensureSchema(ctx, db); err != nil {
 		return err
 	}
+	s.backfillDestinationFingerprints(ctx, db)
 	if _, err := loadAndMigrateConditionState(ctx, db); err != nil {
 		return fmt.Errorf("read restored notification conditions: %w", err)
 	}
@@ -879,12 +885,13 @@ func (s *Service) processOutboxRow(ctx context.Context, row outboxRow) bool {
 	}
 	cancelAttempt()
 	outcome := outboxOutcome{
-		Attempts:    status.Attempts,
-		AttemptedAt: status.AttemptedAt,
-		CompletedAt: status.CompletedAt,
-		StatusCode:  status.StatusCode,
-		Error:       status.Error,
-		DurationMS:  status.DurationMS,
+		Attempts:               status.Attempts,
+		AttemptedAt:            status.AttemptedAt,
+		CompletedAt:            status.CompletedAt,
+		StatusCode:             status.StatusCode,
+		Error:                  status.Error,
+		DurationMS:             status.DurationMS,
+		DestinationFingerprint: destinationConfigFingerprint(settings, row.Destination),
 	}
 	if deliveryErr == nil {
 		outcome.State = outboxStateSucceeded
@@ -912,7 +919,7 @@ func (s *Service) processOutboxRow(ctx context.Context, row outboxRow) bool {
 		s.deps.Logf("notification outbox outcome persistence failed for %q: %v", row.ID, err)
 		return false
 	}
-	err = s.retrySQLiteContention(func() error { return s.storeLastDelivery(row.Destination, status) })
+	err = s.retrySQLiteContention(func() error { return s.storeLastDelivery(row.Destination, status, "") })
 	if err != nil {
 		s.health.Error(s.deps.Now())
 		s.deps.Logf("notification diagnostic persistence failed for %q: %v", row.ID, err)
@@ -932,7 +939,7 @@ func (s *Service) attemptOutboxDestination(ctx context.Context, settings Setting
 		Attempts:    row.Attempts + 1,
 	}
 	attemptedAt := s.deps.Now().UTC()
-	status.AttemptedAt = attemptedAt.Format(time.RFC3339)
+	status.AttemptedAt = attemptedAt.Format(time.RFC3339Nano)
 	payload, err := buildPayload(row.EventType, row.Intent)
 	if err != nil {
 		return failedDeliveryStatus(status, attemptedAt, s.deps.Now().UTC(), err)
@@ -969,7 +976,7 @@ func (s *Service) attemptOutboxDestination(ctx context.Context, settings Setting
 		}
 	}
 	completedAt := s.deps.Now().UTC()
-	status.CompletedAt = completedAt.Format(time.RFC3339)
+	status.CompletedAt = completedAt.Format(time.RFC3339Nano)
 	status.DeliveredAt = status.CompletedAt
 	status.DurationMS = nonNegativeMilliseconds(completedAt.Sub(attemptedAt))
 	if err == nil {
@@ -989,7 +996,7 @@ func failedDeliveryStatus(status DeliveryStatus, attemptedAt, completedAt time.T
 	status.Outcome = DeliveryOutcomeFailed
 	status.Error = safeDeliveryError(err)
 	status.ConsecutiveFailures++
-	status.CompletedAt = completedAt.Format(time.RFC3339)
+	status.CompletedAt = completedAt.Format(time.RFC3339Nano)
 	status.DeliveredAt = status.CompletedAt
 	status.DurationMS = nonNegativeMilliseconds(completedAt.Sub(attemptedAt))
 	return status, err
@@ -1075,6 +1082,7 @@ func (s *Service) SaveSettings(update SettingsUpdate) (SettingsResponse, error) 
 		EventTypes:        events,
 		LastDelivery:      current.LastDelivery,
 		LastDeliveries:    cloneDeliveryStatuses(current.LastDeliveries),
+		lastManualTests:   current.lastManualTests,
 	}
 	switch intent {
 	case WebhookURLReplace:
@@ -1320,6 +1328,7 @@ func (s *Service) deliverToDestination(ctx context.Context, settings Settings, e
 		}
 	}
 	var lastErr error
+	fingerprint := destinationConfigFingerprint(settings, destination)
 	for attempt := 1; attempt <= defaultAttempts; attempt++ {
 		attemptedAt := s.deps.Now().UTC()
 		status.Attempts = attempt
@@ -1354,7 +1363,7 @@ func (s *Service) deliverToDestination(ctx context.Context, settings Settings, e
 				status.DurationMS = nonNegativeMilliseconds(completedAt.Sub(attemptedAt))
 				status.ConsecutiveFailures = 0
 				status.NextRetryAt = ""
-				if err := s.storeLastDelivery(destination, status); err != nil {
+				if err := s.storeLastDelivery(destination, status, fingerprint); err != nil {
 					return status, fmt.Errorf("record notification delivery outcome: %w", err)
 				}
 				return status, nil
@@ -1375,7 +1384,7 @@ func (s *Service) deliverToDestination(ctx context.Context, settings Settings, e
 			}
 			status.Outcome = DeliveryOutcomeRetrying
 			status.NextRetryAt = completedAt.Add(delay).Format(time.RFC3339)
-			if err := s.storeLastDelivery(destination, status); err != nil {
+			if err := s.storeLastDelivery(destination, status, ""); err != nil {
 				return status, fmt.Errorf("record notification retry outcome: %w", err)
 			}
 			select {
@@ -1399,7 +1408,7 @@ func (s *Service) deliverToDestination(ctx context.Context, settings Settings, e
 	if status.ConsecutiveFailures == 0 {
 		status.ConsecutiveFailures = 1
 	}
-	if err := s.storeLastDelivery(destination, status); err != nil {
+	if err := s.storeLastDelivery(destination, status, fingerprint); err != nil {
 		if lastErr == nil {
 			lastErr = errors.New("webhook delivery failed")
 		}
@@ -1448,6 +1457,7 @@ func (s *Service) loadSettings() (Settings, error) {
 	settings.EventTypes = stored.EventTypes
 	settings.LastDelivery = safeDeliveryStatus(stored.LastDelivery)
 	settings.LastDeliveries = cloneDeliveryStatuses(stored.LastDeliveries)
+	settings.lastManualTests = stored.LastManualTests
 	legacyURLStored := strings.TrimSpace(stored.EncryptedWebhookURL) == "" &&
 		strings.TrimSpace(stored.LegacyWebhookURL) != ""
 	rewriteStoredSettings := legacyURLStored
@@ -1505,6 +1515,11 @@ func (s *Service) loadSettings() (Settings, error) {
 			}
 			return Settings{}, errors.New("unsafe webhook configuration could not be disabled")
 		}
+	} else if stored.DestinationFingerprints == nil {
+		stored.DestinationFingerprints = destinationFingerprints(settings)
+		if err := saveStoredSettings(db, stored); err != nil {
+			s.deps.Logf("notification destination bindings could not be persisted")
+		}
 	}
 	return settings, nil
 }
@@ -1519,12 +1534,14 @@ func (s *Service) saveSettings(settings Settings) error {
 	}
 	stored := persistedSettings{
 		RemindersEnabled: settings.RemindersEnabled, ReminderIntervalMinutes: settings.ReminderIntervalMinutes,
-		Enabled:         settings.Enabled,
-		DiscordEnabled:  settings.DiscordEnabled,
-		TelegramEnabled: settings.TelegramEnabled,
-		EventTypes:      append([]string{}, settings.EventTypes...),
-		LastDelivery:    safeDeliveryStatus(settings.LastDelivery),
-		LastDeliveries:  cloneDeliveryStatuses(settings.LastDeliveries),
+		Enabled:                 settings.Enabled,
+		DiscordEnabled:          settings.DiscordEnabled,
+		TelegramEnabled:         settings.TelegramEnabled,
+		EventTypes:              append([]string{}, settings.EventTypes...),
+		LastDelivery:            safeDeliveryStatus(settings.LastDelivery),
+		LastDeliveries:          cloneDeliveryStatuses(settings.LastDeliveries),
+		DestinationFingerprints: destinationFingerprints(settings),
+		LastManualTests:         settings.lastManualTests,
 	}
 	var err error
 	if strings.TrimSpace(settings.WebhookURL) != "" {
@@ -1546,6 +1563,10 @@ func (s *Service) saveSettings(settings Settings) error {
 	if stored.TelegramChatID, err = s.encryptStoredSecret(settings.TelegramChatID); err != nil {
 		return errors.New("telegram chat ID could not be protected")
 	}
+	return saveStoredSettings(db, stored)
+}
+
+func saveStoredSettings(db *sql.DB, stored persistedSettings) error {
 	body, err := json.Marshal(stored)
 	if err != nil {
 		return err
@@ -1558,7 +1579,7 @@ func (s *Service) saveSettings(settings Settings) error {
 	return err
 }
 
-func (s *Service) storeLastDelivery(destination string, status DeliveryStatus) error {
+func (s *Service) storeLastDelivery(destination string, status DeliveryStatus, manualFingerprint string) error {
 	s.settingsMu.Lock()
 	defer s.settingsMu.Unlock()
 	settings, err := s.loadSettings()
@@ -1571,6 +1592,14 @@ func (s *Service) storeLastDelivery(destination string, status DeliveryStatus) e
 	settings.LastDeliveries[destination] = safeDeliveryStatus(&status)
 	if destination == DestinationWebhook {
 		settings.LastDelivery = safeDeliveryStatus(&status)
+	}
+	if manualFingerprint != "" && manualFingerprint == destinationConfigFingerprint(settings, destination) {
+		if settings.lastManualTests == nil {
+			settings.lastManualTests = make(map[string]destinationManualTest)
+		}
+		settings.lastManualTests[destination] = destinationManualTest{
+			Fingerprint: manualFingerprint, CompletedAt: status.CompletedAt, Outcome: status.Outcome,
+		}
 	}
 	return s.saveSettings(settings)
 }

@@ -17,14 +17,15 @@ const (
 )
 
 type InstallationHealthFacts struct {
-	Enabled                   bool       `json:"enabled"`
-	Pending                   int        `json:"pending"`
-	Retrying                  int        `json:"retrying"`
-	Failed                    int        `json:"failed"`
-	ConditionEvaluationState  string     `json:"condition_evaluation_state,omitempty"`
-	LastConditionEvaluationAt *time.Time `json:"last_condition_evaluation_at,omitempty"`
-	LastSuccessfulDeliveryAt  *time.Time `json:"last_successful_delivery_at,omitempty"`
-	OldestPendingAgeSeconds   *float64   `json:"oldest_pending_age_seconds,omitempty"`
+	Enabled                   bool                         `json:"enabled"`
+	Pending                   int                          `json:"pending"`
+	Retrying                  int                          `json:"retrying"`
+	Failed                    int                          `json:"failed"`
+	ConditionEvaluationState  string                       `json:"condition_evaluation_state,omitempty"`
+	LastConditionEvaluationAt *time.Time                   `json:"last_condition_evaluation_at,omitempty"`
+	LastSuccessfulDeliveryAt  *time.Time                   `json:"last_successful_delivery_at,omitempty"`
+	OldestPendingAgeSeconds   *float64                     `json:"oldest_pending_age_seconds,omitempty"`
+	Destinations              map[string]DestinationHealth `json:"destinations,omitempty"`
 }
 
 type conditionEvaluationHealth struct {
@@ -71,8 +72,8 @@ func (h *conditionEvaluationHealth) snapshot() InstallationHealthFacts {
 	return facts
 }
 
-// InstallationHealth reads aggregate observations without decrypting delivery
-// settings, acquiring work, or returning destination or event identities.
+// InstallationHealth reads observations without decrypting settings, acquiring
+// work, or returning configuration or event identities.
 func (s *Service) InstallationHealth(ctx context.Context) (installationhealth.WorkerSnapshot, InstallationHealthFacts, error) {
 	worker := s.health.Snapshot(false)
 	facts := s.conditionHealth.snapshot()
@@ -80,8 +81,13 @@ func (s *Service) InstallationHealth(ctx context.Context) (installationhealth.Wo
 	if db == nil {
 		return worker, facts, errors.New("notification persistence unavailable")
 	}
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return worker, facts, err
+	}
+	defer tx.Rollback()
 	var raw string
-	err := db.QueryRowContext(ctx, "SELECT value FROM settings WHERE key = ?", SettingsKey).Scan(&raw)
+	err = tx.QueryRowContext(ctx, "SELECT value FROM settings WHERE key = ?", SettingsKey).Scan(&raw)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return worker, facts, err
 	}
@@ -95,7 +101,7 @@ func (s *Service) InstallationHealth(ctx context.Context) (installationhealth.Wo
 	worker.Enabled = facts.Enabled
 	var oldest sql.NullString
 	var success string
-	err = db.QueryRowContext(ctx, `
+	err = tx.QueryRowContext(ctx, `
 		SELECT COALESCE(SUM(state IN ('pending', 'claimed')), 0),
 		       COALESCE(SUM(state='retrying'), 0),
 		       COALESCE(SUM(state='failed'), 0),
@@ -106,16 +112,16 @@ func (s *Service) InstallationHealth(ctx context.Context) (installationhealth.Wo
 	if err != nil {
 		return worker, facts, err
 	}
-	if at, err := time.Parse(time.RFC3339Nano, success); err == nil {
-		facts.LastSuccessfulDeliveryAt = &at
-	}
+	facts.LastSuccessfulDeliveryAt = deliveryHealthTime(success)
+	now := s.deps.Now()
 	if oldest.Valid {
-		if at, err := time.Parse(time.RFC3339Nano, oldest.String+"Z"); err == nil {
-			age := max(0, s.deps.Now().Sub(at).Seconds())
+		if at := deliveryHealthTime(oldest.String + "Z"); at != nil {
+			age := max(0, now.Sub(*at).Seconds())
 			facts.OldestPendingAgeSeconds = &age
 		}
 	}
-	return worker, facts, nil
+	facts.Destinations, err = loadDestinationHealth(ctx, tx, settings, now)
+	return worker, facts, err
 }
 
 func persistSuccessfulDelivery(ctx context.Context, tx *sql.Tx, at string) error {

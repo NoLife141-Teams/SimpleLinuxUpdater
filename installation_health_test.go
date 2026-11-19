@@ -209,6 +209,13 @@ func TestInstallationMetricsBoundedVocabularyAndUnknowns(t *testing.T) {
 	value.Notifications = installationNotificationFacts{Available: true, InstallationHealthFacts: notificationpkg.InstallationHealthFacts{
 		ConditionEvaluationState: notificationpkg.ConditionEvaluationDegraded, LastConditionEvaluationAt: &now,
 		LastSuccessfulDeliveryAt: &now, OldestPendingAgeSeconds: &queueAge,
+		Destinations: map[string]notificationpkg.DestinationHealth{
+			notificationpkg.DestinationWebhook: {LastSuccessfulDeliveryAt: &now, LastAttemptState: notificationpkg.DeliveryOutcomeSucceeded},
+			notificationpkg.DestinationTelegram: {HistoricalSuccessAt: &now, LastAttemptState: notificationpkg.DeliveryOutcomeRetrying, LastManualTestAt: &now,
+				LastManualTestState: notificationpkg.DeliveryOutcomeSucceeded, OldestPendingAgeSeconds: &queueAge},
+			notificationpkg.DestinationDiscord: {LastAttemptState: "private error"},
+			"secret destination":               {LastSuccessfulDeliveryAt: &now},
+		},
 	}}
 	body = installationMetrics(value)
 	for _, observation := range []string{
@@ -216,9 +223,21 @@ func TestInstallationMetricsBoundedVocabularyAndUnknowns(t *testing.T) {
 		"last_condition_evaluation_timestamp_seconds ",
 		"last_successful_delivery_timestamp_seconds ",
 		"oldest_pending_age_seconds 60",
+		`destination_last_successful_delivery_timestamp_seconds{destination="webhook"} `,
+		`destination_historical_success_timestamp_seconds{destination="telegram"} `,
+		`destination_last_attempt_state{destination="telegram",state="retrying"} 1`,
+		`destination_last_attempt_state{destination="discord",state="unknown"} 1`,
+		`destination_last_manual_test_state{destination="telegram",state="succeeded"} 1`,
+		`destination_oldest_pending_age_seconds{destination="telegram"} 60`,
 	} {
 		if !strings.Contains(body, "\nslu_installation_notifications_"+observation) {
 			t.Fatalf("missing %s:\n%s", observation, body)
+		}
+	}
+	for _, absent := range []string{`destination_last_successful_delivery_timestamp_seconds{destination="telegram"}`,
+		`destination_oldest_pending_age_seconds{destination="webhook"}`, "secret destination", "private error"} {
+		if strings.Contains(body, absent) {
+			t.Fatalf("unexpected metric observation %q", absent)
 		}
 	}
 }

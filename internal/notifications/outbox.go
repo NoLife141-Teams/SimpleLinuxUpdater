@@ -43,14 +43,15 @@ type outboxRow struct {
 }
 
 type outboxOutcome struct {
-	State         string
-	Attempts      int
-	NextAttemptAt string
-	AttemptedAt   string
-	CompletedAt   string
-	StatusCode    int
-	Error         string
-	DurationMS    int64
+	State                  string
+	Attempts               int
+	NextAttemptAt          string
+	AttemptedAt            string
+	CompletedAt            string
+	StatusCode             int
+	Error                  string
+	DurationMS             int64
+	DestinationFingerprint string
 }
 
 type outboxSnapshot struct {
@@ -64,6 +65,7 @@ type outboxReplacement struct {
 	TerminalOutcomes       map[string]outboxOutcome
 	APTAdmissions          []string
 	LastSuccessfulDelivery string
+	DestinationHealth      []destinationHealthEvidence
 }
 
 func loadPersistenceEvidence(ctx context.Context, db *sql.DB) (conditionState, outboxReplacement, error) {
@@ -82,6 +84,9 @@ func loadPersistenceEvidence(ctx context.Context, db *sql.DB) (conditionState, o
 	if err == nil && db != nil {
 		err = db.QueryRowContext(ctx, "SELECT last_success_at FROM notification_delivery_health WHERE id=1").
 			Scan(&rows.LastSuccessfulDelivery)
+		if err == nil {
+			rows.DestinationHealth, err = loadDestinationHealthEvidence(ctx, db)
+		}
 	}
 	return conditions, rows, err
 }
@@ -191,7 +196,7 @@ func restoreCurrentOutboxRows(ctx context.Context, db *sql.DB, replacement *outb
 		return nil
 	}
 	if len(replacement.RetainedRows) == 0 && len(replacement.TerminalOutcomes) == 0 &&
-		len(replacement.APTAdmissions) == 0 && replacement.LastSuccessfulDelivery == "" {
+		len(replacement.APTAdmissions) == 0 && replacement.LastSuccessfulDelivery == "" && len(replacement.DestinationHealth) == 0 {
 		return nil
 	}
 	tx, err := db.BeginTx(ctx, nil)
@@ -273,6 +278,11 @@ func restoreCurrentOutboxRows(ctx context.Context, db *sql.DB, replacement *outb
 	}
 	if err := persistSuccessfulDelivery(ctx, tx, replacement.LastSuccessfulDelivery); err != nil {
 		return err
+	}
+	for _, event := range replacement.DestinationHealth {
+		if err := persistDestinationHealth(ctx, tx, event); err != nil {
+			return err
+		}
 	}
 	return tx.Commit()
 }
@@ -362,6 +372,9 @@ func ensureSchema(ctx context.Context, db *sql.DB) error {
 		WHERE NOT EXISTS (SELECT 1 FROM notification_delivery_health WHERE id=1);
 	`); err != nil {
 		return fmt.Errorf("initialize notification delivery health: %w", err)
+	}
+	if err := ensureDestinationHealthSchema(ctx, db); err != nil {
+		return fmt.Errorf("initialize notification destination health: %w", err)
 	}
 	return nil
 }
@@ -561,25 +574,37 @@ func completeOutboxRow(ctx context.Context, db *sql.DB, id string, outcome outbo
 		return err
 	}
 	defer tx.Rollback()
-	result, err := tx.ExecContext(ctx, `
+	var destination string
+	err = tx.QueryRowContext(ctx, `
 		UPDATE notification_outbox
 		   SET state = ?, attempts = ?, next_attempt_at = ?, claimed_at = '', attempted_at = ?,
 		       completed_at = ?, status_code = ?, error = ?, duration_ms = ?, updated_at = ?
 		 WHERE id = ? AND state = ?
+		 RETURNING destination
 	`, outcome.State, outcome.Attempts, outcome.NextAttemptAt, outcome.AttemptedAt,
-		outcome.CompletedAt, outcome.StatusCode, outcome.Error, outcome.DurationMS, now, id, outboxStateClaimed)
-	if err != nil {
-		return err
-	}
-	changed, err := result.RowsAffected()
-	if err != nil {
-		return err
-	}
-	if changed != 1 {
+		outcome.CompletedAt, outcome.StatusCode, outcome.Error, outcome.DurationMS, now, id, outboxStateClaimed).Scan(&destination)
+	if errors.Is(err, sql.ErrNoRows) {
 		return errors.New("notification outbox completion lost its claim")
 	}
-	if outcome.State == outboxStateSucceeded && outcome.StatusCode >= 200 && outcome.StatusCode < 300 {
+	if err != nil {
+		return err
+	}
+	success := outcome.State == outboxStateSucceeded && outcome.StatusCode >= 200 && outcome.StatusCode < 300
+	if success {
 		if err := persistSuccessfulDelivery(ctx, tx, outcome.CompletedAt); err != nil {
+			return err
+		}
+	}
+	if outcome.DestinationFingerprint != "" && outcome.AttemptedAt != "" && outcome.CompletedAt != "" &&
+		(success || outcome.State == outboxStateRetrying || outcome.State == outboxStateFailed) {
+		event := destinationHealthEvidence{
+			destination: destination, fingerprint: outcome.DestinationFingerprint,
+			attemptAt: outcome.CompletedAt, state: outcome.State,
+		}
+		if success {
+			event.successAt = outcome.CompletedAt
+		}
+		if err := persistDestinationHealth(ctx, tx, event); err != nil {
 			return err
 		}
 	}

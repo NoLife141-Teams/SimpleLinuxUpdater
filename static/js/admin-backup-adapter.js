@@ -346,6 +346,14 @@
             panel.setAttribute("aria-busy", "true");
             button.disabled = true;
             feedback.textContent = `Checking ${name}…`;
+            const release = () => {
+                panel.removeAttribute("aria-busy");
+                button.disabled = false;
+            };
+            const unregister = lifecycle.own(() => {
+                release();
+                feedback.textContent = "";
+            });
             try {
                 await reauthentication.sensitive(
                     "/api/backup/restore-isolation/apt-check",
@@ -360,8 +368,8 @@
                 if (lifecycle.isCurrent(lifetime)) feedback.textContent = error.message || "Could not check APT.";
             } finally {
                 if (lifecycle.isCurrent(lifetime)) {
-                    panel.removeAttribute("aria-busy");
-                    button.disabled = false;
+                    unregister();
+                    release();
                 }
             }
         }

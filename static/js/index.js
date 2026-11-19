@@ -99,6 +99,7 @@
             "facts_refresh",
             "vulnerability_scan",
             "postchecks_test",
+            "restore_apt_check",
             "rebooting",
         ]);
 
@@ -1831,6 +1832,8 @@
                     return "Refreshing…";
                 case "vulnerability_scan":
                     return "Scanning vulnerabilities…";
+                case "restore_apt_check":
+                    return "Checking APT after restore…";
                 case "postchecks_test":
                     return "Testing application checks…";
                 default:

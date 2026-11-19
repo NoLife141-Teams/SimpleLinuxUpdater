@@ -54,7 +54,7 @@ func (s *productionHostMaintenanceSession) runInspectionCommand(ctx context.Cont
 func (s *productionHostMaintenanceSession) runUpdatePrechecks(ctx context.Context) PrecheckSummary {
 	checks := []func(context.Context) PrecheckResult{
 		s.checkDiskSpace,
-		s.checkAptLocks,
+		func(ctx context.Context) PrecheckResult { return s.checkAptLocks(ctx, true) },
 		func(ctx context.Context) PrecheckResult { return s.runAptHealthCheck(ctx, "apt_health") },
 	}
 	summary := PrecheckSummary{AllPassed: true, Results: make([]PrecheckResult, 0, len(checks))}
@@ -279,10 +279,10 @@ func parseMinimumFreeDiskKB(stdout string) (int64, error) {
 	return minFreeKB, nil
 }
 
-func (s *productionHostMaintenanceSession) checkAptLocks(ctx context.Context) PrecheckResult {
+func (s *productionHostMaintenanceSession) checkAptLocks(ctx context.Context, allowLegacy bool) PrecheckResult {
 	stdout, stderr, err := s.runInspectionCommand(ctx, precheckLocksCmd)
 	output := compactInspectionOutput(stdout, stderr)
-	if err != nil && inspectionSudoPolicyError(output+"\n"+err.Error()) {
+	if allowLegacy && err != nil && inspectionSudoPolicyError(output+"\n"+err.Error()) {
 		stdout, stderr, err = s.runInspectionCommand(ctx, precheckLegacyLocksCmd)
 		output = compactInspectionOutput(stdout, stderr)
 	}
@@ -314,7 +314,7 @@ func (s *productionHostMaintenanceSession) checkAptLocks(ctx context.Context) Pr
 // CheckRestoredAPT uses fixed read-only probes. Simulation disables APT
 // cache generation and leaves the archived host's package metadata untouched.
 func (s *productionHostMaintenanceSession) CheckRestoredAPT(ctx context.Context) string {
-	if locks := s.checkAptLocks(ctx); !locks.Passed {
+	if locks := s.checkAptLocks(ctx, false); !locks.Passed {
 		return "locks_unverified"
 	}
 	stdout, stderr, err := s.runInspectionCommand(ctx, precheckDpkgAuditCmd)

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"path/filepath"
 	"strings"
@@ -105,5 +106,101 @@ func TestRestoredAPTProofFencesAdmissionUntilFreshResume(t *testing.T) {
 	stored, err := app.Deps.PolicyRepository.GetRun(run.RunID)
 	if err != nil || stored.Status != policypkg.RunSkipped || !strings.Contains(stored.Summary, "APT validation is required") {
 		t.Fatalf("scheduled denial = %+v, %v", stored, err)
+	}
+}
+
+func TestRestoredAPTInventoryKeepsProofBoundAcrossTargetChanges(t *testing.T) {
+	app := newIsolatedTestApp(t)
+	inventory := app.Deps.ServerInventoryService
+	restored, err := inventory.Create(Server{Name: "recovered", Host: "recovered.example.test", User: "root"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	validation := app.Deps.RestoreAPTValidation
+	if isolated, err := validation.prepare(t.Context(), app.Deps.DB(), true); err != nil || !isolated {
+		t.Fatalf("prepare restored inventory = %t, %v", isolated, err)
+	}
+
+	const fingerprint = "SHA256:restored"
+	if _, err := app.Deps.DB().Exec(`UPDATE restore_apt_validation
+		SET host_key=?,result='healthy',approved=1 WHERE identity=?`, fingerprint, restored.Identity); err != nil {
+		t.Fatal(err)
+	}
+	if key, err := validation.authorize(t.Context(), restored); err != nil || key != fingerprint {
+		t.Fatalf("original proof = %q, %v", key, err)
+	}
+	moved := restored
+	moved.Host = "moved.example.test"
+	if _, err := inventory.Update(restored.Name, moved); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := inventory.Update(restored.Name, restored); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := validation.authorize(t.Context(), restored); !errors.Is(err, serverpkg.ErrRestoreAPTValidation) {
+		t.Fatalf("returning to the old endpoint yielded %v, want revalidation", err)
+	}
+	if err := inventory.Delete(restored.Name); err != nil {
+		t.Fatal(err)
+	}
+	replacement, err := inventory.Create(Server{Name: "replacement", Host: restored.Host, User: "root"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := validation.authorize(t.Context(), replacement); !errors.Is(err, serverpkg.ErrRestoreAPTValidation) {
+		t.Fatalf("recreated endpoint yielded %v, want revalidation", err)
+	}
+}
+
+func TestSameKeyRestoreIntoEmptyInventoryRequiresAPTValidation(t *testing.T) {
+	app := newIsolatedTestApp(t)
+	staged, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "staged.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer staged.Close()
+	if err := ensureSchema(staged); err != nil {
+		t.Fatal(err)
+	}
+	repo := serverpkg.SQLiteRepository{DB: func() *sql.DB { return staged }}
+	servers := []Server{{Name: "archived", Identity: "restored-identity", Host: "archived.example.test", User: "root"}}
+	if err := repo.Save(servers, nil); err != nil {
+		t.Fatal(err)
+	}
+	isolated, err := app.Deps.RestoreAPTValidation.prepare(t.Context(), staged, false)
+	if err != nil || !isolated {
+		t.Fatalf("prepare same-key restore into empty inventory = %t, %v", isolated, err)
+	}
+	recovery := &restoreAPTValidation{db: func() *sql.DB { return staged }}
+	if _, err := recovery.authorize(t.Context(), servers[0]); !errors.Is(err, serverpkg.ErrRestoreAPTValidation) {
+		t.Fatalf("restored package admission = %v, want revalidation", err)
+	}
+}
+
+func TestRestoredAPTCheckReservesHostUntilObservationIsSaved(t *testing.T) {
+	app := newIsolatedTestApp(t)
+	admin := app.authenticate(t)
+	server, err := app.Deps.ServerInventoryService.Create(Server{Name: "srv", Host: "srv.example.test", User: "root"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	validation := app.Deps.RestoreAPTValidation
+	if _, err := validation.prepare(t.Context(), app.Deps.DB(), true); err != nil {
+		t.Fatal(err)
+	}
+	validation.sessions = HostMaintenanceSessionFactoryFunc(func(_ context.Context, req HostMaintenanceSessionRequest) (HostMaintenanceSession, error) {
+		// Simulate a scheduled action claiming the host while SSH is open.
+		if _, _, err := app.Deps.ServerState.BeginActionWithOptions(req.Server.Name, "updating", serverpkg.ActionAdmissionOptions{PackageMutation: true}); !errors.Is(err, serverpkg.ErrActionInProgress) {
+			t.Fatalf("concurrent maintenance admission = %v, want host busy", err)
+		}
+		req.OnConnectedHostKey("SHA256:restored")
+		return &HostMaintenanceSessionFuncs{CheckRestoredAPTFunc: func(context.Context) string { return "healthy" }}, nil
+	})
+	rec := identityRequest(app, "POST", restoreAPTValidationRoute, admin, "", gin.H{"name": server.Name, "identity": server.Identity})
+	if rec.Code != 200 || !strings.Contains(rec.Body.String(), `"state":"approved"`) {
+		t.Fatalf("restore validation = %d, %s", rec.Code, rec.Body.String())
+	}
+	if active, _ := app.Deps.ServerState.ActionStatusInProgress(server.Name); active {
+		t.Fatal("completed validation left the host busy")
 	}
 }

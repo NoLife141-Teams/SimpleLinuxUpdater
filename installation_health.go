@@ -203,13 +203,7 @@ func installationSnapshot(ctx context.Context, deps AppDeps) installationDiagnos
 		}
 	}
 	if deps.RestoreAPTValidation != nil {
-		if observations, err := deps.RestoreAPTValidation.all(ctx); err == nil && len(observations) != 0 {
-			for _, server := range deps.ServerState.CloneServers() {
-				if observation, required := observations[server.Identity]; required {
-					out.RestoreAPTHosts = append(out.RestoreAPTHosts, observation.facts(server, now, out.RestoreIsolation != "inactive"))
-				}
-			}
-		}
+		out.RestoreAPTHosts = deps.RestoreAPTValidation.hostFacts(ctx, deps.ServerState, now, out.RestoreIsolation != "inactive")
 	}
 	if deps.BackupAutomation != nil {
 		facts, err := deps.BackupAutomation.installationFacts(ctx)

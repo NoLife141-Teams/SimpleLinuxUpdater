@@ -9,6 +9,7 @@ import (
 	"time"
 
 	internalbackup "debian-updater/internal/backup"
+	runtimepkg "debian-updater/internal/runtime"
 	serverpkg "debian-updater/internal/servers"
 	updatespkg "debian-updater/internal/updates"
 
@@ -44,7 +45,10 @@ type restoreAPTHostFacts struct {
 }
 
 func ensureRestoreAPTValidationSchema(db *sql.DB) error {
-	_, err := db.Exec(`CREATE TABLE IF NOT EXISTS restore_apt_validation (
+	_, err := db.Exec(`CREATE TABLE IF NOT EXISTS restore_apt_validation_targets (
+		endpoint TEXT PRIMARY KEY CHECK(endpoint <> '')
+	);
+	CREATE TABLE IF NOT EXISTS restore_apt_validation (
 		identity TEXT PRIMARY KEY CHECK(identity <> ''),
 		target TEXT NOT NULL DEFAULT '',
 		host_key TEXT NOT NULL DEFAULT '',
@@ -59,9 +63,19 @@ func ensureRestoreAPTValidationSchema(db *sql.DB) error {
 // and rollback therefore move the gate together with its inventory.
 func (v *restoreAPTValidation) prepare(ctx context.Context, staged *sql.DB, isolate bool) (bool, error) {
 	if !isolate {
-		err := v.db().QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM restore_apt_validation)`).Scan(&isolate)
+		var hasInventory bool
+		err := v.db().QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM restore_apt_validation_targets),
+			EXISTS(SELECT 1 FROM servers)`).Scan(&isolate, &hasInventory)
 		if err != nil {
 			return false, err
+		}
+		if !isolate && !hasInventory {
+			// The encryption key can be retained while SQLite is rebuilt.
+			// There is no live inventory to reconcile in that case.
+			err = staged.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM servers)`).Scan(&isolate)
+			if err != nil {
+				return false, err
+			}
 		}
 	}
 	tx, err := staged.BeginTx(ctx, nil)
@@ -72,13 +86,48 @@ func (v *restoreAPTValidation) prepare(ctx context.Context, staged *sql.DB, isol
 	if _, err := tx.ExecContext(ctx, `DELETE FROM restore_apt_validation`); err != nil {
 		return false, err
 	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM restore_apt_validation_targets`); err != nil {
+		return false, err
+	}
 	if isolate {
-		if _, err := tx.ExecContext(ctx, `INSERT INTO restore_apt_validation (identity)
-			SELECT identity FROM servers WHERE identity <> ''`); err != nil {
+		if err := reconcileRestoredAPTInventory(ctx, tx, true); err != nil {
 			return false, err
 		}
 	}
 	return isolate, tx.Commit()
+}
+
+// Retain the SSH endpoints even if their inventory records are deleted. A
+// replacement identity at any of those endpoints must establish its own proof.
+func reconcileRestoredAPTInventory(ctx context.Context, tx *sql.Tx, restored bool) error {
+	if !restored {
+		var guarded bool
+		if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM restore_apt_validation_targets)`).Scan(&guarded); err != nil || !guarded {
+			return err
+		}
+	}
+	inventory, err := aptRestoreInventory(ctx, tx)
+	if err != nil {
+		return err
+	}
+	for target, server := range inventory.byTarget {
+		endpoint := serverpkg.NormalizeServerEndpoint(server.Host, server.Port).String()
+		if _, err := tx.ExecContext(ctx, `INSERT INTO restore_apt_validation_targets (endpoint)
+			SELECT ? WHERE ? OR EXISTS(SELECT 1 FROM restore_apt_validation WHERE identity=?)
+			ON CONFLICT(endpoint) DO NOTHING`, endpoint, restored, server.Identity); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO restore_apt_validation (identity,target)
+			SELECT ?,? WHERE EXISTS(SELECT 1 FROM restore_apt_validation_targets WHERE endpoint=?)
+			ON CONFLICT(identity) DO UPDATE SET
+				target=excluded.target, host_key='', result='target_changed', checked_at=0, approved=0
+			WHERE restore_apt_validation.target<>excluded.target`, server.Identity, target, endpoint); err != nil {
+			return err
+		}
+	}
+	_, err = tx.ExecContext(ctx, `DELETE FROM restore_apt_validation WHERE
+		NOT EXISTS(SELECT 1 FROM servers WHERE servers.identity=restore_apt_validation.identity)`)
+	return err
 }
 
 func (v *restoreAPTValidation) observe(ctx context.Context, server Server) (restoreAPTObservation, bool, error) {
@@ -155,6 +204,22 @@ func (v *restoreAPTValidation) all(ctx context.Context) (map[string]restoreAPTOb
 		result[identity] = observation
 	}
 	return result, rows.Err()
+}
+
+func (v *restoreAPTValidation) hostFacts(ctx context.Context, state *serverpkg.State, now time.Time, isolated bool) []restoreAPTHostFacts {
+	observations, err := v.all(ctx)
+	if err != nil || len(observations) == 0 {
+		return nil
+	}
+	state.Lock()
+	defer state.Unlock()
+	var facts []restoreAPTHostFacts
+	for _, server := range state.Servers() {
+		if observation, required := observations[server.Identity]; required {
+			facts = append(facts, observation.facts(server, now, isolated))
+		}
+	}
+	return facts
 }
 
 func (v *restoreAPTValidation) blocked(ctx context.Context, servers []Server) map[string]bool {
@@ -256,15 +321,16 @@ func handleRestoreAPTValidation(c *gin.Context, deps AppDeps) {
 		return
 	}
 	defer v.checkMu.Unlock()
-	server, found := deps.ServerState.FindByName(selection.Name)
-	if !found || server.Identity != selection.Identity || server.Disabled {
-		c.JSON(http.StatusConflict, gin.H{"error": "Select the current enabled restored server."})
+	server, previousStatus, err := deps.ServerState.BeginTransientActionForIdentity(selection.Name, runtimepkg.StatusRestoreAPTCheck, selection.Identity)
+	if err != nil {
+		message := "Select the current enabled restored server."
+		if errors.Is(err, serverpkg.ErrActionInProgress) {
+			message = "Wait for current server work to finish before checking APT."
+		}
+		c.JSON(http.StatusConflict, gin.H{"error": message})
 		return
 	}
-	if active, _ := deps.ServerState.ActionStatusInProgress(selection.Name); active {
-		c.JSON(http.StatusConflict, gin.H{"error": "Wait for current server work to finish before checking APT."})
-		return
-	}
+	defer deps.ServerState.FinishTransientAction(server, runtimepkg.StatusRestoreAPTCheck, previousStatus)
 	ctx := c.Request.Context()
 	if _, required, err := v.observe(ctx, server); err != nil || !required {
 		c.JSON(http.StatusConflict, gin.H{"error": "This server has no pending restore validation."})

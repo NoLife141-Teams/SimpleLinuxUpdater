@@ -2748,6 +2748,7 @@ test("admin restore isolation is selectable and resumption requires typed confir
     let isolation = "active";
     let resumptionCount = 0;
     let aptState = "pending";
+    let probes = 0;
     await ensureAuthenticatedSession(page);
     await stubAdminApi(page, state);
     await page.route("**/api/installation/health", route => fulfillJson(route, {
@@ -2757,8 +2758,12 @@ test("admin restore isolation is selectable and resumption requires typed confir
             {name: "offline-host", identity: "host-2", state: "unreachable"},
         ],
     }));
-    await page.route("**/api/backup/restore-isolation/apt-check", route => {
+    await page.route("**/api/backup/restore-isolation/apt-check", async route => {
         expect(route.request().postDataJSON()).toEqual({name: "healthy-host", identity: "host-1"});
+        if (++probes === 1) {
+            // Leave the first check pending while the document is cached.
+            return;
+        }
         aptState = "healthy";
         return fulfillJson(route, {state: aptState});
     });
@@ -2780,7 +2785,14 @@ test("admin restore isolation is selectable and resumption requires typed confir
     expect((await restore).postData()).toMatch(/name="isolate"\r\n\r\ntrue\r\n/);
     await page.goto("/admin#admin-section-installation");
     await expect(page.locator("#installation-restore-isolation")).toContainText("SSH and notifications paused");
-    await page.getByRole("button", {name: "Check APT on healthy-host"}).click();
+    const checkAPT = page.getByRole("button", {name: "Check APT on healthy-host"});
+    await checkAPT.click();
+    await expect.poll(() => probes).toBe(1);
+    await page.evaluate(() => {
+        window.dispatchEvent(new PageTransitionEvent("pagehide", {persisted: true}));
+        window.dispatchEvent(new PageTransitionEvent("pageshow", {persisted: true}));
+    });
+    await checkAPT.click();
     await expect(page.locator("#restore-apt-validation").getByRole("row", {name: /healthy-host/})).toContainText("Validated");
     const resume = page.locator("#restore-isolation-resume");
     await dismissTypedConfirm(page, resume);

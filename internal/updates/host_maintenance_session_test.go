@@ -511,6 +511,18 @@ func TestPlanDiskSpaceCheckUsesUpgradePlanReserve(t *testing.T) {
 	})
 }
 
+func TestRestoreAPTCheckRequiresExtendedLockObservation(t *testing.T) {
+	conn := &inspectionTestConnection{results: map[string]inspectionCommandResult{
+		precheckLocksCmd:       {stderr: "sudo: a password is required", err: inspectionExitError{code: 1}},
+		precheckLegacyLocksCmd: {err: inspectionExitError{code: 1}},
+		precheckDpkgAuditCmd:   {},
+		"/usr/bin/apt-get -s -o Dir::Cache::pkgcache= -o Dir::Cache::srcpkgcache= check": {},
+	}}
+	if got := newInspectionSession(t, conn).CheckRestoredAPT(t.Context()); got != "locks_unverified" {
+		t.Fatalf("restore APT check with legacy lock coverage = %q, want locks_unverified", got)
+	}
+}
+
 func TestPlanDiskSpaceProbeUsesEffectiveAptArchiveDirectory(t *testing.T) {
 	for _, required := range []string{
 		"/usr/bin/apt-config shell archive_dir Dir::Cache::archives/d",

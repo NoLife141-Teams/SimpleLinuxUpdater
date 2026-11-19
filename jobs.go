@@ -239,7 +239,20 @@ func syncServerStateFromJobRecord(state *serverpkg.State, record JobRecord) {
 		return
 	}
 	status.JobRevision = record.Revision
-	status.Status = statusValue
+	if statusValue == runtimepkg.StatusNeedsReconciliation {
+		status.APTReconciliationPending = true
+		status.APTReconciliationJobID = record.ID
+	} else if record.Kind == jobKindAptRepair && record.Status == jobStatusSucceeded {
+		status.APTReconciliationPending = false
+		status.APTReconciliationJobID = ""
+	}
+	switch status.Status {
+	case runtimepkg.StatusFactsRefresh, runtimepkg.StatusApplicationCheck, runtimepkg.StatusVulnerabilityScan:
+		// The read-only reservation owns the activity until its collector
+		// releases it. Job transitions still update the package blocker.
+	default:
+		status.Status = statusValue
+	}
 	status.JobID = record.ID
 	if record.LogsText != "" {
 		status.Logs = record.LogsText

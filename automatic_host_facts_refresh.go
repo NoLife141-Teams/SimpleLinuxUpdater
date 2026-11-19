@@ -145,7 +145,7 @@ func automaticHostFactsRefreshAttempt(ctx context.Context, deps AppDeps, candida
 		return attempt
 	}
 	server = admittedServer
-	defer deps.ServerState.RestoreStatusSnapshot(server.Name, previousStatus)
+	defer deps.ServerState.FinishTransientAction(server, "facts_refresh", previousStatus)
 
 	record, err := deps.UpdateService.RefreshServerFacts(ctx, server, automaticHostFactsRefreshDial)
 	attempt := healthpkg.RefreshAttempt{State: healthpkg.RefreshAttemptSucceeded, Facts: record}

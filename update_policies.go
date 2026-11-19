@@ -2,6 +2,7 @@ package main
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -508,6 +509,17 @@ func handleUpdatePolicyRunsWithDeps(c *gin.Context, deps AppDeps) {
 			}
 		} else {
 			run.MaintenanceCause = ""
+		}
+		if run.Status == updatePolicyRunSkipped && run.Reason == policypkg.RunReasonAPTReconciliation {
+			if jm != nil && run.BlockingJobID != "" && run.ServerIdentity != "" {
+				job, err := jm.GetJob(run.BlockingJobID)
+				var target [2]string
+				if err == nil && job.Status == jobStatusFailed && job.ErrorClass == "reconciliation_required" &&
+					json.Unmarshal([]byte(job.APTTarget), &target) == nil && target[0] == run.ServerIdentity && target[1] != "" {
+					run.ReportURL = "/api/reports/jobs/" + url.PathEscape(job.ID)
+				}
+			}
+			continue
 		}
 		if run.Status != updatePolicyRunSkipped || run.ServerName == "" {
 			continue

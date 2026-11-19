@@ -458,6 +458,23 @@ test("maintenance queue starts by name and lets the operator reverse the order",
         ]);
 });
 
+test("Status keeps the APT incident report visible during a host facts refresh", async ({ page }) => {
+    const incident = "0".repeat(32);
+    const server = {
+        ...makeServer("repair-host", "facts_refresh"),
+        apt_reconciliation_required: true,
+        apt_reconciliation_job_id: incident,
+    };
+    await stubDashboardApi(page, () => [server]);
+    await ensureAuthenticatedSession(page);
+    const row = page.locator('tr[data-name="repair-host"]');
+    await expect(row).toContainText("APT reconciliation required");
+    await expect(row.getByRole("button", { name: "Update", exact: true })).toHaveCount(0);
+    await row.getByRole("button", { name: "repair-host", exact: true }).click();
+    const panel = page.locator("#selected-host-panel");
+    await expect(panel.getByRole("link", { name: "APT incident report" })).toHaveAttribute("href", `/api/reports/jobs/${incident}`);
+});
+
 test("degraded Status synchronization stays visible beside the timeline until recovery succeeds", async ({
     baseURL,
     page,

@@ -1724,7 +1724,8 @@
                     backup_export: "Backup export in progress",
                     backup_restore: "Backup restore in progress",
                     recovery_required: "Backup recovery required",
-                }[run.maintenance_cause] || run.exact_skip_reason;
+                }[run.maintenance_cause] || (run.exact_skip_reason === "apt_reconciliation_required"
+                    ? "APT reconciliation required" : run.exact_skip_reason);
                 row.innerHTML = `
             <td data-label="Scheduled" title="${escapeHtml(scheduled.title || "")}">
                 <div>${escapeHtml(scheduled.primary || "")}</div>

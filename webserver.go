@@ -1139,7 +1139,7 @@ func runServerFactsRefresh(ctx context.Context, deps AppDeps, state *serverpkg.S
 		recordAudit("failure", "Facts refresh unavailable", map[string]any{"error": err.Error()})
 		return serverFactsRecord{}, jsonResult(http.StatusInternalServerError, "failed to start host facts refresh")
 	}
-	defer state.RestoreStatusSnapshot(name, preRefreshStatus)
+	defer state.FinishTransientAction(server, "facts_refresh", preRefreshStatus)
 
 	updateDeps := updateServiceEnsureDeps(deps.UpdateService)
 	if persistence.save != nil {
@@ -2231,6 +2231,7 @@ func registerServerAndActionRoutes(r *gin.Engine, deps AppDeps) {
 			if !canReadLogs {
 				statuses[i].Logs = ""
 				statuses[i].ApplicationPostcheckProfile = nil
+				statuses[i].APTReconciliationJobID = ""
 			}
 		}
 		c.JSON(http.StatusOK, statuses)

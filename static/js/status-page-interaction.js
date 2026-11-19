@@ -174,12 +174,12 @@
         let enabled;
 		if (key === "repair_apt") {
 			const status = String(server && server.status || "").trim().toLowerCase();
-			enabled = !!server && status === "needs_reconciliation";
+			enabled = !!server && (server.apt_reconciliation_required || status === "needs_reconciliation") && !transientBlockingStatuses.has(status);
 		} else if (key === "reboot") {
 			enabled = false;
 		} else if (["update", "autoremove"].includes(key)) {
 			const status = String(server && server.status || "").trim().toLowerCase();
-			enabled = !!server && status !== "needs_reconciliation" && !transientBlockingStatuses.has(status);
+			enabled = !!server && !server.apt_reconciliation_required && status !== "needs_reconciliation" && !transientBlockingStatuses.has(status);
 		} else if (["refresh_facts", "enable_apt", "disable_apt"].includes(key)) {
             const status = String(server && server.status || "").trim().toLowerCase();
             enabled = !!server && !transientBlockingStatuses.has(status);

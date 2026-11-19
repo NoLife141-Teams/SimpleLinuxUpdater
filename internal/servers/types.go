@@ -24,6 +24,7 @@ var (
 	ErrDisabled            = errors.New("server is disabled; enable it in Manage Servers before starting maintenance")
 	ErrIdentityChanged     = errors.New("server identity changed")
 	ErrActionNotAllowed    = errors.New("action is not available for the current server status")
+	ErrAPTReconciliation   = errors.New("APT reconciliation is required before another package mutation")
 	ErrFingerprintMismatch = errors.New("host key fingerprint mismatch")
 )
 
@@ -124,6 +125,8 @@ type ServerStatus struct {
 	JobRevision                 int64                      `json:"-"`
 	Name                        string                     `json:"name"`
 	JobID                       string                     `json:"job_id,omitempty"`
+	APTReconciliationPending    bool                       `json:"apt_reconciliation_required,omitempty"`
+	APTReconciliationJobID      string                     `json:"apt_reconciliation_job_id,omitempty"`
 	Host                        string                     `json:"host"`
 	Port                        int                        `json:"port"`
 	User                        string                     `json:"user"`
@@ -141,6 +144,34 @@ type ServerStatus struct {
 	// EmptyPackageDiscoveryRefreshAt binds a confirmed empty plan to its APT refresh.
 	EmptyPackageDiscoveryRefreshAt string `json:"-"`
 }
+
+func (status *ServerStatus) RequiresAPTReconciliation() bool {
+	return status != nil && (status.APTReconciliationPending || status.Status == runtimepkg.StatusNeedsReconciliation)
+}
+
+func (status *ServerStatus) ReconciliationJobID() string {
+	if status.APTReconciliationPending {
+		return status.APTReconciliationJobID
+	}
+	if status.Status == runtimepkg.StatusNeedsReconciliation {
+		return status.JobID
+	}
+	return ""
+}
+
+func (status *ServerStatus) keepAPTReconciliation() {
+	if status.RequiresAPTReconciliation() {
+		status.APTReconciliationJobID = status.ReconciliationJobID()
+		status.APTReconciliationPending = true
+	}
+}
+
+type APTReconciliationError struct {
+	JobID string
+}
+
+func (err APTReconciliationError) Error() string { return ErrAPTReconciliation.Error() }
+func (err APTReconciliationError) Unwrap() error { return ErrAPTReconciliation }
 
 type PendingUpdate struct {
 	PhasedUpdate           bool                   `json:"phased_update,omitempty"`
@@ -508,12 +539,6 @@ func (s *State) BeginActionWithOptions(name, newStatus string, opts ActionAdmiss
 	if !exists || status == nil {
 		return Server{}, nil, sql.ErrNoRows
 	}
-	if status.ActionRunning || s.statusInProgress(status.Status) || (opts.PackageMutation && runtimepkg.BlocksPackageMutation(status.Status)) {
-		return Server{}, nil, ErrActionInProgress
-	}
-	if len(opts.AllowedStatuses) > 0 && !opts.AllowedStatuses[strings.ToLower(strings.TrimSpace(status.Status))] {
-		return Server{}, nil, ErrActionNotAllowed
-	}
 	server, found := s.FindByNameLocked(name)
 	if !found {
 		return Server{}, nil, sql.ErrNoRows
@@ -521,12 +546,27 @@ func (s *State) BeginActionWithOptions(name, newStatus string, opts ActionAdmiss
 	if opts.ExpectedServerIdentity != "" && server.Identity != opts.ExpectedServerIdentity {
 		return Server{}, nil, ErrIdentityChanged
 	}
-	if opts.ExpectedAPTTarget != "" && (server.APTTarget() != opts.ExpectedAPTTarget || status.JobID != opts.ExpectedJobID) {
-		return Server{}, nil, ErrIdentityChanged
+	if opts.PackageMutation && status.RequiresAPTReconciliation() {
+		return Server{}, nil, APTReconciliationError{JobID: status.ReconciliationJobID()}
+	}
+	if opts.ExpectedAPTTarget != "" {
+		if !status.RequiresAPTReconciliation() {
+			return Server{}, nil, ErrActionNotAllowed
+		}
+		if server.APTTarget() != opts.ExpectedAPTTarget || status.ReconciliationJobID() != opts.ExpectedJobID {
+			return Server{}, nil, ErrIdentityChanged
+		}
+	}
+	if status.ActionRunning || s.statusInProgress(status.Status) {
+		return Server{}, nil, ErrActionInProgress
+	}
+	if len(opts.AllowedStatuses) > 0 && !opts.AllowedStatuses[strings.ToLower(strings.TrimSpace(status.Status))] {
+		return Server{}, nil, ErrActionNotAllowed
 	}
 	if server.Disabled {
 		return Server{}, nil, ErrDisabled
 	}
+	status.keepAPTReconciliation()
 	previous := CloneServerStatus(status)
 	status.ActionGeneration++
 	status.JobID = ""
@@ -576,9 +616,30 @@ func (s *State) BeginTransientActionForIdentity(name, newStatus, expectedIdentit
 	if server.Disabled {
 		return Server{}, nil, ErrDisabled
 	}
+	status.keepAPTReconciliation()
 	snapshot := CloneServerStatus(status)
+	status.ActionGeneration++
 	status.Status = newStatus
 	return server, snapshot, nil
+}
+
+// FinishTransientAction releases the activity only if the same reservation
+// still owns the Server. Package reconciliation evidence may have advanced.
+func (s *State) FinishTransientAction(server Server, activity string, previous *ServerStatus) {
+	s.Lock()
+	defer s.Unlock()
+	current, found := s.FindByNameLocked(server.Name)
+	status := (*s.statusMap)[server.Name]
+	if !found || current.APTTarget() != server.APTTarget() || status == nil || previous == nil ||
+		status.ActionGeneration != previous.ActionGeneration+1 || status.Status != activity {
+		return
+	}
+	status.Status = previous.Status
+	if status.APTReconciliationPending {
+		status.Status = runtimepkg.StatusNeedsReconciliation
+	} else if status.Status == runtimepkg.StatusNeedsReconciliation {
+		status.Status = runtimepkg.StatusIdle
+	}
 }
 
 func (s *State) ApprovePendingUpdate(name, scope string) (exists bool, approved bool) {

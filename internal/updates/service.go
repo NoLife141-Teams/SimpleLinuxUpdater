@@ -479,6 +479,8 @@ func (r *withActorRunner) setCommandErrorLogs(logs string, err error) {
 func (r *withActorRunner) setReconciliationRequired(logs string) {
 	r.lastErrClass = "reconciliation_required"
 	_ = r.withStatus(func(status *servers.ServerStatus) {
+		status.APTReconciliationPending = true
+		status.APTReconciliationJobID = r.jobID
 		status.Status = runtimepkg.StatusNeedsReconciliation
 		status.Logs = logs + "\nAPT outcome requires reconciliation before another package mutation."
 	})

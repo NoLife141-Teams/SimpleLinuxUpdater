@@ -382,8 +382,8 @@ func (s *Service) Update(name string, server Server) (Server, error) {
 			return server, EndpointConflictError{Endpoint: NormalizeServerEndpoint(server.Host, server.Port)}
 		}
 		endpointChanged := NormalizeServerEndpoint(existing.Host, existing.Port) != NormalizeServerEndpoint(server.Host, server.Port)
-		if status := state.StatusMap()[name]; endpointChanged && status != nil && status.Status == runtimepkg.StatusNeedsReconciliation {
-			return server, ActionError{Status: status.Status}
+		if status := state.StatusMap()[name]; endpointChanged && status.RequiresAPTReconciliation() {
+			return server, ActionError{Status: runtimepkg.StatusNeedsReconciliation}
 		}
 		currentServers[i] = server
 		state.SetServers(currentServers)
@@ -391,7 +391,7 @@ func (s *Service) Update(name string, server Server) (Server, error) {
 		if renamedServer {
 			previousStatus := CloneServerStatus(state.StatusMap()[name])
 			delete(state.StatusMap(), name)
-			if previousStatus != nil && strings.EqualFold(strings.TrimSpace(previousStatus.Status), runtimepkg.StatusNeedsReconciliation) {
+			if previousStatus.RequiresAPTReconciliation() {
 				previousStatus.Name = server.Name
 				state.StatusMap()[server.Name] = previousStatus
 				UpdateStatusFromServer(state.StatusMap(), server.Name, server)
@@ -476,7 +476,7 @@ func (s *Service) Delete(name string) error {
 			continue
 		}
 		if status := state.StatusMap()[name]; status != nil &&
-			(status.ActionRunning || state.statusInProgress(status.Status) || strings.EqualFold(strings.TrimSpace(status.Status), runtimepkg.StatusNeedsReconciliation)) {
+			(status.ActionRunning || state.statusInProgress(status.Status) || status.RequiresAPTReconciliation()) {
 			return ActionError{Status: status.Status}
 		}
 		_ = server

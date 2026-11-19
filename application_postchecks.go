@@ -101,7 +101,7 @@ func registerApplicationPostcheckRoutes(r *gin.Engine, deps AppDeps) {
 			return
 		}
 		defer func() {
-			deps.ServerState.RestoreStatusSnapshot(server.Name, previous)
+			deps.ServerState.FinishTransientAction(server, runtimepkg.StatusApplicationCheck, previous)
 			if deps.NotifyDashboardEvent != nil {
 				deps.NotifyDashboardEvent("postchecks.test.completed")
 			}

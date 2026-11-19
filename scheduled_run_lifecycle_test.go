@@ -265,6 +265,20 @@ func TestScheduledRunLifecycleMissingAndBusyServer(t *testing.T) {
 			t.Fatalf("summary = %q, want busy update skip", current.Summary)
 		}
 	})
+
+	t.Run("APT reconciliation takes precedence over busy", func(t *testing.T) {
+		deps, policy, run, _ := newScheduledRunLifecycleTestDeps(t, "scheduled-run-apt-blocker.db", server, "facts_refresh")
+		status := deps.ServerState.CurrentStatusSnapshot(server.Name)
+		status.APTReconciliationPending = true
+		status.APTReconciliationJobID = testAPTReconciliationJobID
+		deps.ServerState.RestoreStatusSnapshot(server.Name, status)
+		scheduledrunspkg.New(deps).ExecuteRun(run, policy, server)
+		current := getScheduledLifecycleRun(t, deps, run.ID)
+		if current.Status != updatePolicyRunSkipped || current.Reason != "apt_reconciliation_required" ||
+			current.BlockingJobID != testAPTReconciliationJobID || current.JobID != "" {
+			t.Fatalf("run does not retain the specific APT blocker: %+v", current)
+		}
+	})
 }
 
 func TestScheduledRunLifecycleUpdateJobCreationSuccessLoadsRetryOnce(t *testing.T) {

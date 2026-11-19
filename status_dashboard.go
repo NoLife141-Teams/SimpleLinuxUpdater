@@ -49,23 +49,25 @@ type statusPlanSummary struct {
 }
 
 type statusServerRow struct {
-	Name                     string                  `json:"name"`
-	Host                     string                  `json:"host"`
-	Port                     int                     `json:"port"`
-	User                     string                  `json:"user"`
-	Status                   string                  `json:"status"`
-	Disabled                 bool                    `json:"disabled"`
-	HasPassword              bool                    `json:"has_password"`
-	HasKey                   bool                    `json:"has_key"`
-	HostKeyStatus            serverpkg.HostKeyStatus `json:"host_key_status"`
-	Tags                     []string                `json:"tags"`
-	ServerIdentity           string                  `json:"server_identity,omitempty"`
-	JobID                    string                  `json:"job_id,omitempty"`
-	ApprovalGeneration       uint64                  `json:"approval_generation,omitempty"`
-	RemediationDigest        string                  `json:"remediation_digest,omitempty"`
-	HasApplicationPostchecks bool                    `json:"has_application_postchecks,omitempty"`
-	PackageCounts            statusPackageCounts     `json:"package_counts"`
-	UpgradePlan              statusPlanSummary       `json:"upgrade_plan"`
+	Name                      string                  `json:"name"`
+	Host                      string                  `json:"host"`
+	Port                      int                     `json:"port"`
+	User                      string                  `json:"user"`
+	Status                    string                  `json:"status"`
+	Disabled                  bool                    `json:"disabled"`
+	HasPassword               bool                    `json:"has_password"`
+	HasKey                    bool                    `json:"has_key"`
+	HostKeyStatus             serverpkg.HostKeyStatus `json:"host_key_status"`
+	Tags                      []string                `json:"tags"`
+	ServerIdentity            string                  `json:"server_identity,omitempty"`
+	JobID                     string                  `json:"job_id,omitempty"`
+	APTReconciliationRequired bool                    `json:"apt_reconciliation_required,omitempty"`
+	APTReconciliationJobID    string                  `json:"apt_reconciliation_job_id,omitempty"`
+	ApprovalGeneration        uint64                  `json:"approval_generation,omitempty"`
+	RemediationDigest         string                  `json:"remediation_digest,omitempty"`
+	HasApplicationPostchecks  bool                    `json:"has_application_postchecks,omitempty"`
+	PackageCounts             statusPackageCounts     `json:"package_counts"`
+	UpgradePlan               statusPlanSummary       `json:"upgrade_plan"`
 }
 
 func projectStatusRows(statuses []serverpkg.ServerStatus, canReadLogs bool) []statusServerRow {
@@ -91,12 +93,18 @@ func projectStatusRows(statuses []serverpkg.ServerStatus, canReadLogs bool) []st
 			counts.CVEs += len(update.CVEs)
 		}
 		plan := status.UpgradePlan
+		reconciliationJobID := ""
+		if canReadLogs {
+			reconciliationJobID = status.ReconciliationJobID()
+		}
 		rows = append(rows, statusServerRow{
 			Name: status.Name, Host: status.Host, Port: status.Port, User: status.User,
 			Status: status.Status, Disabled: status.Disabled, Tags: status.Tags,
 			HasPassword: status.HasPassword, HasKey: status.HasKey, HostKeyStatus: status.HostKeyStatus,
 			ServerIdentity: status.ServerIdentity, JobID: status.JobID,
-			ApprovalGeneration: status.ApprovalGeneration, RemediationDigest: status.RemediationDigest,
+			APTReconciliationRequired: status.RequiresAPTReconciliation(),
+			APTReconciliationJobID:    reconciliationJobID,
+			ApprovalGeneration:        status.ApprovalGeneration, RemediationDigest: status.RemediationDigest,
 			HasApplicationPostchecks: canReadLogs && status.ApplicationPostcheckProfile != nil,
 			PackageCounts:            counts,
 			UpgradePlan: statusPlanSummary{

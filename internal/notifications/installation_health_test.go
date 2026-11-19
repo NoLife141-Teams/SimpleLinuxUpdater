@@ -9,58 +9,83 @@ import (
 )
 
 func TestNotificationWorkerReportsFailedEvaluationWithoutProgress(t *testing.T) {
-	db := openOutboxTestDB(t, "worker-health.db")
-	db.SetMaxOpenConns(1)
-	prepareOutboxSettings(t, db, "", false)
-	deps := outboxTestDeps(db, time.Hour)
-	deps.ConditionPollInterval = time.Hour
-	start := time.Date(2026, 10, 25, 12, 0, 0, 0, time.UTC)
-	var unavailable atomic.Bool
-	deps.Now = func() time.Time {
-		if unavailable.Load() {
-			return start.Add(time.Minute)
-		}
-		return start
-	}
-	deps.ReadConditions = func(context.Context, string, []Condition) (ConditionBatch, error) {
-		if unavailable.Load() {
-			return ConditionBatch{}, errors.New("condition source unavailable")
-		}
-		return ConditionBatch{}, nil
-	}
-	service := NewService(deps)
-	t.Cleanup(func() { closeOutboxService(t, service) })
-	service.StartConditionMonitoring()
-	for deadline := time.Now().Add(5 * time.Second); ; {
-		worker, facts, err := service.InstallationHealth(t.Context())
-		if err != nil {
-			t.Fatal(err)
-		}
-		if worker.LastProgress.Equal(start) && facts.ConditionEvaluationState == ConditionEvaluationHealthy {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("first cycle = %+v, %+v", worker, facts)
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	unavailable.Store(true)
-	service.signalWorker()
-	for deadline := time.Now().Add(5 * time.Second); ; {
-		worker, facts, err := service.InstallationHealth(t.Context())
-		if err != nil {
-			t.Fatal(err)
-		}
-		if worker.LastTick.Equal(start.Add(time.Minute)) && !worker.Running {
-			if !worker.LastProgress.Equal(start) || worker.Errors != 1 || facts.ConditionEvaluationState != ConditionEvaluationDegraded {
-				t.Fatalf("failed cycle = %+v, %+v", worker, facts)
+	for _, tc := range []struct {
+		name                string
+		failsAtRevalidation bool
+	}{
+		{name: "initial sweep"},
+		{name: "before sending admitted delivery", failsAtRevalidation: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newConditionHarness(t)
+			h.db.SetMaxOpenConns(1)
+			deps := h.service.deps
+			deps.ConditionPollInterval = time.Hour
+			start := h.now
+			next := start.Add(time.Minute)
+			var failCycle atomic.Bool
+			deps.Now = func() time.Time {
+				if failCycle.Load() {
+					return next
+				}
+				return start
 			}
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("failed cycle did not complete = %+v, %+v", worker, facts)
-		}
-		time.Sleep(5 * time.Millisecond)
+			failureCycleReads := 0
+			deps.ReadConditions = func(context.Context, string, []Condition) (ConditionBatch, error) {
+				if !failCycle.Load() {
+					return ConditionBatch{}, nil
+				}
+				failureCycleReads++
+				if tc.failsAtRevalidation && failureCycleReads == 1 {
+					return ConditionBatch{Facts: []ConditionFact{rebootFact(true)}}, nil
+				}
+				return ConditionBatch{}, errors.New("condition source unavailable")
+			}
+			service := NewService(deps)
+			t.Cleanup(func() { closeOutboxService(t, service) })
+			service.StartConditionMonitoring()
+			for deadline := time.Now().Add(5 * time.Second); ; {
+				worker, facts, err := service.InstallationHealth(t.Context())
+				if err != nil {
+					t.Fatal(err)
+				}
+				if worker.LastProgress.Equal(start) && facts.ConditionEvaluationState == ConditionEvaluationHealthy {
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatalf("first cycle = %+v, %+v", worker, facts)
+				}
+				time.Sleep(5 * time.Millisecond)
+			}
+			failCycle.Store(true)
+			service.signalWorker()
+			for deadline := time.Now().Add(5 * time.Second); ; {
+				worker, facts, err := service.InstallationHealth(t.Context())
+				if err != nil {
+					t.Fatal(err)
+				}
+				if worker.LastTick.Equal(next) && !worker.Running {
+					if !worker.LastProgress.Equal(start) || worker.Errors != 1 || facts.ConditionEvaluationState != ConditionEvaluationDegraded {
+						t.Fatalf("failed cycle = %+v, %+v", worker, facts)
+					}
+					wantLastSuccess := start
+					if tc.failsAtRevalidation {
+						wantLastSuccess = next
+						if facts.Retrying != 1 || facts.LastSuccessfulDeliveryAt != nil {
+							t.Fatalf("unvalidated delivery result = %+v", facts)
+						}
+					}
+					if facts.LastConditionEvaluationAt == nil || !facts.LastConditionEvaluationAt.Equal(wantLastSuccess) {
+						t.Fatalf("last successful evaluation = %v, want %v", facts.LastConditionEvaluationAt, wantLastSuccess)
+					}
+					return
+				}
+				if time.Now().After(deadline) {
+					t.Fatalf("failed cycle did not complete = %+v, %+v", worker, facts)
+				}
+				time.Sleep(5 * time.Millisecond)
+			}
+		})
 	}
 }
 

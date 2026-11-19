@@ -45,19 +45,22 @@ test("production installation health is public, admin cookie diagnostics refresh
   await page.unroute(route);
   await section.getByRole("button",{name:"Retry",exact:true}).click();
   await expect(section.locator("[data-admin-section-status]")).toHaveText("Current");
+  const evaluatedAt = "2026-10-27T01:02:03Z";
+  const deliveredAt = "2026-10-27T01:03:05Z";
   await page.route(route, route => route.fulfill({json: {
    ...facts,
    notifications: {
     available: true, enabled: true, pending: 1, retrying: 1, failed: 0,
     condition_evaluation_state: "degraded",
-    last_condition_evaluation_at: "2026-10-27T01:02:03Z",
-    last_successful_delivery_at: "2026-10-27T01:03:05Z",
+    last_condition_evaluation_at: evaluatedAt,
+    last_successful_delivery_at: deliveredAt,
     oldest_pending_age_seconds: 90
    }
   }}));
   await section.getByRole("button",{name:"Refresh",exact:true}).click();
-  await expect(page.locator("#installation-notification-evaluation")).toContainText("Degraded · Last success");
-  await expect(page.locator("#installation-notification-delivery")).not.toHaveText("Never observed");
+  const [evaluationDate, deliveryDate] = await page.evaluate(values => values.map(value => new Date(value).toLocaleString()), [evaluatedAt, deliveredAt]);
+  await expect(page.locator("#installation-notification-evaluation")).toHaveText("Degraded · Last success " + evaluationDate);
+  await expect(page.locator("#installation-notification-delivery")).toHaveText(deliveryDate);
   await expect(page.locator("#installation-notification-queue-age")).toHaveText("90 seconds");
   await page.setViewportSize({width:390,height:844});await section.scrollIntoViewIfNeeded();await expect(page.locator("#installation-state")).toBeVisible();
   await page.screenshot({path:testInfo.outputPath("installation-health-mobile.png"),fullPage:false});

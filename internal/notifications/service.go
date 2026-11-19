@@ -461,7 +461,9 @@ func (s *Service) run(ctx context.Context) {
 				}
 				break
 			}
-			s.processOutboxRow(ctx, *row)
+			if !s.processOutboxRow(ctx, *row) {
+				cycleOK = false
+			}
 			s.endPersistence()
 			if !s.beginPersistence(ctx) {
 				return
@@ -802,16 +804,20 @@ func (s *Service) isClosing() bool {
 	return s.closing
 }
 
-func (s *Service) processOutboxRow(ctx context.Context, row outboxRow) {
+// processOutboxRow reports whether the worker could process the claim,
+// including persisting a retry or failure after an HTTP attempt.
+func (s *Service) processOutboxRow(ctx context.Context, row outboxRow) bool {
 	settings, err := s.currentSettings()
 	if err != nil {
+		s.health.Error(s.deps.Now())
 		s.releaseClaim(row, err)
-		return
+		return false
 	}
 	eligibility, eligibilityErr := s.revalidateOutboxCondition(ctx, &row, settings)
 	if eligibilityErr != nil {
+		s.health.Error(s.deps.Now())
 		s.releaseClaim(row, eligibilityErr)
-		return
+		return false
 	}
 	var skipReason string
 	switch {
@@ -840,7 +846,7 @@ func (s *Service) processOutboxRow(ctx context.Context, row outboxRow) {
 			s.health.Error(s.deps.Now())
 			s.deps.Logf("notification outbox skip persistence failed for %q: %v", row.ID, err)
 		}
-		return
+		return err == nil
 	}
 
 	attemptCtx, cancelAttempt := context.WithTimeout(ctx, s.deps.DeliveryTimeout)
@@ -881,15 +887,17 @@ func (s *Service) processOutboxRow(ctx context.Context, row outboxRow) {
 	if err != nil {
 		s.health.Error(s.deps.Now())
 		s.deps.Logf("notification outbox outcome persistence failed for %q: %v", row.ID, err)
-		return
+		return false
 	}
-	if err := s.retrySQLiteContention(func() error { return s.storeLastDelivery(row.Destination, status) }); err != nil {
+	err = s.retrySQLiteContention(func() error { return s.storeLastDelivery(row.Destination, status) })
+	if err != nil {
 		s.health.Error(s.deps.Now())
 		s.deps.Logf("notification diagnostic persistence failed for %q: %v", row.ID, err)
 	}
 	if outcome.State == outboxStateRetrying {
 		s.signalWorker()
 	}
+	return err == nil
 }
 
 func (s *Service) attemptOutboxDestination(ctx context.Context, settings Settings, row outboxRow) (DeliveryStatus, error) {

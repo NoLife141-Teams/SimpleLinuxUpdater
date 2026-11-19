@@ -108,7 +108,7 @@ def qualification_overlay(work):
         (anchor, '\t\tqualificationReconciled := false\n' + anchor),
         (failure, failure + ' else {\n\t\t\t\tqualificationReconciled = true\n\t\t\t}'),
         (finish, """\
-\t\tif qualificationReconciled {
+\t\tif qualificationReconciled && cycleOK {
 \t\t\tif _, err := os.Stat("/work/observe-notifications"); err == nil {
 \t\t\t\tfingerprint := ""
 \t\t\t\tif settings, err := s.currentSettings(); err == nil && destinationEnabled(settings, DestinationWebhook) &&

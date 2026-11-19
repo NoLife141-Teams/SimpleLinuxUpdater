@@ -318,7 +318,7 @@ func (fs restoreFiles) writeAtomicFileFromPath(target, source string, mode os.Fi
 			return err
 		}
 	}
-	tmp, err := os.CreateTemp(filepath.Dir(target), ".restore-*")
+	tmp, err := os.CreateTemp(restoreEntryDirectory(target), ".restore-*")
 	if err != nil {
 		return err
 	}
@@ -349,11 +349,11 @@ func (fs restoreFiles) writeAtomicFileFromPath(target, source string, mode os.Fi
 		_ = os.Remove(tmpPath)
 		return err
 	}
-	if err := fs.syncPath(filepath.Dir(target)); err != nil {
+	if err := fs.syncPath(restoreEntryDirectory(target)); err != nil {
 		return err
 	}
 	for _, dir := range createdDirs {
-		if err := fs.syncPath(filepath.Dir(dir)); err != nil {
+		if err := fs.syncPath(restoreEntryDirectory(dir)); err != nil {
 			return err
 		}
 	}
@@ -420,6 +420,10 @@ func (s *Service) applyArchiveFiles(ctx context.Context, files map[string]string
 			Recovery: errors.New("restore recovery is already pending"),
 		}
 	}
+	snapshotRoot, err := filepath.EvalSymlinks(restoreEntryDirectory(dbTarget))
+	if err != nil {
+		return fmt.Errorf("resolve rollback snapshot directory: %w", err)
+	}
 	knownHostsTarget := filepath.Join(filepath.Dir(dbTarget), "known_hosts")
 	if path, err := s.deps.KnownHostsWritePath(); err == nil && strings.TrimSpace(path) != "" {
 		knownHostsTarget = path
@@ -450,7 +454,7 @@ func (s *Service) applyArchiveFiles(ctx context.Context, files map[string]string
 			return s.reloadOriginalPersistence(ctx, fmt.Errorf("stage restored runtime persistence: %w", err), restoreHandoff)
 		}
 	}
-	snapshotDir, snapshots, err := fs.snapshotFilesToDirectory(filepath.Dir(dbTarget), targets)
+	snapshotDir, snapshots, err := fs.snapshotFilesToDirectory(snapshotRoot, targets)
 	if err != nil {
 		return s.reloadOriginalPersistence(ctx, err, restoreHandoff)
 	}

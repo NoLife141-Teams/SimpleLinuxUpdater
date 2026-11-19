@@ -123,7 +123,7 @@ func (c *runtimeComposition) ReloadRestoredState(ctx context.Context) (resultErr
 	}
 
 	if deps.MaintenanceCoordinator != nil && !deps.MaintenanceCoordinator.Snapshot().Active {
-		if err := deps.MaintenanceCoordinator.Initialize(ctx); err != nil {
+		if err := deps.MaintenanceCoordinator.InitializeAfterReplacement(ctx); err != nil {
 			return fmt.Errorf("restore Maintenance Coordination: %w", err)
 		}
 	}

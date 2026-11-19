@@ -218,7 +218,7 @@ func TestRestoreSynchronizesBeforeReplacementAndKeepsEvidenceOnFailedRollback(t 
 }
 
 func TestRestoreRecoveryMarkerProtectsReservedEntryAndExistingEvidence(t *testing.T) {
-	for _, test := range []string{"host trust conflicts", "recovery already pending"} {
+	for _, test := range []string{"host trust conflicts", "host trust conflicts after parent traversal", "recovery already pending"} {
 		t.Run(test, func(t *testing.T) {
 			root := t.TempDir()
 			f := newDurabilityFixture(t, root, testRestoredRuntime{prepare: func() {
@@ -230,13 +230,23 @@ func TestRestoreRecoveryMarkerProtectsReservedEntryAndExistingEvidence(t *testin
 				if err := os.WriteFile(markerPath, []byte("slu-restore-rollback-existing\n"), 0600); err != nil {
 					t.Fatal(err)
 				}
-			} else {
+			} else if test == "host trust conflicts" {
 				alias := filepath.Join(root, "alias")
 				if err := os.Symlink(root, alias); err != nil {
 					t.Fatal(err)
 				}
 				f.service.deps.KnownHostsWritePath = func() (string, error) {
 					return filepath.Join(alias, filepath.Base(markerPath)), nil
+				}
+			} else {
+				alias := filepath.Join(t.TempDir(), "alias")
+				if err := os.Symlink(filepath.Dir(f.hosts), alias); err != nil {
+					t.Fatal(err)
+				}
+				f.service.deps.KnownHostsWritePath = func() (string, error) {
+					// Construct the raw path to the marker through the SSH
+					// directory. filepath.Join would erase the traversal.
+					return alias + "/../" + filepath.Base(markerPath), nil
 				}
 			}
 			err := f.service.applyArchiveFiles(t.Context(), f.files, RestoreOptions{})

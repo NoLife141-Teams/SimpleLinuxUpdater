@@ -90,6 +90,7 @@ type backupArchiveCatalog struct {
 type backupArchiveView struct {
 	ID                 string `json:"id"`
 	PublishedAt        string `json:"published_at,omitempty"`
+	CapturedAt         string `json:"captured_at,omitempty"`
 	SizeBytes          *int64 `json:"size_bytes"`
 	KnownHostsIncluded *bool  `json:"known_hosts_included"`
 	SHA256             string `json:"sha256"`
@@ -177,7 +178,7 @@ func (a *backupAutomation) catalogLocked(ctx context.Context, s *backupAutomatio
 			verification = "unknown"
 		}
 		catalog.Archives = append(catalog.Archives, backupArchiveView{
-			ID: archive.ID, PublishedAt: archive.PublishedAt, SizeBytes: archive.SizeBytes,
+			ID: archive.ID, PublishedAt: archive.PublishedAt, CapturedAt: archive.CapturedAt, SizeBytes: archive.SizeBytes,
 			KnownHostsIncluded: archive.KnownHostsIncluded, SHA256: archive.SHA256, LastVerifiedAt: archive.LastVerifiedAt,
 			Verification: verification, Availability: availability, ReverifyPossible: reverifyPossible, JobID: archive.JobID,
 		})
@@ -417,6 +418,13 @@ func handleBackupCatalogOperation(c *gin.Context, a *backupAutomation, verify bo
 			}
 			verified.Verification = "verified"
 			verified.LossActive = false
+			captureLimit := a.now()
+			if published := parseBackupStamp(archive.PublishedAt); !published.IsZero() && published.Before(captureLimit) {
+				captureLimit = published
+			}
+			if capture := verifiedBackupCapture(result.Manifest, captureLimit); capture != "" {
+				verified.CapturedAt = capture
+			}
 			verified.KnownHostsIncluded = &result.KnownHostsIncluded
 			*archive = verified
 		} else {

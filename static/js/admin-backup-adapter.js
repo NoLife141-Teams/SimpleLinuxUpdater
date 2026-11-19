@@ -456,6 +456,7 @@
                     <p>Size: ${escapeHtml(archive.sizeBytes === null ? "Unknown" : formatBackupBytes(archive.sizeBytes))} · known_hosts: ${archive.knownHostsIncluded === null ? "Unknown" : archive.knownHostsIncluded ? "Included" : "Not included"}</p>
                     <p>Local availability: <strong>${escapeHtml(archive.availability)}</strong> · Latest review: ${escapeHtml(archive.verification)}</p>
                     <p>Last successful verification: ${escapeHtml(archive.lastVerifiedAt ? formatSessionTime(archive.lastVerifiedAt) : "Unknown")}</p>
+                    <p>Data captured: ${escapeHtml(archive.capturedAt ? formatSessionTime(archive.capturedAt) : "Unknown")}</p>
                     <details><summary>Recorded SHA-256</summary><code>${escapeHtml(archive.sha256 || "Unknown")}</code></details>
                     <button type="button" class="btn-ghost" data-backup-archive="${escapeHtml(archive.id)}" data-backup-operation="download" ${download.enabled ? "" : "disabled"}>Download encrypted</button>
                     <button type="button" class="btn-ghost" data-backup-archive="${escapeHtml(archive.id)}" data-backup-operation="verify" ${verify.enabled ? "" : "disabled"}>Reverify</button>

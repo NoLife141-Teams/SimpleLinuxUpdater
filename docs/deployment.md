@@ -230,6 +230,16 @@ archive's coverage and allows a future loss to open a new episode. An inaccessib
 or replaced mount yields an unavailable observation. A surviving verified archive
 still contributes to local coverage. Manual off-host backups are outside this observation.
 
+**Newest verified local recovery point** reports the age of the data in the
+newest registered archive that is present and restore-verified. The snapshot
+timestamp is recorded in the encrypted manifest. Reverifying an older archive
+can recover the date from its verified manifest and refreshes the verification
+time separately. Data older than seven days is stale. Losing the newest archive
+falls back to the newest confirmed surviving point. An unobserved mount or a
+verified archive with an unknown capture date can leave the recovery point
+unknown. Audit history still reports export and verification outcomes, including
+manual backups. Off-host availability is outside the local point calculation.
+
 The existing Metrics Access Credential also protects the added
 `slu_installation_*` Prometheus gauges. Existing `simplelinuxupdater_*` series are
 preserved during normal operation. During exclusive maintenance `/metrics` and the diagnostics API return a minimal
@@ -252,6 +262,11 @@ last registered-archive observation. `slu_installation_backup_archive_storage_av
 and `slu_installation_backup_local_archive_coverage` are omitted when
 their corresponding facts are unknown. Verified, lost and unknown archive
 counts are exported for observable storage without file identifiers or paths.
+
+`slu_installation_backup_local_recovery_point_timestamp_seconds` and
+`slu_installation_backup_local_recovery_point_age_seconds` describe capture time.
+The `_available` gauge reports known presence or absence, and the `_stale` gauge
+describes the freshness of a confirmed point. Unknown observations omit samples.
 
 `slu_installation_notifications_condition_evaluation_degraded` is 1 when
 the latest observed evaluation failed and 0 when it succeeded. This gauge and
@@ -284,6 +299,8 @@ slu_installation_notifications_failed > 0
 slu_installation_notifications_condition_evaluation_degraded == 1
 slu_installation_notifications_destination_oldest_pending_age_seconds > 1800
 slu_installation_backup_verified_age_seconds > 7 * 24 * 3600
+slu_installation_backup_local_recovery_point_available == 0
+slu_installation_backup_local_recovery_point_stale == 1
 (time() - slu_installation_worker_last_tick_timestamp_seconds{worker="scheduler"} > 180)
   and on(worker) slu_installation_worker_enabled{worker="scheduler"} == 1
 ```

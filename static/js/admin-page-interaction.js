@@ -190,7 +190,7 @@
             lastSuccessAt: String(data.last_success_at || ""),
             catalog: {
                 archives: (Array.isArray(data.catalog?.archives) ? data.catalog.archives : []).slice(0, 200).map(item => ({
-                    id: String(item.id || ""), publishedAt: String(item.published_at || ""),
+                    id: String(item.id || ""), publishedAt: String(item.published_at || ""), capturedAt: String(item.captured_at || ""),
                     sizeBytes: item.size_bytes == null ? null : Math.max(0, Number(item.size_bytes) || 0),
                     knownHostsIncluded: item.known_hosts_included == null ? null : Boolean(item.known_hosts_included),
                     sha256: String(item.sha256 || ""), lastVerifiedAt: String(item.last_verified_at || ""),
@@ -342,6 +342,7 @@
             .map(host => ({ name: host.name, identity: host.identity, disabled: Boolean(host.disabled),
                 state: String(host.state || "pending"), checkedAt: timestamp(host.checked_at) }));
         const archives = data.backup_archives || {};
+        const point = archives.recovery_point || {};
         return { state: String(data.state || "unavailable"), checkedAt: timestamp(data.checked_at), maintenance: Boolean(data.maintenance), restoreIsolation, restoreAPTHosts, workers,
             backupAvailable: Boolean(data.backup_available), backupState: String(data.backup_state || "unavailable"), verifiedAt: timestamp(data.last_verified_backup_at), backupAgeSeconds: count(data.verified_backup_age_seconds),
             backupArchives: {
@@ -350,6 +351,11 @@
                 verified: count(archives.verified),
                 lost: count(archives.lost),
                 unknown: count(archives.unknown)
+            },
+            backupRecoveryPoint: {
+                state: ["recent", "stale", "missing"].includes(point.state) ? point.state : "unknown",
+                capturedAt: timestamp(point.captured_at),
+                age: count(point.age_seconds)
             },
             notifications: {
                 available: Boolean(notifications.available),

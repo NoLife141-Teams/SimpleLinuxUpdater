@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"time"
 
+	internalbackup "debian-updater/internal/backup"
 	maintenancepkg "debian-updater/internal/maintenance"
 )
 
@@ -31,17 +32,40 @@ type backupArchiveScan struct {
 }
 
 type backupArchiveCoverage struct {
-	State          string `json:"state"`
-	Storage        string `json:"storage"`
-	CheckedAt      string `json:"checked_at,omitempty"`
-	Verified       int    `json:"verified"`
-	Lost           int    `json:"lost"`
-	Unknown        int    `json:"unknown"`
-	LastVerifiedAt string `json:"last_verified_at,omitempty"`
+	State          string              `json:"state"`
+	Storage        string              `json:"storage"`
+	CheckedAt      string              `json:"checked_at,omitempty"`
+	Verified       int                 `json:"verified"`
+	Lost           int                 `json:"lost"`
+	Unknown        int                 `json:"unknown"`
+	LastVerifiedAt string              `json:"last_verified_at,omitempty"`
+	RecoveryPoint  backupRecoveryPoint `json:"recovery_point"`
+}
+
+type backupRecoveryPoint struct {
+	State      string   `json:"state"`
+	CapturedAt string   `json:"captured_at,omitempty"`
+	VerifiedAt string   `json:"verified_at,omitempty"`
+	AgeSeconds *float64 `json:"age_seconds,omitempty"`
+}
+
+// Only a manifest read from integrity-checked, restore-ready bytes can supply
+// a capture date. Earlier manifests recorded the archive's creation time.
+func verifiedBackupCapture(manifest internalbackup.Manifest, latest time.Time) string {
+	value := manifest.CapturedAt
+	if value == "" {
+		value = manifest.CreatedAt
+	}
+	at := parseBackupStamp(value)
+	created := parseBackupStamp(manifest.CreatedAt)
+	if at.IsZero() || at.After(latest) || (!created.IsZero() && at.Truncate(time.Second).After(created.Truncate(time.Second))) {
+		return ""
+	}
+	return backupStamp(at)
 }
 
 func (s backupAutomationState) archiveCoverage(now time.Time) backupArchiveCoverage {
-	facts := backupArchiveCoverage{State: "unknown", Storage: "not_observed"}
+	facts := backupArchiveCoverage{State: "unknown", Storage: "not_observed", RecoveryPoint: backupRecoveryPoint{State: "unknown"}}
 	observation := s.Observation
 	checked := parseBackupStamp(observation.CheckedAt)
 	if checked.IsZero() {
@@ -56,7 +80,7 @@ func (s backupAutomationState) archiveCoverage(now time.Time) backupArchiveCover
 	if observation.Owner == "" || observation.Storage != "available" {
 		return facts
 	}
-	var lastVerified time.Time
+	var lastVerified, captured time.Time
 	registered := 0
 	for _, archive := range s.Archives {
 		if !backupArchiveOwned(archive, observation.Owner) {
@@ -73,6 +97,11 @@ func (s backupAutomationState) archiveCoverage(now time.Time) backupArchiveCover
 			if verified.After(lastVerified) {
 				facts.LastVerifiedAt, lastVerified = archive.LastVerifiedAt, verified
 			}
+			if at := parseBackupStamp(archive.CapturedAt); at.After(captured) && !at.After(now) && !at.After(verified) {
+				captured = at
+				facts.RecoveryPoint.CapturedAt = archive.CapturedAt
+				facts.RecoveryPoint.VerifiedAt = archive.LastVerifiedAt
+			}
 		case archive.LossActive || archiveAvailabilityLost(archive.Availability):
 			facts.Lost++
 		}
@@ -86,6 +115,18 @@ func (s backupAutomationState) archiveCoverage(now time.Time) backupArchiveCover
 		facts.State = "no_registered"
 	default:
 		facts.State = "missing"
+	}
+	switch {
+	case !captured.IsZero():
+		age := now.Sub(captured)
+		seconds := age.Seconds()
+		facts.RecoveryPoint.AgeSeconds = &seconds
+		facts.RecoveryPoint.State = "recent"
+		if age > internalbackup.DefaultRecoveryStaleAfter {
+			facts.RecoveryPoint.State = "stale"
+		}
+	case facts.State == "missing" || facts.State == "no_registered":
+		facts.RecoveryPoint.State = "missing"
 	}
 	return facts
 }

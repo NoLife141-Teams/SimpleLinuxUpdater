@@ -20,6 +20,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 	"unicode/utf16"
 	"unicode/utf8"
 
@@ -33,8 +34,9 @@ const (
 // TemporaryFile is a bounded, caller-owned file produced by the Backup pipeline.
 // Call Remove when the response or restore operation no longer needs it.
 type TemporaryFile struct {
-	Path string
-	Size int64
+	Path       string
+	Size       int64
+	CapturedAt time.Time
 }
 
 func (f TemporaryFile) Remove() error {
@@ -192,6 +194,7 @@ func (s *Service) CreateDBSnapshotFile() (TemporaryFile, error) {
 		return TemporaryFile{}, err
 	}
 	vacuumSQL := "VACUUM INTO " + sqliteStringLiteral(tmpPath)
+	capturedAt := s.deps.Now().UTC()
 	if _, err := s.deps.DB().Exec(vacuumSQL); err != nil {
 		_ = os.Remove(tmpPath)
 		return TemporaryFile{}, fmt.Errorf("snapshot database: %w", err)
@@ -205,7 +208,7 @@ func (s *Service) CreateDBSnapshotFile() (TemporaryFile, error) {
 		_ = os.Remove(tmpPath)
 		return TemporaryFile{}, fmt.Errorf("database snapshot is too large (max %d bytes)", MaxExtractedBytes)
 	}
-	return TemporaryFile{Path: tmpPath, Size: info.Size()}, nil
+	return TemporaryFile{Path: tmpPath, Size: info.Size(), CapturedAt: capturedAt}, nil
 }
 
 func ValidateSnapshotPathInRoot(path, tempRoot string) error {
@@ -238,12 +241,15 @@ func hashPath(path string) (ManifestFile, error) {
 	return ManifestFile{Size: size, SHA256: hex.EncodeToString(hash.Sum(nil))}, nil
 }
 
-func (s *Service) buildTarGzFile(paths map[string]string) (TemporaryFile, error) {
+func (s *Service) buildTarGzFile(paths map[string]string, capturedAt time.Time) (TemporaryFile, error) {
 	manifest := Manifest{
 		Format:    FormatName,
 		Version:   FormatVersion,
 		CreatedAt: s.deps.Now().UTC().Format("2006-01-02T15:04:05Z07:00"),
 		Files:     make(map[string]ManifestFile, len(paths)),
+	}
+	if !capturedAt.IsZero() {
+		manifest.CapturedAt = capturedAt.UTC().Format(time.RFC3339Nano)
 	}
 	var total int64
 	for name, path := range paths {
@@ -536,7 +542,7 @@ func (s *Service) ExportArchiveFileFromSnapshot(ctx context.Context, req ExportR
 			knownHostsIncluded = true
 		}
 	}
-	archive, err := s.buildTarGzFile(paths)
+	archive, err := s.buildTarGzFile(paths, snapshot.CapturedAt)
 	if err != nil {
 		return ExportFileResult{}, &ExportError{Stage: ExportStageArchive, Err: err}
 	}

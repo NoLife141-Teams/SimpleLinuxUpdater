@@ -44,6 +44,7 @@ type ownedBackupArchive struct {
 	SHA256             string `json:"sha256"`
 	Owner              string `json:"owner"`
 	PublishedAt        string `json:"published_at,omitempty"`
+	CapturedAt         string `json:"captured_at,omitempty"`
 	SizeBytes          *int64 `json:"size_bytes,omitempty"`
 	KnownHostsIncluded *bool  `json:"known_hosts_included,omitempty"`
 	LastVerifiedAt     string `json:"last_verified_at,omitempty"`
@@ -960,6 +961,7 @@ func (a *backupAutomation) publish(ctx context.Context, root *os.Root, source in
 	}
 	archive.SHA256 = hex.EncodeToString(digest.Sum(nil))
 	archive.PublishedAt = backupStamp(a.now())
+	archive.CapturedAt = verifiedBackupCapture(result.Manifest, parseBackupStamp(archive.PublishedAt))
 	archive.LastVerifiedAt = archive.PublishedAt
 	archive.ObservedAt = archive.PublishedAt
 	archive.SizeBytes = &written

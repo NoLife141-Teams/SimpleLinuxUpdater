@@ -32,6 +32,8 @@ test("production installation health is public, admin cookie diagnostics refresh
   await expect(page.locator("#installation-workers tr").filter({hasText:"vulnerabilities"})).toContainText("Disabled");
   await expect(page.locator("#installation-backup")).toContainText("never");
   await expect(page.locator("#installation-storage")).toContainText("bytes");
+  await expect(page.locator("#installation-notification-delivery")).toHaveText("Never observed");
+  await expect(page.locator("#installation-notification-queue-age")).toHaveText("Queue empty");
   const diagnostic=await page.request.get(url+"/api/installation/health");expect(diagnostic.status()).toBe(200);expect(diagnostic.headers()["cache-control"]).toContain("no-store");const facts=await diagnostic.json();expect(facts.workers.scheduler.last_tick).not.toMatch(/^0001-/);expect(facts.notifications.pending).toBe(0);expect(facts.verified_backup_age_seconds).toBeNull();expect(JSON.stringify(facts)).not.toContain(directory);
   const rotated=await page.evaluate(async()=>{const response=await fetch("/api/metrics/token",{method:"POST"});return {status:response.status,data:await response.json()}});expect(rotated.status).toBe(200);
   const metrics=await page.request.get(url+"/metrics",{headers:{Authorization:`Bearer ${rotated.data.token}`}});expect(metrics.status()).toBe(200);const text=await metrics.text();expect(text).toContain("slu_installation_ready 1");expect(text).toContain("simplelinuxupdater_update_runs");expect(text).not.toContain(rotated.data.token);expect(text).not.toContain(directory);
@@ -43,6 +45,20 @@ test("production installation health is public, admin cookie diagnostics refresh
   await page.unroute(route);
   await section.getByRole("button",{name:"Retry",exact:true}).click();
   await expect(section.locator("[data-admin-section-status]")).toHaveText("Current");
+  await page.route(route, route => route.fulfill({json: {
+   ...facts,
+   notifications: {
+    available: true, enabled: true, pending: 1, retrying: 1, failed: 0,
+    condition_evaluation_state: "degraded",
+    last_condition_evaluation_at: "2026-10-27T01:02:03Z",
+    last_successful_delivery_at: "2026-10-27T01:03:05Z",
+    oldest_pending_age_seconds: 90
+   }
+  }}));
+  await section.getByRole("button",{name:"Refresh",exact:true}).click();
+  await expect(page.locator("#installation-notification-evaluation")).toContainText("Degraded · Last success");
+  await expect(page.locator("#installation-notification-delivery")).not.toHaveText("Never observed");
+  await expect(page.locator("#installation-notification-queue-age")).toHaveText("90 seconds");
   await page.setViewportSize({width:390,height:844});await section.scrollIntoViewIfNeeded();await expect(page.locator("#installation-state")).toBeVisible();
   await page.screenshot({path:testInfo.outputPath("installation-health-mobile.png"),fullPage:false});
   const anonymous=await browser.newContext();try{const response=await anonymous.request.get(url+"/api/installation/health");expect(response.status()).toBe(401)}finally{await anonymous.close()}

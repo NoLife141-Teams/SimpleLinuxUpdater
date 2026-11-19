@@ -285,8 +285,9 @@ type ServiceDeps struct {
 }
 
 type Service struct {
-	health installationhealthpkg.Worker
-	deps   ServiceDeps
+	health          installationhealthpkg.Worker
+	conditionHealth conditionEvaluationHealth
+	deps            ServiceDeps
 
 	settingsMu            sync.Mutex
 	lifecycleMu           sync.Mutex
@@ -416,23 +417,27 @@ func (s *Service) run(ctx context.Context) {
 			return
 		}
 		s.health.Tick(s.deps.Now())
+		cycleOK := true
 		if s.conditionMonitoringStarted() {
 			if conditionTicker == nil {
 				conditionTicker = time.NewTicker(s.deps.ConditionPollInterval)
 				conditionC = conditionTicker.C
 			}
 			if err := s.reconcileConditions(ctx); err != nil {
+				cycleOK = false
 				s.health.Error(s.deps.Now())
 				s.deps.Logf("notification condition reconciliation failed: %v", err)
 			}
 		}
 		if prune {
 			if _, err := pruneOutbox(ctx, s.database(), s.deps.Now(), s.deps.Retention); err != nil {
+				cycleOK = false
 				s.health.Error(s.deps.Now())
 				s.deps.Logf("notification outbox pruning failed: %v", err)
 			}
 		}
 		if err := recoverExpiredOutboxClaims(ctx, s.database(), s.deps.Now(), s.deps.ClaimTTL); err != nil {
+			cycleOK = false
 			s.health.Error(s.deps.Now())
 			s.deps.Logf("notification outbox claim recovery failed: %v", err)
 		}
@@ -495,7 +500,11 @@ func (s *Service) run(ctx context.Context) {
 			retryC = retryTimer.C
 			continue
 		}
-		s.health.Finish(s.deps.Now(), nil)
+		if cycleOK {
+			s.health.Finish(s.deps.Now(), nil)
+		} else {
+			s.health.Stop()
+		}
 		if !scheduled {
 			continue
 		}
@@ -593,8 +602,8 @@ func (s *Service) PreparePersistenceReplacement(ctx context.Context) error {
 	return nil
 }
 
-// StageAPTDeliveryEvidence carries confirmed admissions and their retained
-// outcomes before the archive can replace SQLite, even if reload never runs.
+// StageAPTDeliveryEvidence carries confirmed APT admissions and their retained
+// outcomes, plus the aggregate last delivery success, into the staged archive.
 func (s *Service) StageAPTDeliveryEvidence(ctx context.Context, staged *sql.DB) error {
 	s.persistenceMu.Lock()
 	conditions, replacement := s.replacementConditions, s.replacementRows
@@ -609,12 +618,13 @@ func stageAPTDeliveryEvidence(ctx context.Context, staged *sql.DB, replacement *
 	if err := PrepareArchivedPersistence(ctx, staged); err != nil {
 		return err
 	}
-	if len(replacement.APTAdmissions) == 0 {
+	if len(replacement.APTAdmissions) == 0 && replacement.LastSuccessfulDelivery == "" {
 		return nil
 	}
 	aptRows := outboxReplacement{
-		RetainedRows:  make(map[string]outboxSnapshot),
-		APTAdmissions: replacement.APTAdmissions,
+		RetainedRows:           make(map[string]outboxSnapshot),
+		APTAdmissions:          replacement.APTAdmissions,
+		LastSuccessfulDelivery: replacement.LastSuccessfulDelivery,
 	}
 	for id, snapshot := range replacement.RetainedRows {
 		if snapshot.Row.EventType == EventAPTReconciliationRequired {
@@ -671,6 +681,7 @@ func (s *Service) ReloadPersistence(ctx context.Context) error {
 	s.replacementRows = nil
 	s.replacementConditions = nil
 	s.persistenceMu.Unlock()
+	s.conditionHealth.reset()
 	s.resumePersistence()
 	return nil
 }
@@ -1986,33 +1997,4 @@ func (s *Service) conditionMonitoringStarted() bool {
 	s.lifecycleMu.Lock()
 	defer s.lifecycleMu.Unlock()
 	return s.monitoringStarted && !s.closing
-}
-
-// InstallationHealth exposes aggregate facts only. It does not decrypt settings,
-// attempt delivery, recover claims, or enumerate destinations or accepted work.
-func (s *Service) InstallationHealth(ctx context.Context) (installationhealthpkg.WorkerSnapshot, bool, int, int, int, error) {
-	worker := s.health.Snapshot(false)
-	db := s.database()
-	if db == nil {
-		return worker, false, 0, 0, 0, errors.New("notification persistence unavailable")
-	}
-	var raw string
-	err := db.QueryRowContext(ctx, "SELECT value FROM settings WHERE key = ?", SettingsKey).Scan(&raw)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return worker, false, 0, 0, 0, err
-	}
-	var settings persistedSettings
-	if raw != "" {
-		if err = json.Unmarshal([]byte(raw), &settings); err != nil {
-			return worker, false, 0, 0, 0, err
-		}
-	}
-	enabled := settings.Enabled || settings.DiscordEnabled || settings.TelegramEnabled
-	worker.Enabled = enabled
-	var pending, retrying, failed int
-	err = db.QueryRowContext(ctx, `SELECT
- COALESCE(SUM(CASE WHEN state IN (?,?) THEN 1 ELSE 0 END),0),
- COALESCE(SUM(CASE WHEN state=? THEN 1 ELSE 0 END),0),
- COALESCE(SUM(CASE WHEN state=? THEN 1 ELSE 0 END),0) FROM notification_outbox`, outboxStatePending, outboxStateClaimed, outboxStateRetrying, outboxStateFailed).Scan(&pending, &retrying, &failed)
-	return worker, enabled, pending, retrying, failed, err
 }

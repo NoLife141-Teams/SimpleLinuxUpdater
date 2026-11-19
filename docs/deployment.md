@@ -191,10 +191,19 @@ or `GET /api/installation/health`. Reader/operator cookies and all personal API
 credentials are rejected. The panel uses the existing Admin Page Interaction
 snapshot lifecycle, lazy loading, explicit refresh and stale/retry indication.
 It separates local installation facts from Server health. It shows observed
-scheduler, host facts, vulnerability, backup notification, audit-pruning and job-log-pruning worker tick,
+scheduler, host facts, vulnerability, backup, notification, audit-pruning and job-log-pruning worker tick,
 completion and error timestamps; running/enabled state; backup verification age;
 persisted pending/claimed, retrying and failed notification rows; and observed
 main DB/WAL and available filesystem bytes (capacity currently on Linux).
+A successful notification condition evaluation reads and validates its inputs
+and commits any state changes, including when no delivery is due. A later
+evaluation failure marks this observation as degraded and retains its last
+success time. The evaluation starts unobserved after startup or persistence
+reload. The latest persisted HTTP success for a queued delivery survives
+process restarts and outbox history pruning. Manual test deliveries use their
+own diagnostics. The oldest queued delivery age includes pending, claimed and
+retrying rows. An empty queue has no age. Worker tick and progress timestamps
+remain separate observations.
 A completed empty worker sweep is progress, not proof of a successful Server
 operation. Disabled configuration is expected. Never observed/unavailable is
 unknown and is never displayed as a zero age. Error counts reset on restart;
@@ -222,6 +231,15 @@ unavailable storage are omitted; the `_available` gauges identify unknown backup
 and notification observations. The panel and metrics do not estimate queue depth
 from timer cadence or infer progress from goroutine existence.
 
+`slu_installation_notifications_condition_evaluation_degraded` is 1 when
+the latest observed evaluation failed and 0 when it succeeded. This gauge and
+`slu_installation_notifications_last_condition_evaluation_timestamp_seconds`
+appear after an evaluation result and a successful evaluation, respectively.
+`slu_installation_notifications_last_successful_delivery_timestamp_seconds`
+tracks persisted HTTP success.
+`slu_installation_notifications_oldest_pending_age_seconds` is present when
+a nonterminal row has an observed creation time.
+
 Example alert expressions (tune windows to deployment cadence):
 
 ```promql
@@ -229,6 +247,7 @@ slu_installation_ready == 0 and slu_installation_maintenance == 0
 slu_installation_storage_available_bytes < 1024 * 1024 * 1024
 slu_installation_notifications_retrying > 0
 slu_installation_notifications_failed > 0
+slu_installation_notifications_condition_evaluation_degraded == 1
 slu_installation_backup_verified_age_seconds > 7 * 24 * 3600
 (time() - slu_installation_worker_last_tick_timestamp_seconds{worker="scheduler"} > 180)
   and on(worker) slu_installation_worker_enabled{worker="scheduler"} == 1

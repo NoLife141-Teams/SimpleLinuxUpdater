@@ -314,6 +314,10 @@
     function normalizeInstallation(data = {}) {
         const timestamp = value => typeof value === "string" ? value : "";
         const count = value => Number.isFinite(value) && value >= 0 ? value : null;
+        const notifications = data.notifications || {};
+        const evaluationState = ["not_observed", "healthy", "degraded"].includes(notifications.condition_evaluation_state)
+            ? notifications.condition_evaluation_state
+            : "";
         const workers = ["scheduler", "host_facts", "vulnerabilities", "backup", "notifications", "audit_pruner", "job_log_pruner"].map(name => {
             const value = data.workers?.[name];
             return { name, available: Boolean(value), enabled: Boolean(value?.enabled), running: Boolean(value?.running),
@@ -321,7 +325,17 @@
         });
         return { state: String(data.state || "unavailable"), checkedAt: timestamp(data.checked_at), maintenance: Boolean(data.maintenance), workers,
             backupAvailable: Boolean(data.backup_available), backupState: String(data.backup_state || "unavailable"), verifiedAt: timestamp(data.last_verified_backup_at), backupAgeSeconds: count(data.verified_backup_age_seconds),
-            notifications: { available: Boolean(data.notifications?.available), enabled: Boolean(data.notifications?.enabled), pending: count(data.notifications?.pending), retrying: count(data.notifications?.retrying), failed: count(data.notifications?.failed) },
+            notifications: {
+                available: Boolean(notifications.available),
+                enabled: Boolean(notifications.enabled),
+                pending: count(notifications.pending),
+                retrying: count(notifications.retrying),
+                failed: count(notifications.failed),
+                evaluationState,
+                lastEvaluationAt: timestamp(notifications.last_condition_evaluation_at),
+                lastDeliveryAt: timestamp(notifications.last_successful_delivery_at),
+                oldestPendingAge: count(notifications.oldest_pending_age_seconds)
+            },
             storage: { dbBytes: count(data.storage?.db_bytes), walBytes: count(data.storage?.wal_bytes), availableBytes: count(data.storage?.available_bytes) } };
     }
 

@@ -236,9 +236,14 @@ func conditionList(state conditionState) []Condition {
 	return list
 }
 
-func (s *Service) reconcileConditions(ctx context.Context) error {
+func (s *Service) reconcileConditions(ctx context.Context) (evaluationErr error) {
 	s.conditionMu.Lock()
 	defer s.conditionMu.Unlock()
+	defer func() {
+		if ctx.Err() == nil {
+			s.conditionHealth.observe(s.deps.Now(), evaluationErr)
+		}
+	}()
 	db := s.database()
 	state, err := loadAndMigrateConditionState(ctx, db)
 	if err != nil {

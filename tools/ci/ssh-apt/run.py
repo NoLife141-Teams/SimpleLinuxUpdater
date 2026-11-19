@@ -102,7 +102,7 @@ def qualification_overlay(work):
     # establish that the restored configuration still allows this delivery.
     anchor = '\t\tif s.conditionMonitoringStarted() {\n\t\t\tif conditionTicker == nil {'
     failure = '\t\t\t\ts.deps.Logf("notification condition reconciliation failed: %v", err)\n\t\t\t}'
-    finish = '\t\ts.health.Finish(s.deps.Now(), nil)\n\t\tif !scheduled {'
+    finish = '\t\tif !scheduled {'
     instrument("internal/notifications/service.go", [
         ('\n\t"net/url"\n', '\n\t"net/url"\n\t"os"\n'),
         (anchor, '\t\tqualificationReconciled := false\n' + anchor),

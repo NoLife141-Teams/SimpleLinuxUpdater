@@ -238,6 +238,39 @@ class OperationalQualificationTest(unittest.TestCase):
         self.assertEqual(evidence["status"], "failed")
         self.assertEqual(qualification.report["controlled_reboot_vm"]["status"], "failed")
 
+    def test_vm_runner_uses_preserved_trusted_release_tools(self):
+        class BuildContextVerified(Exception):
+            pass
+
+        with tempfile.TemporaryDirectory() as directory:
+            work = Path(directory)
+            trusted = work / "trusted-tools" / "ci"
+            runner_sources = trusted / "ssh-apt"
+            runner_sources.mkdir(parents=True)
+            files = ("vm-runner.Dockerfile", "vm-reboot.py", "run.py", "images.json")
+            with tarfile.open(work / "source.tar", "w") as candidate_archive:
+                for name in files:
+                    original = operational.HERE.parent / "ssh-apt" / name
+                    (runner_sources / name).write_bytes(original.read_bytes())
+                    data = f"older tagged candidate {name}".encode()
+                    entry = tarfile.TarInfo(f"tools/ci/ssh-apt/{name}")
+                    entry.size = len(data)
+                    candidate_archive.addfile(entry, io.BytesIO(data))
+
+            def inspect_build_context(*args, **_kwargs):
+                self.assertEqual(args[0], "build")
+                context = args[-1]
+                self.assertEqual(set(entry.name for entry in context.iterdir()), set(files))
+                for name in files:
+                    self.assertEqual((context / name).read_bytes(), (runner_sources / name).read_bytes(), name)
+                raise BuildContextVerified()
+
+            qualification = operational.Qualification(work, work, work / "tagged", "a" * 40)
+            with patch.object(operational, "HERE", trusted / "upgrade"), \
+                    patch.object(operational, "docker", side_effect=inspect_build_context):
+                with self.assertRaises(BuildContextVerified):
+                    qualification.controlled_reboot()
+
     def test_host_api_does_not_fetch_redirect_target(self):
         class FixtureTransport(urllib.request.HTTPHandler):
             handler_order = 100

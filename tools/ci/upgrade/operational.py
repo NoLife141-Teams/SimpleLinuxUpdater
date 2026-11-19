@@ -652,8 +652,10 @@ HTTPServer(("127.0.0.1", int(port)), Receiver).serve_forever()
             archive.extractall(source, filter="data")
         build = self.work / "vm-runner"
         build.mkdir()
+        # The release gate runs from its preserved trusted tools directory.
+        runner_sources = HERE.parent / "ssh-apt"
         for name in ("vm-runner.Dockerfile", "vm-reboot.py", "run.py", "images.json"):
-            shutil.copyfile(source / "tools" / "ci" / "ssh-apt" / name, build / name)
+            shutil.copyfile(runner_sources / name, build / name)
         docker("build", "--platform", PLATFORM, "--label", self.label, "--tag", self.vm_runner,
                "--file", build / "vm-runner.Dockerfile", build, timeout=240)
 

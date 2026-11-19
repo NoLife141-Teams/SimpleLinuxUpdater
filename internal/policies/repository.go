@@ -196,7 +196,10 @@ func EnsureSchema(db *sql.DB) error {
 			return err
 		}
 	}
-	return ensureOccurrenceSchema(db)
+	if err := ensureOccurrenceSchema(db); err != nil {
+		return err
+	}
+	return ensureSchedulerDenials(db)
 }
 
 func ensureColumn(db *sql.DB, name, definition string) error {

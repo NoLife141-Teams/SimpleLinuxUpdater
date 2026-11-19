@@ -563,6 +563,13 @@ the same server, the operation is attributed to the policy that takes priority.
 **Blocking job details** opens the associated backup job when it is still
 available and you can read job history. Historical entries with no observed
 cause keep their existing reason. Observed skips remain terminal.
+Before Scheduled Runs is written, a denial can survive restart when the
+application could record the observation against stable local persistence.
+The cause is used only for the observed minute, with matching scheduling
+configuration and inventory identities and SSH endpoints. If only a missed
+slot can be verified, history keeps a generic reason. Pending observations
+expire after seven days and are discarded when an archive replaces the
+database. Existing Scheduled Runs remain part of the archive's history.
 
 ## Scheduled canary and wave rollouts
 

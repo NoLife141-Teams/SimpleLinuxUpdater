@@ -75,6 +75,9 @@ func (l *ExclusiveLease) PrepareReplacement(ctx context.Context, db *sql.DB) err
 	if l.closed || l.releasePending || !l.activated || l.operation != OperationBackupRestore {
 		return errors.New("active backup restore lease is required for replacement preparation")
 	}
+	l.coordinator.stateMu.Lock()
+	l.coordinator.replacementPrepared = true
+	l.coordinator.stateMu.Unlock()
 	state := l.activeState
 	state.RecoveryRequired = true
 	state.Message = recoveryRequiredMessage

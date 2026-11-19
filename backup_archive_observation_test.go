@@ -18,6 +18,14 @@ import (
 
 func TestBackupArchiveObservationsDistinguishLossFromUnavailableStorage(t *testing.T) {
 	app, a, now := newBackupAutomationTest(t)
+	if err := a.observeArchiveAvailability(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	empty := installationSnapshot(t.Context(), app.Deps)
+	if empty.BackupArchives.State != "no_registered" ||
+		!strings.Contains(installationMetrics(empty), "slu_installation_backup_local_archive_coverage 0\n") {
+		t.Fatalf("observed empty storage did not report zero coverage: %+v", empty.BackupArchives)
+	}
 	if err := a.Tick(t.Context(), true); err != nil {
 		t.Fatal(err)
 	}

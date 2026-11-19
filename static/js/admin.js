@@ -606,7 +606,7 @@
                 missing: `No verified archive available · ${number(archives.lost)} lost`,
                 no_registered: "No locally registered archives",
                 unknown: {
-                    available: "Coverage unknown",
+                    available: archives.lost > 0 ? `Coverage unknown · ${number(archives.lost)} lost` : "Coverage unknown",
                     unavailable: "Storage unavailable",
                     stale: "Availability observation is stale",
                     not_observed: "Never observed",

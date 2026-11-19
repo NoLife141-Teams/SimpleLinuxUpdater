@@ -318,7 +318,7 @@ func installationMetrics(value installationDiagnostics) string {
 		gauge("backup_archives_lost", "Registered backups with a confirmed loss awaiting re-verification.", archives.Lost)
 		gauge("backup_archives_unknown", "Registered backups without a current availability observation.", archives.Unknown)
 	}
-	if archives.State == "covered" || archives.State == "missing" {
+	if archives.State == "covered" || archives.State == "missing" || archives.State == "no_registered" {
 		gauge("backup_local_archive_coverage", "At least one present and restore-verified registered backup.", bit(archives.State == "covered"))
 	}
 	notifications := value.Notifications

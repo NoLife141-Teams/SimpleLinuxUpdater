@@ -65,6 +65,9 @@ test("production installation health is public, admin cookie diagnostics refresh
   await expect(page.locator("#installation-notification-delivery")).toHaveText(deliveryDate);
   await expect(page.locator("#installation-notification-queue-age")).toHaveText("90 seconds");
   await expect(page.locator("#installation-backup-archives")).toHaveText("1 verified and present · 1 lost");
+  archiveFacts = {state: "unknown", storage: "available", verified: 0, lost: 1, unknown: 1};
+  await section.getByRole("button",{name:"Refresh",exact:true}).click();
+  await expect(page.locator("#installation-backup-archives")).toHaveText("Coverage unknown · 1 lost");
   archiveFacts = {state: "unknown", storage: "unavailable", verified: 0, lost: 0, unknown: 0};
   await section.getByRole("button",{name:"Refresh",exact:true}).click();
   await expect(page.locator("#installation-backup-archives")).toHaveText("Storage unavailable");

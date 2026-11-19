@@ -100,8 +100,12 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: race
-            cmd: go test -race -count=1 ./...
+          - name: race-1
+            cmd: tools/ci/test-race-shard.sh 1 3
+          - name: race-2
+            cmd: tools/ci/test-race-shard.sh 2 3
+          - name: race-3
+            cmd: tools/ci/test-race-shard.sh 3 3
           - name: cover
             cmd: go test -count=1 -covermode=atomic -coverprofile=coverage.out ./...
     steps:

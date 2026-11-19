@@ -240,10 +240,24 @@ Fix:
 
 If both backup application and recovery fail, the app keeps maintenance active and returns `backup recovery incomplete; maintenance remains active`. Requests and scheduled work stay blocked. An interrupted restore also stays blocked on startup. Before changing active files, the app synchronizes the rollback files and manifest and creates a durable marker beside SQLite. For `servers.db`, the marker is `servers.db.restore-recovery` and names the rollback directory. Reserve this path for recovery state. Startup recognizes the marker even when the SQLite maintenance state is missing. A restart alone does not clear it.
 
-1. Stop attempts to use the app and inspect its process/container logs. The `backup restore requires operator recovery` entry identifies the error and, when available, the retained rollback directory. Rollback directories (`slu-restore-rollback-*`) are stored beside the application database, so they share its persistent volume (normally `/data` in Docker). Preserve that volume and the recovery directory until recovery is verified.
-2. Stop the application before changing persistence files. Keep an untouched copy of the current database, sidecars, configuration and host-key file for diagnosis.
-3. Restore a verified, consistent set of original files. A retained rollback directory contains `recovery.json`, mapping each original `Target` to its `BackupPath` and recording whether it originally existed. Use the entire recorded set, including SQLite sidecars and any included host-key file; do not mix files from different attempts. A target recorded as absent must remain absent. Keep private file permissions. The rollback database uses the current configuration's encryption key.
-4. Verify SQLite integrity on the recovered set (for example, `PRAGMA quick_check`), confirm the expected inventory and configuration, and resolve the runtime reload error from the logs. Integrity alone does not establish that the chosen inventory/configuration is the intended one. If no usable rollback files exist, recover from an independent verified backup instead.
-5. Only after recovery is verified, and while the application is stopped, clear the saved maintenance latch in the recovered database with `DELETE FROM settings WHERE key = 'maintenance_state';`. Move the corresponding `.restore-recovery` marker, if present, into the preserved diagnosis copy. Start the app and check its startup logs and inventory before initiating maintenance on a host.
+Stop the application before running either mode. Use the same working directory, environment and files as the service. For a binary installation, run as the service user.
+
+```sh
+./webserver backup recover --inspect
+./webserver backup recover --apply <recovery-set-id>
+```
+
+For Docker Compose, use your existing service name so the one-shot command receives the same volume, user and path configuration.
+
+```sh
+docker compose stop <service>
+docker compose run --rm --no-deps -T --entrypoint /app/webserver <service> backup recover --inspect
+docker compose run --rm --no-deps -T --entrypoint /app/webserver <service> backup recover --apply <recovery-set-id>
+docker compose start <service>
+```
+
+Inspect the returned set IDs, inventory count and APT report count. Confirm the intended installation against your records and choose a set marked `ready`. Application keeps a private diagnosis copy beside SQLite, validates the installed files and releases recovery only after those checks pass. It invalidates restored sessions and suspends automated backups until local configuration is revalidated. Start the app after a successful application, sign in again, and review the inventory and any active APT incident from the original job report.
+
+If the report cannot validate a set, preserve the volume and the rollback directories for diagnosis. An unreadable current SQLite file also blocks application because the command cannot verify current APT and notification delivery evidence. In that case, use a verified independent backup with the retained recovery evidence. The process and container logs may also contain the original restore failure.
 
 If the recovery latch cannot be persisted, the current process still blocks work and logs that persistence error. Diagnose the storage failure before restarting. Retained rollback files contain sensitive application data; protect them like backups and remove them after recovery has been verified. They are retained only on incomplete recovery, not after a successful restore or successful rollback.

@@ -616,6 +616,27 @@ func (s *Service) StageAPTDeliveryEvidence(ctx context.Context, staged *sql.DB) 
 	if conditions == nil || replacement == nil {
 		return errors.New("notification persistence replacement was not prepared")
 	}
+	return stageAPTDeliveryEvidence(ctx, staged, replacement, s.deps.Now())
+}
+
+// MergeOfflineAPTDeliveryEvidence carries the same evidence during a local
+// recovery without instantiating a delivery worker. Both databases are copies.
+func MergeOfflineAPTDeliveryEvidence(ctx context.Context, live, staged *sql.DB, now time.Time) error {
+	if err := PrepareArchivedPersistence(ctx, live); err != nil {
+		return err
+	}
+	replacement, err := loadCurrentOutboxRows(ctx, live)
+	if err != nil {
+		return err
+	}
+	replacement.APTAdmissions, err = loadAPTAdmissions(ctx, live)
+	if err != nil {
+		return err
+	}
+	return stageAPTDeliveryEvidence(ctx, staged, &replacement, now)
+}
+
+func stageAPTDeliveryEvidence(ctx context.Context, staged *sql.DB, replacement *outboxReplacement, now time.Time) error {
 	if err := PrepareArchivedPersistence(ctx, staged); err != nil {
 		return err
 	}
@@ -631,7 +652,7 @@ func (s *Service) StageAPTDeliveryEvidence(ctx context.Context, staged *sql.DB) 
 			aptRows.RetainedRows[id] = snapshot
 		}
 	}
-	return restoreCurrentOutboxRows(ctx, staged, &aptRows, s.deps.Now().UTC().Format(time.RFC3339Nano))
+	return restoreCurrentOutboxRows(ctx, staged, &aptRows, now.UTC().Format(time.RFC3339Nano))
 }
 
 // ReloadPersistence reinitializes the outbox after runtime persistence has

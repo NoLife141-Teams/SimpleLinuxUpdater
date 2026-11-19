@@ -134,6 +134,13 @@ func main() {
 	if handled, code := runHelperCommand(os.Args[1:], os.Stdout, os.Stderr); handled {
 		os.Exit(code)
 	}
+	if handled, err := runRestoreRecoveryCommand(os.Args[1:], os.Stdout); handled {
+		if err != nil {
+			log.Print(err)
+			os.Exit(1)
+		}
+		return
+	}
 	if handled, err := runAdminCommand(os.Args[1:], os.Stdin, os.Stdout); handled {
 		if err != nil {
 			log.Print(err)

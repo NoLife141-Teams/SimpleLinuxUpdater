@@ -270,8 +270,8 @@ type fileRestoreSnapshot struct {
 	Exists     bool
 }
 
-func (fs restoreFiles) snapshotFilesToDirectory(tempRoot string, targets []string) (string, []fileRestoreSnapshot, error) {
-	dir, err := os.MkdirTemp(tempRoot, "slu-restore-rollback-*")
+func (fs restoreFiles) snapshotFilesToDirectory(tempRoot string, targets []string, prefix string) (string, []fileRestoreSnapshot, error) {
+	dir, err := os.MkdirTemp(tempRoot, prefix+"*")
 	if err != nil {
 		return "", nil, err
 	}
@@ -454,7 +454,7 @@ func (s *Service) applyArchiveFiles(ctx context.Context, files map[string]string
 			return s.reloadOriginalPersistence(ctx, fmt.Errorf("stage restored runtime persistence: %w", err), restoreHandoff)
 		}
 	}
-	snapshotDir, snapshots, err := fs.snapshotFilesToDirectory(snapshotRoot, targets)
+	snapshotDir, snapshots, err := fs.snapshotFilesToDirectory(snapshotRoot, targets, restoreRollbackPrefix)
 	if err != nil {
 		return s.reloadOriginalPersistence(ctx, err, restoreHandoff)
 	}

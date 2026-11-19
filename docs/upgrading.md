@@ -286,7 +286,8 @@ archived enabled automation.
 
 When restoring on the running installation, the app keeps live APT
 reconciliation for inventory identities and SSH endpoints that also exist in
-the archive. The original job remains available after restart. An archive that
+the archive. The original job and failed attempts for the unresolved incident
+remain available after restart. An archive that
 would replace an affected identity, change its SSH endpoint, or contradict its
 open evidence is rejected before files are replaced. A later successful
 explicit repair with recorded SSH host-key proof can settle the corresponding

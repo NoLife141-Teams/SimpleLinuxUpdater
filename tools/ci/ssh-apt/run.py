@@ -479,6 +479,11 @@ class Harness:
                     "APT/DPKG repair blocked: package-manager lock is active." in locked_repair["logs_text"] and
                     self.api.server(name)["status"] == "needs_reconciliation",
                     "repair did not respect the active lock and preserve the reconciliation requirement")
+            restore(pre_incident_archive)
+            require(self.api.server(name).get("job_id") == locked_repair_id
+                    and self.api.job(job_id)["error_class"] == "reconciliation_required"
+                    and self.api.request("GET", log_tail_path) == log_tail,
+                    "restore after failed repair lost the original interrupted mutation report or the active repair job")
             self.api.request("POST", "/api/repair/" + name,
                              {"confirm": True, "job_id": job_id}, allowed=(409,))
             require(upgrades() == baseline_upgrades + 1, "APT mutation was not attempted exactly once")

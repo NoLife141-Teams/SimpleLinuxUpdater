@@ -12,7 +12,7 @@ import (
 func prepareAPTRestore(ctx context.Context, liveDB, stagedDB *sql.DB, now string) error {
 	live := jobs.NewSQLiteRepository(liveDB)
 	staged := jobs.NewSQLiteRepository(stagedDB)
-	open, err := live.ListReconciliationRequired()
+	open, err := live.ListUnresolvedAPTJobs()
 	if err != nil {
 		return err
 	}
@@ -32,6 +32,7 @@ func prepareAPTRestore(ctx context.Context, liveDB, stagedDB *sql.DB, now string
 		return err
 	}
 
+	latestOpen := make(map[string]string)
 	importedOpen := make(map[string]bool)
 	for _, incident := range open {
 		name, matches := stagedTargets[incident.APTTarget]
@@ -44,7 +45,12 @@ func prepareAPTRestore(ctx context.Context, liveDB, stagedDB *sql.DB, now string
 		if err := staged.ImportAPTRecoveryEvidence(ctx, live, incident.ID, name); err != nil {
 			return err
 		}
-		importedOpen[incident.ID] = true
+		// The most recent timestamp controls repair admission. Keep earlier
+		// unresolved jobs for their reports, without requiring their admission.
+		if latest, seen := latestOpen[incident.APTTarget]; !seen || latest == incident.CreatedAt {
+			latestOpen[incident.APTTarget] = incident.CreatedAt
+			importedOpen[incident.ID] = true
+		}
 	}
 	for _, repair := range repairs {
 		name, matches := stagedTargets[repair.APTTarget]

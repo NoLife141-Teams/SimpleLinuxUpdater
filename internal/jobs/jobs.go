@@ -1093,6 +1093,16 @@ func (r *SQLiteRepository) ListUnfinishedServerNames() ([]string, error) {
 }
 
 func (r *SQLiteRepository) ListReconciliationRequired() ([]Record, error) {
+	return r.listAPTReconciliationEvidence(false)
+}
+
+// ListUnresolvedAPTJobs includes the original interrupted mutation and failed
+// repair attempts while their target still requires reconciliation.
+func (r *SQLiteRepository) ListUnresolvedAPTJobs() ([]Record, error) {
+	return r.listAPTReconciliationEvidence(true)
+}
+
+func (r *SQLiteRepository) listAPTReconciliationEvidence(includePrevious bool) ([]Record, error) {
 	if r == nil || r.db == nil {
 		return nil, errors.New("job repository is not initialized")
 	}
@@ -1116,7 +1126,7 @@ func (r *SQLiteRepository) ListReconciliationRequired() ([]Record, error) {
 		          AND later_success.status = ?
 		          AND later_success.created_at > candidate.created_at
 		   )
-		   AND NOT EXISTS (
+		   AND (? OR NOT EXISTS (
 		       SELECT 1
 		         FROM jobs AS later_reconciliation
 		        WHERE later_reconciliation.apt_target = candidate.apt_target
@@ -1125,11 +1135,12 @@ func (r *SQLiteRepository) ListReconciliationRequired() ([]Record, error) {
 		          AND later_reconciliation.error_class = ?
 		          AND later_reconciliation.kind IN (?, ?, ?)
 		          AND later_reconciliation.created_at > candidate.created_at
-		   )
+		   ))
 		 ORDER BY candidate.created_at DESC
 	`,
 		StatusFailed, "reconciliation_required", KindUpdate, KindAutoremove, KindAptRepair,
 		KindUpdate, KindAutoremove, KindAptRepair, StatusSucceeded,
+		includePrevious,
 		StatusFailed, "reconciliation_required", KindUpdate, KindAutoremove, KindAptRepair,
 	)
 	if err != nil {

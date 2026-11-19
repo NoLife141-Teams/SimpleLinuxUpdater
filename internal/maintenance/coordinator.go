@@ -3,6 +3,7 @@ package maintenance
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"time"
@@ -76,8 +77,9 @@ type Store interface {
 }
 
 type Deps struct {
-	Store Store
-	Now   func() time.Time
+	Store           Store
+	Now             func() time.Time
+	RecoveryPending func() (bool, error)
 }
 
 type Coordinator struct {
@@ -106,6 +108,19 @@ func (c *Coordinator) Initialize(ctx context.Context) error {
 	state, err := c.deps.Store.Load(ctx)
 	if err != nil {
 		return err
+	}
+	if c.deps.RecoveryPending != nil {
+		pending, err := c.deps.RecoveryPending()
+		if err != nil {
+			return fmt.Errorf("inspect durable restore recovery marker: %w", err)
+		}
+		if pending {
+			if state.Kind != string(OperationBackupRestore) {
+				state = State{Kind: string(OperationBackupRestore)}
+			}
+			state.Active = true
+			state.RecoveryRequired = true
+		}
 	}
 	if state.Active && (state.RecoveryRequired || state.Kind == string(OperationBackupRestore)) {
 		state.RecoveryRequired = true

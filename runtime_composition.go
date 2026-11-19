@@ -271,6 +271,9 @@ func (c *runtimeComposition) Compose() AppDeps {
 		deps.MaintenanceCoordinator = maintenancepkg.NewCoordinator(maintenancepkg.Deps{
 			Store: maintenancepkg.SQLiteStore{DB: deps.DB},
 			Now:   deps.Now,
+			RecoveryPending: func() (bool, error) {
+				return internalbackup.RestoreRecoveryPending(deps.DBPath())
+			},
 		})
 	}
 	if deps.AuditService == nil {

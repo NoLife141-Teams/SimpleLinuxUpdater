@@ -664,14 +664,16 @@ HTTPServer(("127.0.0.1", int(port)), Receiver).serve_forever()
         app.mkdir(mode=0o755)
         with container_archive(f"{asset_container}:/app/.") as archive:
             archive.extractall(app, filter="data")
+        command("env", "CGO_ENABLED=0", "GOOS=linux", "GOARCH=amd64", "go", "-C", self.source,
+                "test", "-c", "-o", app / "restore-power-loss.test", "./internal/backup", timeout=240)
         name = self.prefix + "-reboot"
         docker("run", "--pull", "never", "--detach", "--label", self.label, "--name", name,
                "--network", "none", "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
                "--mount", f"type=bind,src={app},dst=/candidate,readonly",
                "--mount", f"type=bind,src={guest},dst=/guest.img,readonly",
                self.vm_runner, "--isolated-app-directory", "/candidate", "--image", "/guest.img",
-               "--sha256", PIN["vm_image_sha256"], "--output", "/tmp/report")
-        self.collect_vm_evidence(name, docker("wait", name, timeout=600))
+               "--sha256", PIN["vm_image_sha256"], "--output", "/tmp/report", "--qualify-restore-power-loss")
+        self.collect_vm_evidence(name, docker("wait", name, timeout=660))
 
     def collect_vm_evidence(self, name, exit_code):
         with container_archive(f"{name}:/tmp/report/report.json") as archive:
@@ -683,7 +685,12 @@ HTTPServer(("127.0.0.1", int(port)), Receiver).serve_forever()
             status = "not_executed"
         elif (exit_code == "0" and proof.get("status") == "passed"
               and proof.get("cleanup", {}).get("status") == "passed"
-              and proof.get("image_sha256") == PIN["vm_image_sha256"]):
+              and proof.get("image_sha256") == PIN["vm_image_sha256"]
+              and proof.get("restore_power_loss") == {
+                  phase: {"status": "passed", "checkpoint_observed": True,
+                          "disk_verified": True, "recovery_required": phase != "before"}
+                  for phase in ("before", "forward", "rollback")
+              }):
             status = "passed"
         else:
             status = "failed"
@@ -693,6 +700,7 @@ HTTPServer(("127.0.0.1", int(port)), Receiver).serve_forever()
             self.report["controlled_reboot_vm"]["status"] = status
             raise RuntimeError(f"VM qualification exited {exit_code}; see vm-report.json")
         self.report["controlled_reboot_vm"]["guest_sha256"] = proof["image_sha256"]
+        self.report["controlled_reboot_vm"]["restore_power_loss"] = "passed"
 
     def cleanup(self):
         errors = []

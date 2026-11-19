@@ -455,8 +455,8 @@ class Harness:
         require(event["actor"] == "account:" + str(self.identity["id"]) and event["status"] == "started" and
                 facts.get("account_id") == self.identity["id"] and
                 facts.get("job_id") == repair_id and facts.get("reconciliation_job_id") == rejected_id and
-                facts.get("previous_host_key") == self.original_fingerprint and
-                facts.get("independently_verified_host_key") == verified_key,
+                facts.get("previous_host_fingerprint") == self.original_fingerprint and
+                facts.get("independently_verified_host_fingerprint") == verified_key,
                 "rotated host key confirmation did not retain the operator, job and fingerprint audit evidence")
         repaired, _ = self.api.wait_job(repair_id, lambda j: j["status"] in TERMINAL)
         require(repaired["status"] == "succeeded" and self.api.server(name)["status"] == "done",

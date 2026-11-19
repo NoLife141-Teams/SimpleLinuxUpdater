@@ -380,7 +380,7 @@ func TestAptRepairRequiresIndependentKeyConfirmationForOldJob(t *testing.T) {
 		t.Fatalf("repair after independent verification = %+v", result)
 	}
 	audit := h.auditEvents[len(h.auditEvents)-1]
-	if audit.meta["independently_verified_host_key"] != testAPTMutationHostKey || audit.meta["reconciliation_job_id"] != testAPTReconciliationJobID {
+	if audit.meta["independently_verified_host_fingerprint"] != testAPTMutationHostKey || audit.meta["reconciliation_job_id"] != testAPTReconciliationJobID {
 		t.Fatalf("verification was not audited with the source job: %+v", audit)
 	}
 }

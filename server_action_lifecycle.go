@@ -364,8 +364,8 @@ func (l *serverActionLifecycle) startAction(name, actor, clientIP, sudoPassword 
 	retryMeta["job_id"] = job.ID
 	if spec.verifiedAPTKey != "" {
 		retryMeta["reconciliation_job_id"] = spec.expectedJobID
-		retryMeta["independently_verified_host_key"] = spec.verifiedAPTKey
-		retryMeta["previous_host_key"] = spec.previousAPTKey
+		retryMeta["independently_verified_host_fingerprint"] = spec.verifiedAPTKey
+		retryMeta["previous_host_fingerprint"] = spec.previousAPTKey
 		if err := l.recordVerifiedRepair(name, spec.successMessage, retryMeta); err != nil {
 			l.serverState.RestoreAdmittedAction(name, admittedGeneration, preStartStatus)
 			log.Printf("cannot audit verified SSH key for APT repair job %q: %v", job.ID, err)

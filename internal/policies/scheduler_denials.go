@@ -25,6 +25,16 @@ func (s *Service) recordSchedulerDenial(tick time.Time, decision maintenance.Dec
 		return nil
 	}
 	deps := s.EnsureDeps()
+	observedAt, blocker := req.Now, req.MaintenanceBlocker
+	if blocker.Cause == "" || blocker != decision.Blocker {
+		observedAt, blocker = deps.Now().UTC(), maintenance.Blocker{}
+	}
+	if !observedAt.Truncate(time.Minute).Equal(tick.UTC().Truncate(time.Minute)) {
+		// The snapshot describes the observation minute, so it cannot prove a
+		// delayed tick's scheduling state. Keep the generic in-memory fallback
+		// and let the ordinary checkpoint rules determine historical coverage.
+		return nil
+	}
 	persisted := false
 	err := deps.Maintenance.WithDeniedPersistence(decision, func() error {
 		snapshot, revision, err := s.captureSchedulerState(store)
@@ -38,10 +48,6 @@ func (s *Service) recordSchedulerDenial(tick time.Time, decision maintenance.Dec
 		fingerprint, err = snapshot.denialFingerprint(fmt.Sprintf("%s:rev:%d", fingerprint, revision))
 		if err != nil {
 			return err
-		}
-		observedAt, blocker := req.Now, req.MaintenanceBlocker
-		if blocker.Cause == "" || blocker != decision.Blocker {
-			observedAt, blocker = deps.Now().UTC(), maintenance.Blocker{}
 		}
 		err = store.SaveDenial(SchedulerDenial{
 			Tick: tick, ObservedAt: observedAt,
@@ -75,6 +81,9 @@ func (snapshot schedulerRecoverySnapshot) denialFingerprint(schedulingState stri
 }
 
 func (denial SchedulerDenial) recoveryRequest(current time.Time, fingerprint, schedulingFingerprint string) (ScheduleRequest, bool) {
+	if !denial.ObservedAt.UTC().Truncate(time.Minute).Equal(denial.Tick) {
+		return ScheduleRequest{}, false
+	}
 	observedAt, blocker := denial.ObservedAt, denial.Blocker
 	if fingerprint == "" || denial.Fingerprint != fingerprint {
 		matchingSchedule := schedulingFingerprint != "" && strings.HasPrefix(denial.Fingerprint, schedulingFingerprint+":targets:")
@@ -85,9 +94,6 @@ func (denial SchedulerDenial) recoveryRequest(current time.Time, fingerprint, sc
 		}
 		// The observation matches the scheduling rules, but its inventory
 		// proof cannot establish the exact target or cause.
-		observedAt, blocker = denial.Tick, maintenance.Blocker{}
-	}
-	if !observedAt.UTC().Truncate(time.Minute).Equal(denial.Tick) {
 		observedAt, blocker = denial.Tick, maintenance.Blocker{}
 	}
 	return ScheduleRequest{Now: observedAt, MaintenanceActive: true, MaintenanceBlocker: blocker, Admitted: true}, true

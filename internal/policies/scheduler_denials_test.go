@@ -202,11 +202,22 @@ func TestSchedulerDenialRetainsFirstObservationAndPrunesExpiredRows(t *testing.T
 	}
 }
 
-func TestSchedulerDenialDoesNotSuppressNewScheduleInCurrentMinute(t *testing.T) {
+func TestSchedulerDenialDoesNotApplyPolicyEditsRetroactively(t *testing.T) {
+	t.Run("newly due in the current minute remains eligible", func(t *testing.T) {
+		testSchedulerDenialAcrossPolicyEdit(t, false)
+	})
+	t.Run("delayed tick cannot use configuration saved in a later minute", func(t *testing.T) {
+		testSchedulerDenialAcrossPolicyEdit(t, true)
+	})
+}
+
+func testSchedulerDenialAcrossPolicyEdit(t *testing.T, delayedTick bool) {
+	t.Helper()
 	repo, _ := newTestRepository(t)
 	deps := testServiceDeps()
 	slot := time.Date(2026, 11, 19, 4, 30, 0, 0, time.UTC)
-	now := slot.Add(10 * time.Second)
+	now := slot.Add(-time.Minute)
+	repo.nowString = func() string { return now.Format(DefaultTimestampLayout) }
 	coordinator := maintenance.NewCoordinator(maintenance.Deps{Store: maintenance.NewMemoryStore()})
 	if err := coordinator.Initialize(t.Context()); err != nil {
 		t.Fatal(err)
@@ -234,6 +245,21 @@ func TestSchedulerDenialDoesNotSuppressNewScheduleInCurrentMinute(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := service.ProcessDueWithRecovery(now, store); err != nil {
+		t.Fatal(err)
+	}
+	editSchedule := func() {
+		t.Helper()
+		policy.TimeLocal = "04:30"
+		if _, err := repo.UpdatePolicy(policy.ID, policy); err != nil {
+			t.Fatal(err)
+		}
+	}
+	now = slot.Add(10 * time.Second)
+	if delayedTick {
+		now = now.Add(time.Minute)
+		editSchedule()
+	}
 	lease, decision := coordinator.TryExclusive(maintenance.OperationBackupExport)
 	if !decision.Allowed {
 		t.Fatal("exclusive export refused")
@@ -247,12 +273,17 @@ func TestSchedulerDenialDoesNotSuppressNewScheduleInCurrentMinute(t *testing.T) 
 	if err := lease.Close(); err != nil {
 		t.Fatal(err)
 	}
-	policy.TimeLocal = "04:30"
-	if _, err := repo.UpdatePolicy(policy.ID, policy); err != nil {
-		t.Fatal(err)
+	if !delayedTick {
+		editSchedule()
 	}
 	if err := NewService(deps).ProcessDueWithRecovery(now, store); err != nil {
 		t.Fatal(err)
+	}
+	if delayedTick {
+		if len(requests) != 0 {
+			t.Fatalf("requests = %+v, want no historical run for a later policy revision", requests)
+		}
+		return
 	}
 	if len(requests) != 1 || requests[0].Outcome != "" || requests[0].MaintenanceBlocker.Cause != "" {
 		t.Fatalf("requests = %+v, want live admission of the newly due policy", requests)

@@ -656,7 +656,7 @@ func (r *withActorRunner) setupSSH(dialOpName string) bool {
 			r.hostKeyMu.Lock()
 			defer r.hostKeyMu.Unlock()
 			if r.expectedHostKey != "" && r.expectedHostKey != fingerprint {
-				return errors.New("SSH host key differs from the key confirmed for APT maintenance. Verify the original host independently before confirming a key in the repair dialog.")
+				return errors.New("SSH host key differs from the key confirmed for APT maintenance. Verify the original host independently before confirming a key in the repair dialog")
 			}
 			return nil
 		}

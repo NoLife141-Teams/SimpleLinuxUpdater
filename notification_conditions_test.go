@@ -295,10 +295,9 @@ func TestNotificationBackupFactsManualAutomaticCoverageAndUnavailable(t *testing
 	if batch.Incomplete || lastConditionFact(batch.Facts, "backup/coverage/missing").ID != "" {
 		t.Fatal("unobserved local storage produced a coverage alert")
 	}
-	automation := backupAutomationState{Config: defaultBackupSchedule(), Observation: backupArchiveObservation{
-		CheckedAt: backupStamp(now), Storage: "available", Owner: "fixture", DirectoryIdentity: "fixture-directory",
-	}}
-	saveAutomation := func() {
+	automation := backupAutomationState{Config: defaultBackupSchedule(),
+		Observation: newBackupArchiveObservation(now, "available", "fixture", "fixture-directory")}
+	saveAutomation := func(t *testing.T) {
 		t.Helper()
 		raw, err := json.Marshal(automation)
 		if err != nil {
@@ -309,7 +308,7 @@ func TestNotificationBackupFactsManualAutomaticCoverageAndUnavailable(t *testing
 			t.Fatal(err)
 		}
 	}
-	saveAutomation()
+	saveAutomation(t)
 	appendConditionAudit(t, db, now.Format(time.RFC3339), "backup.export", "failure", `{"password":"do-not-forward"}`)
 	appendConditionAudit(t, db, now.Format(time.RFC3339), "backup.automatic.failed", "failure", `{"occurrence_at":"now"}`)
 	batch, err = source(context.Background(), batch.Cursor, conditionPrevious(batch.Facts))
@@ -343,9 +342,9 @@ func TestNotificationBackupFactsManualAutomaticCoverageAndUnavailable(t *testing
 	automation.Archives = []ownedBackupArchive{{
 		Name: "slu-auto-fixture-example.slubkp", Owner: "fixture", DirectoryIdentity: "fixture-directory",
 		LastVerifiedAt: backupStamp(now), CapturedAt: backupStamp(now.Add(-8 * 24 * time.Hour)),
-		Verification: "verified", Availability: "present", ObservedAt: backupStamp(now),
+		Verification: "verified", Availability: "present", ObservedAt: backupStamp(now), ObservationProcess: backupArchiveObservationProcess,
 	}}
-	saveAutomation()
+	saveAutomation(t)
 	batch, err = source(context.Background(), batch.Cursor, conditionPrevious(batch.Facts))
 	if err != nil {
 		t.Fatal(err)
@@ -353,13 +352,24 @@ func TestNotificationBackupFactsManualAutomaticCoverageAndUnavailable(t *testing
 	if !lastConditionFact(batch.Facts, "backup/coverage/stale").Active || lastConditionFact(batch.Facts, "backup/coverage/missing").Active {
 		t.Fatal("stale capture with fresh verification did not replace the missing condition")
 	}
-	automation.Observation.Storage = "unavailable"
-	saveAutomation()
 	previous := conditionPrevious(batch.Facts)
-	batch, err = source(context.Background(), batch.Cursor, previous)
 	stale := lastConditionFact(batch.Facts, "backup/coverage/stale")
-	if err != nil || batch.Incomplete || !stale.Active || !stale.Suspended {
-		t.Fatal("temporary storage uncertainty did not suspend the confirmed episode")
+	stale.Suspended = true
+	for _, tc := range []struct{ name, storage, storageProcess, archiveProcess string }{
+		{"restart before the first scan", "available", "previous-process", "previous-process"},
+		{"a partial scan has yet to observe the archive", "available", backupArchiveObservationProcess, "previous-process"},
+		{"storage unavailable", "unavailable", backupArchiveObservationProcess, backupArchiveObservationProcess},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			automation.Observation.Storage = tc.storage
+			automation.Observation.Process = tc.storageProcess
+			automation.Archives[0].ObservationProcess = tc.archiveProcess
+			saveAutomation(t)
+			observed, err := source(t.Context(), batch.Cursor, previous)
+			if err != nil || observed.Incomplete || lastConditionFact(observed.Facts, "backup/coverage/stale") != stale {
+				t.Fatalf("unknown local availability did not suspend the prior stale episode: %+v, %v", observed.Facts, err)
+			}
+		})
 	}
 	if _, err := db.Exec("UPDATE settings SET value='!' WHERE key=?", backupAutomationSettingsKey); err != nil {
 		t.Fatal(err)

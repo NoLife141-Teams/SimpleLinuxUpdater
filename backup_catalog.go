@@ -184,7 +184,7 @@ func (a *backupAutomation) catalogLocked(ctx context.Context, s *backupAutomatio
 		})
 	}
 	if changed {
-		s.Observation = backupArchiveObservation{CheckedAt: backupStamp(a.now()), Storage: "available", Owner: owner, DirectoryIdentity: directory}
+		s.Observation = newBackupArchiveObservation(a.now(), "available", owner, directory)
 		return catalog, a.save(ctx, *s, events...)
 	}
 	return catalog, nil
@@ -359,10 +359,10 @@ func handleBackupCatalogOperation(c *gin.Context, a *backupAutomation, verify bo
 			var evidenceErr error
 			var events []AuditEvent
 			if archiveAvailabilityLost(availability) {
-				if event := a.observeArchive(archive, availability, backupStamp(a.now()), actorFromContext(c), clientIPFromContext(c)); event != nil {
+				s.Observation = newBackupArchiveObservation(a.now(), "available", owner, directory)
+				if event := a.observeArchive(archive, availability, s.Observation.CheckedAt, actorFromContext(c), clientIPFromContext(c)); event != nil {
 					events = append(events, *event)
 				}
-				s.Observation = backupArchiveObservation{CheckedAt: archive.ObservedAt, Storage: "available", Owner: owner, DirectoryIdentity: directory}
 			} else if availability == "present" {
 				archive.Verification = "failed"
 				evidenceErr = a.catalogAudit(actorFromContext(c), clientIPFromContext(c), "backup.verify", *archive, false)
@@ -400,15 +400,14 @@ func handleBackupCatalogOperation(c *gin.Context, a *backupAutomation, verify bo
 				availability, _ = backupArchiveAvailabilityAt(root, verified, owner, directory)
 			}
 			if availability != "present" {
-				observedAt := backupStamp(a.now())
+				s.Observation = newBackupArchiveObservation(a.now(), storage, owner, directory)
 				if archiveAvailabilityLost(availability) {
 					archive.DirectoryIdentity = directory
 				}
 				var events []AuditEvent
-				if event := a.observeArchive(archive, availability, observedAt, actorFromContext(c), clientIPFromContext(c)); event != nil {
+				if event := a.observeArchive(archive, availability, s.Observation.CheckedAt, actorFromContext(c), clientIPFromContext(c)); event != nil {
 					events = append(events, *event)
 				}
-				s.Observation = backupArchiveObservation{CheckedAt: observedAt, Storage: storage, Owner: owner, DirectoryIdentity: directory}
 				if err := a.save(ctx, s, events...); err != nil {
 					c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Backup verification evidence could not be saved."})
 					return
@@ -431,11 +430,12 @@ func handleBackupCatalogOperation(c *gin.Context, a *backupAutomation, verify bo
 			archive.Verification = "failed"
 		}
 		archive.Availability = "present"
-		archive.ObservedAt = backupStamp(a.now())
+		s.Observation = newBackupArchiveObservation(a.now(), "available", owner, directory)
+		archive.ObservedAt = s.Observation.CheckedAt
+		archive.ObservationProcess = backupArchiveObservationProcess
 		if ready {
 			archive.LastVerifiedAt = archive.ObservedAt
 		}
-		s.Observation = backupArchiveObservation{CheckedAt: archive.ObservedAt, Storage: "available", Owner: owner, DirectoryIdentity: directory}
 		// Recovery health and notifications consume the audit, so never report
 		// a completed review or persist its marker without that shared evidence.
 		if err = a.catalogAudit(actorFromContext(c), clientIPFromContext(c), "backup.verify", *archive, ready); err != nil {

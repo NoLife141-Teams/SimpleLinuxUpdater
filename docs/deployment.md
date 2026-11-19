@@ -238,8 +238,10 @@ Archives created before capture dates were recorded can verify successfully
 with unknown capture dates. Data older than seven days is stale. Losing the
 newest archive falls back to the newest confirmed surviving point. An unobserved
 mount or a verified archive with an unknown capture date can leave the recovery
-point unknown. Audit history still reports export and verification outcomes, including
-manual backups. Off-host availability is outside the local point calculation.
+point unknown. After a process restart, storage and archives need a fresh
+observation before they can contribute to local coverage. Audit history still
+reports export and verification outcomes, including manual backups. Off-host
+availability is outside the local point calculation.
 
 The existing Metrics Access Credential also protects the added
 `slu_installation_*` Prometheus gauges. Existing `simplelinuxupdater_*` series are

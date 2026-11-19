@@ -54,6 +54,7 @@ type ownedBackupArchive struct {
 	FileModifiedAt     string `json:"file_modified_at,omitempty"`
 	DirectoryIdentity  string `json:"directory_identity,omitempty"`
 	ObservedAt         string `json:"observed_at,omitempty"`
+	ObservationProcess string `json:"observation_process,omitempty"`
 	LossEpisode        uint64 `json:"loss_episode,omitempty"`
 	LossActive         bool   `json:"loss_active,omitempty"`
 	JobID              string `json:"job_id,omitempty"`
@@ -556,6 +557,7 @@ func (a *backupAutomation) SuspendAfterRestore(ctx context.Context) error {
 	s.Observation = backupArchiveObservation{}
 	for i := range s.Archives {
 		s.Archives[i].ObservedAt = ""
+		s.Archives[i].ObservationProcess = ""
 	}
 	s.Outcome = "suspended"
 	s.Message = "Restored settings require local backup destination and secret revalidation."
@@ -964,6 +966,7 @@ func (a *backupAutomation) publish(ctx context.Context, root *os.Root, source in
 	archive.CapturedAt = verifiedBackupCapture(result.Manifest, parseBackupStamp(archive.PublishedAt))
 	archive.LastVerifiedAt = archive.PublishedAt
 	archive.ObservedAt = archive.PublishedAt
+	archive.ObservationProcess = backupArchiveObservationProcess
 	archive.SizeBytes = &written
 	archive.KnownHostsIncluded = &result.KnownHostsIncluded
 	archive.Verification = "verified"

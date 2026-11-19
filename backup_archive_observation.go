@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"log"
 	"os"
@@ -18,11 +19,23 @@ const backupArchiveObservationBudget = 2 * time.Second
 
 var errBackupArchiveObservationDeferred = errors.New("backup archive observation deferred while catalog changes")
 
+// A mount can change while the process is stopped. A persisted observation
+// needs a new probe before it can describe availability in this process.
+var backupArchiveObservationProcess = rand.Text()
+
 type backupArchiveObservation struct {
 	CheckedAt         string `json:"checked_at,omitempty"`
 	Storage           string `json:"storage,omitempty"`
 	Owner             string `json:"owner,omitempty"`
 	DirectoryIdentity string `json:"directory_identity,omitempty"`
+	Process           string `json:"process,omitempty"`
+}
+
+func newBackupArchiveObservation(at time.Time, storage, owner, directory string) backupArchiveObservation {
+	return backupArchiveObservation{
+		CheckedAt: backupStamp(at), Storage: storage, Owner: owner, DirectoryIdentity: directory,
+		Process: backupArchiveObservationProcess,
+	}
 }
 
 type backupArchiveScan struct {
@@ -63,7 +76,7 @@ func (s backupAutomationState) archiveCoverage(now time.Time) backupArchiveCover
 	facts := backupArchiveCoverage{State: "unknown", Storage: "not_observed", RecoveryPoint: backupRecoveryPoint{State: "unknown"}}
 	observation := s.Observation
 	checked := parseBackupStamp(observation.CheckedAt)
-	if checked.IsZero() {
+	if checked.IsZero() || observation.Process != backupArchiveObservationProcess {
 		return facts
 	}
 	facts.CheckedAt = observation.CheckedAt
@@ -85,7 +98,8 @@ func (s backupAutomationState) archiveCoverage(now time.Time) backupArchiveCover
 		observed := parseBackupStamp(archive.ObservedAt)
 		verified := parseBackupStamp(archive.LastVerifiedAt)
 		switch {
-		case archive.DirectoryIdentity != observation.DirectoryIdentity || observed.IsZero() || now.Sub(observed) > 2*backupArchiveObservationInterval || archive.Availability == "unavailable":
+		case archive.ObservationProcess != observation.Process || archive.DirectoryIdentity != observation.DirectoryIdentity ||
+			observed.IsZero() || now.Sub(observed) > 2*backupArchiveObservationInterval || archive.Availability == "unavailable":
 			facts.Unknown++
 		case archive.Availability == "present" && archive.Verification == "verified" && !archive.LossActive && !verified.IsZero():
 			facts.Verified++
@@ -198,7 +212,7 @@ func (a *backupAutomation) observeArchiveAvailabilityWithScan(ctx context.Contex
 		return ctx.Err()
 	}
 	if scan.observation.CheckedAt == "" {
-		scan.observation = backupArchiveObservation{CheckedAt: backupStamp(a.now()), Storage: "unavailable"}
+		scan.observation = newBackupArchiveObservation(a.now(), "unavailable", "", "")
 	}
 	// Persist timeouts with a fresh SQLite budget. They describe storage rather
 	// than individual archives, so a partial scan cannot open a loss episode.
@@ -235,7 +249,7 @@ func (a *backupAutomation) observeArchiveAvailabilityWithScan(ctx context.Contex
 }
 
 func (a *backupAutomation) scanBackupArchives(ctx context.Context, archives []ownedBackupArchive) backupArchiveScan {
-	scan := backupArchiveScan{observation: backupArchiveObservation{CheckedAt: backupStamp(a.now()), Storage: "unavailable"}}
+	scan := backupArchiveScan{observation: newBackupArchiveObservation(a.now(), "unavailable", "", "")}
 	observation := &scan.observation
 	owner, err := a.localIdentity(false)
 	if err != nil {
@@ -316,5 +330,6 @@ func (a *backupAutomation) observeArchive(archive *ownedBackupArchive, availabil
 	}
 	archive.Availability = availability
 	archive.ObservedAt = observedAt
+	archive.ObservationProcess = backupArchiveObservationProcess
 	return event
 }

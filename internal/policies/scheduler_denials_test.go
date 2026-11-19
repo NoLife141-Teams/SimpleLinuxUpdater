@@ -14,12 +14,14 @@ import (
 
 func TestSchedulerDenialSurvivesAProcessRestartAndPartialHistory(t *testing.T) {
 	for _, test := range []struct {
-		name        string
-		replaceHost bool
-		partial     bool
+		name             string
+		replaceHost      bool
+		journalFailure   bool
+		failedRecoveries int
 	}{
-		{name: "retains exact winner after partially recording history", partial: true},
+		{name: "retains exact one-time winner after two partially recorded recoveries", failedRecoveries: 2},
 		{name: "inventory replacement invalidates attribution", replaceHost: true},
+		{name: "journal failure leaves an unattributed skip after inventory replacement", replaceHost: true, journalFailure: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			const blockingJob = "encrypted-export"
@@ -67,6 +69,8 @@ func TestSchedulerDenialSurvivesAProcessRestartAndPartialHistory(t *testing.T) {
 				deps.Now = func() time.Time { return now }
 				deps.ListPolicies = repo.ListPolicies
 				deps.ListRuns = repo.ListRuns
+				deps.ListRolloutRuns = repo.ListRolloutRuns
+				deps.Occurrences = repo
 				deps.SnapshotServers = func() []servers.Server { return inventory }
 				deps.HandleScheduledRun = func(req ScheduledRunRequest) ScheduledRunResult {
 					if req.Outcome == "" {
@@ -93,10 +97,15 @@ func TestSchedulerDenialSurvivesAProcessRestartAndPartialHistory(t *testing.T) {
 			restart()
 			defer func() { _ = db.Close() }()
 			for _, mode := range []string{ExecutionApprovalRequired, ExecutionScanOnly} {
-				if _, err := repo.CreatePolicy(Policy{
+				policy := Policy{
 					Name: mode, Enabled: true, TargetServers: []string{"host"},
 					ExecutionMode: mode, PackageScope: PackageScopeSecurity, CadenceKind: CadenceDaily, TimeLocal: "04:30",
-				}); err != nil {
+				}
+				if mode == ExecutionApprovalRequired && test.failedRecoveries > 0 {
+					policy.CadenceKind = CadenceOnce
+					policy.DateLocal = "2026-11-19"
+				}
+				if _, err := repo.CreatePolicy(policy); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -111,19 +120,27 @@ func TestSchedulerDenialSurvivesAProcessRestartAndPartialHistory(t *testing.T) {
 				t.Fatal(err)
 			}
 			now = slot.Add(20 * time.Second)
-			if err := service.ProcessDueWithRecovery(slot, store); err != nil {
-				t.Fatal(err)
+			if test.journalFailure {
+				store.SaveDenial = func(SchedulerDenial) error { return errors.New("interrupted denial write") }
+			}
+			if err := service.ProcessDueWithRecovery(slot, store); (err != nil) != test.journalFailure {
+				t.Fatalf("record denial: %v", err)
 			}
 			// Simulate death with the export still active and no Scheduled Run.
 			if runs, err := repo.ListRuns(10); err != nil || len(runs) != 0 {
 				t.Fatalf("runs before replacement = %+v, %v", runs, err)
 			}
-			restart()
+			if test.journalFailure {
+				if err := lease.Close(); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				restart()
+			}
 			if test.replaceHost {
 				inventory[0].Identity = "replacement-id"
-				now = slot.Add(time.Minute)
 			}
-			if test.partial {
+			for range test.failedRecoveries {
 				failLower = true
 				if err := service.ProcessDueWithRecovery(now, store); err == nil {
 					t.Fatal("expected interrupted history write")
@@ -152,6 +169,8 @@ func TestSchedulerDenialSurvivesAProcessRestartAndPartialHistory(t *testing.T) {
 					}
 				} else if run.BlockingJobID != "" || run.MaintenanceCause != "" {
 					t.Fatalf("unexpected attribution: %+v", run)
+				} else if test.replaceHost && run.Reason != RunReasonMaintenance {
+					t.Fatalf("missing generic maintenance skip: %+v", run)
 				}
 			}
 			if denials, err := repo.LoadSchedulerDenials(slot, now); err != nil || len(denials) != 0 {

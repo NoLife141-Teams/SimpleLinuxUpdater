@@ -943,6 +943,16 @@ func (s *Service) PendingMissedTicks() []ScheduleRequest {
 	return ticks
 }
 
+func (s *Service) clearMissedTickBlocker(tick time.Time) {
+	key := MissedTickKey(tick, s.EnsureDeps().TimestampLayout)
+	s.missedTickMu.Lock()
+	defer s.missedTickMu.Unlock()
+	if req, exists := s.missedTicks[key]; exists {
+		req.MaintenanceBlocker = maintenancepkg.Blocker{}
+		s.missedTicks[key] = req
+	}
+}
+
 func (s *Service) ForgetMissedTick(tick time.Time) {
 	deps := s.EnsureDeps()
 	s.missedTickMu.Lock()
@@ -1009,6 +1019,7 @@ func (s *Service) ProcessDueSlot(req ScheduleRequest) error {
 
 	candidatesByServer := make(map[string][]ScheduledCandidate)
 	attributedMaintenance := make(map[string]bool)
+	var completedOccurrences []*Occurrence
 	plans, err := s.schedulePlans(policies, serversSnapshot, overrides, slotLocal, runsByScope)
 	if err != nil {
 		return err
@@ -1099,9 +1110,7 @@ func (s *Service) ProcessDueSlot(req ScheduleRequest) error {
 			}
 		}
 		if complete && plan.occurrence != nil {
-			if err := deps.Occurrences.CloseOccurrence(policy.ID, plan.occurrence.Key); err != nil {
-				return err
-			}
+			completedOccurrences = append(completedOccurrences, plan.occurrence)
 		}
 	}
 
@@ -1159,6 +1168,13 @@ func (s *Service) ProcessDueSlot(req ScheduleRequest) error {
 	}
 	if len(queueErrs) > 0 {
 		return fmt.Errorf("scheduled policy queue encountered %d error(s): %w", len(queueErrs), errors.Join(queueErrs...))
+	}
+	// Keep already-recorded winners visible to competing candidates on a
+	// retry until every result for the tick has been recorded.
+	for _, occurrence := range completedOccurrences {
+		if err := deps.Occurrences.CloseOccurrence(occurrence.Policy.ID, occurrence.Key); err != nil {
+			return err
+		}
 	}
 	return nil
 }

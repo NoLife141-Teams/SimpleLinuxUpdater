@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"debian-updater/internal/maintenance"
@@ -24,7 +25,8 @@ func (s *Service) recordSchedulerDenial(tick time.Time, decision maintenance.Dec
 		return nil
 	}
 	deps := s.EnsureDeps()
-	return deps.Maintenance.WithDeniedPersistence(decision, func() error {
+	persisted := false
+	err := deps.Maintenance.WithDeniedPersistence(decision, func() error {
 		snapshot, revision, err := s.captureSchedulerState(store)
 		if err != nil {
 			return err
@@ -41,12 +43,20 @@ func (s *Service) recordSchedulerDenial(tick time.Time, decision maintenance.Dec
 		if blocker.Cause == "" || blocker != decision.Blocker {
 			observedAt, blocker = deps.Now().UTC(), maintenance.Blocker{}
 		}
-		return store.SaveDenial(SchedulerDenial{
+		err = store.SaveDenial(SchedulerDenial{
 			Tick: tick, ObservedAt: observedAt,
 			Fingerprint: fingerprint,
 			Blocker:     blocker,
 		})
+		persisted = err == nil
+		return err
 	})
+	if !persisted {
+		// The in-memory fallback has no durable scheduling and inventory
+		// proof. Keep the skip, without attributing its blocker to new state.
+		s.clearMissedTickBlocker(tick)
+	}
+	return err
 }
 
 func (snapshot schedulerRecoverySnapshot) denialFingerprint(schedulingState string) (string, error) {
@@ -64,19 +74,25 @@ func (snapshot schedulerRecoverySnapshot) denialFingerprint(schedulingState stri
 	return fmt.Sprintf("%s:targets:%x", schedulingState, sha256.Sum256(encoded)), nil
 }
 
-func (s *Service) recoverSchedulerDenials(denials []SchedulerDenial, current time.Time, fingerprint string, processed map[string]struct{}) (bool, error) {
+func (s *Service) recoverSchedulerDenials(denials []SchedulerDenial, current time.Time, fingerprint, schedulingFingerprint string, processed map[string]struct{}) (bool, error) {
 	layout := s.EnsureDeps().TimestampLayout
 	currentDenied := false
 	for _, denial := range denials {
 		if denial.Tick.Equal(current) {
 			currentDenied = true
 		}
-		if fingerprint == "" || denial.Fingerprint != fingerprint {
-			// The slot remains covered by ordinary historical reconstruction
-			// where possible, without attributing the obsolete observation.
-			continue
-		}
 		observedAt, blocker := denial.ObservedAt, denial.Blocker
+		if fingerprint == "" || denial.Fingerprint != fingerprint {
+			matchingSchedule := schedulingFingerprint != "" && strings.HasPrefix(denial.Fingerprint, schedulingFingerprint+":targets:")
+			if !matchingSchedule || !denial.Tick.Equal(current) {
+				// Ordinary historical reconstruction may still cover this
+				// slot without attributing the obsolete observation.
+				continue
+			}
+			// The observation matches the scheduling rules, but its inventory
+			// proof cannot establish the exact target or cause.
+			observedAt, blocker = denial.Tick, maintenance.Blocker{}
+		}
 		if !observedAt.UTC().Truncate(time.Minute).Equal(denial.Tick) {
 			observedAt, blocker = denial.Tick, maintenance.Blocker{}
 		}

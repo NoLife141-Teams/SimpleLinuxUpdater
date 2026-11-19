@@ -178,7 +178,7 @@ func (s *Service) ProcessDueWithRecovery(now time.Time, store SchedulerWatermark
 		if err != nil {
 			return err
 		}
-		currentDenied, err = recoveryService.recoverSchedulerDenials(denials, currentUTC, denialFingerprint, processedPending)
+		currentDenied, err = recoveryService.recoverSchedulerDenials(denials, currentUTC, denialFingerprint, currentFingerprint, processedPending)
 		if err != nil {
 			return err
 		}

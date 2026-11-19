@@ -15,20 +15,15 @@ var ErrBusy = errors.New("installation is already in use; stop the server and ot
 type Lock struct{ file *os.File }
 
 func Acquire(database string, createDirectory bool) (*Lock, error) {
-	abs, err := filepath.Abs(database)
-	if err != nil {
-		return nil, fmt.Errorf("resolve installation directory: %w", err)
-	}
 	if createDirectory {
-		if err = os.MkdirAll(filepath.Dir(abs), 0700); err != nil {
+		if err := os.MkdirAll(databaseDirectory(database), 0700); err != nil {
 			return nil, fmt.Errorf("create installation directory: %w", err)
 		}
 	}
-	dir, err := filepath.EvalSymlinks(filepath.Dir(abs))
+	database, err := ResolveDatabasePath(database)
 	if err != nil {
 		return nil, fmt.Errorf("resolve installation directory: %w", err)
 	}
-	database = filepath.Join(dir, filepath.Base(abs))
 	if info, statErr := os.Lstat(database); statErr == nil {
 		if !info.Mode().IsRegular() || linkedDatabase(database, info) {
 			return nil, errors.New("database must be a regular file without symbolic or hard links")
@@ -45,6 +40,26 @@ func Acquire(database string, createDirectory bool) (*Lock, error) {
 		return nil, err
 	}
 	return &Lock{file: f}, nil
+}
+
+// ResolveDatabasePath resolves the original parent before a prefix such as
+// link/.. can be collapsed into a different installation directory. The final
+// database entry is kept so callers can reject symlinks at that entry.
+func ResolveDatabasePath(database string) (string, error) {
+	dir, err := filepath.EvalSymlinks(databaseDirectory(database))
+	if err != nil {
+		return "", err
+	}
+	_, name := filepath.Split(database)
+	return filepath.Abs(filepath.Join(dir, name))
+}
+
+func databaseDirectory(database string) string {
+	dir, _ := filepath.Split(database)
+	if dir == "" {
+		return "."
+	}
+	return dir
 }
 
 func (l *Lock) Close() error {

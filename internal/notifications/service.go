@@ -285,8 +285,9 @@ type ServiceDeps struct {
 }
 
 type Service struct {
-	health installationhealthpkg.Worker
-	deps   ServiceDeps
+	health          installationhealthpkg.Worker
+	conditionHealth conditionEvaluationHealth
+	deps            ServiceDeps
 
 	settingsMu            sync.Mutex
 	lifecycleMu           sync.Mutex
@@ -416,23 +417,28 @@ func (s *Service) run(ctx context.Context) {
 			return
 		}
 		s.health.Tick(s.deps.Now())
+		cycleOK := true
 		if s.conditionMonitoringStarted() {
 			if conditionTicker == nil {
 				conditionTicker = time.NewTicker(s.deps.ConditionPollInterval)
 				conditionC = conditionTicker.C
 			}
 			if err := s.reconcileConditions(ctx); err != nil {
+				cycleOK = false
 				s.health.Error(s.deps.Now())
 				s.deps.Logf("notification condition reconciliation failed: %v", err)
 			}
+			cycleOK = cycleOK && !s.conditionHealth.degraded()
 		}
 		if prune {
 			if _, err := pruneOutbox(ctx, s.database(), s.deps.Now(), s.deps.Retention); err != nil {
+				cycleOK = false
 				s.health.Error(s.deps.Now())
 				s.deps.Logf("notification outbox pruning failed: %v", err)
 			}
 		}
 		if err := recoverExpiredOutboxClaims(ctx, s.database(), s.deps.Now(), s.deps.ClaimTTL); err != nil {
+			cycleOK = false
 			s.health.Error(s.deps.Now())
 			s.deps.Logf("notification outbox claim recovery failed: %v", err)
 		}
@@ -456,7 +462,9 @@ func (s *Service) run(ctx context.Context) {
 				}
 				break
 			}
-			s.processOutboxRow(ctx, *row)
+			if !s.processOutboxRow(ctx, *row) || s.conditionHealth.degraded() {
+				cycleOK = false
+			}
 			s.endPersistence()
 			if !s.beginPersistence(ctx) {
 				return
@@ -495,7 +503,11 @@ func (s *Service) run(ctx context.Context) {
 			retryC = retryTimer.C
 			continue
 		}
-		s.health.Finish(s.deps.Now(), nil)
+		if cycleOK {
+			s.health.Finish(s.deps.Now(), nil)
+		} else {
+			s.health.Stop()
+		}
 		if !scheduled {
 			continue
 		}
@@ -581,21 +593,7 @@ func (s *Service) PreparePersistenceReplacement(ctx context.Context) error {
 	if alreadyPrepared {
 		return nil
 	}
-	conditions, err := loadAndMigrateConditionState(ctx, s.database())
-	if err != nil {
-		s.resumePersistence()
-		return err
-	}
-	if err := migrateApprovalOutboxHistory(ctx, s.database(), &conditions); err != nil {
-		s.resumePersistence()
-		return err
-	}
-	rows, err := loadCurrentOutboxRows(ctx, s.database())
-	if err != nil {
-		s.resumePersistence()
-		return err
-	}
-	rows.APTAdmissions, err = loadAPTAdmissions(ctx, s.database())
+	conditions, rows, err := loadPersistenceEvidence(ctx, s.database())
 	if err != nil {
 		s.resumePersistence()
 		return err
@@ -607,8 +605,8 @@ func (s *Service) PreparePersistenceReplacement(ctx context.Context) error {
 	return nil
 }
 
-// StageAPTDeliveryEvidence carries confirmed admissions and their retained
-// outcomes before the archive can replace SQLite, even if reload never runs.
+// StageAPTDeliveryEvidence carries confirmed APT admissions and their retained
+// outcomes, plus the aggregate last delivery success, into the staged archive.
 func (s *Service) StageAPTDeliveryEvidence(ctx context.Context, staged *sql.DB) error {
 	s.persistenceMu.Lock()
 	conditions, replacement := s.replacementConditions, s.replacementRows
@@ -616,25 +614,27 @@ func (s *Service) StageAPTDeliveryEvidence(ctx context.Context, staged *sql.DB) 
 	if conditions == nil || replacement == nil {
 		return errors.New("notification persistence replacement was not prepared")
 	}
-	if err := ensureSchema(ctx, staged); err != nil {
+	return stageAPTDeliveryEvidence(ctx, staged, replacement, s.deps.Now())
+}
+
+func stageAPTDeliveryEvidence(ctx context.Context, staged *sql.DB, replacement *outboxReplacement, now time.Time) error {
+	if err := PrepareArchivedPersistence(ctx, staged); err != nil {
 		return err
 	}
-	if _, err := loadAndMigrateConditionState(ctx, staged); err != nil {
-		return fmt.Errorf("read staged notification conditions: %w", err)
-	}
-	if len(replacement.APTAdmissions) == 0 {
+	if len(replacement.APTAdmissions) == 0 && replacement.LastSuccessfulDelivery == "" {
 		return nil
 	}
 	aptRows := outboxReplacement{
-		RetainedRows:  make(map[string]outboxSnapshot),
-		APTAdmissions: replacement.APTAdmissions,
+		RetainedRows:           make(map[string]outboxSnapshot),
+		APTAdmissions:          replacement.APTAdmissions,
+		LastSuccessfulDelivery: replacement.LastSuccessfulDelivery,
 	}
 	for id, snapshot := range replacement.RetainedRows {
 		if snapshot.Row.EventType == EventAPTReconciliationRequired {
 			aptRows.RetainedRows[id] = snapshot
 		}
 	}
-	return restoreCurrentOutboxRows(ctx, staged, &aptRows, s.deps.Now().UTC().Format(time.RFC3339Nano))
+	return restoreCurrentOutboxRows(ctx, staged, &aptRows, now.UTC().Format(time.RFC3339Nano))
 }
 
 // ReloadPersistence reinitializes the outbox after runtime persistence has
@@ -684,6 +684,7 @@ func (s *Service) ReloadPersistence(ctx context.Context) error {
 	s.replacementRows = nil
 	s.replacementConditions = nil
 	s.persistenceMu.Unlock()
+	s.conditionHealth.reset()
 	s.resumePersistence()
 	return nil
 }
@@ -804,16 +805,20 @@ func (s *Service) isClosing() bool {
 	return s.closing
 }
 
-func (s *Service) processOutboxRow(ctx context.Context, row outboxRow) {
+// processOutboxRow reports whether the worker could process the claim,
+// including persisting a retry or failure after an HTTP attempt.
+func (s *Service) processOutboxRow(ctx context.Context, row outboxRow) bool {
 	settings, err := s.currentSettings()
 	if err != nil {
+		s.health.Error(s.deps.Now())
 		s.releaseClaim(row, err)
-		return
+		return false
 	}
 	eligibility, eligibilityErr := s.revalidateOutboxCondition(ctx, &row, settings)
 	if eligibilityErr != nil {
+		s.health.Error(s.deps.Now())
 		s.releaseClaim(row, eligibilityErr)
-		return
+		return false
 	}
 	var skipReason string
 	switch {
@@ -842,7 +847,7 @@ func (s *Service) processOutboxRow(ctx context.Context, row outboxRow) {
 			s.health.Error(s.deps.Now())
 			s.deps.Logf("notification outbox skip persistence failed for %q: %v", row.ID, err)
 		}
-		return
+		return err == nil
 	}
 
 	attemptCtx, cancelAttempt := context.WithTimeout(ctx, s.deps.DeliveryTimeout)
@@ -883,15 +888,17 @@ func (s *Service) processOutboxRow(ctx context.Context, row outboxRow) {
 	if err != nil {
 		s.health.Error(s.deps.Now())
 		s.deps.Logf("notification outbox outcome persistence failed for %q: %v", row.ID, err)
-		return
+		return false
 	}
-	if err := s.retrySQLiteContention(func() error { return s.storeLastDelivery(row.Destination, status) }); err != nil {
+	err = s.retrySQLiteContention(func() error { return s.storeLastDelivery(row.Destination, status) })
+	if err != nil {
 		s.health.Error(s.deps.Now())
 		s.deps.Logf("notification diagnostic persistence failed for %q: %v", row.ID, err)
 	}
 	if outcome.State == outboxStateRetrying {
 		s.signalWorker()
 	}
+	return err == nil
 }
 
 func (s *Service) attemptOutboxDestination(ctx context.Context, settings Settings, row outboxRow) (DeliveryStatus, error) {
@@ -1558,6 +1565,60 @@ func (s *Service) encryptStoredSecret(value string) (string, error) {
 	return s.deps.EncryptSecret(value)
 }
 
+func readArchivedNotificationSettings(ctx context.Context, db interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}) (*persistedSettings, error) {
+	var raw string
+	err := db.QueryRowContext(ctx, "SELECT value FROM settings WHERE key = ?", SettingsKey).Scan(&raw)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, errors.New("read restored notification settings")
+	}
+	var stored persistedSettings
+	if err := json.Unmarshal([]byte(raw), &stored); err != nil {
+		return nil, errors.New("parse restored notification settings")
+	}
+	return &stored, nil
+}
+
+func (s *persistedSettings) archivedIntegrationSecrets() [3]*string {
+	return [3]*string{&s.DiscordWebhookURL, &s.TelegramBotToken, &s.TelegramChatID}
+}
+
+// ValidateArchivedSettings checks the saved configuration with the archive
+// key. It does not contact destinations or modify their saved settings.
+func ValidateArchivedSettings(ctx context.Context, db *sql.DB, decrypt func(string) (string, error)) error {
+	stored, err := readArchivedNotificationSettings(ctx, db)
+	if err != nil || stored == nil {
+		return err
+	}
+	if _, err := decryptArchivedNotificationSecret(stored.EncryptedWebhookURL, decrypt, "webhook"); err != nil {
+		return err
+	}
+	for _, secret := range stored.archivedIntegrationSecrets() {
+		if _, err := decryptArchivedNotificationSecret(*secret, decrypt, "integration secret"); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func decryptArchivedNotificationSecret(ciphertext string, decrypt func(string) (string, error), field string) (string, error) {
+	if strings.TrimSpace(ciphertext) == "" {
+		return "", nil
+	}
+	if decrypt == nil {
+		return "", fmt.Errorf("notification %s decryption is unavailable", field)
+	}
+	value, err := decrypt(ciphertext)
+	if err != nil {
+		return "", fmt.Errorf("decrypt restored notification %s", field)
+	}
+	return value, nil
+}
+
 func ReencryptStoredWebhookURL(
 	ctx context.Context,
 	tx *sql.Tx,
@@ -1567,26 +1628,15 @@ func ReencryptStoredWebhookURL(
 	if tx == nil {
 		return errors.New("notification settings transaction is unavailable")
 	}
-	var raw string
-	err := tx.QueryRowContext(ctx, "SELECT value FROM settings WHERE key = ?", SettingsKey).Scan(&raw)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil
-	}
-	if err != nil {
-		return errors.New("read restored notification settings")
-	}
-	var stored persistedSettings
-	if err := json.Unmarshal([]byte(raw), &stored); err != nil {
-		return errors.New("parse restored notification settings")
+	stored, err := readArchivedNotificationSettings(ctx, tx)
+	if err != nil || stored == nil {
+		return err
 	}
 	webhookURL := strings.TrimSpace(stored.LegacyWebhookURL)
 	if strings.TrimSpace(stored.EncryptedWebhookURL) != "" {
-		if decrypt == nil {
-			return errors.New("notification webhook decryption is unavailable")
-		}
-		webhookURL, err = decrypt(stored.EncryptedWebhookURL)
+		webhookURL, err = decryptArchivedNotificationSecret(stored.EncryptedWebhookURL, decrypt, "webhook")
 		if err != nil {
-			return errors.New("decrypt restored notification webhook")
+			return err
 		}
 	}
 	stored.LegacyWebhookURL = ""
@@ -1603,31 +1653,22 @@ func ReencryptStoredWebhookURL(
 			return errors.New("encrypt restored notification webhook")
 		}
 	}
-	rewrap := func(ciphertext string) (string, error) {
-		if strings.TrimSpace(ciphertext) == "" {
-			return "", nil
+	for _, secret := range stored.archivedIntegrationSecrets() {
+		if strings.TrimSpace(*secret) == "" {
+			*secret = ""
+			continue
 		}
-		if decrypt == nil || encrypt == nil {
-			return "", errors.New("notification integration secret protection is unavailable")
+		if encrypt == nil {
+			return errors.New("notification integration secret protection is unavailable")
 		}
-		plaintext, err := decrypt(ciphertext)
+		plaintext, err := decryptArchivedNotificationSecret(*secret, decrypt, "integration secret")
 		if err != nil {
-			return "", errors.New("decrypt restored notification integration secret")
+			return err
 		}
-		protected, err := encrypt(plaintext)
+		*secret, err = encrypt(plaintext)
 		if err != nil {
-			return "", errors.New("encrypt restored notification integration secret")
+			return errors.New("encrypt restored notification integration secret")
 		}
-		return protected, nil
-	}
-	if stored.DiscordWebhookURL, err = rewrap(stored.DiscordWebhookURL); err != nil {
-		return err
-	}
-	if stored.TelegramBotToken, err = rewrap(stored.TelegramBotToken); err != nil {
-		return err
-	}
-	if stored.TelegramChatID, err = rewrap(stored.TelegramChatID); err != nil {
-		return err
 	}
 	body, err := json.Marshal(stored)
 	if err != nil {
@@ -1965,33 +2006,4 @@ func (s *Service) conditionMonitoringStarted() bool {
 	s.lifecycleMu.Lock()
 	defer s.lifecycleMu.Unlock()
 	return s.monitoringStarted && !s.closing
-}
-
-// InstallationHealth exposes aggregate facts only. It does not decrypt settings,
-// attempt delivery, recover claims, or enumerate destinations or accepted work.
-func (s *Service) InstallationHealth(ctx context.Context) (installationhealthpkg.WorkerSnapshot, bool, int, int, int, error) {
-	worker := s.health.Snapshot(false)
-	db := s.database()
-	if db == nil {
-		return worker, false, 0, 0, 0, errors.New("notification persistence unavailable")
-	}
-	var raw string
-	err := db.QueryRowContext(ctx, "SELECT value FROM settings WHERE key = ?", SettingsKey).Scan(&raw)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return worker, false, 0, 0, 0, err
-	}
-	var settings persistedSettings
-	if raw != "" {
-		if err = json.Unmarshal([]byte(raw), &settings); err != nil {
-			return worker, false, 0, 0, 0, err
-		}
-	}
-	enabled := settings.Enabled || settings.DiscordEnabled || settings.TelegramEnabled
-	worker.Enabled = enabled
-	var pending, retrying, failed int
-	err = db.QueryRowContext(ctx, `SELECT
- COALESCE(SUM(CASE WHEN state IN (?,?) THEN 1 ELSE 0 END),0),
- COALESCE(SUM(CASE WHEN state=? THEN 1 ELSE 0 END),0),
- COALESCE(SUM(CASE WHEN state=? THEN 1 ELSE 0 END),0) FROM notification_outbox`, outboxStatePending, outboxStateClaimed, outboxStateRetrying, outboxStateFailed).Scan(&pending, &retrying, &failed)
-	return worker, enabled, pending, retrying, failed, err
 }

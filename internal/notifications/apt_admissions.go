@@ -3,11 +3,24 @@ package notifications
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"slices"
 	"strings"
 )
 
 const aptAdmissionPrefix = "condition/" + aptConditionPrefix
+
+// PrepareArchivedPersistence checks and migrates notifications on an isolated
+// copy of an archive. It has no live runtime or delivery dependencies.
+func PrepareArchivedPersistence(ctx context.Context, db *sql.DB) error {
+	if err := ensureSchema(ctx, db); err != nil {
+		return err
+	}
+	if _, err := loadAndMigrateConditionState(ctx, db); err != nil {
+		return fmt.Errorf("read archived notification conditions: %w", err)
+	}
+	return nil
+}
 
 // The key is derived from the incident and destination fingerprint. It
 // survives outbox retention so older backups cannot reintroduce a delivery.

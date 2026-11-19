@@ -100,8 +100,12 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: race
-            cmd: go test -race -count=1 ./...
+          - name: race-1
+            cmd: tools/ci/test-race-shard.sh 1 3
+          - name: race-2
+            cmd: tools/ci/test-race-shard.sh 2 3
+          - name: race-3
+            cmd: tools/ci/test-race-shard.sh 3 3
           - name: cover
             cmd: go test -count=1 -covermode=atomic -coverprofile=coverage.out ./...
     steps:
@@ -197,6 +201,10 @@ jobs:
     if: github.event_name == 'push' || needs.preflight.outputs.e2e == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ['1/2', '2/2']
     env:
       SLU_E2E_OUTPUT_DIR: test-results
       PLAYWRIGHT_HTML_OUTPUT_DIR: playwright-report
@@ -209,9 +217,6 @@ jobs:
         with:
           go-version-file: 'go.mod'
           cache: true
-
-      - name: Build webserver
-        run: go build -o webserver .
 
       - name: Set up Node
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
@@ -243,13 +248,15 @@ jobs:
         run: npx playwright install chromium
 
       - name: Run isolated Playwright E2E
-        run: npm run test:e2e
+        env:
+          PLAYWRIGHT_SHARD: ${{ matrix.shard }}
+        run: npm run test:e2e -- --shard="$PLAYWRIGHT_SHARD"
 
       - name: Retain Playwright diagnostics
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: ci-playwright-${{ github.run_attempt }}
+          name: ci-playwright-${{ strategy.job-index }}-${{ github.run_attempt }}
           path: |
             playwright-report/
             test-results/

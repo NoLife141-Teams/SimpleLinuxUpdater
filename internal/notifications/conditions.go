@@ -35,12 +35,18 @@ type Condition struct {
 	Fact      ConditionFact
 	Episode   int64
 	UpdatedAt string
+	// Keep the current delivery identity when an offline recovery combines
+	// histories with different counters. Use the floor for the next episode.
+	EpisodeFloor int64 `json:",omitempty"`
 }
 
 type ConditionBatch struct {
 	Rebased bool
 	Facts   []ConditionFact
 	Cursor  string
+	// Incomplete reports an independent read failure. Facts and cursor remain
+	// safe to commit, but the whole evaluation has not succeeded.
+	Incomplete bool
 }
 
 // ConditionSource is supplied by runtime composition. Cursor and facts are
@@ -209,8 +215,19 @@ func readConditionState(row *sql.Row) (conditionState, error) {
 	if err != nil {
 		return state, err
 	}
-	err = json.Unmarshal([]byte(raw), &state)
-	return state, err
+	if err := json.Unmarshal([]byte(raw), &state); err != nil {
+		return state, err
+	}
+	if state.Conditions == nil {
+		state.Conditions = map[string]Condition{}
+	}
+	if state.Admissions == nil {
+		state.Admissions = map[string]bool{}
+	}
+	if state.Reminders == nil {
+		state.Reminders = map[string]string{}
+	}
+	return state, nil
 }
 
 func conditionList(state conditionState) []Condition {
@@ -222,9 +239,19 @@ func conditionList(state conditionState) []Condition {
 	return list
 }
 
-func (s *Service) reconcileConditions(ctx context.Context) error {
+func (s *Service) reconcileConditions(ctx context.Context) (evaluationErr error) {
 	s.conditionMu.Lock()
 	defer s.conditionMu.Unlock()
+	incomplete := false
+	defer func() {
+		if ctx.Err() == nil {
+			now := s.deps.Now()
+			s.conditionHealth.observe(now, incomplete || evaluationErr != nil)
+			if incomplete && evaluationErr == nil {
+				s.health.Error(now)
+			}
+		}
+	}()
 	db := s.database()
 	state, err := loadAndMigrateConditionState(ctx, db)
 	if err != nil {
@@ -238,6 +265,7 @@ func (s *Service) reconcileConditions(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	incomplete = batch.Incomplete
 	settings, err := s.currentSettings()
 	if err != nil {
 		return err
@@ -266,8 +294,10 @@ func (s *Service) reconcileConditions(ctx context.Context) error {
 			}
 		}
 		episode := previous.Episode
+		episodeFloor := previous.EpisodeFloor
 		if fact.Active && (!exists || !previous.Fact.Active || previous.Fact.Generation != fact.Generation || previous.Fact.EventType != fact.EventType) {
-			episode++
+			episode = max(episode, episodeFloor) + 1
+			episodeFloor = 0
 		}
 		if fact.CreatedAt == "" {
 			if exists && previous.Fact.Active == fact.Active {
@@ -286,7 +316,7 @@ func (s *Service) reconcileConditions(ctx context.Context) error {
 		if !exists || previous.Fact.Active != fact.Active || previous.Episode != episode {
 			updated = now.Format(time.RFC3339Nano)
 		}
-		state.Conditions[fact.ID] = Condition{Fact: fact, Episode: episode, UpdatedAt: updated}
+		state.Conditions[fact.ID] = Condition{Fact: fact, Episode: episode, UpdatedAt: updated, EpisodeFloor: episodeFloor}
 	}
 	state.Cursor = batch.Cursor
 	for _, condition := range conditionList(state) {

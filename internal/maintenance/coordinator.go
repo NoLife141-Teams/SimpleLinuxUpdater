@@ -3,6 +3,7 @@ package maintenance
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"time"
@@ -76,8 +77,9 @@ type Store interface {
 }
 
 type Deps struct {
-	Store Store
-	Now   func() time.Time
+	Store           Store
+	Now             func() time.Time
+	RecoveryPending func() (bool, error)
 }
 
 type Coordinator struct {
@@ -100,12 +102,35 @@ func NewCoordinator(deps Deps) *Coordinator {
 }
 
 func (c *Coordinator) Initialize(ctx context.Context) error {
+	return c.initialize(ctx, true)
+}
+
+// InitializeAfterReplacement loads the new SQLite state during an in-process
+// restore. The current operation still owns the filesystem recovery marker.
+func (c *Coordinator) InitializeAfterReplacement(ctx context.Context) error {
+	return c.initialize(ctx, false)
+}
+
+func (c *Coordinator) initialize(ctx context.Context, startup bool) error {
 	if c == nil || c.deps.Store == nil {
 		return errors.New("maintenance persistence is not configured")
 	}
 	state, err := c.deps.Store.Load(ctx)
 	if err != nil {
 		return err
+	}
+	if startup && c.deps.RecoveryPending != nil {
+		pending, err := c.deps.RecoveryPending()
+		if err != nil {
+			return fmt.Errorf("inspect durable restore recovery marker: %w", err)
+		}
+		if pending {
+			if state.Kind != string(OperationBackupRestore) {
+				state = State{Kind: string(OperationBackupRestore)}
+			}
+			state.Active = true
+			state.RecoveryRequired = true
+		}
 	}
 	if state.Active && (state.RecoveryRequired || state.Kind == string(OperationBackupRestore)) {
 		state.RecoveryRequired = true

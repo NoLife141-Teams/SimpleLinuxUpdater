@@ -60,9 +60,30 @@ type outboxSnapshot struct {
 }
 
 type outboxReplacement struct {
-	RetainedRows     map[string]outboxSnapshot
-	TerminalOutcomes map[string]outboxOutcome
-	APTAdmissions    []string
+	RetainedRows           map[string]outboxSnapshot
+	TerminalOutcomes       map[string]outboxOutcome
+	APTAdmissions          []string
+	LastSuccessfulDelivery string
+}
+
+func loadPersistenceEvidence(ctx context.Context, db *sql.DB) (conditionState, outboxReplacement, error) {
+	conditions, err := loadAndMigrateConditionState(ctx, db)
+	if err != nil {
+		return conditionState{}, outboxReplacement{}, err
+	}
+	if err := migrateApprovalOutboxHistory(ctx, db, &conditions); err != nil {
+		return conditionState{}, outboxReplacement{}, err
+	}
+	rows, err := loadCurrentOutboxRows(ctx, db)
+	if err != nil {
+		return conditionState{}, outboxReplacement{}, err
+	}
+	rows.APTAdmissions, err = loadAPTAdmissions(ctx, db)
+	if err == nil && db != nil {
+		err = db.QueryRowContext(ctx, "SELECT last_success_at FROM notification_delivery_health WHERE id=1").
+			Scan(&rows.LastSuccessfulDelivery)
+	}
+	return conditions, rows, err
 }
 
 func loadCurrentOutboxRows(ctx context.Context, db *sql.DB) (outboxReplacement, error) {
@@ -169,7 +190,8 @@ func restoreCurrentOutboxRows(ctx context.Context, db *sql.DB, replacement *outb
 	if db == nil || replacement == nil {
 		return nil
 	}
-	if len(replacement.RetainedRows) == 0 && len(replacement.TerminalOutcomes) == 0 && len(replacement.APTAdmissions) == 0 {
+	if len(replacement.RetainedRows) == 0 && len(replacement.TerminalOutcomes) == 0 &&
+		len(replacement.APTAdmissions) == 0 && replacement.LastSuccessfulDelivery == "" {
 		return nil
 	}
 	tx, err := db.BeginTx(ctx, nil)
@@ -249,6 +271,9 @@ func restoreCurrentOutboxRows(ctx context.Context, db *sql.DB, replacement *outb
 	if err := mergeAPTAdmissionsTx(ctx, tx, replacement.APTAdmissions); err != nil {
 		return err
 	}
+	if err := persistSuccessfulDelivery(ctx, tx, replacement.LastSuccessfulDelivery); err != nil {
+		return err
+	}
 	return tx.Commit()
 }
 
@@ -322,6 +347,21 @@ func ensureSchema(ctx context.Context, db *sql.DB) error {
 	if _, err := db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_notification_outbox_history
 		ON notification_outbox (rtrim(created_at, 'Z') DESC, id DESC)`); err != nil {
 		return fmt.Errorf("index notification outbox history: %w", err)
+	}
+	if _, err := db.ExecContext(ctx, `
+		CREATE TABLE IF NOT EXISTS notification_delivery_health (
+			id INTEGER PRIMARY KEY CHECK(id=1),
+			last_success_at TEXT NOT NULL
+		);
+		INSERT INTO notification_delivery_health(id, last_success_at)
+		SELECT 1, COALESCE((
+			SELECT completed_at FROM notification_outbox
+			WHERE state='succeeded' AND status_code BETWEEN 200 AND 299
+			ORDER BY rtrim(completed_at, 'Z') DESC LIMIT 1
+		), '')
+		WHERE NOT EXISTS (SELECT 1 FROM notification_delivery_health WHERE id=1);
+	`); err != nil {
+		return fmt.Errorf("initialize notification delivery health: %w", err)
 	}
 	return nil
 }
@@ -516,7 +556,12 @@ func claimNextOutboxRow(ctx context.Context, db *sql.DB, now time.Time) (*outbox
 }
 
 func completeOutboxRow(ctx context.Context, db *sql.DB, id string, outcome outboxOutcome, now string) error {
-	result, err := db.ExecContext(ctx, `
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	result, err := tx.ExecContext(ctx, `
 		UPDATE notification_outbox
 		   SET state = ?, attempts = ?, next_attempt_at = ?, claimed_at = '', attempted_at = ?,
 		       completed_at = ?, status_code = ?, error = ?, duration_ms = ?, updated_at = ?
@@ -533,7 +578,12 @@ func completeOutboxRow(ctx context.Context, db *sql.DB, id string, outcome outbo
 	if changed != 1 {
 		return errors.New("notification outbox completion lost its claim")
 	}
-	return nil
+	if outcome.State == outboxStateSucceeded && outcome.StatusCode >= 200 && outcome.StatusCode < 300 {
+		if err := persistSuccessfulDelivery(ctx, tx, outcome.CompletedAt); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 func releaseOutboxClaim(ctx context.Context, db *sql.DB, id, nextAttemptAt, now string) error {

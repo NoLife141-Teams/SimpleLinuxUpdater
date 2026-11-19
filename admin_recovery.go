@@ -220,13 +220,13 @@ func guardRecoveryTerminal(input *os.File, output io.Writer) (func(), error) {
 }
 
 func openRecoveryDatabase(path string) (*sql.DB, error) {
-	info, err := os.Lstat(path)
-	if err != nil || !info.Mode().IsRegular() {
-		return nil, errors.New("recovery requires an existing accessible regular database; no database was created")
-	}
-	abs, err := filepath.Abs(path)
+	abs, err := installationlock.ResolveDatabasePath(path)
 	if err != nil {
 		return nil, errors.New("invalid database path")
+	}
+	info, err := os.Lstat(abs)
+	if err != nil || !info.Mode().IsRegular() {
+		return nil, errors.New("recovery requires an existing accessible regular database; no database was created")
 	}
 	database, err := sql.Open("sqlite", recoveryDatabaseDSN(abs))
 	if err != nil {

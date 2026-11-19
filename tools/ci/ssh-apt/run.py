@@ -68,7 +68,7 @@ def qualification_overlay(work):
 
     # This marker can only be reached after applying the staged database and
     # removing SQLite sidecars, before host keys, handoff or runtime reload.
-    anchor = '\tif knownHosts, ok := files["known_hosts"]; ok {\n\t\tif err := writeAtomicFileFromPath'
+    anchor = '\tif knownHosts, ok := files["known_hosts"]; ok {\n\t\tif err := fs.writeAtomicFileFromPath'
     instrument("internal/backup/file_restore.go", [
         ('\n\t"strings"\n', '\n\t"strings"\n\t"time"\n'),
         (anchor, """\
@@ -82,19 +82,33 @@ def qualification_overlay(work):
 \t}
 """ + anchor),
     ])
+    anchor = '\tif stagedHosts != nil {\n\t\tif stagedHosts.Exists {'
+    instrument("internal/backup/offline_recovery.go", [
+        ('\n\t"strings"\n', '\n\t"strings"\n\t"time"\n'),
+        (anchor, """\
+\tif os.Remove("/work/arm-offline-recovery-crash") == nil {
+\t\tif err := os.WriteFile("/work/offline-recovery-db-installed", nil, 0600); err != nil {
+\t\t\treturn fail
+\t\t}
+\t\tfor {
+\t\t\ttime.Sleep(time.Second)
+\t\t}
+\t}
+""" + anchor),
+    ])
 
     # Refresh the proof after condition reconciliation and outbox draining.
     # Record which destination was eligible, since an idle worker alone cannot
     # establish that the restored configuration still allows this delivery.
     anchor = '\t\tif s.conditionMonitoringStarted() {\n\t\t\tif conditionTicker == nil {'
     failure = '\t\t\t\ts.deps.Logf("notification condition reconciliation failed: %v", err)\n\t\t\t}'
-    finish = '\t\ts.health.Finish(s.deps.Now(), nil)\n\t\tif !scheduled {'
+    finish = '\t\tif !scheduled {'
     instrument("internal/notifications/service.go", [
         ('\n\t"net/url"\n', '\n\t"net/url"\n\t"os"\n'),
         (anchor, '\t\tqualificationReconciled := false\n' + anchor),
         (failure, failure + ' else {\n\t\t\t\tqualificationReconciled = true\n\t\t\t}'),
         (finish, """\
-\t\tif qualificationReconciled {
+\t\tif qualificationReconciled && cycleOK {
 \t\t\tif _, err := os.Stat("/work/observe-notifications"); err == nil {
 \t\t\t\tfingerprint := ""
 \t\t\t\tif settings, err := s.currentSettings(); err == nil && destinationEnabled(settings, DestinationWebhook) &&
@@ -803,14 +817,31 @@ class Harness:
         self.stop_app()
         # The HTTP API is unavailable while latched. Verify the disposable
         # replacement files offline before completing the documented release.
-        with closing(sqlite3.connect(db_uri + "?mode=rw", uri=True, timeout=5)) as db, db:
+        with closing(sqlite3.connect(db_uri + "?mode=ro", uri=True, timeout=5)) as db:
             require(db.execute("PRAGMA quick_check").fetchall() == [("ok",)]
                     and db.execute("SELECT name, host, port, identity FROM servers").fetchall()
                     == [(name, self.ssh_host, self.ssh_port, server_identity)]
                     and known_hosts.read_bytes() == trusted_hosts,
                     "replacement persistence, inventory or host trust failed verification")
-            require(db.execute("DELETE FROM settings WHERE key='maintenance_state'").rowcount == 1,
-                    "offline recovery marker was missing")
+        recovery_marker = self.work / "servers.db.restore-recovery"
+        snapshots = recovery_marker.read_text().strip()
+        require(Path(snapshots).name == snapshots and snapshots.startswith("slu-restore-rollback-")
+                and (self.work / snapshots / "recovery.json").is_file(),
+                "durable recovery marker did not locate the rollback manifest")
+        inspection = self.run_offline_recovery("--inspect")
+        require(inspection["recovery_required"] and inspection["sets"] == [
+            {"id": snapshots, "ready": True, "servers": 1, "apt_reports": 1}
+        ], "offline recovery inspection did not validate the saved installation")
+        self.interrupt_offline_recovery(snapshots)
+        require(self.run_offline_recovery("--inspect") == inspection,
+                "interrupted offline recovery did not preserve the validated set and latch")
+        record["verified_interrupted_offline_recovery"] = True
+        recovered = self.run_offline_recovery("--apply", snapshots)
+        diagnosis = recovered.get("diagnosis", "")
+        require(recovered["applied"] == snapshots and not recovered["recovery_required"]
+                and Path(diagnosis).name == diagnosis and diagnosis.startswith("slu-recovery-diagnosis-")
+                and (self.work / diagnosis / "recovery.json").is_file(),
+                "offline recovery did not preserve diagnostics and release the verified installation")
         poll.unlink()
         self.docker("start", self.app_name)
         self.connect_app(include_error_body=False)
@@ -850,6 +881,34 @@ class Harness:
             except (http.client.RemoteDisconnected, ConnectionResetError):
                 return
             raise AssertionError("restore request did not lose its connection to the killed process")
+
+    def offline_recovery_container_args(self):
+        require(self.owned("container", self.app_name), "application ownership mismatch")
+        return ("--name", self.app_name + "-recovery", "--network", "none",
+            "--label", LABEL + "=" + self.owner, "--user", f"{os.getuid()}:{os.getgid()}",
+            "--mount", f"type=bind,src={self.work},dst=/work", "--workdir", "/work",
+            "--env", "HOME=/work", "--env", "TMPDIR=/work", "--env", "DEBIAN_UPDATER_DB_PATH=/work/servers.db",
+            "--env", "DEBIAN_UPDATER_KNOWN_HOSTS=/work/known_hosts", "--entrypoint", "/work/webserver",
+            self.image, "backup", "recover")
+
+    def run_offline_recovery(self, *args):
+        output = self.docker("run", "--rm", *self.offline_recovery_container_args(), *args)
+        return json.loads(output)
+
+    def interrupt_offline_recovery(self, snapshot):
+        (self.work / "arm-offline-recovery-crash").touch(exist_ok=False)
+        recovery = self.app_name + "-recovery"
+        self.docker("run", "-d", *self.offline_recovery_container_args(), "--apply", snapshot)
+        require(self.owned("container", recovery), "recovery container ownership mismatch")
+        try:
+            until((self.work / "offline-recovery-db-installed").is_file,
+                  "offline recovery did not reach the durable SQLite checkpoint")
+            self.docker("kill", recovery)
+            require(self.docker("inspect", "--format", "{{.State.ExitCode}}", recovery).strip() == "137",
+                    "offline recovery process was not killed at its checkpoint")
+        finally:
+            require(self.owned("container", recovery), "recovery container ownership mismatch")
+            self.docker("container", "rm", "-f", recovery)
 
     def kill_app(self):
         require(self.owned("container", self.app_name), "application ownership mismatch")
@@ -1037,7 +1096,8 @@ class Harness:
             self.cleanup_errors.append(str(error))
         # Inspect names even if a create command failed after the daemon created the
         # resource, or SIGTERM arrived before its return value was assigned.
-        for kind, name in (("container", self.app_name), ("container", self.name), ("network", self.network), ("image", self.image)):
+        for kind, name in (("container", self.app_name + "-recovery"), ("container", self.app_name),
+                           ("container", self.name), ("network", self.network), ("image", self.image)):
             try:
                 require(self.owned(kind, name), f"refusing cleanup of unowned {kind}")
                 self.docker(kind, "rm", *(["-f"] if kind in ("container", "image") else []), name)

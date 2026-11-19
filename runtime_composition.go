@@ -123,7 +123,7 @@ func (c *runtimeComposition) ReloadRestoredState(ctx context.Context) (resultErr
 	}
 
 	if deps.MaintenanceCoordinator != nil && !deps.MaintenanceCoordinator.Snapshot().Active {
-		if err := deps.MaintenanceCoordinator.Initialize(ctx); err != nil {
+		if err := deps.MaintenanceCoordinator.InitializeAfterReplacement(ctx); err != nil {
 			return fmt.Errorf("restore Maintenance Coordination: %w", err)
 		}
 	}
@@ -271,6 +271,9 @@ func (c *runtimeComposition) Compose() AppDeps {
 		deps.MaintenanceCoordinator = maintenancepkg.NewCoordinator(maintenancepkg.Deps{
 			Store: maintenancepkg.SQLiteStore{DB: deps.DB},
 			Now:   deps.Now,
+			RecoveryPending: func() (bool, error) {
+				return internalbackup.RestoreRecoveryPending(deps.DBPath())
+			},
 		})
 	}
 	if deps.AuditService == nil {

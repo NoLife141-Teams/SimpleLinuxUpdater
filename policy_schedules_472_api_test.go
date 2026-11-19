@@ -12,6 +12,7 @@ import (
 	"time"
 
 	internalbackup "debian-updater/internal/backup"
+	"debian-updater/internal/maintenance"
 	"debian-updater/internal/policies"
 )
 
@@ -162,6 +163,11 @@ func TestPolicySchedules472EncryptedBackupRestorePreservesConsumptionAndManifest
 	if _, e := app.Deps.BackupService.RestoreArchive(t.Context(), archive.Bytes, "policy schedules test backup"); e != nil {
 		t.Fatal(e)
 	}
+	lease, decision := app.Deps.MaintenanceCoordinator.TryShared(maintenance.WorkScheduled)
+	if !decision.Allowed {
+		t.Fatalf("successful restore left scheduled work blocked: %+v", decision)
+	}
+	lease.Close()
 	restored, e := app.Deps.PolicyRepository.GetPolicy(p.ID)
 	if e != nil || restored.OnceConsumedAt == "" || restored.OnceScheduledForUTC != original.ScheduledForUTC {
 		t.Fatalf("restored policy=%+v err=%v", restored, e)

@@ -304,7 +304,8 @@ func (unavailableRestoredRuntime) ReloadRestoredState(context.Context) error {
 }
 
 type Service struct {
-	deps ServiceDeps
+	deps            ServiceDeps
+	syncRestoreFile func(*os.File) error
 }
 
 func NewService(deps ServiceDeps) *Service {

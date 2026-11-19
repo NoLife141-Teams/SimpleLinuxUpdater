@@ -68,7 +68,7 @@ def qualification_overlay(work):
 
     # This marker can only be reached after applying the staged database and
     # removing SQLite sidecars, before host keys, handoff or runtime reload.
-    anchor = '\tif knownHosts, ok := files["known_hosts"]; ok {\n\t\tif err := writeAtomicFileFromPath'
+    anchor = '\tif knownHosts, ok := files["known_hosts"]; ok {\n\t\tif err := fs.writeAtomicFileFromPath'
     instrument("internal/backup/file_restore.go", [
         ('\n\t"strings"\n', '\n\t"strings"\n\t"time"\n'),
         (anchor, """\
@@ -811,6 +811,12 @@ class Harness:
                     "replacement persistence, inventory or host trust failed verification")
             require(db.execute("DELETE FROM settings WHERE key='maintenance_state'").rowcount == 1,
                     "offline recovery marker was missing")
+        recovery_marker = self.work / "servers.db.restore-recovery"
+        snapshots = recovery_marker.read_text().strip()
+        require(Path(snapshots).name == snapshots and snapshots.startswith("slu-restore-rollback-")
+                and (self.work / snapshots / "recovery.json").is_file(),
+                "durable recovery marker did not locate the rollback manifest")
+        recovery_marker.unlink()
         poll.unlink()
         self.docker("start", self.app_name)
         self.connect_app(include_error_body=False)

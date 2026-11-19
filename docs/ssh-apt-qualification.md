@@ -37,6 +37,24 @@ The restore checkpoint and notification poll observation are injected only when 
 
 Systemd service health and controlled reboot are explicitly `not_executed` by the container harness. PID1 is OpenSSH, and Docker shares the host's kernel and uptime. The real systemd client remains present, its unavailable observation is a visible warning, and no fake `systemctl` is installed. Official-provenance/CVE qualification is a separate test concern; the local test repository cannot establish it.
 
+## Restore durability in a VM
+
+Add `--qualify-restore-power-loss` to the VM command below to run three
+power cuts on the same disposable guest disk. The runner uploads a disposable
+Go test binary that invokes the actual restore file replacement with distinct
+SQLite and host-key fixtures. It kills QEMU before the rollback manifest is
+synced, after SQLite is replaced but before `known_hosts` is replaced, and
+after SQLite is put back during rollback. All three checkpoints run with
+QEMU's host page cache disabled for the writable disk.
+
+After each cut the runner checks for a new boot identity and runs SQLite
+integrity, inventory and trust checks. At the two partial-replacement
+checkpoints it also checks the saved rollback files and proves that the
+filesystem marker blocks work even without a SQLite maintenance latch. The
+Docker SSH/APT scenario separately checks real delivery and package command
+counts. CI requires the three VM results and publishes their redacted status
+and cleanup with the controlled reboot report.
+
 ## CI matrices and updates
 
 Normal PR/push CI qualifies Debian 13 and Ubuntu 24.04. Relevant Go, template/static, harness and workflow paths select the matrix; `ci-required` rejects failed, cancelled or unexpectedly skipped qualification. The jobs use no deployment secrets and run for external PRs with read-only repository permissions. The independent `Extended SSH and APT qualification` workflow runs weekly or manually across Debian 12/13 and Ubuntu 22.04/24.04/26.04, matching the distribution coverage advertised by the application.

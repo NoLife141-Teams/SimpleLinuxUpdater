@@ -125,3 +125,46 @@ func TestOfflineDeliveryEvidenceKeepsLatestEpisodeAndPreservesNewRecurrence(t *t
 		t.Fatalf("recurrence after recovery produced %d total deliveries, want 3", staged.client.calls)
 	}
 }
+
+func TestOfflineDeliveryEvidenceKeepsPrunedLegacyApprovalAcrossEpisodes(t *testing.T) {
+	live, staged := newConditionHarness(t), newConditionHarness(t)
+	approval := ConditionFact{ID: "approval/job", EventType: EventApprovalPublished, TargetName: "test",
+		ServerIdentity: "inventory", Generation: "1", Active: true, MetaJSON: `{"job_id":"job","approval_generation":1}`}
+	live.facts = []ConditionFact{approval}
+	live.reconcile(t)
+	live.drain(t)
+	if live.client.calls != 1 {
+		t.Fatalf("interrupted history sent %d deliveries, want 1", live.client.calls)
+	}
+	legacy, err := loadConditionState(t.Context(), live.db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fingerprint := legacy.ApprovalAdmissions[approval.ID][0].Fingerprint
+	legacy.ApprovalHistoryMigrated = false
+	legacy.ApprovalAdmissions = nil
+	legacy.Admissions[episodeAdmissionID(legacy.Conditions[approval.ID], fingerprint)] = true
+	if err := saveConditionState(t.Context(), live.db, &legacy); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := live.db.Exec(`DELETE FROM notification_outbox`); err != nil {
+		t.Fatal(err)
+	}
+
+	// The selected copy has a later episode for the same exact approval.
+	staged.facts = []ConditionFact{approval}
+	staged.reconcile(t)
+	staged.facts[0].Active = false
+	staged.reconcile(t)
+	staged.now = live.now.Add(time.Minute)
+	staged.facts[0].Active = true
+	staged.reconcile(t)
+	if err := MergeOfflineDeliveryEvidence(t.Context(), live.db, staged.db, staged.now); err != nil {
+		t.Fatal(err)
+	}
+	staged.reconcile(t)
+	staged.drain(t)
+	if staged.client.calls != 0 {
+		t.Fatalf("recovery replayed a legacy approval %d times", staged.client.calls)
+	}
+}

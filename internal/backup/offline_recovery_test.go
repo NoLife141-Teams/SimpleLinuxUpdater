@@ -149,6 +149,41 @@ func TestOfflineRecoveryMarkerRemovalSyncFailureKeepsSQLiteLatch(t *testing.T) {
 	requireDurableRestoreState(t, f.db, f.hosts, originalRestoreServer, originalRestoreTrust, true)
 }
 
+func TestOfflineRecoveryCanRetryAfterMarkerWriteFailure(t *testing.T) {
+	f, _, id := interruptedRecoveryFixture(t)
+	marker := RestoreRecoveryMarkerPath(f.db)
+	if err := os.Remove(marker); err != nil {
+		t.Fatal(err)
+	}
+	live, err := openRecoveryCopy(t.Context(), f.db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := maintenance.SQLiteStore{DB: func() *sql.DB { return live }}
+	state := maintenance.State{Active: true, RecoveryRequired: true, Kind: string(maintenance.OperationBackupRestore)}
+	if err := errors.Join(store.Save(t.Context(), state), live.Close()); err != nil {
+		t.Fatal(err)
+	}
+	f.service.syncRestoreFile = func(file *os.File) error {
+		if file.Name() == marker || strings.HasPrefix(filepath.Base(file.Name()), ".slu-restore-recovery-") {
+			// Simulate a cut before the marker contents reach durable storage.
+			if err := file.Truncate(0); err != nil {
+				t.Fatal(err)
+			}
+			return syscall.EIO
+		}
+		return file.Sync()
+	}
+	if report, err := f.service.OfflineRestoreRecovery(t.Context(), id, offlineRecoveryMergeFixtureJobs); err == nil || !report.RecoveryRequired || report.Diagnosis == "" {
+		t.Fatalf("failed publication = %+v, %v", report, err)
+	}
+	f.service.syncRestoreFile = nil
+	if report, err := f.service.OfflineRestoreRecovery(t.Context(), id, offlineRecoveryMergeFixtureJobs); err != nil || report.Applied != id || report.RecoveryRequired {
+		t.Fatalf("retry = %+v, %v", report, err)
+	}
+	requireDurableRestoreState(t, f.db, f.hosts, originalRestoreServer, originalRestoreTrust, false)
+}
+
 func TestOfflineRecoveryWriteFailureKeepsCommittedWALState(t *testing.T) {
 	f, root, id := interruptedRecoveryFixture(t)
 	// Copy a crash image while its writer is still open so the committed

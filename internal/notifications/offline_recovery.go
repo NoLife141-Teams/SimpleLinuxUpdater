@@ -2,8 +2,10 @@ package notifications
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"slices"
+	"strings"
 	"time"
 )
 
@@ -25,6 +27,8 @@ func MergeOfflineDeliveryEvidence(ctx context.Context, live, staged *sql.DB, now
 	if err != nil {
 		return err
 	}
+	observed.preserveOfflineEpisodeApprovals(incoming)
+	selected.preserveOfflineEpisodeApprovals(saved)
 	timestamp := now.UTC().Format(time.RFC3339Nano)
 	selectedExpired := offlineExpiredDeliveries(selected, saved, incoming.RetainedRows)
 	for id := range offlineExpiredDeliveries(observed, incoming, saved.RetainedRows) {
@@ -56,6 +60,40 @@ func MergeOfflineDeliveryEvidence(ctx context.Context, live, staged *sql.DB, now
 	}
 	selected.Cursor = "restore"
 	return saveConditionState(ctx, staged, &selected)
+}
+
+// A legacy approval can outlive its outbox row. Recover its exact plan from
+// the original observation before combining histories with different episodes.
+func (state *conditionState) preserveOfflineEpisodeApprovals(evidence outboxReplacement) {
+	episodes := make(map[string]ConditionFact)
+	for _, condition := range state.Conditions {
+		if fact := condition.Fact; fact.EventType == EventApprovalPublished && fact.Generation != "" {
+			episodes[episodeAdmissionID(condition, "")] = fact
+		}
+	}
+	for identity, admitted := range state.Admissions {
+		separator := strings.LastIndexByte(identity, '/')
+		fact, exists := episodes[identity[:separator+1]]
+		fingerprint := identity[separator+1:]
+		if !admitted || !exists || len(fingerprint) != 2*sha256.Size {
+			continue
+		}
+		admission := fact.approvalAdmission(fingerprint)
+		if _, exists := state.findApprovalAdmission(fact.ID, admission); exists {
+			continue
+		}
+		for _, destination := range []string{DestinationWebhook, DestinationDiscord, DestinationTelegram} {
+			id := outboxDeliveryID(identity, destination)
+			_, retained := evidence.RetainedRows[id]
+			_, terminal := evidence.TerminalOutcomes[id]
+			if retained || terminal {
+				admission.OutboxID = id
+				break
+			}
+		}
+		// A pruned admission retains the exact plan without permitting any row.
+		state.recordApprovalAdmission(fact.ID, admission)
+	}
 }
 
 // An admission can outlive its row. A pending copy from the other database
@@ -130,7 +168,7 @@ func (selected *conditionState) mergeOfflineApprovalAdmissions(observed conditio
 			previous, exists := selected.findApprovalAdmission(id, admission)
 			if !exists {
 				selected.recordApprovalAdmission(id, admission)
-			} else if admission.OutboxID != "" && admission.OutboxID != previous.OutboxID {
+			} else if admission.OutboxID != previous.OutboxID {
 				// Legacy approval deliveries can have different row IDs for the
 				// same plan. Prefer known delivery evidence over a pending copy.
 				if _, completed := saved.TerminalOutcomes[previous.OutboxID]; !completed && (terminal || !retained) {

@@ -26,6 +26,9 @@ func TestSchedulerRevisionServerRepositoryTracksOnlyMatchingState(t *testing.T) 
 	if err := policypkg.EnsureSchema(db); err != nil {
 		t.Fatalf("policies.EnsureSchema() error = %v", err)
 	}
+	if err := ensureRestoreAPTValidationSchema(db); err != nil {
+		t.Fatal(err)
+	}
 	policyRepo := policypkg.NewSQLiteRepository(policypkg.SQLiteRepositoryDeps{DB: func() *sql.DB { return db }})
 	initialRevision, err := policyRepo.LoadSchedulerStateRevision()
 	if err != nil {

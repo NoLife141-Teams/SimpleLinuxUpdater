@@ -96,6 +96,14 @@ func (l *serverActionLifecycle) approve(name string, identity serverActionApprov
 	var persistErr error
 	server, found := l.serverState.FindByName(name)
 	previous := l.serverState.CurrentStatusSnapshot(name)
+	if found && previous != nil && previous.Status == "pending_approval" && l.validatePackageMutation != nil {
+		if err := l.validatePackageMutation(server); err != nil {
+			l.recordAuditWithMeta("update.approve", name, "ignored", err.Error(), map[string]any{
+				"scope": scope, "job_id": identity.JobID, "reason_code": "restore_apt_validation_required",
+			})
+			return jsonResult(http.StatusConflict, err.Error())
+		}
+	}
 	var freshRevision string
 	if l.updateService != nil && found && previous != nil && previous.Status == "pending_approval" && previous.JobID == identity.JobID && previous.ApprovalGeneration == identity.Generation && previous.UpgradePlan.PackageDeferrals.Revision == identity.DeferralRevision {
 		snapshot, err := l.updateService.EnsureDeps().LoadPackageDeferrals(server, identity.JobID)

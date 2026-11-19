@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"sort"
@@ -40,18 +41,20 @@ func (r schedulerRevisionServerRepository) Save(servers []serverpkg.Server, txHo
 	if err != nil {
 		return err
 	}
-	combinedHook := txHook
-	if changed {
-		combinedHook = func(tx *sql.Tx) error {
-			if txHook != nil {
-				if err := txHook(tx); err != nil {
-					return err
-				}
+	return r.base.Save(servers, func(tx *sql.Tx) error {
+		if txHook != nil {
+			if err := txHook(tx); err != nil {
+				return err
 			}
+		}
+		if err := reconcileRestoredAPTInventory(context.Background(), tx, false); err != nil {
+			return err
+		}
+		if changed {
 			return bumpSchedulerServerStateRevisionIfPresent(tx)
 		}
-	}
-	return r.base.Save(servers, combinedHook)
+		return nil
+	})
 }
 
 func schedulerServerMatchingStateChanged(dbProvider func() *sql.DB, desired []serverpkg.Server) (bool, error) {

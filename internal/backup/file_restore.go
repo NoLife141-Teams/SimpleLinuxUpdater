@@ -407,7 +407,17 @@ func (s *Service) applyArchiveFiles(ctx context.Context, files map[string]string
 	// Invalidate archived sessions before replacement, so a successful runtime
 	// reload is the final fallible operation and notification writers resume
 	// only after all archive changes have been prepared.
-	if err := prepareRestoredDatabase(ctx, preparedDB.Path, opts.PrepareReplacement); err != nil {
+	if err := prepareRestoredDatabase(ctx, preparedDB.Path, func(ctx context.Context, db *sql.DB) error {
+		if opts.PrepareHostValidation != nil {
+			if err := opts.PrepareHostValidation(ctx, db, !bytes.Equal(backupKey, installationKey)); err != nil {
+				return err
+			}
+		}
+		if opts.PrepareReplacement != nil {
+			return opts.PrepareReplacement(ctx, db)
+		}
+		return nil
+	}); err != nil {
 		return err
 	}
 

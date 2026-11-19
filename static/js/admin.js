@@ -661,6 +661,40 @@
                 return card;
             }));
             document.getElementById("restore-isolation-controls").hidden = !["active", "unavailable"].includes(view.restoreIsolation);
+            const aptPanel = document.getElementById("restore-apt-validation");
+            aptPanel.hidden = view.restoreAPTHosts.length === 0;
+            const aptStates = {
+                pending: "Check required", healthy: "Validated · ready to resume", approved: "Package maintenance allowed",
+                reconciliation_required: "APT reconciliation required · repair from Status",
+                expired: "Check expired · check again", target_changed: "SSH target changed · check again",
+                unreachable: "Unreachable · check connectivity", host_key_unverified: "SSH key unverified · review host trust",
+                locks_unverified: "APT locks active or unknown · check again", dpkg_incomplete: "Incomplete package state · inspect dpkg",
+                apt_unverified: "APT health check failed · inspect the host", unavailable: "Package check unavailable · review SSH permissions",
+            };
+            aptPanel.querySelector("tbody").replaceChildren(...view.restoreAPTHosts.map(host => {
+                const row = document.createElement("tr");
+                const name = document.createElement("th");
+                name.scope = "row";
+                name.textContent = host.name;
+                row.append(name);
+                for (const value of [aptStates[host.state] || "Check required", date(host.checkedAt)]) {
+                    const cell = document.createElement("td");
+                    cell.textContent = value;
+                    row.append(cell);
+                }
+                const command = document.createElement("td");
+                const button = document.createElement("button");
+                button.type = "button";
+                button.className = "btn-ghost inline-btn";
+                button.dataset.restoreAptName = host.name;
+                button.dataset.restoreAptIdentity = host.identity;
+                button.textContent = "Check APT";
+                button.setAttribute("aria-label", `Check APT on ${host.name}`);
+                button.disabled = host.disabled;
+                command.append(button);
+                row.append(command);
+                return row;
+            }));
             const body = document.getElementById("installation-workers");
             body.replaceChildren(...view.workers.map(worker => {
                 const row = document.createElement("tr");

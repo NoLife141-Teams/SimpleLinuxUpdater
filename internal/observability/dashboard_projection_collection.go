@@ -65,6 +65,10 @@ func (c dashboardProjectionCollector) CollectContextWithOptions(ctx context.Cont
 		serverNames = append(serverNames, server.Name)
 	}
 	readinessByName := c.deps.MaintenanceReadiness(serversSnapshot)
+	var restoreAPTBlocked map[string]bool
+	if c.deps.RestoreAPTBlocked != nil {
+		restoreAPTBlocked = c.deps.RestoreAPTBlocked(ctx, serversSnapshot)
+	}
 	facts, err := c.deps.HostHealthObservation.Latest()
 	if err != nil {
 		return dashboardProjectionInput{}, err
@@ -118,18 +122,19 @@ func (c dashboardProjectionCollector) CollectContextWithOptions(ctx context.Cont
 		timeline := buildDashboardTimeline(timelineSource, c.deps, loc, timezoneName)
 		failure := c.collectMaintenanceFailure(status, latestUpdateJob, agg.projection.lastFailure)
 		input.servers = append(input.servers, dashboardServerProjectionInput{
-			server:         server,
-			now:            now,
-			status:         status,
-			health:         health,
-			failure:        failure,
-			readiness:      readinessByName[server.Name],
-			nextRun:        dashboardScheduleInfoFromPolicy(schedule.NextRun, c.deps, loc, timezoneName),
-			noRun:          dashboardNoRunInfoFromPolicy(schedule.NoRun, timezoneName),
-			timeline:       timeline,
-			triageTime:     c.collectTriageTime(health, agg.projection.lastSuccess, timeline, now, loc, timezoneName),
-			updateHistory:  agg.projection,
-			commandHistory: commandHistory[server.Name],
+			server:            server,
+			now:               now,
+			status:            status,
+			health:            health,
+			failure:           failure,
+			readiness:         readinessByName[server.Name],
+			restoreAPTBlocked: restoreAPTBlocked[server.Name],
+			nextRun:           dashboardScheduleInfoFromPolicy(schedule.NextRun, c.deps, loc, timezoneName),
+			noRun:             dashboardNoRunInfoFromPolicy(schedule.NoRun, timezoneName),
+			timeline:          timeline,
+			triageTime:        c.collectTriageTime(health, agg.projection.lastSuccess, timeline, now, loc, timezoneName),
+			updateHistory:     agg.projection,
+			commandHistory:    commandHistory[server.Name],
 		})
 	}
 	return input, nil

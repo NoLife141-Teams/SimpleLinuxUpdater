@@ -25,6 +25,7 @@ type Deps struct {
 	LoadRetryPolicy                 func() updates.RetryPolicy
 	MaintenanceCoordinator          *maintenance.Coordinator
 	MaintenanceReadiness            func(servers.Server) servers.MaintenanceReadiness
+	ValidatePackageMutation         func(servers.Server) error
 	AcquireScheduledAction          func(string) func()
 	PolicyRepository                RunRepository
 	ServerState                     *servers.State
@@ -313,7 +314,7 @@ func (l *Lifecycle) runPackageMutation(run policies.Run, policy policies.Policy,
 		kind, operation, runtimeStatus = jobs.KindAutoremove, "autoremove", "autoremove"
 	}
 	serverForRun, preStartStatus, err := l.deps.ServerState.BeginActionWithOptions(server.Name, runtimeStatus, servers.ActionAdmissionOptions{
-		PackageMutation: true, ExpectedServerIdentity: run.ServerIdentity,
+		PackageMutation: true, ExpectedServerIdentity: run.ServerIdentity, ValidatePackageMutation: l.deps.ValidatePackageMutation,
 	})
 	if err != nil {
 		status := policies.RunFailed
@@ -325,6 +326,11 @@ func (l *Lifecycle) runPackageMutation(run policies.Run, policy policies.Policy,
 		}
 		if errors.Is(err, servers.ErrIdentityChanged) {
 			return l.markIdentityChangedSkipped(run, policy, server)
+		}
+		if errors.Is(err, servers.ErrRestoreAPTValidation) {
+			return l.markReadinessSkipped(run, policy, server, servers.MaintenanceReadiness{
+				Code: "restore_apt_validation_required", Message: err.Error(),
+			})
 		}
 		if errors.Is(err, servers.ErrActionInProgress) {
 			status = policies.RunSkipped

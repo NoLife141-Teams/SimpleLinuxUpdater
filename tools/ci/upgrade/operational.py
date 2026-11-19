@@ -590,6 +590,17 @@ HTTPServer(("127.0.0.1", int(port)), Receiver).serve_forever()
 
         self.start_batch_probe(isolated_name)
         evidence["isolated_retry_admission"] = "failed"
+        blocked = isolated.request("POST", BATCH_PATH, fixture.retry, allowed=(409,))
+        require(blocked.get("code") == "restore_isolated", "restore isolation did not block the batch route")
+        isolated.request("POST", "/api/auth/reauthenticate", {"password": credentials["password"]})
+        require(isolated.request("POST", "/api/backup/restore-isolation/resume",
+                                 {"confirmation": "RESUME"})["restore_isolation"] == "inactive",
+                "recovery did not resume external work")
+        # This peer only counts connections. It cannot produce an APT proof.
+        # Verify that replaying history works while fresh package work remains gated.
+        blocked = isolated.request("POST", f"/api/update/{BATCH_SERVER}", allowed=(409,))
+        require(blocked.get("reason_code") == "restore_apt_validation_required",
+                "resuming external work released the unchecked host")
         winner_id = fixture.retry["id"]
         require(isolated.request("POST", BATCH_PATH, fixture.retry, allowed=(202,)) == {"id": winner_id},
                 "restored retry replay did not return the original attempt")

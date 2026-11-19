@@ -54,7 +54,7 @@ func (s *productionHostMaintenanceSession) runInspectionCommand(ctx context.Cont
 func (s *productionHostMaintenanceSession) runUpdatePrechecks(ctx context.Context) PrecheckSummary {
 	checks := []func(context.Context) PrecheckResult{
 		s.checkDiskSpace,
-		s.checkAptLocks,
+		func(ctx context.Context) PrecheckResult { return s.checkAptLocks(ctx, true) },
 		func(ctx context.Context) PrecheckResult { return s.runAptHealthCheck(ctx, "apt_health") },
 	}
 	summary := PrecheckSummary{AllPassed: true, Results: make([]PrecheckResult, 0, len(checks))}
@@ -279,10 +279,10 @@ func parseMinimumFreeDiskKB(stdout string) (int64, error) {
 	return minFreeKB, nil
 }
 
-func (s *productionHostMaintenanceSession) checkAptLocks(ctx context.Context) PrecheckResult {
+func (s *productionHostMaintenanceSession) checkAptLocks(ctx context.Context, allowLegacy bool) PrecheckResult {
 	stdout, stderr, err := s.runInspectionCommand(ctx, precheckLocksCmd)
 	output := compactInspectionOutput(stdout, stderr)
-	if err != nil && inspectionSudoPolicyError(output+"\n"+err.Error()) {
+	if allowLegacy && err != nil && inspectionSudoPolicyError(output+"\n"+err.Error()) {
 		stdout, stderr, err = s.runInspectionCommand(ctx, precheckLegacyLocksCmd)
 		output = compactInspectionOutput(stdout, stderr)
 	}
@@ -309,6 +309,26 @@ func (s *productionHostMaintenanceSession) checkAptLocks(ctx context.Context) Pr
 		return PrecheckResult{Name: "apt_locks", Details: "Lock check command failed because a required command was not found. Install `sudo` for non-root users or `psmisc` for `/usr/bin/fuser`.", Output: output}
 	}
 	return PrecheckResult{Name: "apt_locks", Details: boundedInspectionDetail("Failed to evaluate apt/dpkg lock state: %v", err), Output: output}
+}
+
+// CheckRestoredAPT uses fixed read-only probes. Simulation disables APT
+// cache generation and leaves the archived host's package metadata untouched.
+func (s *productionHostMaintenanceSession) CheckRestoredAPT(ctx context.Context) string {
+	if locks := s.checkAptLocks(ctx, false); !locks.Passed {
+		return "locks_unverified"
+	}
+	stdout, stderr, err := s.runInspectionCommand(ctx, precheckDpkgAuditCmd)
+	if err != nil {
+		return "unavailable"
+	}
+	if strings.TrimSpace(stdout+stderr) != "" {
+		return "dpkg_incomplete"
+	}
+	const aptCheck = "/usr/bin/apt-get -s -o Dir::Cache::pkgcache= -o Dir::Cache::srcpkgcache= check"
+	if _, _, err := s.runInspectionCommand(ctx, aptCheck); err != nil {
+		return "apt_unverified"
+	}
+	return "healthy"
 }
 
 func (s *productionHostMaintenanceSession) runAptHealthCheck(ctx context.Context, checkName string) PrecheckResult {

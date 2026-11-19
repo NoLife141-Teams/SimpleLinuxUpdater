@@ -22,15 +22,16 @@ import (
 )
 
 type AppDeps struct {
-	SecurityIntel       *securityintel.Catalog
-	Remediation         *remediationLifecycle
-	InstallationHealth  *installationHealth
-	PackageDeferralGate *sync.RWMutex
-	BackupAutomation    *backupAutomation
-	RestoreIsolation    *internalbackup.RestoreIsolation
-	VulnerabilityScans  *vulnerabilityScanLifecycle
-	DB                  func() *sql.DB
-	DBPath              func() string
+	SecurityIntel        *securityintel.Catalog
+	Remediation          *remediationLifecycle
+	InstallationHealth   *installationHealth
+	PackageDeferralGate  *sync.RWMutex
+	BackupAutomation     *backupAutomation
+	RestoreIsolation     *internalbackup.RestoreIsolation
+	RestoreAPTValidation *restoreAPTValidation
+	VulnerabilityScans   *vulnerabilityScanLifecycle
+	DB                   func() *sql.DB
+	DBPath               func() string
 
 	AuditService              *AuditService
 	AuthService               *AuthService

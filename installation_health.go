@@ -163,6 +163,7 @@ type installationDiagnostics struct {
 	BackupArchives           backupArchiveCoverage                           `json:"backup_archives"`
 	Notifications            installationNotificationFacts                   `json:"notifications"`
 	Storage                  installationStorage                             `json:"storage"`
+	RestoreAPTHosts          []restoreAPTHostFacts                           `json:"restore_apt_hosts,omitempty"`
 }
 
 func installationSnapshot(ctx context.Context, deps AppDeps) installationDiagnostics {
@@ -200,6 +201,9 @@ func installationSnapshot(ctx context.Context, deps AppDeps) installationDiagnos
 				out.RestoreIsolation = "active"
 			}
 		}
+	}
+	if deps.RestoreAPTValidation != nil {
+		out.RestoreAPTHosts = deps.RestoreAPTValidation.hostFacts(ctx, deps.ServerState, now, out.RestoreIsolation != "inactive")
 	}
 	if deps.BackupAutomation != nil {
 		facts, err := deps.BackupAutomation.installationFacts(ctx)

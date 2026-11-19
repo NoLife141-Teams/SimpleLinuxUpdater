@@ -676,6 +676,7 @@ func (r *withActorRunner) setupSSH(dialOpName string) bool {
 		OnRetry:            r.onHostRetry,
 		VerifyHostKey:      verifyHostKey,
 		OnConnectedHostKey: recordHostKey,
+		PackageMaintenance: r.jobKind == jobs.KindUpdate || r.jobKind == jobs.KindAutoremove,
 	})
 	if err != nil {
 		var sessionErr *HostMaintenanceError

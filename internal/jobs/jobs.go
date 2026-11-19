@@ -988,17 +988,19 @@ func (r *SQLiteRepository) Get(id string) (Record, error) {
 	return getJobRow(context.Background(), r.db, id)
 }
 
+const jobRecordColumns = `id, kind, parent_job_id, server_name, actor, client_ip, status, phase, summary, logs_text,
+		       error_class, retry_policy_json, meta_json, created_at, updated_at, started_at, finished_at,
+		       logs_expired, logs_truncated, revision, apt_target, apt_mutation_host_key`
+
 func getJobRow(ctx context.Context, db interface {
 	QueryRowContext(context.Context, string, ...any) *sql.Row
 }, id string) (Record, error) {
+	return scanJobRecord(db.QueryRowContext(ctx, `SELECT `+jobRecordColumns+` FROM jobs WHERE id = ?`, id))
+}
+
+func scanJobRecord(row interface{ Scan(...any) error }) (Record, error) {
 	var record Record
-	err := db.QueryRowContext(ctx, `
-		SELECT id, kind, parent_job_id, server_name, actor, client_ip, status, phase, summary, logs_text,
-		       error_class, retry_policy_json, meta_json, created_at, updated_at, started_at, finished_at,
-		       logs_expired, logs_truncated, revision, apt_target, apt_mutation_host_key
-		  FROM jobs
-		 WHERE id = ?
-	`, id).Scan(
+	err := row.Scan(
 		&record.ID,
 		&record.Kind,
 		&record.ParentJobID,
@@ -1100,13 +1102,20 @@ func (r *SQLiteRepository) ListUnfinishedServerNames() ([]string, error) {
 }
 
 func (r *SQLiteRepository) ListReconciliationRequired() ([]Record, error) {
-	return r.listAPTReconciliationEvidence(false)
+	return r.ListReconciliationRequiredContext(context.Background())
+}
+
+func (r *SQLiteRepository) ListReconciliationRequiredContext(ctx context.Context) ([]Record, error) {
+	if r == nil || r.db == nil {
+		return nil, errors.New("job repository is not initialized")
+	}
+	return listAPTReconciliationEvidence(ctx, r.db, false)
 }
 
 // ListUnresolvedAPTJobs includes the original interrupted mutation and failed
 // repair attempts while their target still requires reconciliation.
-func (r *SQLiteRepository) ListUnresolvedAPTJobs() ([]Record, error) {
-	return r.listAPTReconciliationEvidence(true)
+func ListUnresolvedAPTJobs(ctx context.Context, read *sql.Tx) ([]Record, error) {
+	return listAPTReconciliationEvidence(ctx, read, true)
 }
 
 const unresolvedAPTJobPredicate = `WHERE candidate.status = ?
@@ -1130,11 +1139,10 @@ func unresolvedAPTJobArgs() []any {
 	}
 }
 
-func (r *SQLiteRepository) listAPTReconciliationEvidence(includePrevious bool) ([]Record, error) {
-	if r == nil || r.db == nil {
-		return nil, errors.New("job repository is not initialized")
-	}
-	rows, err := r.db.Query(`
+func listAPTReconciliationEvidence(ctx context.Context, db interface {
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+}, includePrevious bool) ([]Record, error) {
+	rows, err := db.QueryContext(ctx, `
 		SELECT candidate.id, candidate.kind, candidate.parent_job_id, candidate.server_name,
 		       candidate.actor, candidate.client_ip, candidate.status, candidate.phase, candidate.summary,
 		       candidate.logs_text, candidate.error_class, candidate.retry_policy_json, candidate.meta_json,
@@ -1165,14 +1173,8 @@ func (r *SQLiteRepository) listAPTReconciliationEvidence(includePrevious bool) (
 
 	var records []Record
 	for rows.Next() {
-		var record Record
-		if err := rows.Scan(
-			&record.ID, &record.Kind, &record.ParentJobID, &record.ServerName, &record.Actor, &record.ClientIP,
-			&record.Status, &record.Phase, &record.Summary, &record.LogsText, &record.ErrorClass,
-			&record.RetryPolicyJSON, &record.MetaJSON, &record.CreatedAt, &record.UpdatedAt,
-			&record.StartedAt, &record.FinishedAt, &record.LogsExpired, &record.LogsTruncated, &record.Revision,
-			&record.APTTarget, &record.APTMutationHostKey,
-		); err != nil {
+		record, err := scanJobRecord(rows)
+		if err != nil {
 			return nil, err
 		}
 		records = append(records, record)
@@ -1192,7 +1194,7 @@ func (r *SQLiteRepository) MarkUnfinishedInterrupted(now string) error {
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	if err := markInterruptedAPTMutations(tx, now); err != nil {
+	if err := markInterruptedAPTMutations(context.Background(), tx, now); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(`

@@ -152,13 +152,14 @@ class API:
     def server(self, name):
         return next(s for s in self.request("GET", "/api/servers") if s["name"] == name)
 
-    def restore_archive(self, archive, passphrase, *, allowed=(200,)):
+    def backup_archive(self, operation, archive, passphrase, *, allowed=(200,)):
+        require(operation in ("verify", "restore"), "invalid fixture archive operation")
         boundary = "slu-" + uuid.uuid4().hex
         body = (f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="fixture.slubkp"\r\n'
                 'Content-Type: application/octet-stream\r\n\r\n').encode() + archive
         body += (f'\r\n--{boundary}\r\nContent-Disposition: form-data; name="passphrase"\r\n\r\n'
                  f'{passphrase}\r\n--{boundary}--\r\n').encode()
-        return self.request("POST", "/api/backup/restore", raw=body,
+        return self.request("POST", "/api/backup/" + operation, raw=body,
                             content_type=f"multipart/form-data; boundary={boundary}", allowed=allowed)
 
     def job(self, job_id):
@@ -401,7 +402,7 @@ class Harness:
 
         def restore(archive):
             wait_for_facts()
-            self.api.restore_archive(archive, archive_passphrase)
+            self.api.backup_archive("restore", archive, archive_passphrase)
             require(not self.api.request("GET", "/api/auth/status")["authenticated"], "restore retained the former session")
             self.api.request("POST", "/api/auth/login", {"username": "fixture-admin", "password": self.password})
 
@@ -411,6 +412,9 @@ class Harness:
         pre_incident_archive = export()
         server_identity = self.api.server(name)["server_identity"]
         require(server_identity != replaced_identity, "recreated fixture reused its inventory identity")
+        initial_review = self.api.backup_archive("verify", conflicting_archive, archive_passphrase)
+        require(initial_review["restore_ready"] and initial_review["installation_review"]["state"] == "ready",
+                "archive did not verify before any live APT incident existed")
         batch_id = uuid.uuid4().hex
         batch_path = "/api/status/batches/" + batch_id
         self.api.request("POST", "/api/status/batches", {"id": batch_id, "action": "update",
@@ -463,7 +467,14 @@ class Harness:
             log_tail_path = f"{logs_path}?after_seq={log_head['next_sequence']}&limit=500"
             log_tail = self.api.request("GET", log_tail_path)
             wait_for_facts()
-            conflict = self.api.restore_archive(conflicting_archive, archive_passphrase, allowed=(409,))
+            review = self.api.backup_archive("verify", conflicting_archive, archive_passphrase)
+            require(review["restore_ready"] and review["installation_review"]["state"] == "blocked",
+                    "review failed to distinguish a valid archive from an APT conflict on this installation")
+            conflicts = review["installation_review"]["conflicts"]
+            require(len(conflicts) == 1 and conflicts[0]["code"] == "apt_target_changed"
+                    and conflicts[0]["server"] == name and conflicts[0]["report_url"] == f"/api/reports/jobs/{job_id}",
+                    "review did not identify the replaced server and the exact authorized report")
+            conflict = self.api.backup_archive("restore", conflicting_archive, archive_passphrase, allowed=(409,))
             require("conflicts with APT reconciliation evidence" in conflict["error"]
                     and self.api.server(name)["server_identity"] == server_identity
                     and self.api.server(name).get("job_id") == job_id
@@ -542,6 +553,9 @@ class Harness:
         # An intervening restore with no archived incident must still preserve
         # the repair needed to settle the next, newer archive.
         restore(pre_incident_archive)
+        repaired_review = self.api.backup_archive("verify", pending_repair_archive, archive_passphrase)
+        require(repaired_review["restore_ready"] and repaired_review["installation_review"]["state"] == "ready",
+                "review did not accept the later verified repair for this archive")
         restore(pending_repair_archive)
         require(not self.api.server(name).get("apt_reconciliation_required") and self.api.job(repair_id)["status"] == "succeeded"
                 and upgrades() == baseline_upgrades + 1,

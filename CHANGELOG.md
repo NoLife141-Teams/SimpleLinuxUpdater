@@ -15,6 +15,7 @@ The format is inspired by Keep a Changelog, and this project uses Semantic Versi
 - Warn about automatic backup overlaps in scheduled policy previews. Qualify Docker volume upgrades, encrypted archive restoration and rollback, batch recovery after interruption and controlled VM reboot in CI.
 - Show the observed backup export, restore, or recovery cause for skipped Scheduled Runs, with the blocking job when available.
 - Offer opt-in APT reconciliation alerts with the original job report in delivery history.
+- Preview APT reconciliation conflicts with the current installation before confirming an archive restore.
 
 ### Fixed
 

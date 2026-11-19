@@ -223,10 +223,23 @@
             const readiness = document.getElementById(
                 "backup-review-readiness",
             );
-            readiness.textContent = review.restoreReady
-                ? "Ready for confirmation"
-                : "Blocked";
-            readiness.className = `pill ${review.restoreReady ? "pill-success" : "pill-danger"}`;
+            const installation = review.installationReview;
+            const ready = review.restoreReady && (!installation || installation.state === "ready");
+            readiness.textContent = ready ? "Ready for confirmation"
+                : installation?.state === "unavailable" ? "Check unavailable" : "Blocked";
+            readiness.className = `pill ${ready ? "pill-success" : "pill-danger"}`;
+            const installationSection = document.getElementById("backup-review-installation");
+            installationSection.hidden = !installation;
+            if (installation) {
+                document.getElementById("backup-review-archive-compatibility").textContent = "Archive compatible";
+                document.getElementById("backup-review-installation-message").textContent = installation.message;
+                document.getElementById("backup-review-installation-conflicts").innerHTML = installation.conflicts.map(conflict => {
+                    const report = String(conflict?.report_url || "");
+                    const link = /^\/api\/reports\/jobs\/(?:[a-f0-9]{32}|job-[0-9]{1,19})$/.test(report)
+                        ? ` <a href="${escapeHtml(report)}">Job report</a>` : "";
+                    return `<li><strong>${escapeHtml(conflict?.server || "Server")}</strong> · ${escapeHtml(conflict?.message || "")}${link}</li>`;
+                }).join("");
+            }
             document.getElementById("backup-review-archive").textContent =
                 `${review.archive.format || "Unknown format"} · version ${review.archive.version || "unknown"}`;
             document.getElementById("backup-review-created").textContent =
@@ -812,9 +825,11 @@
                 }
                 const payload = await res.json().catch(() => ({}));
                 if (!lifecycle.isCurrent(lifetime)) return;
-                const message = payload.restore_ready
-                    ? "Restore readiness review completed."
-                    : "Restore readiness review completed with blockers.";
+                const message = !payload.restore_ready || payload.installation_review?.state === "blocked"
+                    ? "Restore readiness review completed with blockers."
+                    : payload.installation_review?.state === "unavailable"
+                        ? "Archive verified. APT compatibility could not be checked."
+                        : "Restore readiness review completed.";
                 finishAdminCommand(plan, payload, message);
                 renderBackupRestoreReview();
                 window.notifyApp(message);

@@ -249,10 +249,16 @@
         const archive = data.archive && typeof data.archive === "object" ? data.archive : {};
         const counts = data.safe_counts && typeof data.safe_counts === "object" ? data.safe_counts : {};
         const impact = data.impact && typeof data.impact === "object" ? data.impact : {};
+        const installation = data.installation_review;
         return {
             valid: Boolean(data.valid),
             compatible: Boolean(data.compatible),
             restoreReady: Boolean(data.restore_ready),
+            installationReview: installation ? {
+                state: String(installation.state || "unavailable"),
+                message: String(installation.message || ""),
+                conflicts: clone(Array.isArray(installation.conflicts) ? installation.conflicts : []),
+            } : null,
             archive: {
                 format: String(archive.format || data.format || "").trim(),
                 version: Number(archive.version ?? data.version) || 0,
@@ -760,6 +766,9 @@
                     if (!backup.selectedFile || !(payload.passphraseValid || backup.credentialValid)) return { enabled: false, command, key, reason: !backup.selectedFile ? "Choose a backup file." : "A valid backup passphrase is required." };
                     if (!backup.review || !backup.review.restoreReady || !backupBindingMatches(backup.reviewBinding)) {
                         return { enabled: false, command, key, reason: "Verify this exact backup and passphrase before restoring; the restore review is not ready." };
+                    }
+                    if (backup.review.installationReview && backup.review.installationReview.state !== "ready") {
+                        return { enabled: false, command, key, reason: backup.review.installationReview.message || "Review APT compatibility on this installation before restoring." };
                     }
                     return { enabled: true, command, key, binding: currentBackupBinding(), payload: { file: clone(backup.selectedFile) } };
                 default: return { enabled: true, command, key, payload: clone(payload) };

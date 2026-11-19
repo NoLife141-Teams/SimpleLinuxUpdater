@@ -8,10 +8,10 @@ import (
 
 var ErrAPTRecoveryEvidenceConflict = errors.New("APT reconciliation evidence conflicts with the archive")
 
-func markInterruptedAPTMutations(db interface {
-	Exec(string, ...any) (sql.Result, error)
+func markInterruptedAPTMutations(ctx context.Context, db interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
 }, now string) error {
-	_, err := db.Exec(`
+	_, err := db.ExecContext(ctx, `
 		UPDATE jobs
 		   SET status = ?, phase = ?, summary = ?, error_class = ?, finished_at = ?, updated_at = ?, revision = revision + 1
 		 WHERE status = ?
@@ -25,21 +25,23 @@ func markInterruptedAPTMutations(db interface {
 
 // MarkInterruptedAPTMutations prepares an isolated restore database so an
 // archived mutation in flight is included when comparing recovery evidence.
-func (r *SQLiteRepository) MarkInterruptedAPTMutations(now string) error {
-	return markInterruptedAPTMutations(r.db, now)
+func (r *SQLiteRepository) MarkInterruptedAPTMutations(ctx context.Context, now string) error {
+	return markInterruptedAPTMutations(ctx, r.db, now)
 }
 
 // LatestVerifiedAPTRepairs returns the newest successful repair with host key
 // proof for each APT target. Carrying this evidence through intervening restores
 // keeps a later restore from reopening an older, already repaired incident.
-func (r *SQLiteRepository) LatestVerifiedAPTRepairs() ([]Record, error) {
-	rows, err := r.db.Query(`
-		SELECT id, apt_target FROM (
-			SELECT id, apt_target,
+func LatestVerifiedAPTRepairs(ctx context.Context, read *sql.Tx) ([]Record, error) {
+	rows, err := read.QueryContext(ctx, `
+		WITH verified_repairs AS (
+			SELECT id,
 			       row_number() OVER (PARTITION BY apt_target ORDER BY created_at DESC, id DESC) AS position
 			  FROM jobs
 			 WHERE apt_target <> '' AND kind = ? AND status = ? AND apt_mutation_host_key <> ''
-		) WHERE position = 1
+		)
+		SELECT `+jobRecordColumns+` FROM jobs
+		 WHERE id IN (SELECT id FROM verified_repairs WHERE position = 1)
 	`, KindAptRepair, StatusSucceeded)
 	if err != nil {
 		return nil, err
@@ -47,8 +49,8 @@ func (r *SQLiteRepository) LatestVerifiedAPTRepairs() ([]Record, error) {
 	defer rows.Close()
 	var repairs []Record
 	for rows.Next() {
-		var repair Record
-		if err := rows.Scan(&repair.ID, &repair.APTTarget); err != nil {
+		repair, err := scanJobRecord(rows)
+		if err != nil {
 			return nil, err
 		}
 		repairs = append(repairs, repair)
@@ -56,26 +58,15 @@ func (r *SQLiteRepository) LatestVerifiedAPTRepairs() ([]Record, error) {
 	return repairs, rows.Err()
 }
 
-// ImportAPTRecoveryEvidence carries a terminal job and its retained log stream
-// from the live database into an isolated restore database.
-func (r *SQLiteRepository) ImportAPTRecoveryEvidence(ctx context.Context, live *SQLiteRepository, id, serverName string) error {
-	read, err := live.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
-	if err != nil {
-		return err
-	}
-	defer read.Rollback()
-	record, err := getJobRow(ctx, read, id)
-	if err != nil {
-		return err
-	}
-	record.ServerName = serverName
-
+// ImportAPTRecoveryEvidence writes a terminal job to an isolated restore
+// database. Apply supplies the live snapshot to carry its retained log stream.
+func (r *SQLiteRepository) ImportAPTRecoveryEvidence(ctx context.Context, record Record, logSource *sql.Tx) error {
 	write, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer write.Rollback()
-	existing, err := getJobRow(ctx, write, id)
+	existing, err := getJobRow(ctx, write, record.ID)
 	if err == nil && (existing.APTTarget != record.APTTarget || existing.Kind != record.Kind ||
 		existing.CreatedAt != record.CreatedAt) {
 		return ErrAPTRecoveryEvidenceConflict
@@ -86,8 +77,10 @@ func (r *SQLiteRepository) ImportAPTRecoveryEvidence(ctx context.Context, live *
 	if err := upsertJobRow(ctx, write, record, true); err != nil {
 		return err
 	}
-	if err := copyAPTRecoveryLogs(ctx, read, write, record); err != nil {
-		return err
+	if logSource != nil {
+		if err := copyAPTRecoveryLogs(ctx, logSource, write, record); err != nil {
+			return err
+		}
 	}
 	return write.Commit()
 }

@@ -522,6 +522,12 @@ func restoreResourceReviewsFromPaths(manifest Manifest, files map[string]string)
 }
 
 func (s *Service) VerifyArchiveFile(ctx context.Context, encrypted TemporaryFile, passphrase string) (VerifyResult, error) {
+	return s.VerifyArchiveFileWithReview(ctx, encrypted, passphrase, nil)
+}
+
+// VerifyArchiveFileWithReview allows an installation-specific compatibility
+// check on the isolated, schema-validated archive database.
+func (s *Service) VerifyArchiveFileWithReview(ctx context.Context, encrypted TemporaryFile, passphrase string, review func(context.Context, *sql.DB)) (VerifyResult, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -603,6 +609,14 @@ func (s *Service) VerifyArchiveFile(ctx context.Context, encrypted TemporaryFile
 		result.Warnings = append(result.Warnings, ReadinessIssue{Code: "known_hosts_not_included", Message: "known_hosts is not included; the current host-key trust file will remain unchanged."})
 	}
 	result.RestoreReady = true
+	if review != nil {
+		db, err := sql.Open("sqlite", inspection.Files["servers.db"])
+		if err == nil {
+			defer db.Close()
+			db.SetMaxOpenConns(1)
+			review(ctx, db)
+		}
+	}
 	return result, nil
 }
 

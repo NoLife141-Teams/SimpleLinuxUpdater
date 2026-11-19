@@ -22,6 +22,7 @@ import (
 	auditpkg "debian-updater/internal/audit"
 	internalbackup "debian-updater/internal/backup"
 	maintenancepkg "debian-updater/internal/maintenance"
+	notificationpkg "debian-updater/internal/notifications"
 	policypkg "debian-updater/internal/policies"
 )
 
@@ -608,8 +609,17 @@ func TestBackupAutomationArchiveRestoresOnDistinctInstance(t *testing.T) {
 	if _, err := source.Deps.DB().Exec("INSERT INTO servers(name,host,port,user,pass_enc,key_enc,key_path,tags) VALUES('backup-only-host','invalid.example',22,'root','','','','')"); err != nil {
 		t.Fatal(err)
 	}
+	identity := "condition/" + notificationpkg.APTReconciliationConditionID("legacy-target", "legacy-job") + "/" + strings.Repeat("a", 64)
+	legacy := `{"Admissions":{"` + identity + `":true}}`
+	if _, err := source.Deps.DB().Exec("INSERT OR REPLACE INTO notification_conditions(id,state_json) VALUES(1,?)", legacy); err != nil {
+		t.Fatal(err)
+	}
 	if err := a.Tick(context.Background(), true); err != nil {
 		t.Fatal(err)
+	}
+	var stateJSON string
+	if err := source.Deps.DB().QueryRow("SELECT state_json FROM notification_conditions WHERE id=1").Scan(&stateJSON); err != nil || stateJSON != legacy {
+		t.Fatalf("automatic verification changed live notification state: %s, %v", stateJSON, err)
 	}
 	s := backupAutomationStateForTest(t, a)
 	archivePath := filepath.Join(a.deployment.Directory, s.Archives[0].Name)
@@ -627,6 +637,10 @@ func TestBackupAutomationArchiveRestoresOnDistinctInstance(t *testing.T) {
 	outcome := newBackupOperationLifecycle(target.Deps).Restore(context.Background(), backupRestoreCommand{Actor: "test", File: internalbackup.TemporaryFile{Path: archivePath, Size: info.Size()}, Passphrase: "distinct instance restore secret", Lease: lease})
 	if outcome.Kind != backupOperationSucceeded {
 		t.Fatalf("real restore: %+v", outcome)
+	}
+	var storedIdentity string
+	if err := target.Deps.DB().QueryRow("SELECT identity FROM notification_apt_admissions").Scan(&storedIdentity); err != nil || storedIdentity != identity {
+		t.Fatalf("legacy notification admission lost after restore: %q, %v", storedIdentity, err)
 	}
 	var count int
 	if err = target.Deps.DB().QueryRow("SELECT COUNT(*) FROM servers WHERE name='backup-only-host'").Scan(&count); err != nil || count != 1 {
@@ -649,10 +663,18 @@ func TestBackupAutomationArchiveRestoresOnDistinctInstance(t *testing.T) {
 }
 
 func TestBackupAutomationMidWriteAndCancellationFailures(t *testing.T) {
-	for _, failure := range []string{"full disk", "permission", "cancelled", "not restore ready"} {
+	for _, failure := range []string{"full disk", "permission", "cancelled", "not restore ready", "unreadable archived notifications"} {
 		t.Run(failure, func(t *testing.T) {
-			_, a, now := newBackupAutomationTest(t)
+			app, a, now := newBackupAutomationTest(t)
 			s := backupAutomationStateForTest(t, a)
+			if failure == "unreadable archived notifications" {
+				config := s.Config
+				config.Retain = 1
+				if _, err := a.Configure(t.Context(), config); err != nil {
+					t.Fatal(err)
+				}
+				s = backupAutomationStateForTest(t, a)
+			}
 			*now = parseBackupStamp(s.NextAt)
 			if err := a.Tick(context.Background(), false); err != nil {
 				t.Fatal(err)
@@ -687,12 +709,19 @@ func TestBackupAutomationMidWriteAndCancellationFailures(t *testing.T) {
 					return internalbackup.VerifyResult{RestoreReady: false}, nil
 				}
 			}
+			if failure == "unreadable archived notifications" {
+				if _, err := app.Deps.DB().Exec("INSERT OR REPLACE INTO notification_conditions(id,state_json) VALUES(1,?)", `{"Admissions":`); err != nil {
+					t.Fatal(err)
+				}
+			}
+			previousSuccess := s.LastSuccessAt
 			*now = parseBackupStamp(s.NextAt)
 			if err = a.Tick(ctx, false); err == nil {
 				t.Fatal("injected failure accepted")
 			}
 			s = backupAutomationStateForTest(t, a)
-			if s.Outcome != "failed" || len(s.Archives) != 1 || s.LastSuccessAt == "" {
+			if s.Outcome != "failed" || len(s.Archives) != 1 || s.LastSuccessAt == "" || s.LastSuccessAt != previousSuccess ||
+				s.Archives[0].LastVerifiedAt != previous.LastVerifiedAt {
 				t.Fatalf("failure result: %+v", s)
 			}
 			entries, err := os.ReadDir(a.deployment.Directory)

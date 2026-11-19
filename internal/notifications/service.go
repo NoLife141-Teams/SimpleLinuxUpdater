@@ -616,11 +616,8 @@ func (s *Service) StageAPTDeliveryEvidence(ctx context.Context, staged *sql.DB) 
 	if conditions == nil || replacement == nil {
 		return errors.New("notification persistence replacement was not prepared")
 	}
-	if err := ensureSchema(ctx, staged); err != nil {
+	if err := PrepareArchivedPersistence(ctx, staged); err != nil {
 		return err
-	}
-	if _, err := loadAndMigrateConditionState(ctx, staged); err != nil {
-		return fmt.Errorf("read staged notification conditions: %w", err)
 	}
 	if len(replacement.APTAdmissions) == 0 {
 		return nil

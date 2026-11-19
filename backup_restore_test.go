@@ -34,6 +34,83 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+func TestBackupVerificationRejectsUnreadableArchivedNotifications(t *testing.T) {
+	app := newTestApp(t, testAppOptions{DBPath: filepath.Join(t.TempDir(), "backup-notification-review.db")})
+	cookie := app.authenticate(t)
+	live := app.Deps.DB()
+	const canary = "private-condition-canary"
+	if _, err := live.Exec(`INSERT OR REPLACE INTO notification_conditions(id,state_json) VALUES(1,?)`,
+		`{"Admissions":"`+canary); err != nil {
+		t.Fatal(err)
+	}
+	const passphrase = "fixture-notification-archive-passphrase"
+	export := performContractRequest(app.Handler, http.MethodPost, "/api/backup/export",
+		bytes.NewBufferString(`{"passphrase":"`+passphrase+`"}`), cookie, true)
+	if export.Code != http.StatusOK {
+		t.Fatalf("export status = %d, want an encrypted archive", export.Code)
+	}
+	if _, err := live.Exec(`
+		DELETE FROM notification_conditions WHERE id=1;
+		INSERT INTO servers(name,host,port,user,pass_enc,key_enc,key_path,tags) VALUES('live-only','invalid.example',22,'root','','','','');
+	`); err != nil {
+		t.Fatal(err)
+	}
+
+	upload := func(path string) *httptest.ResponseRecorder {
+		t.Helper()
+		var body bytes.Buffer
+		form := multipart.NewWriter(&body)
+		part, err := form.CreateFormFile("file", "fixture.slubkp")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := part.Write(export.Body.Bytes()); err != nil {
+			t.Fatal(err)
+		}
+		if err := form.WriteField("passphrase", passphrase); err != nil {
+			t.Fatal(err)
+		}
+		if err := form.Close(); err != nil {
+			t.Fatal(err)
+		}
+		req := httptest.NewRequest(http.MethodPost, path, &body)
+		req.Header.Set("Content-Type", form.FormDataContentType())
+		req.AddCookie(cookie)
+		markSameOriginAuthRequest(req)
+		rec := httptest.NewRecorder()
+		app.Handler.ServeHTTP(rec, req)
+		if strings.Contains(rec.Body.String(), canary) {
+			t.Fatalf("%s exposed raw archived state", path)
+		}
+		return rec
+	}
+
+	verify := upload("/api/backup/verify")
+	var readiness struct {
+		RestoreReady       bool                            `json:"restore_ready"`
+		Blockers           []internalbackup.ReadinessIssue `json:"blockers"`
+		InstallationReview *backupInstallationReview       `json:"installation_review"`
+	}
+	if err := json.Unmarshal(verify.Body.Bytes(), &readiness); err != nil {
+		t.Fatal(err)
+	}
+	if verify.Code != http.StatusOK || readiness.RestoreReady || readiness.InstallationReview != nil ||
+		len(readiness.Blockers) != 1 || readiness.Blockers[0].Code != "invalid_notification_state" ||
+		!strings.Contains(readiness.Blockers[0].Message, "Choose a different verified backup") {
+		t.Fatalf("verify status = %d, readiness = %+v", verify.Code, readiness)
+	}
+	if restore := upload("/api/backup/restore"); restore.Code != http.StatusBadRequest {
+		t.Fatalf("restore status = %d, want invalid archive", restore.Code)
+	}
+	if result := performContractRequest(app.Handler, http.MethodGet, "/api/servers", nil, cookie, false); result.Code != http.StatusOK {
+		t.Fatalf("live session did not survive verification and rejected restore: %d", result.Code)
+	}
+	var count int
+	if err := app.Deps.DB().QueryRow("SELECT COUNT(*) FROM servers WHERE name='live-only'").Scan(&count); err != nil || count != 1 {
+		t.Fatalf("live inventory was replaced: count=%d err=%v", count, err)
+	}
+}
+
 func TestBackupStatusAPIExposesRecoveryHealthAndUnavailableEvidence(t *testing.T) {
 	now := time.Date(2026, 7, 28, 5, 0, 0, 0, time.UTC)
 	newService := func(t *testing.T, withEvidenceSchema bool) *BackupService {

@@ -1024,6 +1024,12 @@
                             <div><dt>Archive size</dt><dd id="backup-review-size">-</dd></div>
                             <div><dt>Restart</dt><dd id="backup-review-restart">-</dd></div>
                         </dl>
+                        <div class="backup-review-section" id="backup-review-installation" hidden>
+                            <h5>APT compatibility for this installation</h5>
+                            <p class="muted" id="backup-review-archive-compatibility"></p>
+                            <p id="backup-review-installation-message"></p>
+                            <ul id="backup-review-installation-conflicts"></ul>
+                        </div>
                         <div class="backup-review-section">
                             <h5>Included resources</h5>
                             <ul id="backup-review-resources"></ul>
@@ -1224,13 +1230,13 @@
     <script src="/static/js/scheduled-policy-administration-interaction.js?v=scheduled-autoremove-20261020"></script>
     <script src="/static/js/section-navigation.js?v=section-navigation-20261029"></script>
     <script src="/static/js/section-navigation-adapter.js?v=admin-horizontal-20261104"></script>
-    <script src="/static/js/admin-page-interaction.js?v=notification-history-594"></script>
+    <script src="/static/js/admin-page-interaction.js?v=apt-restore-preview-625"></script>
     <script src="/static/js/admin-session-ip-reveal.js?v=frontend-isolation-20261027"></script>
     <script src="/static/js/application-postcheck-adapter.js?v=admin-profile-test-eligibility-20261029"></script>
     <script src="/static/js/package-deferrals.js?v=frontend-isolation-20261027"></script>
 <script src="/static/js/admin-notifications-adapter.js?v=notification-apt-reconciliation-619"></script>
 <script src="/static/js/admin-account-adapter.js?v=frontend-isolation-20261027"></script>
-<script src="/static/js/admin-backup-adapter.js?v=backup-catalog-20261028"></script>
+<script src="/static/js/admin-backup-adapter.js?v=apt-restore-preview-625"></script>
 <script src="/static/js/admin-policies-adapter.js?v=apt-reconciliation-624"></script>
 <script src="/static/js/admin.js?v=backup-policy-preview-20261118"></script>
 </body>

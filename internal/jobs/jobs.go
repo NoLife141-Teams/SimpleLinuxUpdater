@@ -1100,13 +1100,16 @@ func (r *SQLiteRepository) ListUnfinishedServerNames() ([]string, error) {
 }
 
 func (r *SQLiteRepository) ListReconciliationRequired() ([]Record, error) {
-	return r.listAPTReconciliationEvidence(false)
+	if r == nil || r.db == nil {
+		return nil, errors.New("job repository is not initialized")
+	}
+	return listAPTReconciliationEvidence(context.Background(), r.db, false)
 }
 
 // ListUnresolvedAPTJobs includes the original interrupted mutation and failed
 // repair attempts while their target still requires reconciliation.
-func (r *SQLiteRepository) ListUnresolvedAPTJobs() ([]Record, error) {
-	return r.listAPTReconciliationEvidence(true)
+func ListUnresolvedAPTJobs(ctx context.Context, read *sql.Tx) ([]Record, error) {
+	return listAPTReconciliationEvidence(ctx, read, true)
 }
 
 const unresolvedAPTJobPredicate = `WHERE candidate.status = ?
@@ -1130,11 +1133,10 @@ func unresolvedAPTJobArgs() []any {
 	}
 }
 
-func (r *SQLiteRepository) listAPTReconciliationEvidence(includePrevious bool) ([]Record, error) {
-	if r == nil || r.db == nil {
-		return nil, errors.New("job repository is not initialized")
-	}
-	rows, err := r.db.Query(`
+func listAPTReconciliationEvidence(ctx context.Context, db interface {
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+}, includePrevious bool) ([]Record, error) {
+	rows, err := db.QueryContext(ctx, `
 		SELECT candidate.id, candidate.kind, candidate.parent_job_id, candidate.server_name,
 		       candidate.actor, candidate.client_ip, candidate.status, candidate.phase, candidate.summary,
 		       candidate.logs_text, candidate.error_class, candidate.retry_policy_json, candidate.meta_json,

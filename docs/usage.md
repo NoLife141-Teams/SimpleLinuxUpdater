@@ -727,7 +727,7 @@ Notes:
 
 - Restore immediately replaces `servers.db` and, if present in the backup, `known_hosts`. The backup `config.json` is validated and its encryption key is used to re-encrypt restored secrets with the local `config.json` key.
 - No restart is required after restore.
-- An in-place restore keeps open APT reconciliation and the exact job report when the archived inventory contains the same identity and SSH endpoint. An older archive cannot unblock an affected host. If the archive drops or replaces an affected host, or its job evidence contradicts the open incident, the app refuses the restore and keeps the live installation in use. Resolve the incident on that installation before retrying.
+- An in-place restore keeps open APT reconciliation and the exact job report when the archived inventory contains the same identity and SSH endpoint. The restore review shows archive compatibility and any APT conflicts with this installation separately. Resolve an open incident or choose a compatible archive when the review identifies a conflict. Restore checks again before replacing files.
 - An explicitly successful repair with recorded SSH host-key proof can resolve an older archived incident for the same target. Restore never runs remote package commands. A separate installation can recover only the reconciliation evidence available in the archive. Check remote package state before resuming maintenance when the archive may predate an interruption.
 - If your deployment depends on external TLS/reverse-proxy config, back that up separately.
 

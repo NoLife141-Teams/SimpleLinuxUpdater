@@ -32,8 +32,8 @@ func (r *SQLiteRepository) MarkInterruptedAPTMutations(now string) error {
 // LatestVerifiedAPTRepairs returns the newest successful repair with host key
 // proof for each APT target. Carrying this evidence through intervening restores
 // keeps a later restore from reopening an older, already repaired incident.
-func (r *SQLiteRepository) LatestVerifiedAPTRepairs() ([]Record, error) {
-	rows, err := r.db.Query(`
+func LatestVerifiedAPTRepairs(ctx context.Context, read *sql.Tx) ([]Record, error) {
+	rows, err := read.QueryContext(ctx, `
 		SELECT id, apt_target FROM (
 			SELECT id, apt_target,
 			       row_number() OVER (PARTITION BY apt_target ORDER BY created_at DESC, id DESC) AS position
@@ -58,12 +58,7 @@ func (r *SQLiteRepository) LatestVerifiedAPTRepairs() ([]Record, error) {
 
 // ImportAPTRecoveryEvidence carries a terminal job and its retained log stream
 // from the live database into an isolated restore database.
-func (r *SQLiteRepository) ImportAPTRecoveryEvidence(ctx context.Context, live *SQLiteRepository, id, serverName string) error {
-	read, err := live.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
-	if err != nil {
-		return err
-	}
-	defer read.Rollback()
+func (r *SQLiteRepository) ImportAPTRecoveryEvidence(ctx context.Context, read *sql.Tx, id, serverName string, includeLogs bool) error {
 	record, err := getJobRow(ctx, read, id)
 	if err != nil {
 		return err
@@ -86,8 +81,10 @@ func (r *SQLiteRepository) ImportAPTRecoveryEvidence(ctx context.Context, live *
 	if err := upsertJobRow(ctx, write, record, true); err != nil {
 		return err
 	}
-	if err := copyAPTRecoveryLogs(ctx, read, write, record); err != nil {
-		return err
+	if includeLogs {
+		if err := copyAPTRecoveryLogs(ctx, read, write, record); err != nil {
+			return err
+		}
 	}
 	return write.Commit()
 }

@@ -3,27 +3,53 @@ package main
 import (
 	"context"
 	"database/sql"
+	"errors"
+	"sort"
 
 	"debian-updater/internal/jobs"
 )
 
-// Preserve live APT evidence in the isolated replacement database before the
-// restore can change the running installation.
+type aptRestoreConflict struct {
+	Code      string `json:"code"`
+	Server    string `json:"server"`
+	Message   string `json:"message"`
+	ReportURL string `json:"report_url,omitempty"`
+	jobID     string
+}
+
+type aptRestoreConflicts []aptRestoreConflict
+
+func (aptRestoreConflicts) Error() string { return jobs.ErrAPTRecoveryEvidenceConflict.Error() }
+func (aptRestoreConflicts) Unwrap() error { return jobs.ErrAPTRecoveryEvidenceConflict }
+
+// prepareAPTRestore applies the same reconciliation checks as verification.
+// Only the isolated replacement database is modified.
 func prepareAPTRestore(ctx context.Context, liveDB, stagedDB *sql.DB, now string) error {
-	live := jobs.NewSQLiteRepository(liveDB)
+	return reconcileAPTRestore(ctx, liveDB, stagedDB, now, true)
+}
+
+func reconcileAPTRestore(ctx context.Context, liveDB, stagedDB *sql.DB, now string, includeLogs bool) error {
+	if liveDB == nil {
+		return errors.New("live APT evidence is unavailable")
+	}
+	live, err := liveDB.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return err
+	}
+	defer live.Rollback()
 	staged := jobs.NewSQLiteRepository(stagedDB)
-	open, err := live.ListUnresolvedAPTJobs()
+	open, err := jobs.ListUnresolvedAPTJobs(ctx, live)
 	if err != nil {
 		return err
 	}
 	if err := staged.MarkInterruptedAPTMutations(now); err != nil {
 		return err
 	}
-	repairs, err := live.LatestVerifiedAPTRepairs()
+	repairs, err := jobs.LatestVerifiedAPTRepairs(ctx, live)
 	if err != nil || (len(open) == 0 && len(repairs) == 0) {
 		return err
 	}
-	liveTargets, err := aptRestoreInventory(ctx, liveDB)
+	liveTargets, err := aptRestoreInventory(ctx, live)
 	if err != nil {
 		return err
 	}
@@ -33,32 +59,52 @@ func prepareAPTRestore(ctx context.Context, liveDB, stagedDB *sql.DB, now string
 	}
 
 	latestOpen := make(map[string]string)
-	importedOpen := make(map[string]bool)
+	importedOpen := make(map[string]jobs.Record)
+	conflicts := make(map[string]aptRestoreConflict)
+	addConflict := func(record jobs.Record, target Server, code, message string) {
+		if _, exists := conflicts[record.APTTarget]; !exists {
+			conflicts[record.APTTarget] = aptRestoreConflict{Code: code, Server: target.Name, Message: message, jobID: record.ID}
+		}
+	}
+	importEvidence := func(record jobs.Record, target Server) error {
+		err := staged.ImportAPTRecoveryEvidence(ctx, live, record.ID, target.Name, includeLogs)
+		if errors.Is(err, jobs.ErrAPTRecoveryEvidenceConflict) {
+			if original, found := liveTargets.byTarget[record.APTTarget]; found {
+				target = original
+			}
+			addConflict(record, target, "apt_evidence_conflict", "The archive contains conflicting APT job evidence for this server.")
+			return nil
+		}
+		return err
+	}
+
 	for _, incident := range open {
-		name, matches := stagedTargets[incident.APTTarget]
+		server, matches := stagedTargets.byTarget[incident.APTTarget]
 		if !matches {
-			if _, attached := liveTargets[incident.APTTarget]; attached {
-				return jobs.ErrAPTRecoveryEvidenceConflict
+			if original, attached := liveTargets.byTarget[incident.APTTarget]; attached {
+				if stagedTargets.names[original.Name] || stagedTargets.identities[original.Identity] {
+					addConflict(incident, original, "apt_target_changed", "The archive changes the identity or SSH address of this server.")
+				} else {
+					addConflict(incident, original, "apt_target_missing", "The archive omits this server with an open APT incident.")
+				}
 			}
 			continue
 		}
-		if err := staged.ImportAPTRecoveryEvidence(ctx, live, incident.ID, name); err != nil {
+		if err := importEvidence(incident, server); err != nil {
 			return err
 		}
-		// The most recent timestamp controls repair admission. Keep earlier
-		// unresolved jobs for their reports, without requiring their admission.
+		// The latest evidence controls repair admission. Preserve earlier
+		// unresolved jobs for their reports as well.
 		if latest, seen := latestOpen[incident.APTTarget]; !seen || latest == incident.CreatedAt {
 			latestOpen[incident.APTTarget] = incident.CreatedAt
-			importedOpen[incident.ID] = true
+			importedOpen[incident.ID] = incident
 		}
 	}
 	for _, repair := range repairs {
-		name, matches := stagedTargets[repair.APTTarget]
-		if !matches {
-			continue
-		}
-		if err := staged.ImportAPTRecoveryEvidence(ctx, live, repair.ID, name); err != nil {
-			return err
+		if server, matches := stagedTargets.byTarget[repair.APTTarget]; matches {
+			if err := importEvidence(repair, server); err != nil {
+				return err
+			}
 		}
 	}
 	remaining, err := staged.ListReconciliationRequired()
@@ -68,27 +114,54 @@ func prepareAPTRestore(ctx context.Context, liveDB, stagedDB *sql.DB, now string
 	for _, incident := range remaining {
 		delete(importedOpen, incident.ID)
 	}
-	if len(importedOpen) != 0 {
-		return jobs.ErrAPTRecoveryEvidenceConflict
+	for _, incident := range importedOpen {
+		server, liveMatch := liveTargets.byTarget[incident.APTTarget]
+		if !liveMatch {
+			server = stagedTargets.byTarget[incident.APTTarget]
+		}
+		addConflict(incident, server, "apt_evidence_conflict", "The archive contradicts the current APT reconciliation state for this server.")
 	}
-	return nil
+	if len(conflicts) == 0 {
+		return nil
+	}
+	result := make(aptRestoreConflicts, 0, len(conflicts))
+	for _, conflict := range conflicts {
+		result = append(result, conflict)
+	}
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].Server != result[j].Server {
+			return result[i].Server < result[j].Server
+		}
+		return result[i].jobID < result[j].jobID
+	})
+	return result
 }
 
-func aptRestoreInventory(ctx context.Context, db *sql.DB) (map[string]string, error) {
+type aptRestoreTargets struct {
+	byTarget   map[string]Server
+	names      map[string]bool
+	identities map[string]bool
+}
+
+func aptRestoreInventory(ctx context.Context, db interface {
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+}) (aptRestoreTargets, error) {
 	rows, err := db.QueryContext(ctx, `SELECT name, identity, host, port FROM servers`)
 	if err != nil {
-		return nil, err
+		return aptRestoreTargets{}, err
 	}
 	defer rows.Close()
-	targets := make(map[string]string)
+	inventory := aptRestoreTargets{byTarget: map[string]Server{}, names: map[string]bool{}, identities: map[string]bool{}}
 	for rows.Next() {
 		var server Server
 		if err := rows.Scan(&server.Name, &server.Identity, &server.Host, &server.Port); err != nil {
-			return nil, err
+			return aptRestoreTargets{}, err
 		}
+		inventory.names[server.Name] = true
+		inventory.identities[server.Identity] = true
 		if target := server.APTTarget(); target != "" {
-			targets[target] = server.Name
+			inventory.byTarget[target] = server
 		}
 	}
-	return targets, rows.Err()
+	return inventory, rows.Err()
 }

@@ -2703,6 +2703,46 @@ test("admin section drafts support save eligibility, discard, replacement confir
     await expect(page.locator("#policy-draft-action-bar")).toBeHidden();
 });
 
+test("restore review separates archive compatibility from installation APT conflicts", async ({ page }) => {
+    const job = "5".repeat(32);
+    const report = `/api/reports/jobs/${job}`;
+    const state = { verifyResponse: {
+        valid: true, compatible: true, restore_ready: true,
+        installation_review: {
+            state: "blocked",
+            message: "Resolve APT reconciliation on this installation or choose another archive, then review it again.",
+            conflicts: [{
+                code: "apt_target_changed", server: "database-01",
+                message: "The archive changes the identity or SSH address of this server.",
+                report_url: report,
+            }],
+        },
+    } };
+    await ensureAuthenticatedSession(page);
+    await stubAdminApi(page, state);
+    await page.goto("/admin#admin-section-backup");
+    await page.locator("#backup-restore-file").setInputFiles({
+        name: "backup.slubkp", mimeType: "application/octet-stream", buffer: Buffer.from("fixture"),
+    });
+    await page.locator("#backup-restore-passphrase").fill("LongPassphrase123");
+    await page.locator("#backup-verify-btn").click();
+    const panel = page.locator("#backup-review-installation");
+    await expect(panel).toContainText("Archive compatible");
+    await expect(panel).toContainText("database-01");
+    await expect(panel.getByRole("link", { name: "Job report" })).toHaveAttribute("href", report);
+    await expect(page.locator("#backup-restore-btn")).toBeDisabled();
+
+    state.verifyResponse.installation_review = { state: "unavailable", message: "APT compatibility could not be checked." };
+    await page.locator("#backup-verify-btn").click();
+    await expect(page.locator("#backup-review-readiness")).toHaveText("Check unavailable");
+    await expect(page.locator("#backup-restore-btn")).toBeDisabled();
+
+    state.verifyResponse.installation_review = { state: "ready", message: "No APT reconciliation conflict found." };
+    await page.locator("#backup-verify-btn").click();
+    await expect(page.locator("#backup-review-readiness")).toHaveText("Ready for confirmation");
+    await expect(page.locator("#backup-restore-btn")).toBeEnabled();
+});
+
 test("admin typed confirmations gate restore and policy deletion", async ({
     baseURL,
     page,

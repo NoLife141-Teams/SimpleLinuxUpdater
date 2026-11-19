@@ -595,7 +595,11 @@ func (s *Service) PreparePersistenceReplacement(ctx context.Context) error {
 		s.resumePersistence()
 		return err
 	}
-	rows.suppressExpiredAPTDeliveries(conditions.Admissions, s.deps.Now().UTC().Format(time.RFC3339Nano))
+	rows.APTAdmissions, err = loadAPTAdmissions(ctx, s.database())
+	if err != nil {
+		s.resumePersistence()
+		return err
+	}
 	s.persistenceMu.Lock()
 	s.replacementRows = &rows
 	s.replacementConditions = &conditions
@@ -612,30 +616,22 @@ func (s *Service) StageAPTDeliveryEvidence(ctx context.Context, staged *sql.DB) 
 	if conditions == nil || replacement == nil {
 		return errors.New("notification persistence replacement was not prepared")
 	}
-	admissions := conditionState{}
-	mergeAPTAdmissions(&admissions, conditions.Admissions)
-	if len(admissions.Admissions) == 0 {
+	if len(replacement.APTAdmissions) == 0 {
 		return nil
 	}
+	if err := ensureSchema(ctx, staged); err != nil {
+		return err
+	}
 	aptRows := outboxReplacement{
-		RetainedRows: make(map[string]outboxSnapshot), TerminalOutcomes: make(map[string]outboxOutcome),
+		RetainedRows:  make(map[string]outboxSnapshot),
+		APTAdmissions: replacement.APTAdmissions,
 	}
 	for id, snapshot := range replacement.RetainedRows {
 		if snapshot.Row.EventType == EventAPTReconciliationRequired {
 			aptRows.RetainedRows[id] = snapshot
 		}
 	}
-	now := s.deps.Now().UTC().Format(time.RFC3339Nano)
-	aptRows.suppressExpiredAPTDeliveries(admissions.Admissions, now)
-	if err := restoreCurrentOutboxRows(ctx, staged, &aptRows, now); err != nil {
-		return err
-	}
-	archived, err := loadConditionState(ctx, staged)
-	if err != nil {
-		return err
-	}
-	mergeAPTAdmissions(&archived, admissions.Admissions)
-	return saveConditionState(ctx, staged, &archived)
+	return restoreCurrentOutboxRows(ctx, staged, &aptRows, s.deps.Now().UTC().Format(time.RFC3339Nano))
 }
 
 // ReloadPersistence reinitializes the outbox after runtime persistence has
@@ -659,7 +655,7 @@ func (s *Service) ReloadPersistence(ctx context.Context) error {
 	if db == nil {
 		return errors.New("notification outbox database is unavailable")
 	}
-	if err := EnsureSchema(db); err != nil {
+	if err := ensureSchema(ctx, db); err != nil {
 		return err
 	}
 	if err := recoverExpiredOutboxClaims(ctx, db, s.deps.Now(), s.deps.ClaimTTL); err != nil {

@@ -62,6 +62,7 @@ type outboxSnapshot struct {
 type outboxReplacement struct {
 	RetainedRows     map[string]outboxSnapshot
 	TerminalOutcomes map[string]outboxOutcome
+	APTAdmissions    []string
 }
 
 func loadCurrentOutboxRows(ctx context.Context, db *sql.DB) (outboxReplacement, error) {
@@ -119,28 +120,56 @@ func loadCurrentOutboxRows(ctx context.Context, db *sql.DB) (outboxReplacement, 
 	return replacement, rows.Err()
 }
 
-func (replacement *outboxReplacement) suppressExpiredAPTDeliveries(admissions map[string]bool, now string) {
-	for identity, admitted := range admissions {
-		if !admitted || !isAPTAdmission(identity) {
-			continue
+func (replacement *outboxReplacement) suppressExpiredAPTDeliveries(ctx context.Context, tx *sql.Tx, now string) error {
+	if len(replacement.APTAdmissions) == 0 {
+		return nil
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT id FROM notification_outbox WHERE event_type=? AND state IN (?, ?, ?)`,
+		EventAPTReconciliationRequired, outboxStatePending, outboxStateClaimed, outboxStateRetrying)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	pending := make(map[string]bool)
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return err
+		}
+		if _, retained := replacement.RetainedRows[id]; !retained {
+			pending[id] = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, identity := range replacement.APTAdmissions {
+		if len(pending) == 0 {
+			break
 		}
 		for _, destination := range []string{DestinationWebhook, DestinationDiscord, DestinationTelegram} {
 			id := outboxDeliveryID(identity, destination)
-			_, retained := replacement.RetainedRows[id]
-			_, terminal := replacement.TerminalOutcomes[id]
-			if !retained && !terminal {
+			if pending[id] {
 				// The live ledger knows this admission even after its history has
 				// expired. An older archive cannot put it back into the queue.
-				replacement.TerminalOutcomes[id] = outboxOutcome{
-					State: outboxStateSkipped, CompletedAt: now, Error: outboxSkipConditionIneligible,
+				if _, err := tx.ExecContext(ctx, `UPDATE notification_outbox
+					SET state=?, attempts=0, next_attempt_at='', claimed_at='', attempted_at='', completed_at=?,
+					    status_code=0, error=?, duration_ms=0, updated_at=?
+					WHERE id=?`, outboxStateSkipped, now, outboxSkipConditionIneligible, now, id); err != nil {
+					return err
 				}
+				delete(pending, id)
 			}
 		}
 	}
+	return nil
 }
 
 func restoreCurrentOutboxRows(ctx context.Context, db *sql.DB, replacement *outboxReplacement, now string) error {
-	if db == nil || replacement == nil || (len(replacement.RetainedRows) == 0 && len(replacement.TerminalOutcomes) == 0) {
+	if db == nil || replacement == nil {
+		return nil
+	}
+	if len(replacement.RetainedRows) == 0 && len(replacement.TerminalOutcomes) == 0 && len(replacement.APTAdmissions) == 0 {
 		return nil
 	}
 	tx, err := db.BeginTx(ctx, nil)
@@ -214,6 +243,12 @@ func restoreCurrentOutboxRows(ctx context.Context, db *sql.DB, replacement *outb
 			return err
 		}
 	}
+	if err := replacement.suppressExpiredAPTDeliveries(ctx, tx, now); err != nil {
+		return err
+	}
+	if err := mergeAPTAdmissionsTx(ctx, tx, replacement.APTAdmissions); err != nil {
+		return err
+	}
 	return tx.Commit()
 }
 
@@ -231,13 +266,17 @@ func newOutboxID() string {
 }
 
 func EnsureSchema(db *sql.DB) error {
+	return ensureSchema(context.Background(), db)
+}
+
+func ensureSchema(ctx context.Context, db *sql.DB) error {
 	if db == nil {
 		return nil
 	}
-	if err := ensureConditionSchema(db); err != nil {
+	if err := ensureConditionSchema(ctx, db); err != nil {
 		return err
 	}
-	if _, err := db.Exec(`
+	if _, err := db.ExecContext(ctx, `
 		CREATE TABLE IF NOT EXISTS notification_outbox (
 			id TEXT PRIMARY KEY,
 			destination TEXT NOT NULL,
@@ -267,28 +306,28 @@ func EnsureSchema(db *sql.DB) error {
 	`); err != nil {
 		return fmt.Errorf("create notification outbox: %w", err)
 	}
-	if err := ensureOutboxDestinationFingerprintColumn(db); err != nil {
+	if err := ensureOutboxDestinationFingerprintColumn(ctx, db); err != nil {
 		return fmt.Errorf("migrate notification outbox destination binding: %w", err)
 	}
-	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_notification_outbox_due
+	if _, err := db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_notification_outbox_due
 		ON notification_outbox (state, next_attempt_at, created_at, id)`); err != nil {
 		return fmt.Errorf("index notification outbox due rows: %w", err)
 	}
-	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_notification_outbox_terminal
+	if _, err := db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_notification_outbox_terminal
 		ON notification_outbox (state, completed_at)`); err != nil {
 		return fmt.Errorf("index notification outbox terminal rows: %w", err)
 	}
 	// RFC3339Nano omits trailing fractional zeroes. Removing the final Z
 	// preserves chronological ordering for both whole and fractional seconds.
-	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_notification_outbox_history
+	if _, err := db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_notification_outbox_history
 		ON notification_outbox (rtrim(created_at, 'Z') DESC, id DESC)`); err != nil {
 		return fmt.Errorf("index notification outbox history: %w", err)
 	}
 	return nil
 }
 
-func ensureOutboxDestinationFingerprintColumn(db *sql.DB) error {
-	rows, err := db.Query(`PRAGMA table_info(notification_outbox)`)
+func ensureOutboxDestinationFingerprintColumn(ctx context.Context, db *sql.DB) error {
+	rows, err := db.QueryContext(ctx, `PRAGMA table_info(notification_outbox)`)
 	if err != nil {
 		return err
 	}
@@ -316,7 +355,7 @@ func ensureOutboxDestinationFingerprintColumn(db *sql.DB) error {
 	if found {
 		return nil
 	}
-	_, err = db.Exec(`ALTER TABLE notification_outbox ADD COLUMN destination_fingerprint TEXT NOT NULL DEFAULT ''`)
+	_, err = db.ExecContext(ctx, `ALTER TABLE notification_outbox ADD COLUMN destination_fingerprint TEXT NOT NULL DEFAULT ''`)
 	return err
 }
 

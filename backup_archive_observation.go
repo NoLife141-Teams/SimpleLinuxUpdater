@@ -266,11 +266,6 @@ func backupArchiveDirectoryAccessible(info os.FileInfo) bool {
 func (a *backupAutomation) observeArchive(archive *ownedBackupArchive, availability, observedAt, actor, ip string) *AuditEvent {
 	var event *AuditEvent
 	if archiveAvailabilityLost(availability) && !archive.LossActive {
-		if archive.LossEpisode == 0 && archiveAvailabilityLost(archive.Availability) && archive.Verification == "failed" {
-			// Older releases already emitted the generic loss fact.
-			archive.Availability, archive.ObservedAt, archive.LossActive = availability, observedAt, true
-			return nil
-		}
 		archive.LossEpisode++
 		if a.deps.AuditService != nil {
 			key := "backup-archive-loss:" + archive.ID + ":" + strconv.FormatUint(archive.LossEpisode, 10)

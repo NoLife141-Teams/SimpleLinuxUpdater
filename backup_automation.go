@@ -174,6 +174,15 @@ func (a *backupAutomation) load(ctx context.Context) (backupAutomationState, err
 	if err == nil {
 		var changed bool
 		changed, err = ensureBackupArchiveIDs(s.Archives)
+		for i := range s.Archives {
+			archive := &s.Archives[i]
+			if !archive.LossActive && archive.LossEpisode == 0 && archiveAvailabilityLost(archive.Availability) && archive.Verification == "failed" {
+				// Older releases recorded a generic loss audit. Preserve that
+				// episode before a new observation replaces its marker.
+				archive.LossActive = true
+				changed = true
+			}
+		}
 		if err == nil && changed {
 			err = a.save(ctx, s)
 		}
@@ -182,7 +191,7 @@ func (a *backupAutomation) load(ctx context.Context) (backupAutomationState, err
 }
 
 // readState also serves concurrent installation diagnostics. Keep it free of
-// migrations and writes; load callers hold mu before persisting catalog IDs.
+// migrations and writes; load callers hold mu before persisting catalog changes.
 func (a *backupAutomation) readState(ctx context.Context) (backupAutomationState, error) {
 	return readBackupAutomationState(ctx, a.deps.DB())
 }

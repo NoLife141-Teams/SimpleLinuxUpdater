@@ -299,6 +299,39 @@ func TestBackupArchiveLossNotifiesOnceAcrossWorkerRestartAndReverification(t *te
 	}
 }
 
+func TestBackupArchiveObservationPreservesLegacyLossWhenFileReappears(t *testing.T) {
+	app, a, _, archive := publishedCatalogFixture(t)
+	state := backupAutomationStateForTest(t, a)
+	legacy := &state.Archives[0]
+	legacy.Availability, legacy.Verification = "missing", "failed"
+	legacy.DirectoryIdentity, legacy.FileModifiedAt, legacy.ObservedAt = "", "", ""
+	if err := a.catalogAudit("backup-scheduler", "", "backup.verify", *legacy, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.save(t.Context(), state); err != nil {
+		t.Fatal(err)
+	}
+
+	// The previously missing file is back when the upgraded worker first runs.
+	if err := a.observeArchiveAvailability(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(a.deployment.Directory, archive.Name)); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.observeArchiveAvailability(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if facts := installationSnapshot(t.Context(), app.Deps).BackupArchives; facts.State != "missing" || facts.Lost != 1 {
+		t.Fatalf("loss awaiting verification was not reported: %+v", facts)
+	}
+	var audits int
+	err := app.Deps.DB().QueryRow("SELECT count(*) FROM audit_events WHERE action='backup.verify' AND status='failure'").Scan(&audits)
+	if err != nil || audits != 1 {
+		t.Fatalf("one unresolved legacy loss produced %d failure audits: %v", audits, err)
+	}
+}
+
 func TestBackupArchiveLossRemainsObservableAcrossPublication(t *testing.T) {
 	app, a, cookie, archive := publishedCatalogFixture(t)
 	path := filepath.Join(a.deployment.Directory, archive.Name)

@@ -15,8 +15,8 @@ import (
 	"unicode/utf8"
 )
 
-// ConditionFact contains accepted domain facts only. Unknown observations must
-// be omitted, never translated into Active=false.
+// ConditionFact contains accepted domain facts. An unknown observation can
+// suspend an active fact without resolving its episode.
 type ConditionFact struct {
 	ID             string
 	EventType      string
@@ -25,6 +25,7 @@ type ConditionFact struct {
 	ServerIdentity string `json:",omitempty"`
 	Generation     string
 	Active         bool
+	Suspended      bool `json:",omitempty"`
 	OneShot        bool
 	Message        string
 	MetaJSON       string
@@ -321,7 +322,7 @@ func (s *Service) reconcileConditions(ctx context.Context) (evaluationErr error)
 	state.Cursor = batch.Cursor
 	for _, condition := range conditionList(state) {
 		fact := condition.Fact
-		if !fact.Active || (fact.OneShot && !freshOneShots[fact.ID]) || !eventEnabled(settings.EventTypes, fact.EventType) {
+		if !fact.Active || fact.Suspended || (fact.OneShot && !freshOneShots[fact.ID]) || !eventEnabled(settings.EventTypes, fact.EventType) {
 			continue
 		}
 		for _, destination := range enabledDestinations(settings) {
@@ -459,7 +460,7 @@ func reminderIntent(state conditionState, settings Settings, now time.Time) (Del
 	lines := []string{}
 	for _, condition := range conditionList(state) {
 		fact := condition.Fact
-		if !fact.Active || fact.OneShot || fact.EventType == EventAPTReconciliationRequired || !eventEnabled(settings.EventTypes, fact.EventType) {
+		if !fact.Active || fact.Suspended || fact.OneShot || fact.EventType == EventAPTReconciliationRequired || !eventEnabled(settings.EventTypes, fact.EventType) {
 			continue
 		}
 		lines = append(lines, fmt.Sprintf("%s: %s", fact.TargetName, fact.Message))
@@ -490,6 +491,7 @@ type conditionDeliveryEligibility uint8
 const (
 	conditionIneligible conditionDeliveryEligibility = iota
 	conditionEligible
+	conditionDeferred
 	reminderSuperseded
 )
 
@@ -559,6 +561,9 @@ func (s *Service) revalidateOutboxCondition(ctx context.Context, row *outboxRow,
 		}
 	} else if condition.Episode != meta.Episode {
 		return conditionIneligible, nil
+	}
+	if fact.Suspended {
+		return conditionDeferred, nil
 	}
 	row.Intent = conditionIntent(condition)
 	return conditionEligible, nil

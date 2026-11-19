@@ -238,24 +238,28 @@ func localBackupCoverageFacts(state string, previous []notificationpkg.Condition
 		{"stale", notificationpkg.EventBackupCoverageStale, "The newest confirmed local recovery point is older than the recovery threshold. Review the backup catalog."},
 	} {
 		id := "backup/coverage/" + item.state
-		if state == "unknown" {
-			// Keep already confirmed episodes through temporary uncertainty.
-			// Retire the old aggregate-audit condition on its first observation
-			// under the new contract even without local archive evidence.
-			retire := false
-			for _, condition := range previous {
-				if condition.Fact.ID == id && condition.Fact.Generation != generation {
-					retire = true
-					break
-				}
-			}
-			if !retire {
-				continue
-			}
-		}
-		facts = append(facts, notificationpkg.ConditionFact{ID: id, EventType: item.event,
+		fact := notificationpkg.ConditionFact{ID: id, EventType: item.event,
 			TargetType: "backup", TargetName: "Application backup", Generation: generation,
-			Active: state == item.state, Message: item.message})
+			Active: state == item.state, Message: item.message}
+		if state == "unknown" {
+			for _, condition := range previous {
+				if condition.Fact.ID != id {
+					continue
+				}
+				if condition.Fact.Generation != generation {
+					// Retire the old aggregate-audit condition even without archive evidence.
+					facts = append(facts, fact)
+				} else if condition.Fact.Active {
+					// Preserve episode identity while pausing its deliveries.
+					confirmed := condition.Fact
+					confirmed.Suspended = true
+					facts = append(facts, confirmed)
+				}
+				break
+			}
+			continue
+		}
+		facts = append(facts, fact)
 	}
 	return facts
 }

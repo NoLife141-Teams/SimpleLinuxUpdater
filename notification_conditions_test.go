@@ -357,8 +357,9 @@ func TestNotificationBackupFactsManualAutomaticCoverageAndUnavailable(t *testing
 	saveAutomation()
 	previous := conditionPrevious(batch.Facts)
 	batch, err = source(context.Background(), batch.Cursor, previous)
-	if err != nil || batch.Incomplete || lastConditionFact(batch.Facts, "backup/coverage/stale").ID != "" {
-		t.Fatal("temporary storage uncertainty changed the confirmed episode")
+	stale := lastConditionFact(batch.Facts, "backup/coverage/stale")
+	if err != nil || batch.Incomplete || !stale.Active || !stale.Suspended {
+		t.Fatal("temporary storage uncertainty did not suspend the confirmed episode")
 	}
 	if _, err := db.Exec("UPDATE settings SET value='!' WHERE key=?", backupAutomationSettingsKey); err != nil {
 		t.Fatal(err)
@@ -370,10 +371,8 @@ func TestNotificationBackupFactsManualAutomaticCoverageAndUnavailable(t *testing
 	if !batch.Incomplete {
 		t.Fatal("unreadable recovery evidence appeared to be a complete evaluation")
 	}
-	for _, fact := range batch.Facts {
-		if strings.HasPrefix(fact.ID, "backup/coverage") {
-			t.Fatal("unavailable recovery projected a resolution")
-		}
+	if unreadable := lastConditionFact(batch.Facts, "backup/coverage/stale"); unreadable != stale {
+		t.Fatal("unreadable recovery evidence changed the suspended episode")
 	}
 }
 

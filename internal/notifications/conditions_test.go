@@ -89,6 +89,75 @@ func rebootFact(active bool) ConditionFact {
 	return ConditionFact{ID: "reboot/test", EventType: EventRebootRequired, TargetType: "server", TargetName: "test", Active: active, Message: "Reboot required"}
 }
 
+func TestSuspendedConditionDefersDeliveryAndPreservesAdmission(t *testing.T) {
+	h := newConditionHarness(t)
+	settings, err := h.service.currentSettings()
+	if err != nil {
+		t.Fatal(err)
+	}
+	settings.RemindersEnabled = true
+	if err := h.service.saveSettings(settings); err != nil {
+		t.Fatal(err)
+	}
+	const event = EventBackupCoverageMissing
+	h.facts = []ConditionFact{{ID: "backup/coverage/missing", EventType: event, Active: true, Message: "No verified local backup is available."}}
+	h.client.fail = true
+	h.reconcile(t)
+	row, err := claimNextOutboxRow(t.Context(), h.db, h.now)
+	if err != nil || row == nil {
+		t.Fatalf("claim initial alert = %+v, %v", row, err)
+	}
+	h.service.processOutboxRow(t.Context(), *row)
+	if h.client.calls != 1 {
+		t.Fatal("expected one initial delivery attempt")
+	}
+	// Queue a reminder before storage becomes unavailable. Enable another
+	// destination during the outage to exercise new admissions as well as retries.
+	h.now = h.now.Add(5 * time.Minute)
+	h.reconcile(t)
+	if h.count(t, EventReminder) != 1 {
+		t.Fatal("expected a queued reminder")
+	}
+	h.facts[0].Suspended = true
+	settings.DiscordEnabled = true
+	settings.DiscordWebhookURL = "https://discord.com/api/webhooks/123/test-token"
+	if err := h.service.saveSettings(settings); err != nil {
+		t.Fatal(err)
+	}
+	h.client.fail = false
+	h.reconcile(t)
+	h.drain(t)
+	h.now = h.now.Add(5 * time.Minute)
+	h.reconcile(t)
+	if h.client.calls != 1 || h.count(t, event) != 1 || h.count(t, EventReminder) != 1 {
+		t.Fatal("suspended condition generated a new alert, retry, or reminder")
+	}
+	var state string
+	var attempts int
+	if err := h.db.QueryRow(`SELECT state,attempts FROM notification_outbox WHERE id=?`, row.ID).Scan(&state, &attempts); err != nil {
+		t.Fatal(err)
+	}
+	if state != outboxStateRetrying || attempts != 1 {
+		t.Fatalf("suspended delivery = %s after %d attempts", state, attempts)
+	}
+	// Reconfirm the same loss after restart. The pending webhook admission
+	// can finish and the new destination gets one admission for the episode.
+	h.service = &Service{deps: h.service.deps, wake: make(chan struct{}, 1), monitoringStarted: true}
+	settings.RemindersEnabled = false
+	if err := h.service.saveSettings(settings); err != nil {
+		t.Fatal(err)
+	}
+	h.now = h.now.Add(time.Hour)
+	h.facts[0].Suspended = false
+	h.reconcile(t)
+	h.drain(t)
+	h.reconcile(t)
+	h.drain(t)
+	if h.client.calls != 3 || h.count(t, event) != 2 {
+		t.Fatalf("reconfirmed condition made %d calls and %d admissions", h.client.calls, h.count(t, event))
+	}
+}
+
 func TestConditionEpisodesRestartResolutionUnknownAndGeneration(t *testing.T) {
 	h := newConditionHarness(t)
 	h.facts = []ConditionFact{rebootFact(true)}

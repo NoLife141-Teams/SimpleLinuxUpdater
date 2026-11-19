@@ -623,7 +623,7 @@ Supported operational events are:
 - published operator approvals (`approval.published`) and their expiration (`approval.expired`), with the job ID and exact plan generation;
 - confirmed reboot requirements (`reboot.required`);
 - failed backup exports and restore-readiness verification (`backup.export.failed`, `backup.verify.failed`);
-- a missing or stale verified local recovery point (`backup.coverage.missing`, `backup.coverage.stale`). These events use the local archive catalog and the date of data capture. Temporary storage uncertainty preserves the previous confirmed episode.
+- a missing or stale verified local recovery point (`backup.coverage.missing`, `backup.coverage.stale`). These events use the local archive catalog and the date of data capture. Temporary storage uncertainty pauses coverage notifications and preserves the previous confirmed episode.
 
 Notification delivery is best-effort and never changes the maintenance result. Admin shows masked destination state and delivery diagnostics without returning stored secrets. Use HTTPS for public webhook endpoints, and treat test delivery as a real outbound message.
 

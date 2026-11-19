@@ -50,13 +50,9 @@ type backupRecoveryPoint struct {
 }
 
 // Only a manifest read from integrity-checked, restore-ready bytes can supply
-// a capture date. Earlier manifests recorded the archive's creation time.
+// a capture date. Manifest creation happens separately from the SQLite snapshot.
 func verifiedBackupCapture(manifest internalbackup.Manifest, latest time.Time) string {
-	value := manifest.CapturedAt
-	if value == "" {
-		value = manifest.CreatedAt
-	}
-	at := parseBackupStamp(value)
+	at := parseBackupStamp(manifest.CapturedAt)
 	created := parseBackupStamp(manifest.CreatedAt)
 	if at.IsZero() || at.After(latest) || (!created.IsZero() && at.Truncate(time.Second).After(created.Truncate(time.Second))) {
 		return ""

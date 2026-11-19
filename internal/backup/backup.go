@@ -287,6 +287,12 @@ type RestoredRuntime interface {
 	ReloadRestoredState(context.Context) error
 }
 
+// ReplacementStager carries persistence facts that must survive an exit after
+// the first file replacement. It runs after the runtime has drained its writers.
+type ReplacementStager interface {
+	StagePersistenceReplacement(context.Context, *sql.DB) error
+}
+
 type unavailableRestoredRuntime struct{}
 
 func (unavailableRestoredRuntime) PreparePersistenceReplacement(context.Context) error {

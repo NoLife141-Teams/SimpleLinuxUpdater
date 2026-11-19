@@ -1102,18 +1102,7 @@ func (r *SQLiteRepository) ListUnresolvedAPTJobs() ([]Record, error) {
 	return r.listAPTReconciliationEvidence(true)
 }
 
-func (r *SQLiteRepository) listAPTReconciliationEvidence(includePrevious bool) ([]Record, error) {
-	if r == nil || r.db == nil {
-		return nil, errors.New("job repository is not initialized")
-	}
-	rows, err := r.db.Query(`
-		SELECT candidate.id, candidate.kind, candidate.parent_job_id, candidate.server_name,
-		       candidate.actor, candidate.client_ip, candidate.status, candidate.phase, candidate.summary,
-		       candidate.logs_text, candidate.error_class, candidate.retry_policy_json, candidate.meta_json,
-		       candidate.created_at, candidate.updated_at, candidate.started_at, candidate.finished_at,
-		       candidate.logs_expired, candidate.logs_truncated, candidate.revision, candidate.apt_target, candidate.apt_mutation_host_key
-		  FROM jobs AS candidate
-		 WHERE candidate.status = ?
+const unresolvedAPTJobPredicate = `WHERE candidate.status = ?
 		   AND candidate.error_class = ?
 		   AND candidate.kind IN (?, ?, ?)
 		   AND candidate.apt_target <> ''
@@ -1125,7 +1114,27 @@ func (r *SQLiteRepository) listAPTReconciliationEvidence(includePrevious bool) (
 		          AND later_success.kind IN (?, ?, ?)
 		          AND later_success.status = ?
 		          AND later_success.created_at > candidate.created_at
-		   )
+		   )`
+
+func unresolvedAPTJobArgs() []any {
+	return []any{
+		StatusFailed, "reconciliation_required", KindUpdate, KindAutoremove, KindAptRepair,
+		KindUpdate, KindAutoremove, KindAptRepair, StatusSucceeded,
+	}
+}
+
+func (r *SQLiteRepository) listAPTReconciliationEvidence(includePrevious bool) ([]Record, error) {
+	if r == nil || r.db == nil {
+		return nil, errors.New("job repository is not initialized")
+	}
+	rows, err := r.db.Query(`
+		SELECT candidate.id, candidate.kind, candidate.parent_job_id, candidate.server_name,
+		       candidate.actor, candidate.client_ip, candidate.status, candidate.phase, candidate.summary,
+		       candidate.logs_text, candidate.error_class, candidate.retry_policy_json, candidate.meta_json,
+		       candidate.created_at, candidate.updated_at, candidate.started_at, candidate.finished_at,
+		       candidate.logs_expired, candidate.logs_truncated, candidate.revision, candidate.apt_target, candidate.apt_mutation_host_key
+		  FROM jobs AS candidate
+		  `+unresolvedAPTJobPredicate+`
 		   AND (? OR NOT EXISTS (
 		       SELECT 1
 		         FROM jobs AS later_reconciliation
@@ -1138,10 +1147,9 @@ func (r *SQLiteRepository) listAPTReconciliationEvidence(includePrevious bool) (
 		   ))
 		 ORDER BY candidate.created_at DESC
 	`,
-		StatusFailed, "reconciliation_required", KindUpdate, KindAutoremove, KindAptRepair,
-		KindUpdate, KindAutoremove, KindAptRepair, StatusSucceeded,
-		includePrevious,
-		StatusFailed, "reconciliation_required", KindUpdate, KindAutoremove, KindAptRepair,
+		append(unresolvedAPTJobArgs(),
+			includePrevious, StatusFailed, "reconciliation_required", KindUpdate, KindAutoremove, KindAptRepair,
+		)...,
 	)
 	if err != nil {
 		return nil, err

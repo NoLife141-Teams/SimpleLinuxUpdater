@@ -27,19 +27,20 @@ const (
 	DestinationDiscord  = "discord"
 	DestinationTelegram = "telegram"
 
-	EventUpdateComplete        = "update.complete"
-	EventScheduleRunFailed     = "schedule.run.failed"
-	EventScheduleRunSkipped    = "schedule.run.skipped"
-	EventBackupRestore         = "backup.restore"
-	EventTest                  = "notification.test"
-	EventApprovalPublished     = "approval.published"
-	EventApprovalExpired       = "approval.expired"
-	EventRebootRequired        = "reboot.required"
-	EventBackupExportFailed    = "backup.export.failed"
-	EventBackupVerifyFailed    = "backup.verify.failed"
-	EventBackupCoverageMissing = "backup.coverage.missing"
-	EventBackupCoverageStale   = "backup.coverage.stale"
-	EventReminder              = "notification.reminder"
+	EventUpdateComplete            = "update.complete"
+	EventScheduleRunFailed         = "schedule.run.failed"
+	EventScheduleRunSkipped        = "schedule.run.skipped"
+	EventBackupRestore             = "backup.restore"
+	EventTest                      = "notification.test"
+	EventApprovalPublished         = "approval.published"
+	EventApprovalExpired           = "approval.expired"
+	EventRebootRequired            = "reboot.required"
+	EventAPTReconciliationRequired = "apt.reconciliation.required"
+	EventBackupExportFailed        = "backup.export.failed"
+	EventBackupVerifyFailed        = "backup.verify.failed"
+	EventBackupCoverageMissing     = "backup.coverage.missing"
+	EventBackupCoverageStale       = "backup.coverage.stale"
+	EventReminder                  = "notification.reminder"
 
 	defaultAttempts                     = 3
 	defaultSQLiteContentionAttempts     = 20
@@ -57,7 +58,7 @@ var legacyEvents = []string{
 	EventBackupRestore,
 }
 
-var supportedEvents = append(append([]string(nil), legacyEvents...), EventApprovalPublished, EventApprovalExpired, EventRebootRequired, EventBackupExportFailed, EventBackupVerifyFailed, EventBackupCoverageMissing, EventBackupCoverageStale)
+var supportedEvents = append(append([]string(nil), legacyEvents...), EventApprovalPublished, EventApprovalExpired, EventRebootRequired, EventAPTReconciliationRequired, EventBackupExportFailed, EventBackupVerifyFailed, EventBackupCoverageMissing, EventBackupCoverageStale)
 
 var errUnsupportedEvent = errors.New("unsupported notification event type")
 
@@ -594,11 +595,47 @@ func (s *Service) PreparePersistenceReplacement(ctx context.Context) error {
 		s.resumePersistence()
 		return err
 	}
+	rows.suppressExpiredAPTDeliveries(conditions.Admissions, s.deps.Now().UTC().Format(time.RFC3339Nano))
 	s.persistenceMu.Lock()
 	s.replacementRows = &rows
 	s.replacementConditions = &conditions
 	s.persistenceMu.Unlock()
 	return nil
+}
+
+// StageAPTDeliveryEvidence carries confirmed admissions and their retained
+// outcomes before the archive can replace SQLite, even if reload never runs.
+func (s *Service) StageAPTDeliveryEvidence(ctx context.Context, staged *sql.DB) error {
+	s.persistenceMu.Lock()
+	conditions, replacement := s.replacementConditions, s.replacementRows
+	s.persistenceMu.Unlock()
+	if conditions == nil || replacement == nil {
+		return errors.New("notification persistence replacement was not prepared")
+	}
+	admissions := conditionState{}
+	mergeAPTAdmissions(&admissions, conditions.Admissions)
+	if len(admissions.Admissions) == 0 {
+		return nil
+	}
+	aptRows := outboxReplacement{
+		RetainedRows: make(map[string]outboxSnapshot), TerminalOutcomes: make(map[string]outboxOutcome),
+	}
+	for id, snapshot := range replacement.RetainedRows {
+		if snapshot.Row.EventType == EventAPTReconciliationRequired {
+			aptRows.RetainedRows[id] = snapshot
+		}
+	}
+	now := s.deps.Now().UTC().Format(time.RFC3339Nano)
+	aptRows.suppressExpiredAPTDeliveries(admissions.Admissions, now)
+	if err := restoreCurrentOutboxRows(ctx, staged, &aptRows, now); err != nil {
+		return err
+	}
+	archived, err := loadConditionState(ctx, staged)
+	if err != nil {
+		return err
+	}
+	mergeAPTAdmissions(&archived, admissions.Admissions)
+	return saveConditionState(ctx, staged, &archived)
 }
 
 // ReloadPersistence reinitializes the outbox after runtime persistence has

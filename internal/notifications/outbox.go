@@ -60,13 +60,13 @@ type outboxSnapshot struct {
 }
 
 type outboxReplacement struct {
-	ActiveRows       map[string]outboxSnapshot
+	RetainedRows     map[string]outboxSnapshot
 	TerminalOutcomes map[string]outboxOutcome
 }
 
 func loadCurrentOutboxRows(ctx context.Context, db *sql.DB) (outboxReplacement, error) {
 	replacement := outboxReplacement{
-		ActiveRows:       make(map[string]outboxSnapshot),
+		RetainedRows:     make(map[string]outboxSnapshot),
 		TerminalOutcomes: make(map[string]outboxOutcome),
 	}
 	if db == nil {
@@ -99,7 +99,9 @@ func loadCurrentOutboxRows(ctx context.Context, db *sql.DB) (outboxReplacement, 
 		}
 		if snapshot.Outcome.State == outboxStateSucceeded || snapshot.Outcome.State == outboxStateFailed || snapshot.Outcome.State == outboxStateSkipped {
 			replacement.TerminalOutcomes[snapshot.Row.ID] = snapshot.Outcome
-			continue
+			if snapshot.Row.EventType != EventAPTReconciliationRequired {
+				continue
+			}
 		}
 		if snapshot.Outcome.State == outboxStateClaimed {
 			snapshot.Outcome.State = outboxStateRetrying
@@ -112,13 +114,33 @@ func loadCurrentOutboxRows(ctx context.Context, db *sql.DB) (outboxReplacement, 
 		snapshot.Row.State = snapshot.Outcome.State
 		snapshot.Row.Attempts = snapshot.Outcome.Attempts
 		snapshot.Row.NextAttemptAt = snapshot.Outcome.NextAttemptAt
-		replacement.ActiveRows[snapshot.Row.ID] = snapshot
+		replacement.RetainedRows[snapshot.Row.ID] = snapshot
 	}
 	return replacement, rows.Err()
 }
 
+func (replacement *outboxReplacement) suppressExpiredAPTDeliveries(admissions map[string]bool, now string) {
+	for identity, admitted := range admissions {
+		if !admitted || !isAPTAdmission(identity) {
+			continue
+		}
+		for _, destination := range []string{DestinationWebhook, DestinationDiscord, DestinationTelegram} {
+			id := outboxDeliveryID(identity, destination)
+			_, retained := replacement.RetainedRows[id]
+			_, terminal := replacement.TerminalOutcomes[id]
+			if !retained && !terminal {
+				// The live ledger knows this admission even after its history has
+				// expired. An older archive cannot put it back into the queue.
+				replacement.TerminalOutcomes[id] = outboxOutcome{
+					State: outboxStateSkipped, CompletedAt: now, Error: outboxSkipConditionIneligible,
+				}
+			}
+		}
+	}
+}
+
 func restoreCurrentOutboxRows(ctx context.Context, db *sql.DB, replacement *outboxReplacement, now string) error {
-	if db == nil || replacement == nil || (len(replacement.ActiveRows) == 0 && len(replacement.TerminalOutcomes) == 0) {
+	if db == nil || replacement == nil || (len(replacement.RetainedRows) == 0 && len(replacement.TerminalOutcomes) == 0) {
 		return nil
 	}
 	tx, err := db.BeginTx(ctx, nil)
@@ -126,7 +148,7 @@ func restoreCurrentOutboxRows(ctx context.Context, db *sql.DB, replacement *outb
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	for _, snapshot := range replacement.ActiveRows {
+	for _, snapshot := range replacement.RetainedRows {
 		row := snapshot.Row
 		outcome := snapshot.Outcome
 		if _, err := tx.ExecContext(ctx, `

@@ -67,6 +67,15 @@ func (c *runtimeComposition) PreparePersistenceReplacement(ctx context.Context) 
 	return nil
 }
 
+func (c *runtimeComposition) StagePersistenceReplacement(ctx context.Context, staged *sql.DB) error {
+	if stager, ok := c.deps.NotificationService.(interface {
+		StageAPTDeliveryEvidence(context.Context, *sql.DB) error
+	}); ok {
+		return stager.StageAPTDeliveryEvidence(ctx, staged)
+	}
+	return nil
+}
+
 func (c *runtimeComposition) ReloadRestoredState(ctx context.Context) (resultErr error) {
 	if c != nil && c.deps.InstallationHealth != nil {
 		c.deps.InstallationHealth.setPhase("reloading")

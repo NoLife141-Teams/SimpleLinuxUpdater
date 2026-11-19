@@ -2,6 +2,7 @@ package notifications
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -92,6 +93,32 @@ func (state *conditionState) recordApprovalAdmission(conditionID string, admissi
 
 func episodeAdmissionID(condition Condition, fingerprint string) string {
 	return fmt.Sprintf("condition/%s/%d/%s", condition.Fact.ID, condition.Episode, fingerprint)
+}
+
+const aptConditionPrefix = "apt-reconciliation/"
+
+func APTReconciliationConditionID(target, jobID string) string {
+	digest := sha256.Sum256([]byte(target + "\x00" + jobID))
+	return fmt.Sprintf("%s%x", aptConditionPrefix, digest[:])
+}
+
+func aptAdmissionID(fact ConditionFact, fingerprint string) string {
+	return "condition/" + fact.ID + "/" + fingerprint
+}
+
+func isAPTAdmission(identity string) bool {
+	return strings.HasPrefix(identity, "condition/"+aptConditionPrefix)
+}
+
+func mergeAPTAdmissions(state *conditionState, source map[string]bool) {
+	if state.Admissions == nil {
+		state.Admissions = make(map[string]bool)
+	}
+	for identity, admitted := range source {
+		if admitted && isAPTAdmission(identity) {
+			state.Admissions[identity] = true
+		}
+	}
 }
 
 func conditionFingerprints(settings Settings) map[string]string {
@@ -279,6 +306,9 @@ func (s *Service) reconcileConditions(ctx context.Context) error {
 			fingerprint := destinationConfigFingerprint(settings, destination)
 			identity := episodeAdmissionID(condition, fingerprint)
 			exactApproval := fact.EventType == EventApprovalPublished && fact.Generation != ""
+			if fact.EventType == EventAPTReconciliationRequired {
+				identity = aptAdmissionID(fact, fingerprint)
+			}
 			admission := fact.approvalAdmission(fingerprint)
 			if exactApproval {
 				if _, exists := state.findApprovalAdmission(fact.ID, admission); exists {
@@ -373,7 +403,7 @@ func reminderIntent(state conditionState, settings Settings, now time.Time) (Del
 	lines := []string{}
 	for _, condition := range conditionList(state) {
 		fact := condition.Fact
-		if !fact.Active || fact.OneShot || !eventEnabled(settings.EventTypes, fact.EventType) {
+		if !fact.Active || fact.OneShot || fact.EventType == EventAPTReconciliationRequired || !eventEnabled(settings.EventTypes, fact.EventType) {
 			continue
 		}
 		lines = append(lines, fmt.Sprintf("%s: %s", fact.TargetName, fact.Message))
@@ -462,6 +492,11 @@ func (s *Service) revalidateOutboxCondition(ctx context.Context, row *outboxRow,
 		if !exists || row.ID != admission.OutboxID {
 			return conditionIneligible, nil
 		}
+	} else if row.EventType == EventAPTReconciliationRequired {
+		identity := aptAdmissionID(fact, row.DestinationFingerprint)
+		if !state.Admissions[identity] || row.ID != outboxDeliveryID(identity, row.Destination) {
+			return conditionIneligible, nil
+		}
 	} else if condition.Episode != meta.Episode {
 		return conditionIneligible, nil
 	}
@@ -476,9 +511,18 @@ func (s *Service) restoreConditions(ctx context.Context, db *sql.DB) error {
 	if state == nil {
 		return nil
 	}
+	archived, err := loadConditionState(ctx, db)
+	if err != nil {
+		return err
+	}
+	mergeAPTAdmissions(state, archived.Admissions)
 	// Do not replay historical audit events from the restored database. Current
 	// domain state is revalidated by the source before any pending delivery.
 	state.Cursor = "restore"
+	return saveConditionState(ctx, db, state)
+}
+
+func saveConditionState(ctx context.Context, db *sql.DB, state *conditionState) error {
 	raw, err := json.Marshal(state)
 	if err != nil {
 		return err
@@ -489,7 +533,7 @@ func (s *Service) restoreConditions(ctx context.Context, db *sql.DB) error {
 
 func isConditionEvent(event string) bool {
 	switch event {
-	case EventApprovalPublished, EventApprovalExpired, EventRebootRequired, EventBackupExportFailed, EventBackupVerifyFailed, EventBackupCoverageMissing, EventBackupCoverageStale:
+	case EventApprovalPublished, EventApprovalExpired, EventRebootRequired, EventAPTReconciliationRequired, EventBackupExportFailed, EventBackupVerifyFailed, EventBackupCoverageMissing, EventBackupCoverageStale:
 		return true
 	}
 	return false
@@ -500,13 +544,21 @@ func isConditionEvent(event string) bool {
 func pruneConditionState(state *conditionState, fingerprints map[string]string, now time.Time) {
 	for id, condition := range state.Conditions {
 		updated, _ := time.Parse(time.RFC3339Nano, condition.UpdatedAt)
-		if (condition.Fact.OneShot || (!condition.Fact.Active && condition.Fact.EventType == EventApprovalPublished)) && !updated.IsZero() && now.Sub(updated) > defaultOutboxRetention {
+		exactFact := condition.Fact.EventType == EventApprovalPublished || condition.Fact.EventType == EventAPTReconciliationRequired
+		if (condition.Fact.OneShot || (!condition.Fact.Active && exactFact)) && !updated.IsZero() && now.Sub(updated) > defaultOutboxRetention {
 			delete(state.Conditions, id)
 		}
 	}
 	keep := map[string]bool{}
+	// An older archive can reintroduce an incident after its outbox history
+	// has expired. Keep only hashed admission identities for that case.
+	for identity, admitted := range state.Admissions {
+		if admitted && isAPTAdmission(identity) {
+			keep[identity] = true
+		}
+	}
 	for _, condition := range state.Conditions {
-		if condition.Fact.EventType == EventApprovalPublished && condition.Fact.Generation != "" {
+		if (condition.Fact.EventType == EventApprovalPublished && condition.Fact.Generation != "") || condition.Fact.EventType == EventAPTReconciliationRequired {
 			continue
 		}
 		for fingerprint := range fingerprints {

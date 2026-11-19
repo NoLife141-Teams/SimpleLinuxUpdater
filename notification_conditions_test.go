@@ -554,3 +554,71 @@ func TestNotificationRebootRetiresEvidenceFromPreviousEndpoint(t *testing.T) {
 		})
 	}
 }
+
+func TestAPTNotificationKeepsTheOriginalJobForTheExactTarget(t *testing.T) {
+	db := conditionSourceDB(t)
+	server := Server{Name: "node", Identity: "durable-identity", Host: "ssh.invalid", Port: 22}
+	if _, err := db.Exec(`INSERT INTO servers(name,identity,host,port,user,pass_enc) VALUES(?,?,?,?,'root','')`,
+		server.Name, server.Identity, server.Host, server.Port); err != nil {
+		t.Fatal(err)
+	}
+	insert := func(id, kind, status, class, at, target string) {
+		t.Helper()
+		if _, err := db.Exec(`INSERT INTO jobs(id,kind,server_name,actor,status,error_class,created_at,updated_at,apt_target,logs_text)
+			VALUES(?,?,'node','tester',?,?,?,?,?,'secret raw SSH output')`, id, kind, status, class, at, at, target); err != nil {
+			t.Fatal(err)
+		}
+	}
+	target := server.APTTarget()
+	insert("original-job", "update", "failed", "reconciliation_required", "2026-10-25T12:00:00Z", target)
+	insert("failed-repair", "apt_repair", "failed", "reconciliation_required", "2026-10-25T12:01:00Z", target)
+	insert("unverified-legacy", "update", "failed", "reconciliation_required", "2026-10-25T11:00:00Z", "")
+	source := newNotificationConditionSource(func() *sql.DB { return db }, time.Now, nil)
+	ctx := t.Context()
+	read := func(cursor string, previous []notificationpkg.Condition) notificationpkg.ConditionBatch {
+		t.Helper()
+		batch, err := source(ctx, cursor, previous)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return batch
+	}
+	first := read("", nil)
+	incidentID := notificationpkg.APTReconciliationConditionID(target, "original-job")
+	original := lastConditionFact(first.Facts, incidentID)
+	if !original.Active || original.TargetName != server.Name || original.ServerIdentity != server.Identity ||
+		original.MetaJSON != `{"job_id":"original-job"}` || strings.Contains(original.Message, "secret") {
+		t.Fatalf("unexpected original incident: %+v", original)
+	}
+	for _, fact := range first.Facts {
+		if fact.EventType == notificationpkg.EventAPTReconciliationRequired && fact.ID != incidentID {
+			t.Fatalf("retry or unverified job became its own alert: %+v", fact)
+		}
+	}
+	if _, err := db.Exec(`UPDATE servers SET name='renamed' WHERE identity=?`, server.Identity); err != nil {
+		t.Fatal(err)
+	}
+	renamed := read(first.Cursor, conditionPrevious(first.Facts))
+	if fact := lastConditionFact(renamed.Facts, incidentID); !fact.Active || fact.TargetName != "renamed" {
+		t.Fatalf("rename lost the exact incident: %+v", fact)
+	}
+	if _, err := db.Exec(`UPDATE servers SET port=2202 WHERE identity=?`, server.Identity); err != nil {
+		t.Fatal(err)
+	}
+	replaced := read("restore", conditionPrevious(renamed.Facts))
+	if fact := lastConditionFact(replaced.Facts, incidentID); fact.ID == "" || fact.Active {
+		t.Fatalf("replacement did not retire original condition: %+v", fact)
+	}
+	if _, err := db.Exec(`UPDATE servers SET port=22 WHERE identity=?`, server.Identity); err != nil {
+		t.Fatal(err)
+	}
+	insert("successful-repair", "apt_repair", "succeeded", "", "2026-10-25T12:02:00Z", target)
+	insert("new-incident", "autoremove", "failed", "reconciliation_required", "2026-10-25T12:03:00Z", target)
+	later := read(replaced.Cursor, conditionPrevious(renamed.Facts))
+	if fact := lastConditionFact(later.Facts, incidentID); fact.ID == "" || fact.Active {
+		t.Fatalf("repair left the old alert actionable: %+v", fact)
+	}
+	if fact := lastConditionFact(later.Facts, notificationpkg.APTReconciliationConditionID(target, "new-incident")); !fact.Active {
+		t.Fatalf("distinct later incident was not admitted: %+v", fact)
+	}
+}

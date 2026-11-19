@@ -188,7 +188,7 @@ func TestDeliveryHistoryLinksRetainedJobsAndRevalidatesTheExactPlan(t *testing.T
 	seed(5, notificationpkg.EventApprovalPublished, planID, 7)
 	seed(4, notificationpkg.EventApprovalPublished, planID, 6)
 	seed(3, notificationpkg.EventApprovalExpired, planID, 7)
-	seed(2, notificationpkg.EventUpdateComplete, completedID, 0)
+	seed(2, notificationpkg.EventAPTReconciliationRequired, completedID, 0)
 	seed(1, notificationpkg.EventUpdateComplete, "//destination.invalid/path", 0)
 	read := func() []notificationpkg.DeliveryHistoryItem {
 		t.Helper()
@@ -206,7 +206,8 @@ func TestDeliveryHistoryLinksRetainedJobsAndRevalidatesTheExactPlan(t *testing.T
 	link := (approvalLink{ServerIdentity: server.Identity, JobID: planID, Generation: 7}).url(url.URL{})
 	if items[0].ApprovalPlanURL != link || items[0].JobReportURL != "/api/reports/jobs/"+planID ||
 		items[1].ApprovalPlanURL != "" || items[2].ApprovalPlanURL != "" ||
-		items[3].JobReportURL != "/api/reports/jobs/"+completedID || items[4].JobReportURL != "" {
+		items[3].EventType != notificationpkg.EventAPTReconciliationRequired ||
+		items[3].JobReportURL != "/api/reports/jobs/"+completedID || items[3].ApprovalPlanURL != "" || items[4].JobReportURL != "" {
 		t.Fatalf("invalid links in retained deliveries: %+v", items)
 	}
 	page := identityRequest(app, "GET", link, admin, "", nil)

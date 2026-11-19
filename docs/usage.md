@@ -644,6 +644,17 @@ The new condition events are opt-in: existing selections remain unchanged. Initi
 
 The initial approval alert is recorded per exact plan and destination configuration. The active plan comes from the persisted waiting job. Older approval audit records cannot reopen its alert. Other conditions use persistent episodes. A confirmed healthy observation ends an episode, and a later recurrence starts another. Missing or failed observations preserve the previous condition. Manual and automatic backups share the export/verification failure conditions, including automatic scheduling/publication failures. Coverage requires both a successful export and restore-ready verification within the existing seven-day recovery threshold. These are recorded recovery facts, not a fresh scan of operator-managed archive files.
 
+Select **APT reconciliation required** under **Admin → Notifications → Events**
+to alert the enabled destinations. The alert is admitted once per unresolved
+incident and destination configuration. It identifies the original job even
+if a repair attempt fails. The **Job report** link in delivery history opens
+that report for authorized readers. Before every attempt, the app verifies
+that the original inventory identity and SSH endpoint still require
+reconciliation. A successful repair or a target replacement skips queued
+attempts. A later incident can send a new alert. In-place restore preserves
+admissions and retained delivery results before the database is replaced. The alert is excluded from grouped
+reminders, and its payload contains no raw SSH output or destination URL.
+
 **Grouped reminders** are off by default. When enabled, choose 5–43200 minutes (default 1440). At most one summary is admitted per destination and interval, containing selected unresolved conditions. Expirations are not repeated. Conditions and selection are revalidated before each delivery, including retries; resolved entries disappear from queued summaries. Delivery diagnostics and the existing outbox/retry policy apply to all alerts.
 
 Changing a destination skips deliveries still bound to its previous credentials and admits current selected conditions once for the new destination. Disabling a destination or deselecting an event stops its pending deliveries and reminders; observations continue so a healthy state and subsequent recurrence remain distinct. Re-enabling the same unchanged configuration does not replay an already admitted episode. A Server rename preserves its notification identity and updates the displayed name; deletion retires its conditions. Recreating a deleted Server creates a new identity. Changing a Server's host or port retires reboot evidence from its previous endpoint; a new alert requires a confirmed observation of the replacement endpoint.

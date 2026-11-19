@@ -11,6 +11,7 @@ import (
 	"time"
 
 	backuppkg "debian-updater/internal/backup"
+	"debian-updater/internal/jobs"
 	notificationpkg "debian-updater/internal/notifications"
 )
 
@@ -94,22 +95,27 @@ func newNotificationConditionSource(dbProvider func() *sql.DB, now func() time.T
 		if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO notification_server_identities(server_name,identity) SELECT name,lower(hex(randomblob(16))) FROM servers WHERE name NOT IN (SELECT server_name FROM notification_server_identities)`); err != nil {
 			return batch, err
 		}
-		identities, err := tx.QueryContext(ctx, `SELECT n.server_name,n.identity,COALESCE(e.changed_at,'') FROM notification_server_identities n JOIN servers s ON s.name=n.server_name LEFT JOIN server_health_endpoints e ON e.server_name=n.server_name`)
+		identities, err := tx.QueryContext(ctx, `SELECT n.server_name,n.identity,COALESCE(e.changed_at,''),s.identity,s.host,s.port FROM notification_server_identities n JOIN servers s ON s.name=n.server_name LEFT JOIN server_health_endpoints e ON e.server_name=n.server_name`)
 		if err != nil {
 			return batch, err
 		}
 		rebootIDs := map[string]string{}
 		names := map[string]string{}
 		endpointChanges := map[string]string{}
+		aptInventory := map[string]Server{}
 		for identities.Next() {
-			var name, id, changedAt string
-			if err := identities.Scan(&name, &id, &changedAt); err != nil {
+			var server Server
+			var id, changedAt string
+			if err := identities.Scan(&server.Name, &id, &changedAt, &server.Identity, &server.Host, &server.Port); err != nil {
 				_ = identities.Close()
 				return batch, err
 			}
-			rebootIDs[name] = "reboot/" + id
-			names["reboot/"+id] = name
-			endpointChanges[name] = changedAt
+			rebootIDs[server.Name] = "reboot/" + id
+			names["reboot/"+id] = server.Name
+			endpointChanges[server.Name] = changedAt
+			if target := server.APTTarget(); target != "" {
+				aptInventory[target] = server
+			}
 		}
 		if err := identities.Err(); err != nil {
 			_ = identities.Close()
@@ -198,6 +204,11 @@ func newNotificationConditionSource(dbProvider func() *sql.DB, now func() time.T
 		for _, fact := range approvals {
 			batch.Facts = append(batch.Facts, fact)
 		}
+		aptFacts, err := notificationAPTReconciliationFacts(ctx, tx, aptInventory, previous)
+		if err != nil {
+			return batch, err
+		}
+		batch.Facts = append(batch.Facts, aptFacts...)
 		if err := tx.Commit(); err != nil {
 			return batch, err
 		}
@@ -223,6 +234,38 @@ func newNotificationConditionSource(dbProvider func() *sql.DB, now func() time.T
 		batch.Cursor = string(raw)
 		return batch, nil
 	}
+}
+
+func notificationAPTReconciliationFacts(ctx context.Context, tx *sql.Tx, inventory map[string]Server, previous []notificationpkg.Condition) ([]notificationpkg.ConditionFact, error) {
+	incidents, err := jobs.ListAPTReconciliationIncidents(ctx, tx)
+	if err != nil {
+		return nil, err
+	}
+	facts := make([]notificationpkg.ConditionFact, 0, len(incidents))
+	activeIDs := make(map[string]bool, len(incidents))
+	for _, incident := range incidents {
+		server, matches := inventory[incident.Target]
+		if !matches {
+			continue
+		}
+		id := notificationpkg.APTReconciliationConditionID(incident.Target, incident.JobID)
+		activeIDs[id] = true
+		meta, _ := json.Marshal(map[string]string{"job_id": incident.JobID})
+		facts = append(facts, notificationpkg.ConditionFact{
+			ID: id, EventType: notificationpkg.EventAPTReconciliationRequired,
+			TargetType: "server", TargetName: server.Name, ServerIdentity: server.Identity,
+			Active: true, CreatedAt: incident.CreatedAt, MetaJSON: string(meta),
+			Message: "APT reconciliation is required before the next package operation. Review the incident in authenticated job history.",
+		})
+	}
+	for _, condition := range previous {
+		fact := condition.Fact
+		if fact.EventType == notificationpkg.EventAPTReconciliationRequired && fact.Active && !activeIDs[fact.ID] {
+			fact.Active = false
+			facts = append(facts, fact)
+		}
+	}
+	return facts, nil
 }
 
 func notificationAuditFacts(ctx context.Context, db notificationFactQuerier, after int64) ([]notificationpkg.ConditionFact, int64, error) {

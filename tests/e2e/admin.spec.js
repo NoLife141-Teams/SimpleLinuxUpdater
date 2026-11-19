@@ -2047,6 +2047,7 @@ test("delivery history opens on demand, filters by job and navigates retained re
         job_id: job, approval_generation: 7, attempts: 2, created_at: "2026-11-18T18:00:00Z",
         next_attempt_at: "2026-11-18T18:05:00Z", reason: "Destination returned HTTP 503.",
     };
+    const incidentJob = "2d28c63fd8924e7c84b0264f05e12424";
     const requests = [];
     let failOnce = true;
     let olderDeliveryState = "pending";
@@ -2073,7 +2074,11 @@ test("delivery history opens on demand, filters by job and navigates retained re
         ] });
         if (params.job_id) return fulfillJson(route, { retention_seconds: 2592000, items: [] });
         return fulfillJson(route, { retention_seconds: 2592000, next_cursor: "older-cursor", items: [
-            item, { ...item, destination: "discord", state: "succeeded", next_attempt_at: "", reason: "" },
+            item, {
+                destination: "discord", state: "succeeded", event_type: "apt.reconciliation.required",
+                job_id: incidentJob, job_report_url: `/api/reports/jobs/${incidentJob}`, attempts: 1,
+                created_at: item.created_at,
+            },
         ] });
     });
     await page.goto("/admin#admin-section-notifications");
@@ -2091,6 +2096,8 @@ test("delivery history opens on demand, filters by job and navigates retained re
     await expect(history).toContainText("Plan generation 7");
     await expect(history.getByText("Next retry ·", { exact: false })).toBeVisible();
     await expect(results.getByText("Delivered", { exact: true })).toBeVisible();
+    const incident = results.getByRole("listitem").filter({ hasText: "APT reconciliation required" });
+    await expect(incident.getByRole("link", { name: "Job report" })).toHaveAttribute("href", `/api/reports/jobs/${incidentJob}`);
     await page.setViewportSize({ width: 390, height: 840 });
     expect(await history.evaluate(panel => panel.scrollWidth <= panel.clientWidth)).toBe(true);
     await history.getByRole("button", { name: "Older" }).click();
@@ -2136,6 +2143,9 @@ test("notification conditions stay opt-in and grouped reminders validate and sav
     ).not.toBeChecked();
     await page.locator("#notification-event-approval-published").check();
     await page.locator("#notification-event-reboot-required").check();
+    const aptEvent = page.getByLabel("APT reconciliation required", { exact: true });
+    await expect(aptEvent).not.toBeChecked();
+    await aptEvent.check();
     await page.locator("#notification-reminders-enabled").check();
     await page.locator("#notification-reminder-interval").fill("4");
     await expect(page.locator("#notification-save")).toBeDisabled();
@@ -2154,6 +2164,7 @@ test("notification conditions stay opt-in and grouped reminders validate and sav
         "approval.published",
     );
     expect(state.notificationPayload.event_types).toContain("reboot.required");
+    expect(state.notificationPayload.event_types).toContain("apt.reconciliation.required");
     await expect(page.locator("#notification-reminders-enabled")).toBeChecked();
     await expect(page.locator("#notification-reminder-interval")).toHaveValue(
         "60",

@@ -690,6 +690,7 @@
             const events = {
                 "approval.published": "Published update approval",
                 "approval.expired": "Expired update approval",
+                "apt.reconciliation.required": "APT reconciliation required",
                 "update.complete": "Completed update",
                 "schedule.run.failed": "Failed scheduled run",
                 "schedule.run.skipped": "Skipped scheduled run",

@@ -398,6 +398,11 @@ func (s *Service) applyArchiveFiles(ctx context.Context, files map[string]string
 		// been replaced. Preserve typed recovery errors if a preparer cannot unwind.
 		return fmt.Errorf("prepare restored persistence replacement: %w", err)
 	}
+	if stager, ok := s.deps.RestoredRuntime.(ReplacementStager); ok {
+		if err := stageRuntimePersistence(ctx, preparedDB.Path, stager); err != nil {
+			return s.reloadOriginalPersistence(ctx, fmt.Errorf("stage restored runtime persistence: %w", err), restoreHandoff)
+		}
+	}
 	snapshotDir, snapshots, err := snapshotFilesToDirectory(filepath.Dir(dbTarget), targets)
 	if err != nil {
 		return s.reloadOriginalPersistence(ctx, err, restoreHandoff)
@@ -479,6 +484,15 @@ func prepareRestoredDatabase(ctx context.Context, path string, prepareReplacemen
 		err = prepareReplacement(ctx, db)
 	}
 	return errors.Join(err, db.Close())
+}
+
+func stageRuntimePersistence(ctx context.Context, path string, stager ReplacementStager) error {
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		return err
+	}
+	db.SetMaxOpenConns(1)
+	return errors.Join(stager.StagePersistenceReplacement(ctx, db), db.Close())
 }
 
 func (s *Service) reloadOriginalPersistence(ctx context.Context, cause error, restoreHandoff func(context.Context) error) error {

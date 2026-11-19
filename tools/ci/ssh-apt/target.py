@@ -3,6 +3,8 @@
 import fcntl
 import gzip
 import hashlib
+from http.server import BaseHTTPRequestHandler, HTTPServer
+import json
 import os
 from pathlib import Path
 import shutil
@@ -12,6 +14,52 @@ import time
 
 PACKAGE = "slu-ci-fixture"
 STATE = Path("/var/lib/slu-fixture")
+WEBHOOK_PORT = 18081
+
+
+class WebhookReceiver(BaseHTTPRequestHandler):
+    def do_POST(self):
+        if self.path != "/receive":
+            self.send_error(404)
+            return
+        try:
+            size = int(self.headers.get("Content-Length", "0"))
+            if not 0 < size <= 64 * 1024:
+                raise ValueError("invalid receipt size")
+            payload = json.loads(self.rfile.read(size))
+            receipt = [payload["event_type"], payload["target_name"], payload["meta"]["job_id"]]
+        except (ValueError, KeyError, TypeError):
+            self.send_error(400)
+            return
+        with (STATE / "webhook-receipts").open("a") as log:
+            log.write(json.dumps(receipt) + "\n")
+        self.send_response(204)
+        self.end_headers()
+
+    def log_message(self, *_):
+        pass
+
+
+def track_apt():
+    # Installed only in the disposable target at the start of the final scenario.
+    # Count invocations even when APT has nothing to remove or fails early.
+    apt = Path("/usr/bin/apt-get")
+    original = STATE / "apt-get-real"
+    assert not original.exists()
+    apt.rename(original)
+    apt.write_text("""#!/bin/sh
+set -eu
+for arg do
+    case "$arg" in
+        update|upgrade|full-upgrade|autoremove)
+            printf '%s\\n' "$arg" >> /var/lib/slu-fixture/apt-invocations
+            break
+            ;;
+    esac
+done
+exec /var/lib/slu-fixture/apt-get-real "$@"
+""")
+    apt.chmod(0o755)
 
 
 def run(*args, **kwargs):
@@ -80,6 +128,7 @@ def start():
     reset()
     subprocess.Popen(["python3", "-m", "http.server", "18080", "--bind", "127.0.0.1", "--directory", str(STATE)],
                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    subprocess.Popen(["python3", __file__, "webhook"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     os.execv("/usr/sbin/sshd", ["/usr/sbin/sshd", "-D", "-e"])
 
 
@@ -89,6 +138,11 @@ if __name__ == "__main__":
     elif action == "start": start()
     elif action == "reset": reset()
     elif action == "publish": publish(sys.argv[2])
+    elif action == "track-apt": track_apt()
+    elif action == "webhook":
+        server = HTTPServer(("0.0.0.0", WEBHOOK_PORT), WebhookReceiver)
+        (STATE / "webhook-receipts").touch()
+        server.serve_forever()
     elif action == "lock":
         # Open and lock the actual APT frontend lock, rather than emulating its output.
         with open("/var/lib/dpkg/lock-frontend", "a") as lock:

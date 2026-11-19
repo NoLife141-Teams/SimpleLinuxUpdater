@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 """Real API/SSH/APT qualification. Never accepts existing targets or inventories."""
 import argparse
-from contextlib import contextmanager
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing, contextmanager
+import http.client
 import http.cookiejar
+import ipaddress
 import json
 import os
 from pathlib import Path
@@ -10,6 +13,7 @@ import secrets
 import shutil
 import signal
 import socket
+import sqlite3
 import subprocess
 import tempfile
 import time
@@ -25,15 +29,89 @@ LABEL = "io.simplelinuxupdater.ssh-apt-owner"
 DOCKER = ["docker", "--host=unix:///var/run/docker.sock"]
 PACKAGE = "slu-ci-fixture"
 TERMINAL = {"succeeded", "failed", "cancelled", "interrupted"}
+APT_EVENT = "apt.reconciliation.required"
+RESTORE_CRASH = "restore-crash-after-sqlite-replacement"
 SCENARIOS = ("root-upgrade", "operator-upgrade", "misconfigured-helper", "apt-lock",
              "plan-drift-and-obsolete-approval", "ssh-disconnect-during-mutation-and-repair",
              "batch-app-interruption-during-mutation-and-repair", "changed-host-key",
-             "systemd-active", "controlled-reboot", "official-provenance")
+             RESTORE_CRASH, "systemd-active", "controlled-reboot", "official-provenance")
 
 
 def require(condition, message):
     if not condition:
         raise AssertionError(message)
+
+
+def until(predicate, message, seconds=30):
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        result = predicate()
+        if result:
+            return result
+        time.sleep(.1)
+    raise AssertionError(message)
+
+
+def qualification_overlay(work):
+    """Instrument only the disposable binary built by this qualification."""
+    replacements = {}
+
+    def instrument(relative, edits):
+        original = REPO / relative
+        source = original.read_text()
+        for anchor, replacement in edits:
+            require(source.count(anchor) == 1, "qualification checkpoint moved in " + relative)
+            source = source.replace(anchor, replacement)
+        copy = work / original.name
+        copy.write_text(source)
+        replacements[str(original)] = str(copy)
+
+    # This marker can only be reached after applying the staged database and
+    # removing SQLite sidecars, before host keys, handoff or runtime reload.
+    anchor = '\tif knownHosts, ok := files["known_hosts"]; ok {\n\t\tif err := writeAtomicFileFromPath'
+    instrument("internal/backup/file_restore.go", [
+        ('\n\t"strings"\n', '\n\t"strings"\n\t"time"\n'),
+        (anchor, """\
+\tif os.Remove("/work/arm-restore-crash") == nil {
+\t\tif err := os.WriteFile("/work/restore-db-replaced", nil, 0600); err != nil {
+\t\t\treturn rollback(err)
+\t\t}
+\t\tfor {
+\t\t\ttime.Sleep(time.Second)
+\t\t}
+\t}
+""" + anchor),
+    ])
+
+    # Refresh the proof after condition reconciliation and outbox draining.
+    # Record which destination was eligible, since an idle worker alone cannot
+    # establish that the restored configuration still allows this delivery.
+    anchor = '\t\tif s.conditionMonitoringStarted() {\n\t\t\tif conditionTicker == nil {'
+    failure = '\t\t\t\ts.deps.Logf("notification condition reconciliation failed: %v", err)\n\t\t\t}'
+    finish = '\t\ts.health.Finish(s.deps.Now(), nil)\n\t\tif !scheduled {'
+    instrument("internal/notifications/service.go", [
+        ('\n\t"net/url"\n', '\n\t"net/url"\n\t"os"\n'),
+        (anchor, '\t\tqualificationReconciled := false\n' + anchor),
+        (failure, failure + ' else {\n\t\t\t\tqualificationReconciled = true\n\t\t\t}'),
+        (finish, """\
+\t\tif qualificationReconciled {
+\t\t\tif _, err := os.Stat("/work/observe-notifications"); err == nil {
+\t\t\t\tfingerprint := ""
+\t\t\t\tif settings, err := s.currentSettings(); err == nil && destinationEnabled(settings, DestinationWebhook) &&
+\t\t\t\t\teventEnabled(settings.EventTypes, EventAPTReconciliationRequired) {
+\t\t\t\t\tfingerprint = destinationConfigFingerprint(settings, DestinationWebhook)
+\t\t\t\t}
+\t\t\t\tconst marker = "/work/notification-poll-complete"
+\t\t\t\tif err := os.WriteFile(marker+".tmp", []byte(fingerprint), 0600); err == nil {
+\t\t\t\t\t_ = os.Rename(marker+".tmp", marker)
+\t\t\t\t}
+\t\t\t}
+\t\t}
+""" + finish),
+    ])
+    overlay = work / "qualification-overlay.json"
+    overlay.write_text(json.dumps({"Replace": replacements}))
+    return overlay
 
 
 def command(args, *, timeout=60, data=None, env=None, cwd=None):
@@ -85,7 +163,7 @@ def copy_assets(work):
         shutil.copyfile(REPO / relative, destination)
 
 
-def wait_for_app(api, *, check_running=None):
+def wait_for_app(api, *, check_running=None, path="/api/auth/status"):
     """Wait within the startup budget, including transient startup maintenance."""
     deadline = time.monotonic() + 30
     while True:
@@ -98,14 +176,14 @@ def wait_for_app(api, *, check_running=None):
             if remaining <= 0:
                 raise TimeoutError("application startup was not ready within 30 seconds")
         try:
-            api.request("GET", "/api/auth/status", timeout=min(20, remaining))
+            api.request("GET", path, timeout=min(20, remaining))
         except OSError:
             pass
         except AssertionError as error:
             # API.request emits this prefix from the actual HTTP status, not
             # response-body text. Permanent HTTP errors and unrelated assertions
             # remain fatal; only startup maintenance is retried.
-            if not str(error).startswith("GET /api/auth/status: HTTP 503:"):
+            if not str(error).startswith(f"GET {path}: HTTP 503:"):
                 raise
         else:
             if time.monotonic() >= deadline:
@@ -138,8 +216,11 @@ class API:
         if binary and response.code in allowed:
             with response:
                 return response.read(16 * 1024 * 1024 + 1)
-        result = json.loads(response.read())
-        require(response.code in allowed, f"{method} {path}: HTTP {response.code}: {result}")
+        try:
+            result = json.loads(response.read())
+            require(response.code in allowed, f"{method} {path}: HTTP {response.code}: {result}")
+        finally:
+            response.close()
         return result
 
     def upload_key(self, name, key):
@@ -152,7 +233,7 @@ class API:
     def server(self, name):
         return next(s for s in self.request("GET", "/api/servers") if s["name"] == name)
 
-    def backup_archive(self, operation, archive, passphrase, *, allowed=(200,)):
+    def backup_archive(self, operation, archive, passphrase, *, allowed=(200,), timeout=20):
         require(operation in ("verify", "restore"), "invalid fixture archive operation")
         boundary = "slu-" + uuid.uuid4().hex
         body = (f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="fixture.slubkp"\r\n'
@@ -160,7 +241,7 @@ class API:
         body += (f'\r\n--{boundary}\r\nContent-Disposition: form-data; name="passphrase"\r\n\r\n'
                  f'{passphrase}\r\n--{boundary}--\r\n').encode()
         return self.request("POST", "/api/backup/" + operation, raw=body,
-                            content_type=f"multipart/form-data; boundary={boundary}", allowed=allowed)
+                            content_type=f"multipart/form-data; boundary={boundary}", allowed=allowed, timeout=timeout)
 
     def job(self, job_id):
         return self.request("GET", f"/api/jobs/{job_id}")["job"]
@@ -217,7 +298,7 @@ class Harness:
         return self.docker("exec", "-i", self.container, *args, data=data, timeout=timeout)
 
     def fixture(self, operation, *args):
-        require(operation in ("reset", "publish", "drop-ssh"), "invalid fixture operation")
+        require(operation in ("reset", "publish", "drop-ssh", "track-apt"), "invalid fixture operation")
         return self.target("python3", "/usr/local/lib/slu-target.py", operation, *args)
 
     def version(self):
@@ -289,19 +370,19 @@ class Harness:
             "checks": [{"id": "health", "name": "Fixture responds", "kind": "http_status", "url": "http://localhost:18080/version",
                 "expected_status": 200, "timeout_seconds": 3, "interval_seconds": 1, "mode": "blocking"}]}]})
 
-    def connect_app(self):
+    def connect_app(self, *, recovering=False, include_error_body=True):
         require(self.owned("container", self.app_name), "application ownership mismatch")
         host, port = self.docker("port", self.app_name, "8080/tcp").strip().rsplit(":", 1)
         validate_local_endpoint(host, int(port))
-        self.api = API(int(port))
-        self.wait_for_app()
+        self.api = API(int(port), include_error_body=include_error_body)
+        self.wait_for_app(path="/api/maintenance" if recovering else "/api/auth/status")
 
-    def wait_for_app(self):
+    def wait_for_app(self, *, path="/api/auth/status"):
         def check_running(remaining):
             require(self.docker("inspect", "--format", "{{.State.Running}}", self.app_name,
                                 timeout=min(20, remaining)).strip() == "true",
                     "isolated application exited before readiness")
-        wait_for_app(self.api, check_running=check_running)
+        wait_for_app(self.api, check_running=check_running, path=path)
 
     def trust(self):
         require(self.ssh_host == self.name and self.ssh_port == 22 and self.owned("container", self.container), "invalid owned SSH target")
@@ -567,6 +648,217 @@ class Harness:
                       conflicting_inventory_restore="passed",
                       final_version=self.version())
 
+    def qualify_restore_crash(self, record):
+        # The VM runner imports the shared harness without the Docker target.
+        from target import WEBHOOK_PORT
+
+        name = "restore-crash"
+        credentials = {"username": "fixture-admin", "password": self.password}
+        passphrase = secrets.token_urlsafe(24)
+        self.redactions.append(passphrase)
+        self.api.include_error_body = False
+        record["checkpoint"] = "export"
+        self.fixture("reset")
+        self.fixture("track-apt")
+        self.api.request("POST", "/api/hostkeys/clear", {"host": self.ssh_host, "port": self.ssh_port})
+        self.trust()
+        known_hosts = self.work / "known_hosts"
+        trusted_hosts = known_hosts.read_bytes()
+        require(trusted_hosts, "trusted fixture host key was not saved")
+        self.add_server(name)
+        server_identity = self.api.server(name)["server_identity"]
+        template = '{{ (index .NetworkSettings.Networks "' + self.network + '").IPAddress }}'
+        address = self.docker("inspect", "--format", template, self.container).strip()
+        require(ipaddress.IPv4Address(address).is_private, "webhook receiver must use the owned private bridge")
+        url = f"http://{address}:{WEBHOOK_PORT}/receive"
+        self.redactions.extend([url, address])
+        settings = self.api.request("PUT", "/api/notifications/settings", {
+            "enabled": True, "webhook_url_intent": "replace", "webhook_url": url, "event_types": [APT_EVENT],
+        })
+        require(settings["enabled"] and settings["webhook_configured"], "fixture webhook was not enabled")
+        archive = self.api.request("POST", "/api/backup/export", {"passphrase": passphrase}, binary=True)
+        require(100 < len(archive) <= 16 * 1024 * 1024, "expected a bounded encrypted archive")
+
+        record["checkpoint"] = "apt-interruption"
+        identity = self.start_update(name)
+        job_id = identity["job_id"]
+        self.target("touch", "/run/slu-hold-mutation")
+        try:
+            self.api.request("POST", "/api/approve/" + name, identity)
+            self.wait_file("/run/slu-mutation-started")
+            require(self.api.job(job_id)["phase"] == "apt_upgrade", "APT mutation phase did not persist")
+            self.kill_app()
+            self.docker("start", self.app_name)
+            self.connect_app(include_error_body=False)
+            self.api.request("POST", "/api/auth/login", credentials)
+        finally:
+            self.target("rm", "-f", "/run/slu-hold-mutation")
+        report_path = f"/api/reports/jobs/{job_id}"
+        job = self.api.job(job_id)
+        status = self.api.server(name)
+        require(job["status"] == "failed" and job["error_class"] == "reconciliation_required"
+                and status.get("apt_reconciliation_required") and status.get("apt_reconciliation_job_id") == job_id,
+                "APT interruption did not create the original incident")
+        report = self.api.request("GET", report_path, binary=True)
+        require(report.startswith(f"# Update Job Report {job_id}\n".encode()), "original job report did not match")
+        until(lambda: self.version() == "2.0" and not self.target("dpkg", "--audit").strip(),
+              "original package mutation did not settle")
+
+        record["checkpoint"] = "notification-delivery"
+        receipts_path = "/var/lib/slu-fixture/webhook-receipts"
+
+        def receipts():
+            return [json.loads(line) for line in self.target("cat", receipts_path).splitlines()]
+
+        def execution_counts():
+            calls = self.target("cat", "/var/lib/slu-fixture/apt-invocations").splitlines()
+            return {action: calls.count(action) for action in ("update", "upgrade", "full-upgrade", "autoremove")}
+
+        def successful_delivery():
+            history = self.api.request("GET", f"/api/notifications/delivery-history?job_id={job_id}")["items"]
+            return len(history) == 1 and history[0]["state"] == "succeeded" and history[0]["attempts"] == 1
+
+        until(successful_delivery, "worker did not record the fixture delivery as successful")
+        expected_receipts = [[APT_EVENT, name, job_id]]
+        require(receipts() == expected_receipts, "receiver did not observe exactly one delivery for the original incident")
+        commands = execution_counts()
+        require(commands["update"] >= 1 and commands["upgrade"] + commands["full-upgrade"] >= 1,
+                "command tracker did not observe the real APT run")
+        db_uri = (self.work / "servers.db").as_uri()
+
+        def persistence():
+            with closing(sqlite3.connect(db_uri + "?mode=ro", uri=True, timeout=5)) as db:
+                db.execute("BEGIN")
+                incident = db.execute("SELECT status, error_class, apt_target FROM jobs WHERE id=?", (job_id,)).fetchone()
+                chunks = db.execute("SELECT sequence, stream, data FROM job_log_chunks WHERE job_id=? ORDER BY sequence",
+                                    (job_id,)).fetchall()
+                delivered = db.execute(
+                    "SELECT id, destination_fingerprint, state, attempts, json_extract(meta_json, '$.condition_id') "
+                    "FROM notification_outbox WHERE event_type=? AND json_extract(meta_json, '$.job_id')=?",
+                    (APT_EVENT, job_id)).fetchall()
+                row = db.execute("SELECT state_json FROM notification_conditions WHERE id=1").fetchone()
+                state = json.loads(row[0]) if row else {}
+                marker = db.execute("SELECT value FROM settings WHERE key='maintenance_state'").fetchone()
+                return incident, chunks, delivered, state, json.loads(marker[0]) if marker else {}
+
+        incident, chunks, delivered, _, _ = persistence()
+        require(incident and incident[:2] == ("failed", "reconciliation_required") and incident[2] and chunks
+                and len(delivered) == 1 and delivered[0][2:4] == ("succeeded", 1),
+                "original job, logs or successful delivery were missing")
+        fingerprint, condition_id = delivered[0][1], delivered[0][4]
+        require(fingerprint and condition_id, "delivery was not tied to the incident and configured destination")
+        self.redactions.append(fingerprint)
+        admission_id = f"condition/{condition_id}/{fingerprint}"
+
+        record["checkpoint"] = "restore-process-kill"
+        until(lambda: self.api.server(name)["status"] != "facts_refresh", "startup facts refresh did not finish")
+        review = self.api.backup_archive("verify", archive, passphrase)
+        require(review["restore_ready"] and review["installation_review"]["state"] == "ready",
+                "pre-incident archive did not verify for this installation")
+        self.crash_during_restore(archive, passphrase)
+        record["crash_confirmed_after_sqlite_replacement"] = True
+        record["checkpoint"] = "staged-restore-evidence"
+        current_incident, current_chunks, current_delivery, state, marker = persistence()
+        require(marker.get("recovery_required") and marker.get("kind") == "backup_restore",
+                "replacement database did not persist the recovery latch before runtime reload")
+        require((current_incident, current_chunks, current_delivery) == (incident, chunks, delivered),
+                "replacement database lost the exact job, logs or delivery before runtime reload")
+        require(state.get("Admissions", {}).get(admission_id) and condition_id not in (state.get("Conditions") or {}),
+                "replacement database did not stage the admission independently of runtime reconciliation")
+
+        record["checkpoint"] = "recovery-restarts"
+        observe = self.work / "observe-notifications"
+        poll = self.work / "notification-poll-complete"
+        observe.touch(exist_ok=False)
+        for restart in range(2):
+            if restart:
+                self.stop_app()
+            poll.unlink(missing_ok=True)
+            self.docker("start", self.app_name)
+            self.connect_app(recovering=True, include_error_body=False)
+            maintenance = self.api.request("GET", "/api/maintenance")
+            require(maintenance["active"] and maintenance["recovery_required"] and maintenance["kind"] == "backup_restore",
+                    "startup did not preserve the interrupted restore recovery latch")
+            for method, path in (("GET", report_path), ("POST", f"/api/update/{name}"), ("POST", f"/api/autoremove/{name}")):
+                blocked = self.api.request(method, path, allowed=(503,))
+                require(blocked.get("recovery_required"), "runtime bypassed the recovery latch")
+            until(poll.is_file, "notification worker did not finish condition reconciliation and drain")
+            require(poll.read_text() == fingerprint, "restored worker did not observe the original enabled webhook")
+            current_incident, current_chunks, current_delivery, state, _ = persistence()
+            fact = (state.get("Conditions") or {}).get(condition_id, {}).get("Fact", {})
+            require(fact.get("Active") and fact.get("TargetName") == name
+                    and json.loads(fact["MetaJSON"]).get("job_id") == job_id
+                    and state.get("Admissions", {}).get(admission_id),
+                    "notification worker did not observe the original active incident and admission")
+            require((current_incident, current_chunks, current_delivery) == (incident, chunks, delivered)
+                    and receipts() == expected_receipts and execution_counts() == commands,
+                    "restart changed the original evidence, repeated a delivery or executed another APT command")
+            record["verified_recovery_restarts"] = restart + 1
+
+        record["checkpoint"] = "authorized-report"
+        self.stop_app()
+        # The HTTP API is unavailable while latched. Verify the disposable
+        # replacement files offline before completing the documented release.
+        with closing(sqlite3.connect(db_uri + "?mode=rw", uri=True, timeout=5)) as db, db:
+            require(db.execute("PRAGMA quick_check").fetchall() == [("ok",)]
+                    and db.execute("SELECT name, host, port, identity FROM servers").fetchall()
+                    == [(name, self.ssh_host, self.ssh_port, server_identity)]
+                    and known_hosts.read_bytes() == trusted_hosts,
+                    "replacement persistence, inventory or host trust failed verification")
+            require(db.execute("DELETE FROM settings WHERE key='maintenance_state'").rowcount == 1,
+                    "offline recovery marker was missing")
+        poll.unlink()
+        self.docker("start", self.app_name)
+        self.connect_app(include_error_body=False)
+        self.api.request("GET", report_path, allowed=(401,))
+        self.api.request("POST", "/api/auth/login", credentials)
+        require(self.api.request("GET", report_path, binary=True) == report,
+                "authorized report differed from the original incident")
+        for action in ("update", "autoremove"):
+            blocked = self.api.request("POST", f"/api/{action}/{name}", allowed=(409,))
+            require("APT reconciliation is required" in blocked["error"], "recovered APT latch did not block " + action)
+        until(poll.is_file, "notification worker did not finish after offline recovery")
+        require(poll.read_text() == fingerprint, "recovered worker did not observe the original enabled webhook")
+        require(receipts() == expected_receipts and execution_counts() == commands,
+                "offline recovery repeated a webhook delivery or executed another APT command")
+        record.update(job_id=job_id, authorized_report_preserved=True, webhook_deliveries=1,
+                      extra_update_attempts=0, extra_autoremove_attempts=0)
+        del record["checkpoint"]
+
+    def crash_during_restore(self, archive, passphrase):
+        (self.work / "arm-restore-crash").touch(exist_ok=False)
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            request = pool.submit(self.api.backup_archive, "restore", archive, passphrase, timeout=45)
+            killed = False
+            try:
+                until(lambda: request.done() or (self.work / "restore-db-replaced").is_file(),
+                      "restore did not reach the SQLite replacement checkpoint", seconds=35)
+                require(not request.done(), "restore completed before the crash checkpoint")
+            finally:
+                # Release an active request before the executor joins, even if
+                # the controlling thread timed out or received SIGINT/SIGTERM.
+                if not request.cancel() and not request.done():
+                    self.kill_app()
+                    killed = True
+            require(killed, "restore connection closed before the fixture sent SIGKILL")
+            try:
+                request.result(timeout=5)
+            except (http.client.RemoteDisconnected, ConnectionResetError):
+                return
+            raise AssertionError("restore request did not lose its connection to the killed process")
+
+    def kill_app(self):
+        require(self.owned("container", self.app_name), "application ownership mismatch")
+        self.docker("kill", self.app_name)
+        require(self.docker("inspect", "--format", "{{.State.ExitCode}}", self.app_name).strip() == "137",
+                "fixture process was not killed with SIGKILL")
+
+    def stop_app(self):
+        require(self.owned("container", self.app_name), "application ownership mismatch")
+        self.docker("stop", "--timeout", "25", self.app_name)
+        require(self.docker("inspect", "--format", "{{.State.Running}}", self.app_name).strip() == "false",
+                "fixture process did not stop")
+
     def qualify(self):
         for user in ("root", "operator"):
             name = user + "-upgrade"
@@ -690,6 +982,14 @@ class Harness:
             require(any(term in logs for term in ("host key", "hostkey", "knownhosts", "fingerprint mismatch")), "failure did not identify host trust: " + logs)
             record.update(previous_fingerprint=self.original_fingerprint, rejected_fingerprint=scan["fingerprint_sha256"], final_version=self.version(), error_class=job["error_class"])
 
+        with self.scenario(RESTORE_CRASH) as record:
+            try:
+                self.qualify_restore_crash(record)
+            except (RuntimeError, OSError, ValueError, sqlite3.Error, subprocess.SubprocessError) as error:
+                # Subprocess and HTTP errors can embed fixture output. Publish only
+                # the failing checkpoint and exception type for this scenario.
+                raise AssertionError(f"fixture operation failed ({type(error).__name__})") from None
+
         self.records.extend([
             {"scenario": "systemd-active", "status": "not_executed", "reason": "Container has no systemd PID1; no fake systemctl is installed. Use the VM harness."},
             {"scenario": "controlled-reboot", "status": "not_executed", "reason": "Docker shares host uptime; container restart is not a reboot proof. Use vm-reboot.py."},
@@ -737,8 +1037,12 @@ class Harness:
             try:
                 require(self.owned(kind, name), f"refusing cleanup of unowned {kind}")
                 self.docker(kind, "rm", *(["-f"] if kind in ("container", "image") else []), name)
+                self.owned(kind, name)
+                raise AssertionError(f"{kind} remained after cleanup")
             except RuntimeError as error:
-                if "no such" not in str(error).lower(): self.cleanup_errors.append(str(error))
+                message = str(error).lower()
+                if "no such" not in message and f"network {name} not found" not in message:
+                    self.cleanup_errors.append(str(error))
             except Exception as error: self.cleanup_errors.append(str(error))
         try: shutil.rmtree(self.work)
         except OSError as error: self.cleanup_errors.append(str(error))
@@ -770,7 +1074,8 @@ def main():
         architecture = harness.docker("version", "--format", "{{.Server.Arch}}").strip()
         require(architecture in ("amd64", "arm64"), "unsupported local Docker architecture")
         build_env = {**os.environ, "CGO_ENABLED": "0", "GOOS": "linux", "GOARCH": architecture}
-        command(["go", "build", "-o", str(binary), "."], timeout=240, env=build_env, cwd=REPO)
+        overlay = qualification_overlay(harness.work)
+        command(["go", "build", "-overlay", str(overlay), "-o", str(binary), "."], timeout=240, env=build_env, cwd=REPO)
         harness.start(binary)
         harness.qualify()
     except BaseException as error:

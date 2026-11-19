@@ -65,6 +65,7 @@ type ScheduledRunRequest struct {
 	ScheduledForUTC    string
 	Outcome            string
 	MaintenanceBlocker maintenancepkg.Blocker
+	MaintenanceTickUTC string
 	Admitted           bool
 }
 
@@ -998,10 +999,15 @@ func (s *Service) ProcessDueSlot(req ScheduleRequest) error {
 	}
 
 	var queueErrs []error
+	maintenanceTick := MissedTickKey(req.Now, deps.TimestampLayout)
 	recordSkipped := func(policy Policy, server servers.Server, scheduledForUTC, reason string, blocker maintenancepkg.Blocker) {
+		tick := ""
+		if blocker.Cause != "" {
+			tick = maintenanceTick
+		}
 		result := s.handleScheduledRun(ScheduledRunRequest{
 			Policy: policy, Server: server, ScheduledForUTC: scheduledForUTC, Outcome: reason, Admitted: req.Admitted,
-			MaintenanceBlocker: blocker,
+			MaintenanceBlocker: blocker, MaintenanceTickUTC: tick,
 		})
 		if result.Err == nil {
 			return
@@ -1069,14 +1075,11 @@ func (s *Service) ProcessDueSlot(req ScheduleRequest) error {
 				server := plan.servers[serverName]
 				key := rolloutRunKey(policy.ID, policyScheduledForUTC, serverName)
 				if run, exists := runByKey[key]; exists {
-					if req.MaintenanceActive && req.MaintenanceBlocker.Cause != "" &&
+					if req.MaintenanceActive && req.MaintenanceBlocker.Cause != "" && run.MaintenanceTickUTC == maintenanceTick &&
 						run.MaintenanceCause == req.MaintenanceBlocker.Cause && run.BlockingJobID == req.MaintenanceBlocker.JobID {
-						created, err := time.Parse(time.RFC3339Nano, run.CreatedAt)
-						if err == nil && !created.Before(req.Now) {
-							// A partially recorded denial already attributed this host's
-							// winning policy. Retrying may only record its remaining skips.
-							attributedMaintenance[server.Name] = true
-						}
+						// A partially recorded denial already attributed this host's
+						// winning policy for this minute.
+						attributedMaintenance[server.Name] = true
 					}
 					if !isTerminalRunStatus(run.Status) {
 						complete = false

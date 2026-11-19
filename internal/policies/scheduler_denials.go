@@ -78,9 +78,6 @@ func (s *Service) recoverSchedulerDenials(denials []SchedulerDenial, current tim
 	layout := s.EnsureDeps().TimestampLayout
 	currentDenied := false
 	for _, denial := range denials {
-		if denial.Tick.Equal(current) {
-			currentDenied = true
-		}
 		observedAt, blocker := denial.ObservedAt, denial.Blocker
 		if fingerprint == "" || denial.Fingerprint != fingerprint {
 			matchingSchedule := schedulingFingerprint != "" && strings.HasPrefix(denial.Fingerprint, schedulingFingerprint+":targets:")
@@ -92,6 +89,9 @@ func (s *Service) recoverSchedulerDenials(denials []SchedulerDenial, current tim
 			// The observation matches the scheduling rules, but its inventory
 			// proof cannot establish the exact target or cause.
 			observedAt, blocker = denial.Tick, maintenance.Blocker{}
+		}
+		if denial.Tick.Equal(current) {
+			currentDenied = true
 		}
 		if !observedAt.UTC().Truncate(time.Minute).Equal(denial.Tick) {
 			observedAt, blocker = denial.Tick, maintenance.Blocker{}

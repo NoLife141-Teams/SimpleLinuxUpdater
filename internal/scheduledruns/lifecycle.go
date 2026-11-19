@@ -242,8 +242,9 @@ func (l *Lifecycle) recordSkippedCandidate(req policies.ScheduledRunRequest) pol
 		ResultJSON:      "{}",
 		FinishedAt:      finishedAt,
 
-		MaintenanceCause: blocker.Cause,
-		BlockingJobID:    blocker.JobID,
+		MaintenanceCause:   blocker.Cause,
+		BlockingJobID:      blocker.JobID,
+		MaintenanceTickUTC: req.MaintenanceTickUTC,
 	})
 	if err != nil {
 		return policies.ScheduledRunResult{Handled: false, Err: err}

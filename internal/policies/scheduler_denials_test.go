@@ -82,7 +82,7 @@ func TestSchedulerDenialSurvivesAProcessRestartAndPartialHistory(t *testing.T) {
 					_, inserted, err := repo.CreateRun(Run{
 						PolicyID: req.Policy.ID, ServerName: req.Server.Name, ServerIdentity: req.Server.Identity,
 						ScheduledForUTC: req.ScheduledForUTC, Status: RunSkipped, Reason: req.Outcome,
-						MaintenanceCause: req.MaintenanceBlocker.Cause, BlockingJobID: req.MaintenanceBlocker.JobID,
+						MaintenanceCause: req.MaintenanceBlocker.Cause, BlockingJobID: req.MaintenanceBlocker.JobID, MaintenanceTickUTC: req.MaintenanceTickUTC,
 					})
 					return ScheduledRunResult{Inserted: inserted, Err: err}
 				}
@@ -199,5 +199,124 @@ func TestSchedulerDenialRetainsFirstObservationAndPrunesExpiredRows(t *testing.T
 	if err != nil || len(denials) != 1 || denials[0].Blocker.JobID != "first-job" ||
 		denials[0].Fingerprint != "first" || !denials[0].ObservedAt.Equal(now.Add(10*time.Second)) {
 		t.Fatalf("retained denials = %+v, %v", denials, err)
+	}
+}
+
+func TestSchedulerDenialDoesNotSuppressNewScheduleInCurrentMinute(t *testing.T) {
+	repo, _ := newTestRepository(t)
+	deps := testServiceDeps()
+	slot := time.Date(2026, 11, 19, 4, 30, 0, 0, time.UTC)
+	now := slot.Add(10 * time.Second)
+	coordinator := maintenance.NewCoordinator(maintenance.Deps{Store: maintenance.NewMemoryStore()})
+	if err := coordinator.Initialize(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	deps.Now = func() time.Time { return now }
+	deps.Maintenance = coordinator
+	deps.ListPolicies = repo.ListPolicies
+	deps.SnapshotServers = func() []servers.Server { return []servers.Server{{Name: "host", Identity: "fixture"}} }
+	var requests []ScheduledRunRequest
+	deps.HandleScheduledRun = func(req ScheduledRunRequest) ScheduledRunResult {
+		requests = append(requests, req)
+		return ScheduledRunResult{}
+	}
+	service := NewService(deps)
+	store := SchedulerWatermarkStore{
+		Load: repo.LoadSchedulerWatermark, Save: repo.SaveSchedulerWatermark,
+		LoadStateFingerprint: repo.LoadSchedulerStateFingerprint, SaveStateFingerprint: repo.SaveSchedulerStateFingerprint,
+		LoadStateRevision: repo.LoadSchedulerStateRevision, SaveDenial: repo.SaveSchedulerDenial,
+		LoadDenials: repo.LoadSchedulerDenials, DeleteDenialsBefore: repo.DeleteSchedulerDenialsBefore,
+	}
+	policy, err := repo.CreatePolicy(Policy{
+		Name: "rescheduled scan", Enabled: true, TargetServers: []string{"host"},
+		ExecutionMode: ExecutionScanOnly, PackageScope: PackageScopeSecurity, CadenceKind: CadenceDaily, TimeLocal: "04:31",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease, decision := coordinator.TryExclusive(maintenance.OperationBackupExport)
+	if !decision.Allowed {
+		t.Fatal("exclusive export refused")
+	}
+	if err := lease.Activate(t.Context(), maintenance.OperationFacts{JobID: "old-backup"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.ProcessDueWithRecovery(slot, store); err != nil {
+		t.Fatal(err)
+	}
+	if err := lease.Close(); err != nil {
+		t.Fatal(err)
+	}
+	policy.TimeLocal = "04:30"
+	if _, err := repo.UpdatePolicy(policy.ID, policy); err != nil {
+		t.Fatal(err)
+	}
+	if err := NewService(deps).ProcessDueWithRecovery(now, store); err != nil {
+		t.Fatal(err)
+	}
+	if len(requests) != 1 || requests[0].Outcome != "" || requests[0].MaintenanceBlocker.Cause != "" {
+		t.Fatalf("requests = %+v, want live admission of the newly due policy", requests)
+	}
+}
+
+func TestSchedulerDenialsAttributeConsecutiveSlotsToTheirWinners(t *testing.T) {
+	repo, _ := newTestRepository(t)
+	deps := testServiceDeps()
+	origin := time.Date(2026, 11, 19, 4, 25, 0, 0, time.UTC)
+	firstTick := origin.Add(5 * time.Minute)
+	secondTick := firstTick.Add(time.Minute)
+	now := secondTick.Add(time.Minute)
+	// Both history rows will have the same wall-clock creation time.
+	repo.nowString = func() string { return now.Format(DefaultTimestampLayout) }
+	inventory := []servers.Server{{Name: "canary"}, {Name: "host"}, {Name: "later"}}
+	rollout := Policy{
+		ID: 1, Revision: 1, Name: "rollout", Enabled: true, TargetServers: []string{"canary", "host", "later"},
+		ExecutionMode: ExecutionApprovalRequired, PackageScope: PackageScopeSecurity, CadenceKind: CadenceDaily, TimeLocal: "04:25",
+		RolloutMode: RolloutCanaryWaves, CanaryMode: CanaryExplicit, CanaryServers: []string{"canary"}, WaveSize: 1, WaveDelayMinutes: 5,
+	}
+	scan := Policy{
+		ID: 2, Revision: 1, Name: "later scan", Enabled: true, TargetServers: []string{"host"},
+		ExecutionMode: ExecutionScanOnly, PackageScope: PackageScopeSecurity, CadenceKind: CadenceDaily, TimeLocal: "04:31",
+	}
+	deps.Occurrences = repo
+	deps.ListPolicies = func() ([]Policy, error) { return []Policy{rollout, scan}, nil }
+	deps.ListRuns = repo.ListRuns
+	deps.ListRolloutRuns = repo.ListRolloutRuns
+	deps.SnapshotServers = func() []servers.Server { return inventory }
+	deps.HandleScheduledRun = func(req ScheduledRunRequest) ScheduledRunResult {
+		if req.Outcome != RunReasonMaintenance {
+			t.Fatalf("unexpected admission during denial: %+v", req)
+		}
+		_, inserted, err := repo.CreateRun(Run{
+			PolicyID: req.Policy.ID, ServerName: req.Server.Name, ScheduledForUTC: req.ScheduledForUTC,
+			Status: RunSkipped, Reason: req.Outcome, FinishedAt: now.Format(DefaultTimestampLayout),
+			MaintenanceCause: req.MaintenanceBlocker.Cause, BlockingJobID: req.MaintenanceBlocker.JobID, MaintenanceTickUTC: req.MaintenanceTickUTC,
+		})
+		return ScheduledRunResult{Inserted: inserted, Err: err}
+	}
+	service := NewService(deps)
+	if _, err := repo.AcceptOccurrence(newOccurrence(service, rollout, origin, inventory, nil)); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := repo.CreateRun(Run{
+		PolicyID: rollout.ID, ServerName: "canary", ScheduledForUTC: origin.Format(DefaultTimestampLayout),
+		Status: RunSucceeded, FinishedAt: origin.Add(time.Minute).Format(DefaultTimestampLayout),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	blocker := maintenance.Blocker{Cause: maintenance.BlockBackupExport, JobID: "covering-both-minutes"}
+	for _, tick := range []time.Time{firstTick, secondTick} {
+		if err := service.ProcessDueSlot(ScheduleRequest{Now: tick, MaintenanceActive: true, MaintenanceBlocker: blocker, Admitted: true}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for id, times := range map[int64]struct{ scheduled, observed time.Time }{
+		rollout.ID: {scheduled: origin, observed: firstTick},
+		scan.ID:    {scheduled: secondTick, observed: secondTick},
+	} {
+		run, err := repo.FindRun(id, "host", times.scheduled.Format(DefaultTimestampLayout))
+		if err != nil || run.BlockingJobID != blocker.JobID || run.MaintenanceTickUTC != times.observed.Format(DefaultTimestampLayout) {
+			t.Fatalf("policy %d observed deadline = %+v, %v", id, run, err)
+		}
 	}
 }

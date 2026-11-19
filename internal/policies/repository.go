@@ -184,13 +184,14 @@ func EnsureSchema(db *sql.DB) error {
 		}
 	}
 	for name, definition := range map[string]string{
-		"upgrade_mode":       "TEXT NOT NULL DEFAULT 'standard'",
-		"policy_revision":    "INTEGER NOT NULL DEFAULT 0",
-		"rollout_stage":      "TEXT NOT NULL DEFAULT ''",
-		"wave":               "INTEGER NOT NULL DEFAULT 0",
-		"server_identity":    "TEXT NOT NULL DEFAULT ''",
-		"maintenance_cause":  "TEXT NOT NULL DEFAULT ''",
-		"maintenance_job_id": "TEXT NOT NULL DEFAULT ''",
+		"upgrade_mode":         "TEXT NOT NULL DEFAULT 'standard'",
+		"policy_revision":      "INTEGER NOT NULL DEFAULT 0",
+		"rollout_stage":        "TEXT NOT NULL DEFAULT ''",
+		"wave":                 "INTEGER NOT NULL DEFAULT 0",
+		"server_identity":      "TEXT NOT NULL DEFAULT ''",
+		"maintenance_cause":    "TEXT NOT NULL DEFAULT ''",
+		"maintenance_job_id":   "TEXT NOT NULL DEFAULT ''",
+		"maintenance_tick_utc": "TEXT NOT NULL DEFAULT ''",
 	} {
 		if err := ensureTableColumn(db, "update_policy_runs", name, definition); err != nil {
 			return err
@@ -740,8 +741,8 @@ func (r *SQLiteRepository) CreateRun(run Run) (Run, bool, error) {
 	result, err := r.database().Exec(`
 		INSERT INTO update_policy_runs (
 			policy_id, policy_name, server_name, scheduled_for_utc, execution_mode, package_scope, upgrade_mode,
-			status, reason, summary, job_id, result_json, created_at, updated_at, started_at, finished_at, policy_revision, rollout_stage, wave, server_identity, maintenance_cause, maintenance_job_id
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			status, reason, summary, job_id, result_json, created_at, updated_at, started_at, finished_at, policy_revision, rollout_stage, wave, server_identity, maintenance_cause, maintenance_job_id, maintenance_tick_utc
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`,
 		run.PolicyID,
 		run.PolicyName,
@@ -759,7 +760,7 @@ func (r *SQLiteRepository) CreateRun(run Run) (Run, bool, error) {
 		now,
 		run.StartedAt,
 		run.FinishedAt,
-		run.PolicyRevision, run.RolloutStage, run.Wave, run.ServerIdentity, run.MaintenanceCause, run.BlockingJobID,
+		run.PolicyRevision, run.RolloutStage, run.Wave, run.ServerIdentity, run.MaintenanceCause, run.BlockingJobID, run.MaintenanceTickUTC,
 	)
 	if err != nil {
 		if IsSQLiteUniqueConstraint(err) {
@@ -785,7 +786,7 @@ func (r *SQLiteRepository) CreateRun(run Run) (Run, bool, error) {
 func (r *SQLiteRepository) FindRun(policyID int64, serverName, scheduledForUTC string) (Run, error) {
 	row := r.database().QueryRow(`
 		SELECT id, policy_id, policy_name, server_name, scheduled_for_utc, execution_mode, package_scope, upgrade_mode,
-		       status, reason, summary, job_id, result_json, created_at, updated_at, started_at, finished_at, policy_revision, rollout_stage, wave, server_identity, maintenance_cause, maintenance_job_id
+		       status, reason, summary, job_id, result_json, created_at, updated_at, started_at, finished_at, policy_revision, rollout_stage, wave, server_identity, maintenance_cause, maintenance_job_id, maintenance_tick_utc
 		  FROM update_policy_runs
 		 WHERE policy_id = ? AND server_name = ? AND scheduled_for_utc = ?
 	`, policyID, serverName, scheduledForUTC)
@@ -795,7 +796,7 @@ func (r *SQLiteRepository) FindRun(policyID int64, serverName, scheduledForUTC s
 func (r *SQLiteRepository) GetRun(id int64) (Run, error) {
 	row := r.database().QueryRow(`
 		SELECT id, policy_id, policy_name, server_name, scheduled_for_utc, execution_mode, package_scope, upgrade_mode,
-		       status, reason, summary, job_id, result_json, created_at, updated_at, started_at, finished_at, policy_revision, rollout_stage, wave, server_identity, maintenance_cause, maintenance_job_id
+		       status, reason, summary, job_id, result_json, created_at, updated_at, started_at, finished_at, policy_revision, rollout_stage, wave, server_identity, maintenance_cause, maintenance_job_id, maintenance_tick_utc
 		  FROM update_policy_runs
 		 WHERE id = ?
 	`, id)
@@ -822,7 +823,7 @@ func scanRunRow(scanner interface{ Scan(dest ...any) error }) (Run, error) {
 		&run.UpdatedAt,
 		&run.StartedAt,
 		&run.FinishedAt,
-		&run.PolicyRevision, &run.RolloutStage, &run.Wave, &run.ServerIdentity, &run.MaintenanceCause, &run.BlockingJobID,
+		&run.PolicyRevision, &run.RolloutStage, &run.Wave, &run.ServerIdentity, &run.MaintenanceCause, &run.BlockingJobID, &run.MaintenanceTickUTC,
 	)
 	run.UpgradeMode = normalizedUpgradeMode(run.UpgradeMode)
 	return run, err
@@ -922,7 +923,7 @@ func (r *SQLiteRepository) ListRuns(limit int) ([]Run, error) {
 	}
 	rows, err := r.database().Query(`
 		SELECT id, policy_id, policy_name, server_name, scheduled_for_utc, execution_mode, package_scope, upgrade_mode,
-		       status, reason, summary, job_id, result_json, created_at, updated_at, started_at, finished_at, policy_revision, rollout_stage, wave, server_identity, maintenance_cause, maintenance_job_id
+		       status, reason, summary, job_id, result_json, created_at, updated_at, started_at, finished_at, policy_revision, rollout_stage, wave, server_identity, maintenance_cause, maintenance_job_id, maintenance_tick_utc
 		  FROM update_policy_runs
 		 ORDER BY scheduled_for_utc DESC, id DESC
 		 LIMIT ?
@@ -989,7 +990,7 @@ func (r *SQLiteRepository) ListRolloutRuns(scopes []RolloutRunScope) ([]Run, err
 		}
 		rows, err := r.database().Query(`
 			SELECT id, policy_id, policy_name, server_name, scheduled_for_utc, execution_mode, package_scope, upgrade_mode,
-			       status, reason, summary, job_id, result_json, created_at, updated_at, started_at, finished_at, policy_revision, rollout_stage, wave, server_identity, maintenance_cause, maintenance_job_id
+			       status, reason, summary, job_id, result_json, created_at, updated_at, started_at, finished_at, policy_revision, rollout_stage, wave, server_identity, maintenance_cause, maintenance_job_id, maintenance_tick_utc
 			  FROM update_policy_runs
 			 WHERE `+strings.Join(where, " OR ")+`
 			 ORDER BY policy_id ASC, scheduled_for_utc ASC, server_name ASC, id DESC
@@ -1066,7 +1067,7 @@ func (r *SQLiteRepository) QueryRuns(query RunQuery) (RunPage, error) {
 	pageArgs := append(append([]any{}, args...), query.PageSize, (query.Page-1)*query.PageSize)
 	rows, err := r.database().Query(`
 		SELECT id, policy_id, policy_name, server_name, scheduled_for_utc, execution_mode, package_scope, upgrade_mode,
-		       status, reason, summary, job_id, result_json, created_at, updated_at, started_at, finished_at, policy_revision, rollout_stage, wave, server_identity, maintenance_cause, maintenance_job_id
+		       status, reason, summary, job_id, result_json, created_at, updated_at, started_at, finished_at, policy_revision, rollout_stage, wave, server_identity, maintenance_cause, maintenance_job_id, maintenance_tick_utc
 		  FROM update_policy_runs`+whereSQL+`
 		 ORDER BY scheduled_for_utc DESC, id DESC
 		 LIMIT ? OFFSET ?

@@ -311,9 +311,10 @@ The [SSH/APT qualification](../tools/ci/ssh-apt/) exports real encrypted archive
 on an isolated Docker installation. It interrupts a batch during package
 mutation, rejects an archive with a reused inventory name, restores an archive
 from before the incident, and checks the exact block and report after restart.
-It also restores a pre-repair archive after a verified repair and checks that
-the upgrade was attempted exactly once. The report omits archive credentials
-and checks that the temporary resources are removed.
+It also restores the pre-incident and pre-repair archives in succession after
+a verified repair and checks that the upgrade was attempted exactly once. The
+report omits archive credentials and checks that the temporary resources are
+removed.
 
 ### Qualify a Docker volume upgrade and VM reboot
 

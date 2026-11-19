@@ -509,6 +509,9 @@ class Harness:
                 "explicit repair did not reconcile the restarted host")
         require(self.target("dpkg", "--audit").strip() == "" and self.version() == "2.0" and
                 upgrades() == baseline_upgrades + 1, "repair did not verify APT state without replaying the upgrade")
+        # An intervening restore with no archived incident must still preserve
+        # the repair needed to settle the next, newer archive.
+        restore(pre_incident_archive)
         restore(pending_repair_archive)
         require(self.api.server(name)["status"] != "needs_reconciliation" and self.api.job(repair_id)["status"] == "succeeded"
                 and upgrades() == baseline_upgrades + 1,

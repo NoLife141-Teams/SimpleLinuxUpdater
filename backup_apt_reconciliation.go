@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"database/sql"
-	"errors"
 
 	"debian-updater/internal/jobs"
 )
@@ -12,7 +11,7 @@ import (
 // restore can change the running installation.
 func prepareAPTRestore(ctx context.Context, liveDB, stagedDB *sql.DB, manager *JobManager, now string) error {
 	live := jobs.NewSQLiteRepository(liveDB)
-	staged := jobs.NewSQLiteRepository(stagedDB)
+	staged := jobs.NewSQLiteRepositoryWithLogConfig(stagedDB, loadJobLogConfigFromEnv())
 	open, err := live.ListReconciliationRequired()
 	if err != nil {
 		return err
@@ -20,8 +19,8 @@ func prepareAPTRestore(ctx context.Context, liveDB, stagedDB *sql.DB, manager *J
 	if err := staged.MarkInterruptedAPTMutations(now); err != nil {
 		return err
 	}
-	archived, err := staged.ListReconciliationRequired()
-	if err != nil || (len(open) == 0 && len(archived) == 0) {
+	repairs, err := live.LatestVerifiedAPTRepairs()
+	if err != nil || (len(open) == 0 && len(repairs) == 0) {
 		return err
 	}
 	liveTargets, err := aptRestoreInventory(ctx, liveDB)
@@ -44,7 +43,6 @@ func prepareAPTRestore(ctx context.Context, liveDB, stagedDB *sql.DB, manager *J
 		record.ServerName = name
 		return staged.ImportAPTRecoveryEvidence(record)
 	}
-	liveOpenTargets := make(map[string]bool)
 	importedOpen := make(map[string]bool)
 	for _, incident := range open {
 		name, matches := stagedTargets[incident.APTTarget]
@@ -57,22 +55,14 @@ func prepareAPTRestore(ctx context.Context, liveDB, stagedDB *sql.DB, manager *J
 		if err := importJob(incident.ID, name); err != nil {
 			return err
 		}
-		liveOpenTargets[incident.APTTarget] = true
 		importedOpen[incident.ID] = true
 	}
-	for _, incident := range archived {
-		name, matches := stagedTargets[incident.APTTarget]
-		if !matches || liveOpenTargets[incident.APTTarget] {
+	for _, repair := range repairs {
+		name, matches := stagedTargets[repair.APTTarget]
+		if !matches {
 			continue
 		}
-		id, err := live.SuccessfulAPTRepairAfter(incident)
-		if errors.Is(err, sql.ErrNoRows) {
-			continue
-		}
-		if err != nil {
-			return err
-		}
-		if err := importJob(id, name); err != nil {
+		if err := importJob(repair.ID, name); err != nil {
 			return err
 		}
 	}

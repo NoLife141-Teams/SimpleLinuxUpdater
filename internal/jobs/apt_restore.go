@@ -28,17 +28,31 @@ func (r *SQLiteRepository) MarkInterruptedAPTMutations(now string) error {
 	return markInterruptedAPTMutations(r.db, now)
 }
 
-// SuccessfulAPTRepairAfter returns only explicit repairs with recorded host
-// key proof. A completed repair also resolves its own in-flight archive copy.
-func (r *SQLiteRepository) SuccessfulAPTRepairAfter(incident Record) (string, error) {
-	var id string
-	err := r.db.QueryRow(`
-		SELECT id FROM jobs
-		WHERE apt_target = ? AND apt_target <> '' AND kind = ? AND status = ?
-		  AND apt_mutation_host_key <> '' AND (created_at > ? OR id = ?)
-		ORDER BY created_at DESC, id DESC LIMIT 1
-	`, incident.APTTarget, KindAptRepair, StatusSucceeded, incident.CreatedAt, incident.ID).Scan(&id)
-	return id, err
+// LatestVerifiedAPTRepairs returns the newest successful repair with host key
+// proof for each APT target. Carrying this evidence through intervening restores
+// keeps a later restore from reopening an older, already repaired incident.
+func (r *SQLiteRepository) LatestVerifiedAPTRepairs() ([]Record, error) {
+	rows, err := r.db.Query(`
+		SELECT id, apt_target FROM (
+			SELECT id, apt_target,
+			       row_number() OVER (PARTITION BY apt_target ORDER BY created_at DESC, id DESC) AS position
+			  FROM jobs
+			 WHERE apt_target <> '' AND kind = ? AND status = ? AND apt_mutation_host_key <> ''
+		) WHERE position = 1
+	`, KindAptRepair, StatusSucceeded)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var repairs []Record
+	for rows.Next() {
+		var repair Record
+		if err := rows.Scan(&repair.ID, &repair.APTTarget); err != nil {
+			return nil, err
+		}
+		repairs = append(repairs, repair)
+	}
+	return repairs, rows.Err()
 }
 
 // ImportAPTRecoveryEvidence carries an exact job into an isolated restore

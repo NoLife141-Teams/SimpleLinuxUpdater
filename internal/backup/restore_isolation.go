@@ -21,6 +21,7 @@ type restoreIsolationState struct {
 type RestoreIsolation struct {
 	databasePath func() string
 	mu           sync.RWMutex
+	files        restoreFiles
 	syncFailed   bool
 }
 
@@ -45,14 +46,16 @@ func (s *RestoreIsolation) BlocksExternalWork() bool {
 	return active
 }
 
-func (s *RestoreIsolation) BlocksScheduledWork(at time.Time) bool {
+// ScheduledWork reports the first eligible schedule slot after isolation
+// and whether the scheduler must stay paused at the given tick.
+func (s *RestoreIsolation) ScheduledWork(at time.Time) (resumeAt time.Time, blocked bool) {
 	if s == nil {
-		return false
+		return time.Time{}, false
 	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	state, err := s.read()
-	return err != nil || state.Active || at.Before(state.ResumeSchedules)
+	return state.ResumeSchedules, err != nil || state.Active || at.Before(state.ResumeSchedules)
 }
 
 func (s *RestoreIsolation) read() (restoreIsolationState, error) {
@@ -95,22 +98,36 @@ func (s *RestoreIsolation) write(state restoreIsolationState) error {
 	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	dir := filepath.Dir(database)
+	published, err := s.replaceState(path, state)
+	if !published {
+		return err
+	}
+	s.syncFailed = err != nil
+	if err != nil && !state.Active {
+		// A failed resumption must keep isolation visible after restart.
+		// A rename can already be visible even when the directory sync fails.
+		_, retainErr := s.replaceState(path, restoreIsolationState{Active: true})
+		s.syncFailed = retainErr != nil
+		return errors.Join(err, retainErr)
+	}
+	return err
+}
+
+func (s *RestoreIsolation) replaceState(path string, state restoreIsolationState) (published bool, err error) {
+	dir := filepath.Dir(path)
 	file, err := os.CreateTemp(dir, ".slu-restore-isolation-*")
 	if err != nil {
-		return err
+		return false, err
 	}
 	defer os.Remove(file.Name())
 	if err := json.NewEncoder(file).Encode(state); err != nil {
-		return errors.Join(err, file.Close())
+		return false, errors.Join(err, file.Close())
 	}
-	if err := errors.Join(file.Sync(), file.Close()); err != nil {
-		return err
+	if err := errors.Join(s.files.syncFile(file), file.Close()); err != nil {
+		return false, err
 	}
 	if err := os.Rename(file.Name(), path); err != nil {
-		return err
+		return false, err
 	}
-	err = (restoreFiles{}).syncPath(dir)
-	s.syncFailed = err != nil
-	return err
+	return true, s.files.syncPath(dir)
 }

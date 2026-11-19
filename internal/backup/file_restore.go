@@ -459,6 +459,11 @@ func (s *Service) applyArchiveFiles(ctx context.Context, files map[string]string
 		// been replaced. Preserve typed recovery errors if a preparer cannot unwind.
 		return fmt.Errorf("prepare restored persistence replacement: %w", err)
 	}
+	if opts.BeforeReplacement != nil {
+		if err := opts.BeforeReplacement(); err != nil {
+			return s.reloadOriginalPersistence(ctx, err, restoreHandoff)
+		}
+	}
 	if stager, ok := s.deps.RestoredRuntime.(ReplacementStager); ok {
 		if err := stageRuntimePersistence(ctx, preparedDB.Path, stager); err != nil {
 			return s.reloadOriginalPersistence(ctx, fmt.Errorf("stage restored runtime persistence: %w", err), restoreHandoff)

@@ -112,7 +112,7 @@ func (s *Service) ProcessDueWithRecovery(now time.Time, store SchedulerWatermark
 	deps := s.EnsureDeps()
 	s.tickMu.Lock()
 	defer s.tickMu.Unlock()
-	if deps.BlocksScheduledRun != nil && deps.BlocksScheduledRun(now) {
+	if _, blocked := deps.ScheduledWork(now); blocked {
 		return nil
 	}
 
@@ -123,7 +123,8 @@ func (s *Service) ProcessDueWithRecovery(now time.Time, store SchedulerWatermark
 		}
 		defer lease.Close()
 	}
-	if deps.BlocksScheduledRun != nil && deps.BlocksScheduledRun(now) {
+	resumeAt, blocked := deps.ScheduledWork(now)
+	if blocked {
 		return nil
 	}
 
@@ -137,6 +138,9 @@ func (s *Service) ProcessDueWithRecovery(now time.Time, store SchedulerWatermark
 		return fmt.Errorf("load policy scheduler watermark: %w", err)
 	}
 	watermark = watermark.UTC().Truncate(time.Minute)
+	if !resumeAt.IsZero() && watermark.Before(resumeAt.Add(-time.Minute)) {
+		watermark = resumeAt.Add(-time.Minute)
+	}
 
 	recoverySnapshot, stateRevision, err := s.captureSchedulerState(store)
 	if err != nil {

@@ -292,6 +292,8 @@ that restore isolation is active. It persists locally across restarts and
 subsequent restores. After reviewing SSH trust, scheduled policies and notification
 destinations, select **Resume External Work**, confirm with `RESUME` and
 reauthenticate. Scheduling resumes at the next minute with a rebased watermark.
+Scheduled work that became due while isolated, including waves of an accepted
+rollout, is skipped. Future waves still depend on their preceding batches.
 Queued notifications undergo normal eligibility checks before sending.
 
 When restoring on the running installation, the app keeps live APT

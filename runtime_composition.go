@@ -423,10 +423,10 @@ func (c *runtimeComposition) Compose() AppDeps {
 			CurrentLocation: func() *time.Location {
 				return deps.ApplicationTime.Current().Location
 			},
-			Maintenance:        deps.MaintenanceCoordinator,
-			BlocksScheduledRun: deps.RestoreIsolation.BlocksScheduledWork,
-			ApplicationTime:    deps.ApplicationTime,
-			Now:                deps.Now,
+			Maintenance:     deps.MaintenanceCoordinator,
+			ScheduledWork:   deps.RestoreIsolation.ScheduledWork,
+			ApplicationTime: deps.ApplicationTime,
+			Now:             deps.Now,
 			SnapshotServers: func() []Server {
 				return deps.ServerState.CloneServers()
 			},

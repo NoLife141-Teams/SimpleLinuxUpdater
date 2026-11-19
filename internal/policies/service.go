@@ -31,7 +31,7 @@ type ServiceDeps struct {
 	HandleScheduledRun  func(ScheduledRunRequest) ScheduledRunResult
 	CurrentLocation     func() *time.Location
 	Maintenance         *maintenancepkg.Coordinator
-	BlocksScheduledRun  func(time.Time) bool
+	ScheduledWork       func(time.Time) (resumeAt time.Time, blocked bool)
 	ApplicationTime     *apptimepkg.Module
 	MarkInterruptedRuns func() error
 	Now                 func() time.Time
@@ -105,6 +105,9 @@ func (s *Service) EnsureDeps() ServiceDeps {
 }
 
 func (d ServiceDeps) withDefaults() ServiceDeps {
+	if d.ScheduledWork == nil {
+		d.ScheduledWork = func(time.Time) (time.Time, bool) { return time.Time{}, false }
+	}
 	if d.CurrentLocation == nil {
 		d.CurrentLocation = func() *time.Location { return time.Local }
 	}
@@ -968,6 +971,10 @@ func (s *Service) ResetMissedTicksForTest() {
 
 func (s *Service) ProcessDueSlot(req ScheduleRequest) error {
 	deps := s.EnsureDeps()
+	resumeAt, blocked := deps.ScheduledWork(req.Now)
+	if blocked {
+		return nil
+	}
 	if deps.ListPolicies == nil || deps.LoadOverrides == nil || deps.LoadGlobalBlackouts == nil || deps.SnapshotServers == nil || deps.HandleScheduledRun == nil {
 		return errors.New("policy service dependencies are incomplete")
 	}
@@ -1072,6 +1079,7 @@ func (s *Service) ProcessDueSlot(req ScheduleRequest) error {
 			canAttributeMaintenance := req.MaintenanceActive && req.MaintenanceBlocker.Cause != "" && gate == "ready" &&
 				elapsedMinutes >= batch.ReleaseDelayMinutes &&
 				s.rolloutGateStateAt(policy.ID, policyScheduledForUTC, batches[:batchIndex], runByKey, req.Now) == "ready"
+			missedBeforeResume := rolloutSlot.Add(time.Duration(batch.ReleaseDelayMinutes) * time.Minute).Before(resumeAt)
 			for _, serverName := range batch.Servers {
 				server := plan.servers[serverName]
 				key := rolloutRunKey(policy.ID, policyScheduledForUTC, serverName)
@@ -1095,7 +1103,8 @@ func (s *Service) ProcessDueSlot(req ScheduleRequest) error {
 				if gate == "failed" {
 					reason = RunReasonRolloutGate
 				}
-				if reason == "" && plan.occurrence != nil && batchIndex == 0 && rolloutSlot.Before(slotLocal) {
+				if reason == "" && (missedBeforeResume ||
+					(plan.occurrence != nil && batchIndex == 0 && rolloutSlot.Before(slotLocal))) {
 					reason = RunReasonSchedulerMissed
 				}
 				if reason == "" && (s.BlackoutApplies(slotLocal, globalBlackouts) || s.BlackoutApplies(slotLocal, policy.PolicyBlackouts)) {
@@ -1267,7 +1276,7 @@ func (s *Service) ProcessDue(now time.Time) (resultErr error) {
 	deps := s.EnsureDeps()
 	s.tickMu.Lock()
 	defer s.tickMu.Unlock()
-	if deps.BlocksScheduledRun != nil && deps.BlocksScheduledRun(now) {
+	if _, blocked := deps.ScheduledWork(now); blocked {
 		return nil
 	}
 	if deps.Maintenance != nil {
@@ -1278,10 +1287,6 @@ func (s *Service) ProcessDue(now time.Time) (resultErr error) {
 		}
 		defer lease.Close()
 	}
-	if deps.BlocksScheduledRun != nil && deps.BlocksScheduledRun(now) {
-		return nil
-	}
-
 	return s.processDueWithoutDurableRecovery(now)
 }
 

@@ -506,16 +506,7 @@ func (l *backupOperationLifecycle) Restore(ctx context.Context, cmd backupRestor
 					return err
 				}
 			}
-			if err := cmd.Lease.PrepareReplacement(ctx, db); err != nil {
-				return err
-			}
-			if cmd.Isolate {
-				if deps.RestoreIsolation == nil {
-					return errors.New("restore isolation is unavailable")
-				}
-				return deps.RestoreIsolation.Activate()
-			}
-			return nil
+			return cmd.Lease.PrepareReplacement(ctx, db)
 		},
 		RestoreHandoff: func(ctx context.Context) error {
 			if cmd.Lease == nil {
@@ -523,6 +514,14 @@ func (l *backupOperationLifecycle) Restore(ctx context.Context, cmd backupRestor
 			}
 			return cmd.Lease.Handoff(ctx)
 		},
+	}
+	if cmd.Isolate {
+		restoreOptions.BeforeReplacement = func() error {
+			if deps.RestoreIsolation == nil {
+				return errors.New("restore isolation is unavailable")
+			}
+			return deps.RestoreIsolation.Activate()
+		}
 	}
 	var result internalbackup.RestoreResult
 	if fileRunner, ok := deps.Archive.(backupArchiveFileRunner); ok && strings.TrimSpace(cmd.File.Path) != "" {

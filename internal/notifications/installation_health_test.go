@@ -12,9 +12,11 @@ func TestNotificationWorkerReportsFailedEvaluationWithoutProgress(t *testing.T) 
 	for _, tc := range []struct {
 		name                string
 		failsAtRevalidation bool
+		incomplete          bool
 	}{
 		{name: "initial sweep"},
 		{name: "before sending admitted delivery", failsAtRevalidation: true},
+		{name: "incomplete source with independently valid delivery", incomplete: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newConditionHarness(t)
@@ -34,6 +36,9 @@ func TestNotificationWorkerReportsFailedEvaluationWithoutProgress(t *testing.T) 
 			deps.ReadConditions = func(context.Context, string, []Condition) (ConditionBatch, error) {
 				if !failCycle.Load() {
 					return ConditionBatch{}, nil
+				}
+				if tc.incomplete {
+					return ConditionBatch{Incomplete: true, Facts: []ConditionFact{rebootFact(true)}}, nil
 				}
 				failureCycleReads++
 				if tc.failsAtRevalidation && failureCycleReads == 1 {
@@ -65,7 +70,7 @@ func TestNotificationWorkerReportsFailedEvaluationWithoutProgress(t *testing.T) 
 					t.Fatal(err)
 				}
 				if worker.LastTick.Equal(next) && !worker.Running {
-					if !worker.LastProgress.Equal(start) || worker.Errors != 1 || facts.ConditionEvaluationState != ConditionEvaluationDegraded {
+					if !worker.LastProgress.Equal(start) || worker.Errors == 0 || facts.ConditionEvaluationState != ConditionEvaluationDegraded {
 						t.Fatalf("failed cycle = %+v, %+v", worker, facts)
 					}
 					wantLastSuccess := start
@@ -74,6 +79,9 @@ func TestNotificationWorkerReportsFailedEvaluationWithoutProgress(t *testing.T) 
 						if facts.Retrying != 1 || facts.LastSuccessfulDeliveryAt != nil {
 							t.Fatalf("unvalidated delivery result = %+v", facts)
 						}
+					}
+					if tc.incomplete && (facts.LastSuccessfulDeliveryAt == nil || !facts.LastSuccessfulDeliveryAt.Equal(next)) {
+						t.Fatalf("independently valid delivery did not complete: %+v", facts)
 					}
 					if facts.LastConditionEvaluationAt == nil || !facts.LastConditionEvaluationAt.Equal(wantLastSuccess) {
 						t.Fatalf("last successful evaluation = %v, want %v", facts.LastConditionEvaluationAt, wantLastSuccess)

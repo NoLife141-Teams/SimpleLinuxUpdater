@@ -428,6 +428,7 @@ func (s *Service) run(ctx context.Context) {
 				s.health.Error(s.deps.Now())
 				s.deps.Logf("notification condition reconciliation failed: %v", err)
 			}
+			cycleOK = cycleOK && !s.conditionHealth.degraded()
 		}
 		if prune {
 			if _, err := pruneOutbox(ctx, s.database(), s.deps.Now(), s.deps.Retention); err != nil {
@@ -461,7 +462,7 @@ func (s *Service) run(ctx context.Context) {
 				}
 				break
 			}
-			if !s.processOutboxRow(ctx, *row) {
+			if !s.processOutboxRow(ctx, *row) || s.conditionHealth.degraded() {
 				cycleOK = false
 			}
 			s.endPersistence()

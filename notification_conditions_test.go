@@ -292,8 +292,8 @@ func TestNotificationBackupFactsManualAutomaticCoverageAndUnavailable(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !lastConditionFact(batch.Facts, "backup/coverage/missing").Active {
-		t.Fatal("missing backup not detected")
+	if batch.Incomplete || !lastConditionFact(batch.Facts, "backup/coverage/missing").Active {
+		t.Fatal("an observed absence of backup evidence should be a complete evaluation with a coverage alert")
 	}
 	appendConditionAudit(t, db, now.Format(time.RFC3339), "backup.export", "failure", `{"password":"do-not-forward"}`)
 	appendConditionAudit(t, db, now.Format(time.RFC3339), "backup.automatic.failed", "failure", `{"occurrence_at":"now"}`)
@@ -337,6 +337,9 @@ func TestNotificationBackupFactsManualAutomaticCoverageAndUnavailable(t *testing
 	batch, err = source(context.Background(), batch.Cursor, conditionPrevious(batch.Facts))
 	if err != nil {
 		t.Fatal(err)
+	}
+	if !batch.Incomplete {
+		t.Fatal("unreadable recovery evidence appeared to be a complete evaluation")
 	}
 	for _, fact := range batch.Facts {
 		if strings.HasPrefix(fact.ID, "backup/coverage") {

@@ -198,8 +198,10 @@ main DB/WAL and available filesystem bytes (capacity currently on Linux).
 A successful notification condition evaluation reads and validates its inputs
 and commits any state changes, including when no delivery is due. A later
 evaluation failure marks this observation as degraded and retains its last
-success time. The evaluation starts unobserved after startup or persistence
-reload. The latest persisted HTTP success for a queued delivery survives
+success time. When backup recovery evidence cannot be read, the evaluation
+is degraded and available observations such as APT incidents can still be
+admitted and delivered. The evaluation starts unobserved after startup or
+persistence reload. The latest persisted HTTP success for a queued delivery survives
 process restarts and outbox history pruning. Manual test deliveries use their
 own diagnostics. The oldest queued delivery age includes pending, claimed and
 retrying rows. An empty queue has no age. Worker tick and progress timestamps

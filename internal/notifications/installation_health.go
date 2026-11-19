@@ -33,15 +33,21 @@ type conditionEvaluationHealth struct {
 	lastSuccess time.Time
 }
 
-func (h *conditionEvaluationHealth) observe(at time.Time, err error) {
+func (h *conditionEvaluationHealth) observe(at time.Time, degraded bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.state = ConditionEvaluationHealthy
-	if err != nil {
+	if degraded {
 		h.state = ConditionEvaluationDegraded
 		return
 	}
 	h.lastSuccess = at.UTC()
+}
+
+func (h *conditionEvaluationHealth) degraded() bool {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return h.state == ConditionEvaluationDegraded
 }
 
 func (h *conditionEvaluationHealth) reset() {

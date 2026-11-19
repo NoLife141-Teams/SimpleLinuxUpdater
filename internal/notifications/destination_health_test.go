@@ -152,6 +152,42 @@ func TestDestinationHealthMigratesBoundEvidenceBeforeRetention(t *testing.T) {
 	}
 }
 
+func TestDestinationHealthMigrationRecoversCompletedAttemptFromClaimedRetry(t *testing.T) {
+	h := newConditionHarness(t)
+	h.service.deps.Backoff = func(int) time.Duration { return time.Hour }
+	h.facts = []ConditionFact{rebootFact(true)}
+	h.reconcile(t)
+	h.drain(t)
+	succeededAt := h.now
+
+	h.now = h.now.Add(time.Minute)
+	h.facts = []ConditionFact{rebootFact(false)}
+	h.reconcile(t)
+	h.facts = []ConditionFact{rebootFact(true)}
+	h.reconcile(t)
+	h.client.fail = true
+	h.drain(t)
+	retriedAt := h.now
+
+	// Emulate an older process stopping after claiming the retry but before
+	// sending it. The row still contains the preceding completed attempt.
+	h.now = h.now.Add(time.Hour)
+	if row, err := claimNextOutboxRow(t.Context(), h.db, h.now); err != nil || row == nil || row.Attempts != 1 {
+		t.Fatalf("retry claim = %+v, %v", row, err)
+	}
+	if _, err := h.db.Exec(`DROP TABLE notification_destination_health`); err != nil {
+		t.Fatal(err)
+	}
+	restarted := NewService(h.service.deps)
+	defer closeOutboxService(t, restarted)
+	_, facts, err := restarted.InstallationHealth(t.Context())
+	webhook := facts.Destinations[DestinationWebhook]
+	if err != nil || webhook.LastSuccessfulDeliveryAt == nil || !webhook.LastSuccessfulDeliveryAt.Equal(succeededAt) ||
+		webhook.LastAttemptState != DeliveryOutcomeRetrying || webhook.LastAttemptAt == nil || !webhook.LastAttemptAt.Equal(retriedAt) {
+		t.Fatalf("Webhook after resuming claimed retry = %+v, %v", webhook, err)
+	}
+}
+
 func TestDestinationHealthMigrationLeavesConflictingLegacyAttemptsUnknown(t *testing.T) {
 	h := newConditionHarness(t)
 	settings, err := h.service.currentSettings()

@@ -79,6 +79,7 @@ func ensureDestinationHealthSchema(ctx context.Context, db *sql.DB) error {
 	}
 	// Older completions were recorded to the second. When distinct outcomes
 	// share a timestamp, keep any confirmed success and leave their order unknown.
+	// A claimed retry still carries the previous completed retry result.
 	if _, err := tx.ExecContext(ctx, `
 		CREATE TABLE notification_destination_health (
 			destination TEXT NOT NULL CHECK(destination IN ('webhook', 'discord', 'telegram')),
@@ -91,13 +92,14 @@ func ensureDestinationHealthSchema(ctx context.Context, db *sql.DB) error {
 		INSERT INTO notification_destination_health
 			(destination, fingerprint, last_success_at, last_attempt_at, last_attempt_state)
 		WITH attempts AS (
-			SELECT destination, destination_fingerprint, rtrim(completed_at, 'Z') AS completed, state,
+			SELECT destination, destination_fingerprint, rtrim(completed_at, 'Z') AS completed,
+			       CASE WHEN state='claimed' THEN 'retrying' ELSE state END AS state,
 			       RANK() OVER (PARTITION BY destination, destination_fingerprint
 			           ORDER BY rtrim(completed_at, 'Z') DESC) AS recency
 			FROM notification_outbox
 			WHERE destination IN ('webhook', 'discord', 'telegram') AND destination_fingerprint <> ''
 			  AND attempted_at <> '' AND completed_at <> ''
-			  AND ((state='succeeded' AND status_code BETWEEN 200 AND 299) OR state IN ('retrying', 'failed'))
+			  AND ((state='succeeded' AND status_code BETWEEN 200 AND 299) OR state IN ('claimed', 'retrying', 'failed'))
 		)
 		SELECT destination, destination_fingerprint,
 		       COALESCE(MAX(completed) FILTER (WHERE state='succeeded') || 'Z', ''),

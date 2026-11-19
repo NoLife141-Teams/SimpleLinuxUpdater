@@ -320,6 +320,37 @@ func TestOfflineRecoveryMarkerRemovalSyncFailureKeepsSQLiteLatch(t *testing.T) {
 	}
 }
 
+func TestOfflineRecoveryRetriesTrustDirectorySyncBeforeRelease(t *testing.T) {
+	f, _, id := interruptedRecoveryFixture(t, true)
+	if err := os.WriteFile(f.hosts, []byte(archivedRestoreTrust), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(f.db, []byte("damaged active SQLite"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	f.service.syncRestoreFile = func(file *os.File) error {
+		if file.Name() == filepath.Dir(f.hosts) {
+			return syscall.EIO
+		}
+		return file.Sync()
+	}
+	for range 2 {
+		report, err := f.service.OfflineRestoreRecovery(t.Context(), id, offlineRecoveryMergeFixtureJobs)
+		if err == nil || report.Applied != "" || !report.RecoveryRequired {
+			t.Fatalf("recovery cleared the latch before synchronizing host trust: %+v, %v", report, err)
+		}
+		// The first attempt installs the correct contents but its directory
+		// sync fails. The second attempt sees those same bytes.
+		requireDurableRestoreState(t, f.db, f.hosts, originalRestoreServer, originalRestoreTrust, true)
+	}
+	f.service.syncRestoreFile = nil
+	report, err := f.service.OfflineRestoreRecovery(t.Context(), id, offlineRecoveryMergeFixtureJobs)
+	if err != nil || report.Applied != id || report.RecoveryRequired {
+		t.Fatalf("retry after restoring sync = %+v, %v", report, err)
+	}
+	requireDurableRestoreState(t, f.db, f.hosts, originalRestoreServer, originalRestoreTrust, false)
+}
+
 func TestOfflineRecoveryCanRetryAfterMarkerWriteFailure(t *testing.T) {
 	f, _, id := interruptedRecoveryFixture(t, true)
 	marker := RestoreRecoveryMarkerPath(f.db)

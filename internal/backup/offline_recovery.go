@@ -172,8 +172,12 @@ func (s *Service) OfflineRestoreRecovery(ctx context.Context, selection string, 
 		}
 		currentHosts := entries[len(targets)]
 		if stagedHosts != nil && stagedHosts.Exists == currentHosts.Exists && stagedHosts.SHA256 == currentHosts.SHA256 {
-			// A restore that left trust unchanged can recover even when
-			// its deployed known_hosts file cannot be replaced.
+			// Confirm the directory entry is durable even when a prior
+			// attempt installed or removed known_hosts before its sync failed.
+			if err := fs.syncPath(restoreEntryDirectory(hosts)); err != nil &&
+				(currentHosts.Exists || !errors.Is(err, os.ErrNotExist)) {
+				return report, errors.New("could not synchronize host trust; recovery remains locked")
+			}
 			stagedHosts = nil
 		}
 		if !marked {

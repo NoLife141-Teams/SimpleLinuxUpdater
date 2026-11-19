@@ -219,12 +219,14 @@ exists or that it is stored off host. Unknown storage observations are nullable.
 
 **Local backup archives** reports the last availability observation of registered
 automated archives. The worker checks at startup and every five minutes, up to
-100 registered files per pass. It compares directory and file metadata without
-reading the passphrase or hashing archives. A missing or replaced archive opens
-a delivery episode under the existing backup verification failure event. A
-successful full re-verification can clear that episode. An inaccessible or replaced
-mount yields an unavailable observation. A surviving verified archive still
-contributes to local coverage. Manual off-host backups are outside this observation.
+200 registrations per pass. Retention preserves up to 100 unavailable archive
+registrations alongside the configured number of healthy archives. The worker
+compares directory and file metadata without reading the passphrase or hashing
+archives. Each confirmed loss opens one delivery episode under the existing
+backup verification failure event. Successful full re-verification restores the
+archive's coverage and allows a future loss to open a new episode. An inaccessible
+or replaced mount yields an unavailable observation. A surviving verified archive
+still contributes to local coverage. Manual off-host backups are outside this observation.
 
 The existing Metrics Access Credential also protects the added
 `slu_installation_*` Prometheus gauges. Existing `simplelinuxupdater_*` series are

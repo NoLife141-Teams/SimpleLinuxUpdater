@@ -7,29 +7,28 @@ import (
 	"os"
 	"reflect"
 	"strconv"
-	"strings"
 	"time"
 
 	maintenancepkg "debian-updater/internal/maintenance"
-	notificationpkg "debian-updater/internal/notifications"
 )
 
 const backupArchiveObservationInterval = 5 * time.Minute
 const backupArchiveObservationBudget = 2 * time.Second
+const backupArchiveObservationLimit = 2 * backupCatalogLimit
 const backupArchiveLossConditionPrefix = "backup/archive-loss/"
 
 var errBackupArchiveObservationDeferred = errors.New("backup archive observation deferred while catalog changes")
 
 type backupArchiveObservation struct {
-	CheckedAt string `json:"checked_at,omitempty"`
-	Storage   string `json:"storage,omitempty"`
-	Owner     string `json:"owner,omitempty"`
+	CheckedAt         string `json:"checked_at,omitempty"`
+	Storage           string `json:"storage,omitempty"`
+	Owner             string `json:"owner,omitempty"`
+	DirectoryIdentity string `json:"directory_identity,omitempty"`
 }
 
 type backupArchiveScan struct {
 	observation  backupArchiveObservation
 	availability map[int]string
-	directory    string
 }
 
 type backupArchiveCoverage struct {
@@ -68,7 +67,7 @@ func (s backupAutomationState) archiveCoverage(now time.Time) backupArchiveCover
 		observed := parseBackupStamp(archive.ObservedAt)
 		verified := parseBackupStamp(archive.LastVerifiedAt)
 		switch {
-		case observed.IsZero() || now.Sub(observed) > 2*backupArchiveObservationInterval || archive.Availability == "unavailable":
+		case archive.DirectoryIdentity != observation.DirectoryIdentity || observed.IsZero() || now.Sub(observed) > 2*backupArchiveObservationInterval || archive.Availability == "unavailable":
 			facts.Unknown++
 		case archive.Availability == "present" && archive.Verification == "verified" && !archive.LossActive && !verified.IsZero():
 			facts.Verified++
@@ -141,8 +140,8 @@ func (a *backupAutomation) observeArchiveAvailability(ctx context.Context) error
 	results := make(chan backupArchiveScan, 1)
 	go func() {
 		defer a.scanMu.Unlock()
-		observation, availability, directory := a.scanBackupArchives(ctx, before.Archives)
-		results <- backupArchiveScan{observation, availability, directory}
+		observation, availability := a.scanBackupArchives(ctx, before.Archives)
+		results <- backupArchiveScan{observation, availability}
 	}()
 	var scan backupArchiveScan
 	select {
@@ -169,65 +168,64 @@ func (a *backupAutomation) observeArchiveAvailability(ctx context.Context) error
 	if !reflect.DeepEqual(before, current) {
 		return errBackupArchiveObservationDeferred
 	}
+	var events []AuditEvent
 	for i, value := range scan.availability {
 		archive := &current.Archives[i]
 		if value == "present" && archive.DirectoryIdentity == "" {
-			archive.DirectoryIdentity = scan.directory
+			archive.DirectoryIdentity = scan.observation.DirectoryIdentity
 		}
-		if err := a.observeArchive(archive, value, scan.observation.CheckedAt, "backup-scheduler", ""); err != nil {
-			return err
+		if event := a.observeArchive(archive, value, scan.observation.CheckedAt, "backup-scheduler", ""); event != nil {
+			events = append(events, *event)
 		}
 	}
 	current.Observation = scan.observation
-	return a.save(ctx, current)
+	return a.save(ctx, current, events...)
 }
 
-func (a *backupAutomation) scanBackupArchives(ctx context.Context, archives []ownedBackupArchive) (backupArchiveObservation, map[int]string, string) {
+func (a *backupAutomation) scanBackupArchives(ctx context.Context, archives []ownedBackupArchive) (backupArchiveObservation, map[int]string) {
 	observation := backupArchiveObservation{CheckedAt: backupStamp(a.now()), Storage: "unavailable"}
 	owner, err := a.localIdentity(false)
 	if err != nil {
-		return observation, nil, ""
+		return observation, nil
 	}
 	observation.Owner = owner
 	dir, err := backupRealPath(a.deployment.Directory)
 	if err != nil {
-		return observation, nil, ""
+		return observation, nil
 	}
 	root, err := os.OpenRoot(dir)
 	if err != nil {
-		return observation, nil, ""
+		return observation, nil
 	}
 	defer root.Close()
 	info, err := root.Lstat(".")
-	if err != nil || !info.IsDir() || info.Mode().Perm()&0022 != 0 {
-		return observation, nil, ""
+	if err != nil || !info.IsDir() || info.Mode().Perm()&0022 != 0 || info.Mode().Perm()&0111 == 0 {
+		return observation, nil
 	}
-	directory := backupCatalogFileIdentity(info)
+	observation.DirectoryIdentity = backupCatalogFileIdentity(info)
 	probes := make(map[int]string)
 	tracked, comparable := 0, 0
-	for i := len(archives) - 1; i >= 0 && len(probes) < backupCatalogLimit && ctx.Err() == nil; i-- {
+	for i := len(archives) - 1; i >= 0 && len(probes) < backupArchiveObservationLimit && ctx.Err() == nil; i-- {
 		archive := archives[i]
 		if !backupArchiveOwned(archive, owner) {
 			continue
 		}
 		tracked++
-		value := backupArchiveAvailability(root, archive, owner)
-		switch {
-		case archive.DirectoryIdentity != "" && archive.DirectoryIdentity == directory:
-			comparable++
-		case archive.DirectoryIdentity == "" && value == "present" && archive.FileIdentity != "":
-			// A legacy archive can identify its directory through a matching
-			// registered file. Missing legacy files cannot identify a mount.
-			comparable++
-		default:
+		value := backupArchiveAvailabilityAt(root, archive, owner, observation.DirectoryIdentity)
+		if archive.DirectoryIdentity == "" && archive.FileIdentity == "" {
+			// Full verification establishes identity for archives registered before
+			// the catalog recorded file metadata.
 			value = "unavailable"
+		}
+		if value != "unavailable" {
+			comparable++
 		}
 		probes[i] = value
 	}
 	if tracked == 0 || comparable > 0 {
 		observation.Storage = "available"
 	}
-	return observation, probes, directory
+	return observation, probes
 }
 
 func archiveAvailabilityLost(availability string) bool {
@@ -247,13 +245,16 @@ func backupArchiveAvailabilityAt(root *os.Root, archive ownedBackupArchive, owne
 	if backupArchiveOwned(archive, owner) && archive.DirectoryIdentity != "" && archive.DirectoryIdentity != directory {
 		return "unavailable"
 	}
-	return backupArchiveAvailability(root, archive, owner)
+	availability := backupArchiveAvailability(root, archive, owner)
+	if archive.DirectoryIdentity == "" && archiveAvailabilityLost(availability) {
+		// A missing or changed legacy file cannot establish mount identity.
+		return "unavailable"
+	}
+	return availability
 }
 
-func (a *backupAutomation) observeArchive(archive *ownedBackupArchive, availability, observedAt, actor, ip string) error {
-	if availability == "foreign" {
-		return errors.New("cannot observe a foreign backup archive")
-	}
+func (a *backupAutomation) observeArchive(archive *ownedBackupArchive, availability, observedAt, actor, ip string) *AuditEvent {
+	var event *AuditEvent
 	if archiveAvailabilityLost(availability) && !archive.LossActive {
 		if archive.LossEpisode == 0 && archiveAvailabilityLost(archive.Availability) && archive.Verification == "failed" {
 			// Older releases already emitted the generic loss fact.
@@ -263,48 +264,16 @@ func (a *backupAutomation) observeArchive(archive *ownedBackupArchive, availabil
 		archive.LossEpisode++
 		if a.deps.AuditService != nil {
 			key := "backup-archive-loss:" + archive.ID + ":" + strconv.FormatUint(archive.LossEpisode, 10)
-			if err := a.deps.AuditService.RecordOnce(key, actor, ip, "backup.verify", "backup", "automatic", "failure",
+			prepared := a.deps.AuditService.PrepareEvent(key, actor, ip, "backup.verify", "backup", "automatic", "failure",
 				"Registered backup is unavailable. Review the backup catalog.", map[string]any{
-					"archive_id": archive.ID, "restore_ready": false, "archive_loss": true, "availability": availability,
-				}); err != nil {
-				return err
-			}
+					"archive_id": archive.ID, "restore_ready": false, "archive_loss_episode": archive.LossEpisode, "availability": availability,
+				})
+			event = &prepared
 		}
 		archive.LossActive = true
-		archive.LossObservedAt = observedAt
 		archive.Verification = "failed"
 	}
 	archive.Availability = availability
 	archive.ObservedAt = observedAt
-	return nil
-}
-
-func (s backupAutomationState) archiveLossConditions(previous []notificationpkg.Condition) []notificationpkg.ConditionFact {
-	if s.Observation.Owner == "" {
-		// A storage outage or a restore cannot establish a new loss or clear
-		// previously confirmed evidence simply by making the catalog unknown.
-		return nil
-	}
-	var facts []notificationpkg.ConditionFact
-	active := make(map[string]bool)
-	for _, archive := range s.Archives {
-		if !backupArchiveOwned(archive, s.Observation.Owner) || !archive.LossActive || archive.LossEpisode == 0 || !validBackupArchiveID(archive.ID) {
-			continue
-		}
-		key := backupArchiveLossConditionPrefix + archive.ID + "/" + strconv.FormatUint(archive.LossEpisode, 10)
-		active[key] = true
-		facts = append(facts, notificationpkg.ConditionFact{
-			ID: key, EventType: notificationpkg.EventBackupVerifyFailed, Active: true,
-			TargetType: "backup", TargetName: "Application backup", CreatedAt: archive.LossObservedAt,
-			Message: "A registered automated backup is missing or has changed. Review the backup catalog in Administration.",
-		})
-	}
-	for _, condition := range previous {
-		fact := condition.Fact
-		if fact.Active && strings.HasPrefix(fact.ID, backupArchiveLossConditionPrefix) && !active[fact.ID] {
-			fact.Active = false
-			facts = append(facts, fact)
-		}
-	}
-	return facts
+	return event
 }

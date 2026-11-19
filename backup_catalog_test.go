@@ -293,12 +293,35 @@ func TestBackupCatalogLegacyMetadataAndForeignOwnershipRemainUnknown(t *testing.
 	if err != nil || status.Catalog.Archives[1].ID != firstID {
 		t.Fatal("unstable legacy ID")
 	}
+	directory := a.deployment.Directory
+	if err := os.Rename(directory, directory+".unmounted"); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(directory + ".unmounted") })
+	if err := os.Mkdir(directory, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if got := catalogFacts(t, app, cookie).Archives[1]; got.Availability != "unavailable" || got.Verification != "unknown" {
+		t.Fatalf("catalog mistook a missing legacy mount for archive loss: %+v", got)
+	}
+	if err := os.Remove(directory); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(directory+".unmounted", directory); err != nil {
+		t.Fatal(err)
+	}
 	if rec := catalogRequest(app, cookie, firstID, "verify"); rec.Code != 200 {
 		t.Fatalf("legacy verify=%d %s", rec.Code, rec.Body.String())
 	}
 	after := catalogFacts(t, app, cookie).Archives[1]
 	if after.PublishedAt != "" || after.LastVerifiedAt == "" || after.SizeBytes == nil || after.KnownHostsIncluded == nil {
 		t.Fatalf("additive verification metadata=%+v", after)
+	}
+	if err := restarted.observeArchiveAvailability(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if got := installationSnapshot(t.Context(), app.Deps).BackupArchives; got.Verified != 1 || got.Lost != 0 {
+		t.Fatalf("observer discarded verified legacy archive: %+v", got)
 	}
 	persisted := backupAutomationStateForTest(t, a)
 	if persisted.Archives[0].Owner != archive.Owner || persisted.Archives[0].Name != archive.Name || persisted.Archives[0].SHA256 != archive.SHA256 {

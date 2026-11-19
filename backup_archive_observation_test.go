@@ -61,13 +61,18 @@ func TestBackupArchiveObservationsDistinguishLossFromUnavailableStorage(t *testi
 		}
 	}
 	check("covered", "available", 1, 1)
-	if latest := backupAutomationStateForTest(t, a).Archives[1]; latest.Availability != "changed" || !latest.LossActive {
-		t.Fatalf("same-size change was not observed: %s", latest.Availability)
-	}
 	snapshot := installationSnapshot(t.Context(), app.Deps)
 	if snapshot.BackupArchives.LastVerifiedAt != older.LastVerifiedAt ||
 		!strings.Contains(installationMetrics(snapshot), "slu_installation_backup_local_archive_coverage 1") {
 		t.Fatal("older verified archive did not provide local coverage")
+	}
+	if err := os.Chmod(directory, 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(directory, 0700) })
+	check("unknown", "unavailable", 0, 0)
+	if err := os.Chmod(directory, 0700); err != nil {
+		t.Fatal(err)
 	}
 	if err := os.Rename(directory, directory+".unmounted"); err != nil {
 		t.Fatal(err)
@@ -166,7 +171,6 @@ func TestBackupArchiveLossNotifiesOnceAcrossWorkerRestartAndReverification(t *te
 	if err := a.observeArchiveAvailability(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	startWorker()
 	if err := os.Rename(path+".saved", path); err != nil {
 		t.Fatal(err)
 	}
@@ -176,18 +180,32 @@ func TestBackupArchiveLossNotifiesOnceAcrossWorkerRestartAndReverification(t *te
 	if got := installationSnapshot(t.Context(), app.Deps).BackupArchives; got.State != "missing" || got.Lost != 1 {
 		t.Fatalf("mere presence reset verification: %+v", got)
 	}
+	modified := a.now().Add(time.Hour)
+	if err := os.Chtimes(path, modified, modified); err != nil {
+		t.Fatal(err)
+	}
 	if rec := catalogRequest(app, cookie, archive.ID, "verify"); rec.Code != 200 {
 		t.Fatalf("reverification = %d %s", rec.Code, rec.Body.String())
+	}
+	if err := a.observeArchiveAvailability(t.Context()); err != nil {
+		t.Fatal(err)
 	}
 	if got := installationSnapshot(t.Context(), app.Deps).BackupArchives; got.State != "covered" || got.Lost != 0 {
 		t.Fatalf("verification did not restore local coverage: %+v", got)
 	}
-	if err := os.Remove(path); err != nil {
+	if err := os.Rename(path, path+".saved"); err != nil {
 		t.Fatal(err)
 	}
 	if err := a.observeArchiveAvailability(t.Context()); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.Rename(path+".saved", path); err != nil {
+		t.Fatal(err)
+	}
+	if rec := catalogRequest(app, cookie, archive.ID, "verify"); rec.Code != 200 {
+		t.Fatalf("reverification before notification polling = %d %s", rec.Code, rec.Body.String())
+	}
+	startWorker()
 	var second int
 	secondCondition := backupArchiveLossConditionPrefix + archive.ID + "/2"
 	for deadline := time.Now().Add(4 * time.Second); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
@@ -202,6 +220,46 @@ func TestBackupArchiveLossNotifiesOnceAcrossWorkerRestartAndReverification(t *te
 	err := app.Deps.DB().QueryRow("SELECT count(*) FROM audit_events WHERE action='backup.verify' AND status='failure'").Scan(&audits)
 	if err != nil || audits != 2 || second != 1 || client.calls.Load() != 2 {
 		t.Fatalf("loss episodes: audits=%d calls=%d second=%d error=%v", audits, client.calls.Load(), second, err)
+	}
+}
+
+func TestBackupArchiveLossRemainsObservableAcrossPublication(t *testing.T) {
+	app, a, cookie, archive := publishedCatalogFixture(t)
+	path := filepath.Join(a.deployment.Directory, archive.Name)
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Tick(t.Context(), true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.Deps.DB().Exec(`CREATE TRIGGER reject_archive_observation BEFORE UPDATE ON settings
+		WHEN OLD.key='backup_automation_v1' BEGIN SELECT RAISE(ABORT,'controlled observation write failure'); END`); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.observeArchiveAvailability(t.Context()); err == nil {
+		t.Fatal("observation unexpectedly committed")
+	}
+	var audits int
+	if err := app.Deps.DB().QueryRow(`SELECT count(*) FROM audit_events WHERE action='backup.verify' AND status='failure'`).Scan(&audits); err != nil || audits != 0 {
+		t.Fatalf("failed observation published a loss event: %d, %v", audits, err)
+	}
+	if _, err := app.Deps.DB().Exec("DROP TRIGGER reject_archive_observation"); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.observeArchiveAvailability(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if got := installationSnapshot(t.Context(), app.Deps).BackupArchives; got.Verified != 1 || got.Lost != 1 {
+		t.Fatalf("publication hid a registered loss: %+v", got)
+	}
+	var registered bool
+	for _, item := range catalogFacts(t, app, cookie).Archives {
+		if item.ID == archive.ID && item.Availability == "missing" {
+			registered = true
+		}
+	}
+	if !registered {
+		t.Fatal("catalog dropped the lost archive on publication")
 	}
 }
 

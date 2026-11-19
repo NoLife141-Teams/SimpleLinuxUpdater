@@ -18,6 +18,7 @@ import (
 	"time"
 
 	apptimepkg "debian-updater/internal/apptime"
+	auditpkg "debian-updater/internal/audit"
 	internalbackup "debian-updater/internal/backup"
 	installationhealthpkg "debian-updater/internal/installationhealth"
 	maintenancepkg "debian-updater/internal/maintenance"
@@ -54,7 +55,6 @@ type ownedBackupArchive struct {
 	ObservedAt         string `json:"observed_at,omitempty"`
 	LossEpisode        uint64 `json:"loss_episode,omitempty"`
 	LossActive         bool   `json:"loss_active,omitempty"`
-	LossObservedAt     string `json:"loss_observed_at,omitempty"`
 	JobID              string `json:"job_id,omitempty"`
 }
 
@@ -206,13 +206,39 @@ func readBackupAutomationState(ctx context.Context, db *sql.DB) (backupAutomatio
 	}
 	return s, err
 }
-func (a *backupAutomation) save(ctx context.Context, s backupAutomationState) error {
+func (a *backupAutomation) save(ctx context.Context, s backupAutomationState, events ...AuditEvent) error {
 	raw, err := json.Marshal(s)
 	if err != nil {
 		return err
 	}
-	_, err = a.deps.DB().ExecContext(ctx, "INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", backupAutomationSettingsKey, string(raw))
-	return err
+	const statement = "INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value"
+	db := a.deps.DB()
+	if len(events) == 0 {
+		_, err = db.ExecContext(ctx, statement, backupAutomationSettingsKey, string(raw))
+		return err
+	}
+	// Commit both sides of a loss episode before the notification worker can
+	// consume its audit cursor. A failed save must leave the episode retryable.
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err = tx.ExecContext(ctx, statement, backupAutomationSettingsKey, string(raw)); err != nil {
+		return err
+	}
+	for _, event := range events {
+		if err = auditpkg.WriteTx(tx, event); err != nil {
+			return err
+		}
+	}
+	if err = tx.Commit(); err != nil {
+		return err
+	}
+	for _, event := range events {
+		a.deps.AuditService.NotifyCommitted(event.Action, event)
+	}
+	return nil
 }
 func backupStamp(t time.Time) string        { return t.UTC().Format(time.RFC3339Nano) }
 func parseBackupStamp(raw string) time.Time { t, _ := time.Parse(time.RFC3339Nano, raw); return t }
@@ -959,11 +985,21 @@ func (a *backupAutomation) retain(root *os.Root, s *backupAutomationState) error
 	if keep < 1 {
 		keep = 1
 	}
-	valid := 0
+	directory := backupArchiveDirectoryIdentity(root)
+	valid, unavailable := 0, 0
 	retained := make([]ownedBackupArchive, 0, len(s.Archives))
 	for i := len(s.Archives) - 1; i >= 0; i-- {
 		archive := s.Archives[i]
-		if archive.Owner != owner || !backupArchiveMatches(root, archive) {
+		if !backupArchiveOwned(archive, owner) {
+			continue
+		}
+		if archive.LossActive || backupArchiveAvailabilityAt(root, archive, owner, directory) != "present" || !backupArchiveMatches(root, archive) {
+			// Keep genuine registrations available for the observer and for full
+			// re-verification. A new publication is not evidence of an old loss.
+			if len(archive.SHA256) == 2*sha256.Size && unavailable < backupCatalogLimit {
+				retained = append(retained, archive)
+				unavailable++
+			}
 			continue
 		}
 		valid++

@@ -135,6 +135,7 @@ func backupArchiveAvailability(root *os.Root, archive ownedBackupArchive, owner 
 func (a *backupAutomation) catalogLocked(ctx context.Context, s *backupAutomationState, root *os.Root, owner string) (backupArchiveCatalog, error) {
 	catalog := backupArchiveCatalog{Archives: []backupArchiveView{}, Limit: backupCatalogLimit, Truncated: len(s.Archives) > backupCatalogLimit}
 	changed := false
+	var events []AuditEvent
 	directory := backupArchiveDirectoryIdentity(root)
 	for i := len(s.Archives) - 1; i >= 0 && len(catalog.Archives) < backupCatalogLimit; i-- {
 		archive := &s.Archives[i]
@@ -142,8 +143,8 @@ func (a *backupAutomation) catalogLocked(ctx context.Context, s *backupAutomatio
 		// Mere presence is not a new verification. Only observed damage changes
 		// existing recovery/notification evidence; repeated listing is deduplicated.
 		if archiveAvailabilityLost(availability) && archive.Availability != availability {
-			if err := a.observeArchive(archive, availability, backupStamp(a.now()), "backup-scheduler", ""); err != nil {
-				return catalog, err
+			if event := a.observeArchive(archive, availability, backupStamp(a.now()), "backup-scheduler", ""); event != nil {
+				events = append(events, *event)
 			}
 			changed = true
 		}
@@ -158,8 +159,8 @@ func (a *backupAutomation) catalogLocked(ctx context.Context, s *backupAutomatio
 		})
 	}
 	if changed {
-		s.Observation = backupArchiveObservation{CheckedAt: backupStamp(a.now()), Storage: "available", Owner: owner}
-		return catalog, a.save(ctx, *s)
+		s.Observation = backupArchiveObservation{CheckedAt: backupStamp(a.now()), Storage: "available", Owner: owner, DirectoryIdentity: directory}
+		return catalog, a.save(ctx, *s, events...)
 	}
 	return catalog, nil
 }
@@ -204,14 +205,22 @@ func (r backupCatalogReader) Read(p []byte) (int, error) {
 
 var errBackupCatalogUnavailable = errors.New("registered backup is unavailable or failed validation")
 
+type backupCatalogSnapshot struct {
+	file internalbackup.TemporaryFile
+	info os.FileInfo
+}
+
 // snapshotBackupArchive hashes the descriptor that it reads, after no-follow
 // open and inode checks. A private encrypted snapshot pins the validated bytes
 // for both the existing verification pipeline and streaming, even if a local
 // process modifies the original inode during or after hashing.
-func snapshotBackupArchive(ctx context.Context, root *os.Root, archive ownedBackupArchive, owner string) (internalbackup.TemporaryFile, func(), error) {
-	empty := internalbackup.TemporaryFile{}
+func snapshotBackupArchive(ctx context.Context, root *os.Root, archive ownedBackupArchive, owner, directoryIdentity string) (backupCatalogSnapshot, func(), error) {
+	empty := backupCatalogSnapshot{}
 	noop := func() {}
-	if backupArchiveAvailabilityAt(root, archive, owner, backupArchiveDirectoryIdentity(root)) != "present" {
+	// The metadata-only observer cannot tell whether a changed mtime also
+	// changed the contents. The pinned snapshot can prove the original digest.
+	archive.FileModifiedAt = ""
+	if backupArchiveAvailabilityAt(root, archive, owner, directoryIdentity) != "present" {
 		return empty, noop, errBackupCatalogUnavailable
 	}
 	before, err := root.Lstat(archive.Name)
@@ -254,7 +263,7 @@ func snapshotBackupArchive(ctx context.Context, root *os.Root, archive ownedBack
 		cleanup()
 		return empty, noop, errBackupCatalogUnavailable
 	}
-	return internalbackup.TemporaryFile{Path: dst.Name(), Size: size}, cleanup, nil
+	return backupCatalogSnapshot{file: internalbackup.TemporaryFile{Path: dst.Name(), Size: size}, info: current}, cleanup, nil
 }
 
 func handleBackupCatalog(c *gin.Context, a *backupAutomation) {
@@ -319,21 +328,25 @@ func handleBackupCatalogOperation(c *gin.Context, a *backupAutomation, verify bo
 	defer finish()
 	ctx, cancel := context.WithTimeout(c.Request.Context(), defaultHTTPResourceBudgets.backup)
 	defer cancel()
-	snapshot, cleanup, err := snapshotBackupArchive(ctx, root, *archive, owner)
+	directory := backupArchiveDirectoryIdentity(root)
+	snapshot, cleanup, err := snapshotBackupArchive(ctx, root, *archive, owner, directory)
 	defer cleanup()
 	if err != nil {
 		if ctx.Err() == nil && errors.Is(err, errBackupCatalogUnavailable) {
-			availability := backupArchiveAvailabilityAt(root, *archive, owner, backupArchiveDirectoryIdentity(root))
+			availability := backupArchiveAvailabilityAt(root, *archive, owner, directory)
 			var evidenceErr error
+			var events []AuditEvent
 			if archiveAvailabilityLost(availability) {
-				evidenceErr = a.observeArchive(archive, availability, backupStamp(a.now()), actorFromContext(c), clientIPFromContext(c))
-				s.Observation = backupArchiveObservation{CheckedAt: archive.ObservedAt, Storage: "available", Owner: owner}
+				if event := a.observeArchive(archive, availability, backupStamp(a.now()), actorFromContext(c), clientIPFromContext(c)); event != nil {
+					events = append(events, *event)
+				}
+				s.Observation = backupArchiveObservation{CheckedAt: archive.ObservedAt, Storage: "available", Owner: owner, DirectoryIdentity: directory}
 			} else if availability == "present" {
 				archive.Verification = "failed"
 				evidenceErr = a.catalogAudit(actorFromContext(c), clientIPFromContext(c), "backup.verify", *archive, false)
 			}
 			if evidenceErr == nil {
-				evidenceErr = a.save(ctx, s)
+				evidenceErr = a.save(ctx, s, events...)
 			}
 			if evidenceErr != nil {
 				c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Backup verification evidence could not be saved."})
@@ -344,7 +357,7 @@ func handleBackupCatalogOperation(c *gin.Context, a *backupAutomation, verify bo
 		return
 	}
 	if verify {
-		result, verifyErr := a.verify(ctx, snapshot, pass)
+		result, verifyErr := a.verify(ctx, snapshot.file, pass)
 		if ctx.Err() != nil {
 			c.JSON(http.StatusRequestTimeout, gin.H{"error": "Backup verification was cancelled."})
 			return
@@ -357,11 +370,13 @@ func handleBackupCatalogOperation(c *gin.Context, a *backupAutomation, verify bo
 			archive.Verification = "verified"
 			archive.LastVerifiedAt = archive.ObservedAt
 			archive.LossActive = false
-			archive.LossObservedAt = ""
-			archive.SizeBytes = &snapshot.Size
+			archive.SizeBytes = &snapshot.file.Size
+			archive.FileIdentity = backupCatalogFileIdentity(snapshot.info)
+			archive.FileModifiedAt = backupStamp(snapshot.info.ModTime())
+			archive.DirectoryIdentity = directory
 			archive.KnownHostsIncluded = &result.KnownHostsIncluded
 		}
-		s.Observation = backupArchiveObservation{CheckedAt: archive.ObservedAt, Storage: "available", Owner: owner}
+		s.Observation = backupArchiveObservation{CheckedAt: archive.ObservedAt, Storage: "available", Owner: owner, DirectoryIdentity: directory}
 		// Recovery health and notifications consume the audit, so never report
 		// a completed review or persist its marker without that shared evidence.
 		if err = a.catalogAudit(actorFromContext(c), clientIPFromContext(c), "backup.verify", *archive, ready); err != nil {
@@ -381,7 +396,7 @@ func handleBackupCatalogOperation(c *gin.Context, a *backupAutomation, verify bo
 		c.JSON(http.StatusOK, gin.H{"archive_id": id, "restore_ready": ready, "compatible": result.Compatible, "database_valid": result.DatabaseValid, "config_valid": result.ConfigValid, "known_hosts_included": result.KnownHostsIncluded, "safe_counts": result.SafeCounts, "resources": result.Resources, "blockers": result.Blockers, "warnings": result.Warnings, "last_verified_at": archive.LastVerifiedAt})
 		return
 	}
-	file, err := os.Open(snapshot.Path)
+	file, err := os.Open(snapshot.file.Path)
 	if err != nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Backup streaming is unavailable."})
 		return
@@ -389,7 +404,7 @@ func handleBackupCatalogOperation(c *gin.Context, a *backupAutomation, verify bo
 	defer file.Close()
 	c.Header("Content-Type", "application/octet-stream")
 	c.Header("Content-Disposition", `attachment; filename="simplelinuxupdater-automated-backup.slubkp"`)
-	c.Header("Content-Length", strconv.FormatInt(snapshot.Size, 10))
+	c.Header("Content-Length", strconv.FormatInt(snapshot.file.Size, 10))
 	c.Status(http.StatusOK)
 	if _, err = io.Copy(c.Writer, backupCatalogReader{ctx, file}); err == nil && ctx.Err() == nil {
 		a.catalogAudit(actorFromContext(c), clientIPFromContext(c), "backup.download", *archive, true)

@@ -18,18 +18,19 @@ type dashboardProjectionInput struct {
 }
 
 type dashboardServerProjectionInput struct {
-	now            time.Time
-	server         servers.Server
-	status         *servers.ServerStatus
-	health         DashboardHealthInfo
-	failure        dashboardMaintenanceFailureFacts
-	readiness      servers.MaintenanceReadiness
-	nextRun        DashboardScheduleInfo
-	noRun          DashboardNoRunInfo
-	timeline       DashboardTimelineInfo
-	triageTime     dashboardTriageTimeFacts
-	updateHistory  dashboardUpdateHistoryProjection
-	commandHistory []DashboardCommandHistoryItem
+	now               time.Time
+	server            servers.Server
+	status            *servers.ServerStatus
+	health            DashboardHealthInfo
+	failure           dashboardMaintenanceFailureFacts
+	readiness         servers.MaintenanceReadiness
+	restoreAPTBlocked bool
+	nextRun           DashboardScheduleInfo
+	noRun             DashboardNoRunInfo
+	timeline          DashboardTimelineInfo
+	triageTime        dashboardTriageTimeFacts
+	updateHistory     dashboardUpdateHistoryProjection
+	commandHistory    []DashboardCommandHistoryItem
 }
 
 type dashboardMaintenanceFailureFacts struct {
@@ -101,6 +102,15 @@ func (p dashboardProjection) projectServer(input dashboardServerProjectionInput)
 	}
 	triage := buildApprovalTriage(input.status, health, risk, timeline, input.triageTime)
 	actions := buildDashboardActions(input.server.Name, input.status, timeline, triage, health, input.readiness)
+	if input.restoreAPTBlocked {
+		for _, action := range []string{dashboardActionUpdate, dashboardActionAutoremove, dashboardActionApproveAll,
+			dashboardActionApproveSecurity, dashboardActionApproveSecurityKeptBack, dashboardActionApproveFull} {
+			if actions[action].Enabled {
+				actions[action] = dashboardBlockedAction(dashboardActionReadinessUnavailable,
+					servers.ErrRestoreAPTValidation.Error(), "restore_apt_validation_required")
+			}
+		}
+	}
 	triage = mirrorApprovalTriageActions(triage, actions)
 	recommendedAction := buildDashboardRecommendedAction(input.status, timeline, health, input.triageTime, input.failure, actions)
 	if input.server.Disabled {

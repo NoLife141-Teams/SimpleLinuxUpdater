@@ -332,7 +332,7 @@ func ensureSettingsSchema(db *sql.DB) error {
 	if err := notificationpkg.EnsureSchema(db); err != nil {
 		return err
 	}
-	return nil
+	return ensureRestoreAPTValidationSchema(db)
 }
 
 func normalizeAuditFilterTimestamp(raw string) (string, error) {
@@ -2040,6 +2040,9 @@ func registerProtectedAuthAndSettingsRoutes(r *gin.Engine, deps AppDeps) {
 	})
 	r.POST(restoreIsolationResumeRoute, requireRecentAuthentication(), func(c *gin.Context) {
 		handleRestoreIsolationResume(c, deps)
+	})
+	r.POST(restoreAPTValidationRoute, requireRecentAuthentication(), func(c *gin.Context) {
+		handleRestoreAPTValidation(c, deps)
 	})
 	r.POST("/api/backup/verify", func(c *gin.Context) {
 		handleBackupVerifyWithDeps(c, deps)

@@ -61,6 +61,7 @@ type HostMaintenanceSessionRequest struct {
 	OnRetry            func(HostRetryEvent)
 	VerifyHostKey      func(fingerprint string) error
 	OnConnectedHostKey func(fingerprint string)
+	PackageMaintenance bool
 }
 
 type HostDialReplayPolicy string
@@ -168,6 +169,7 @@ func (f HostMaintenanceSessionFactoryFunc) Open(ctx context.Context, req HostMai
 type HostMaintenanceSession interface {
 	RunCommand(context.Context, HostCommandRequest) (HostCommandResult, error)
 	RunUpdatePrechecks(context.Context) PrecheckSummary
+	CheckRestoredAPT(context.Context) string
 	RunPlanDiskPrecheck(context.Context, servers.UpgradePlan) PrecheckResult
 	ListFailedSystemdUnits(context.Context) ([]string, string, error)
 	RunPostUpdateHealthChecks(context.Context, PostUpdateCheckConfig, map[string]struct{}) PostcheckSummary
@@ -181,6 +183,7 @@ type HostMaintenanceSession interface {
 type HostMaintenanceSessionFuncs struct {
 	RunCommandFunc                func(context.Context, HostCommandRequest) (HostCommandResult, error)
 	RunUpdatePrechecksFunc        func(context.Context) PrecheckSummary
+	CheckRestoredAPTFunc          func(context.Context) string
 	RunPlanDiskPrecheckFunc       func(context.Context, servers.UpgradePlan) PrecheckResult
 	ListFailedSystemdUnitsFunc    func(context.Context) ([]string, string, error)
 	RunPostUpdateHealthChecksFunc func(context.Context, PostUpdateCheckConfig, map[string]struct{}) PostcheckSummary
@@ -210,6 +213,13 @@ func (s *HostMaintenanceSessionFuncs) RunPlanDiskPrecheck(ctx context.Context, p
 		return s.RunPlanDiskPrecheckFunc(ctx, plan)
 	}
 	return PrecheckResult{Name: "disk_space_plan", Passed: true, Details: "Plan-aware disk space check passed."}
+}
+
+func (s *HostMaintenanceSessionFuncs) CheckRestoredAPT(ctx context.Context) string {
+	if s != nil && s.CheckRestoredAPTFunc != nil {
+		return s.CheckRestoredAPTFunc(ctx)
+	}
+	return "unavailable"
 }
 
 func (s *HostMaintenanceSessionFuncs) ListFailedSystemdUnits(ctx context.Context) ([]string, string, error) {

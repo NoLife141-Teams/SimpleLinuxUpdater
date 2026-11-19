@@ -518,13 +518,16 @@ func (s *State) BeginPackageMutation(name, newStatus string) (Server, error) {
 }
 
 type ActionAdmissionOptions struct {
-	PackageMutation        bool
-	RequireResolvedAPT     bool
-	AllowedStatuses        map[string]bool
-	ExpectedServerIdentity string
-	ExpectedAPTTarget      string
-	ExpectedJobID          string
+	PackageMutation         bool
+	ValidatePackageMutation func(Server) error
+	RequireResolvedAPT      bool
+	AllowedStatuses         map[string]bool
+	ExpectedServerIdentity  string
+	ExpectedAPTTarget       string
+	ExpectedJobID           string
 }
+
+var ErrRestoreAPTValidation = errors.New("APT validation is required after restore; check this server in Installation Health")
 
 func (s *State) beginAction(name, newStatus string, packageMutation bool) (Server, error) {
 	server, _, err := s.BeginActionWithOptions(name, newStatus, ActionAdmissionOptions{PackageMutation: packageMutation})
@@ -534,6 +537,15 @@ func (s *State) beginAction(name, newStatus string, packageMutation bool) (Serve
 // BeginActionWithOptions checks the current action contract and captures rollback
 // state under the same lock that reserves the next action generation.
 func (s *State) BeginActionWithOptions(name, newStatus string, opts ActionAdmissionOptions) (Server, *ServerStatus, error) {
+	var checkedTarget string
+	var validationErr error
+	validate := opts.PackageMutation && opts.ValidatePackageMutation != nil
+	if validate {
+		if candidate, found := s.FindByName(name); found {
+			checkedTarget = candidate.APTTarget()
+			validationErr = opts.ValidatePackageMutation(candidate)
+		}
+	}
 	s.Lock()
 	defer s.Unlock()
 	status, exists := (*s.statusMap)[name]
@@ -549,6 +561,12 @@ func (s *State) BeginActionWithOptions(name, newStatus string, opts ActionAdmiss
 	}
 	if opts.PackageMutation && status.RequiresAPTReconciliation() {
 		return Server{}, nil, APTReconciliationError{JobID: status.ReconciliationJobID()}
+	}
+	if validate && server.APTTarget() != checkedTarget {
+		return Server{}, nil, ErrIdentityChanged
+	}
+	if validationErr != nil {
+		return Server{}, nil, validationErr
 	}
 	if opts.ExpectedAPTTarget != "" {
 		if !status.RequiresAPTReconciliation() {

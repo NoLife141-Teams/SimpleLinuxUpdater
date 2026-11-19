@@ -163,6 +163,7 @@ type installationDiagnostics struct {
 	BackupArchives           backupArchiveCoverage                           `json:"backup_archives"`
 	Notifications            installationNotificationFacts                   `json:"notifications"`
 	Storage                  installationStorage                             `json:"storage"`
+	RestoreAPTHosts          []restoreAPTHostFacts                           `json:"restore_apt_hosts,omitempty"`
 }
 
 func installationSnapshot(ctx context.Context, deps AppDeps) installationDiagnostics {
@@ -198,6 +199,15 @@ func installationSnapshot(ctx context.Context, deps AppDeps) installationDiagnos
 			out.RestoreIsolation = "inactive"
 			if active {
 				out.RestoreIsolation = "active"
+			}
+		}
+	}
+	if deps.RestoreAPTValidation != nil {
+		if observations, err := deps.RestoreAPTValidation.all(ctx); err == nil && len(observations) != 0 {
+			for _, server := range deps.ServerState.CloneServers() {
+				if observation, required := observations[server.Identity]; required {
+					out.RestoreAPTHosts = append(out.RestoreAPTHosts, observation.facts(server, now, out.RestoreIsolation != "inactive"))
+				}
 			}
 		}
 	}

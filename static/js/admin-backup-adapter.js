@@ -331,6 +331,39 @@
             });
             const resume = document.getElementById("restore-isolation-resume");
             lifecycle.listen(resume, "click", () => void resumeExternalWork(resume));
+            const aptPanel = document.getElementById("restore-apt-validation");
+            lifecycle.listen(aptPanel, "click", event => {
+                const button = event.target.closest("button[data-restore-apt-name]");
+                if (button) void checkRestoredAPT(aptPanel, button);
+            });
+        }
+
+        async function checkRestoredAPT(panel, button) {
+            if (button.disabled || panel.getAttribute("aria-busy") === "true") return;
+            const lifetime = lifecycle.capture();
+            const feedback = document.getElementById("restore-apt-feedback");
+            const name = button.dataset.restoreAptName;
+            panel.setAttribute("aria-busy", "true");
+            button.disabled = true;
+            feedback.textContent = `Checking ${name}…`;
+            try {
+                await reauthentication.sensitive(
+                    "/api/backup/restore-isolation/apt-check",
+                    { method: "POST", headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ name, identity: button.dataset.restoreAptIdentity }) },
+                    "Check APT after restore",
+                );
+                if (!lifecycle.isCurrent(lifetime)) return;
+                feedback.textContent = `Check finished for ${name}.`;
+                await refreshInstallation();
+            } catch (error) {
+                if (lifecycle.isCurrent(lifetime)) feedback.textContent = error.message || "Could not check APT.";
+            } finally {
+                if (lifecycle.isCurrent(lifetime)) {
+                    panel.removeAttribute("aria-busy");
+                    button.disabled = false;
+                }
+            }
         }
 
         async function resumeExternalWork(button) {
@@ -346,7 +379,7 @@
                     {
                         title: "Resume external work",
                         operation: "Lift restore isolation",
-                        consequences: "SSH and queued notifications may resume. New scheduled runs become eligible next minute.",
+                        consequences: "SSH and queued notifications may resume. Package maintenance remains blocked on servers that require an APT check.",
                         authentication: "Recent administrator reauthentication is required.",
                         confirmLabel: "Resume External Work",
                     },

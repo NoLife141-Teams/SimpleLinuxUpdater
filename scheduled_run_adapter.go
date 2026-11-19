@@ -11,11 +11,12 @@ func scheduledRunLifecycleDepsFromApp(deps AppDeps) scheduledrunspkg.Deps {
 		acquireScheduledAction = deps.HostFactsRefreshAdmission.AcquireScheduled
 	}
 	return scheduledrunspkg.Deps{
-		AuditService:           deps.AuditService,
-		CurrentJobManager:      deps.CurrentJobManager,
-		JobTimestampNow:        deps.JobTimestampNow,
-		LoadRetryPolicy:        deps.LoadRetryPolicy,
-		MaintenanceCoordinator: deps.MaintenanceCoordinator,
+		AuditService:            deps.AuditService,
+		CurrentJobManager:       deps.CurrentJobManager,
+		JobTimestampNow:         deps.JobTimestampNow,
+		LoadRetryPolicy:         deps.LoadRetryPolicy,
+		MaintenanceCoordinator:  deps.MaintenanceCoordinator,
+		ValidatePackageMutation: deps.RestoreAPTValidation.admit,
 		MaintenanceReadiness: func(server Server) serverpkg.MaintenanceReadiness {
 			return deps.MaintenanceReadiness([]Server{server})[server.Name]
 		},

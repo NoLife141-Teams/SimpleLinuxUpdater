@@ -311,6 +311,26 @@ func (s *productionHostMaintenanceSession) checkAptLocks(ctx context.Context) Pr
 	return PrecheckResult{Name: "apt_locks", Details: boundedInspectionDetail("Failed to evaluate apt/dpkg lock state: %v", err), Output: output}
 }
 
+// CheckRestoredAPT uses fixed read-only probes. Simulation disables APT
+// cache generation and leaves the archived host's package metadata untouched.
+func (s *productionHostMaintenanceSession) CheckRestoredAPT(ctx context.Context) string {
+	if locks := s.checkAptLocks(ctx); !locks.Passed {
+		return "locks_unverified"
+	}
+	stdout, stderr, err := s.runInspectionCommand(ctx, precheckDpkgAuditCmd)
+	if err != nil {
+		return "unavailable"
+	}
+	if strings.TrimSpace(stdout+stderr) != "" {
+		return "dpkg_incomplete"
+	}
+	const aptCheck = "/usr/bin/apt-get -s -o Dir::Cache::pkgcache= -o Dir::Cache::srcpkgcache= check"
+	if _, _, err := s.runInspectionCommand(ctx, aptCheck); err != nil {
+		return "apt_unverified"
+	}
+	return "healthy"
+}
+
 func (s *productionHostMaintenanceSession) runAptHealthCheck(ctx context.Context, checkName string) PrecheckResult {
 	dpkgStdout, dpkgStderr, dpkgErr := s.runInspectionCommand(ctx, precheckDpkgAuditCmd)
 	dpkgOutput := compactInspectionOutput(dpkgStdout, dpkgStderr)

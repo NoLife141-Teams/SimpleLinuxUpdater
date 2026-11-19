@@ -15,17 +15,18 @@ import (
 )
 
 type serverActionLifecycle struct {
-	admissionReceipt       jobspkg.AdmissionReceipt
-	expectedServerIdentity string
-	validateRemediation    func(*ServerStatus, Server, string, bool) error
-	serverState            *serverpkg.State
-	updateService          *UpdateService
-	currentJobManager      func() *JobManager
-	startJobRunner         func(func() *JobManager, string, func(), ...func())
-	loadRetryPolicy        func() RetryPolicy
-	audit                  func(action, targetType, targetName, status, message string, meta map[string]any)
-	auditVerifiedRepair    func(targetName, message string, meta map[string]any) error
-	maintenanceReadiness   func(Server) serverpkg.MaintenanceReadiness
+	admissionReceipt        jobspkg.AdmissionReceipt
+	expectedServerIdentity  string
+	validateRemediation     func(*ServerStatus, Server, string, bool) error
+	serverState             *serverpkg.State
+	updateService           *UpdateService
+	currentJobManager       func() *JobManager
+	startJobRunner          func(func() *JobManager, string, func(), ...func())
+	loadRetryPolicy         func() RetryPolicy
+	audit                   func(action, targetType, targetName, status, message string, meta map[string]any)
+	auditVerifiedRepair     func(targetName, message string, meta map[string]any) error
+	maintenanceReadiness    func(Server) serverpkg.MaintenanceReadiness
+	validatePackageMutation func(Server) error
 }
 
 type serverActionLifecycleResult struct {
@@ -73,12 +74,13 @@ func newServerActionLifecycle(deps AppDeps, audit func(action, targetType, targe
 			}
 			return deps.Remediation.ValidateApproval(status, server, scope, confirmRemovals)
 		},
-		serverState:       deps.ServerState,
-		updateService:     deps.UpdateService,
-		currentJobManager: currentJobs,
-		startJobRunner:    startJobRunnerWithManager,
-		loadRetryPolicy:   loadRetryPolicyFromEnv,
-		audit:             audit,
+		serverState:             deps.ServerState,
+		updateService:           deps.UpdateService,
+		currentJobManager:       currentJobs,
+		startJobRunner:          startJobRunnerWithManager,
+		loadRetryPolicy:         loadRetryPolicyFromEnv,
+		audit:                   audit,
+		validatePackageMutation: deps.RestoreAPTValidation.admit,
 		maintenanceReadiness: func(server Server) serverpkg.MaintenanceReadiness {
 			return deps.MaintenanceReadiness([]Server{server})[server.Name]
 		},
@@ -290,6 +292,13 @@ func (l *serverActionLifecycle) startAction(name, actor, clientIP, sudoPassword 
 	if spec.packageMutation && preStartStatus.RequiresAPTReconciliation() {
 		return rejectReconciliation()
 	}
+	rejectRestoreValidation := func(err error) serverActionLifecycleResult {
+		retryMeta["reason_code"] = "restore_apt_validation_required"
+		l.recordAudit(spec.auditAction, name, "ignored", err.Error(), retryMeta)
+		return serverActionLifecycleResult{statusCode: http.StatusConflict, body: map[string]any{
+			"error": err.Error(), "reason_code": "restore_apt_validation_required",
+		}}
+	}
 	if (spec.requireResolvedAPT && preStartStatus.RequiresAPTReconciliation()) ||
 		(len(spec.allowedStatuses) > 0 && !spec.allowedStatuses[strings.ToLower(strings.TrimSpace(preStartStatus.Status))]) {
 		message := strings.TrimSpace(spec.invalidStatus)
@@ -313,6 +322,11 @@ func (l *serverActionLifecycle) startAction(name, actor, clientIP, sudoPassword 
 	if l.maintenanceReadiness != nil {
 		readiness := l.maintenanceReadiness(serverForReadiness)
 		if !readiness.Ready {
+			if spec.packageMutation && l.validatePackageMutation != nil {
+				if err := l.validatePackageMutation(serverForReadiness); errors.Is(err, serverpkg.ErrRestoreAPTValidation) {
+					return rejectRestoreValidation(err)
+				}
+			}
 			retryMeta["reason_code"] = readiness.Code
 			l.recordAudit(spec.auditAction, name, "ignored", readiness.Message, retryMeta)
 			return jsonResult(http.StatusConflict, readiness.Message)
@@ -320,13 +334,17 @@ func (l *serverActionLifecycle) startAction(name, actor, clientIP, sudoPassword 
 	}
 	server, admittedSnapshot, err := l.serverState.BeginActionWithOptions(name, spec.status, serverpkg.ActionAdmissionOptions{
 		PackageMutation: spec.packageMutation, AllowedStatuses: spec.allowedStatuses,
-		RequireResolvedAPT:     spec.requireResolvedAPT,
-		ExpectedServerIdentity: spec.expectedServerIdentity,
-		ExpectedAPTTarget:      spec.expectedAPTTarget, ExpectedJobID: spec.expectedJobID,
+		ValidatePackageMutation: l.validatePackageMutation,
+		RequireResolvedAPT:      spec.requireResolvedAPT,
+		ExpectedServerIdentity:  spec.expectedServerIdentity,
+		ExpectedAPTTarget:       spec.expectedAPTTarget, ExpectedJobID: spec.expectedJobID,
 	})
 	if err != nil {
 		if errors.Is(err, serverpkg.ErrAPTReconciliation) {
 			return rejectReconciliation()
+		}
+		if errors.Is(err, serverpkg.ErrRestoreAPTValidation) {
+			return rejectRestoreValidation(err)
 		}
 		if errors.Is(err, serverpkg.ErrIdentityChanged) {
 			message := "The server has changed. Review the current server before starting an update check."

@@ -337,8 +337,12 @@
                 lastTick: timestamp(value?.last_tick), lastProgress: timestamp(value?.last_progress), lastError: timestamp(value?.last_error), errors: count(value?.errors) };
         });
         const restoreIsolation = ["active", "inactive", "unavailable"].includes(data.restore_isolation) ? data.restore_isolation : "";
+        const restoreAPTHosts = (Array.isArray(data.restore_apt_hosts) ? data.restore_apt_hosts : [])
+            .filter(host => host && typeof host.name === "string" && typeof host.identity === "string")
+            .map(host => ({ name: host.name, identity: host.identity, disabled: Boolean(host.disabled),
+                state: String(host.state || "pending"), checkedAt: timestamp(host.checked_at) }));
         const archives = data.backup_archives || {};
-        return { state: String(data.state || "unavailable"), checkedAt: timestamp(data.checked_at), maintenance: Boolean(data.maintenance), restoreIsolation, workers,
+        return { state: String(data.state || "unavailable"), checkedAt: timestamp(data.checked_at), maintenance: Boolean(data.maintenance), restoreIsolation, restoreAPTHosts, workers,
             backupAvailable: Boolean(data.backup_available), backupState: String(data.backup_state || "unavailable"), verifiedAt: timestamp(data.last_verified_backup_at), backupAgeSeconds: count(data.verified_backup_age_seconds),
             backupArchives: {
                 state: ["covered", "missing", "no_registered"].includes(archives.state) ? archives.state : "unknown",

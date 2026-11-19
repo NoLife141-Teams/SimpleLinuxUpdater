@@ -62,6 +62,7 @@ type backupOperationLifecycleDeps struct {
 	DeactivateMaintenance   func() error
 	PrepareRestoredState    func(context.Context, *sql.DB) error
 	RestoreIsolation        *internalbackup.RestoreIsolation
+	RestoreAPTValidation    *restoreAPTValidation
 	RecordAudit             func(backupOperationAuditRecord)
 	EnsureEncryptionKey     func() []byte
 	JobTimestampNow         func() string
@@ -111,9 +112,10 @@ type backupOperationOutcome struct {
 func newBackupOperationLifecycle(deps AppDeps) *backupOperationLifecycle {
 	deps = deps.withDefaults()
 	return newBackupOperationLifecycleWithDeps(backupOperationLifecycleDeps{
-		Archive:           deps.BackupService,
-		CurrentJobManager: deps.CurrentJobManager,
-		RestoreIsolation:  deps.RestoreIsolation,
+		Archive:              deps.BackupService,
+		CurrentJobManager:    deps.CurrentJobManager,
+		RestoreIsolation:     deps.RestoreIsolation,
+		RestoreAPTValidation: deps.RestoreAPTValidation,
 		PrepareRestoredState: func(ctx context.Context, staged *sql.DB) error {
 			if err := policypkg.ClearSchedulerDenials(staged); err != nil {
 				return err
@@ -515,8 +517,20 @@ func (l *backupOperationLifecycle) Restore(ctx context.Context, cmd backupRestor
 			return cmd.Lease.Handoff(ctx)
 		},
 	}
-	if cmd.Isolate {
+	isolate := cmd.Isolate
+	if deps.RestoreAPTValidation != nil {
+		restoreOptions.PrepareHostValidation = func(ctx context.Context, staged *sql.DB, foreign bool) error {
+			var err error
+			isolate, err = deps.RestoreAPTValidation.prepare(ctx, staged,
+				cmd.Isolate || foreign || deps.RestoreIsolation.BlocksExternalWork())
+			return err
+		}
+	}
+	if cmd.Isolate || deps.RestoreAPTValidation != nil {
 		restoreOptions.BeforeReplacement = func() error {
+			if !isolate {
+				return nil
+			}
 			if deps.RestoreIsolation == nil {
 				return errors.New("restore isolation is unavailable")
 			}

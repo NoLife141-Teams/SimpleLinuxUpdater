@@ -32,10 +32,12 @@ TERMINAL = {"succeeded", "failed", "cancelled", "interrupted"}
 APT_EVENT = "apt.reconciliation.required"
 RESTORE_CRASH = "restore-crash-after-sqlite-replacement"
 RESTORE_ISOLATION = "isolated-restore"
+RESTORE_APT_VALIDATION = "cold-restore-apt-validation"
 SCENARIOS = ("root-upgrade", "operator-upgrade", "misconfigured-helper", "apt-lock",
              "plan-drift-and-obsolete-approval", "ssh-disconnect-during-mutation-and-repair",
              "batch-app-interruption-during-mutation-and-repair", "changed-host-key",
-             RESTORE_CRASH, RESTORE_ISOLATION, "systemd-active", "controlled-reboot", "official-provenance")
+             RESTORE_CRASH, RESTORE_ISOLATION, RESTORE_APT_VALIDATION,
+             "systemd-active", "controlled-reboot", "official-provenance")
 
 
 def require(condition, message):
@@ -984,6 +986,130 @@ class Harness:
                       isolated_webhook_deliveries=0, authorized_work_resumed=True)
         del record["checkpoint"]
 
+    def qualify_cold_restore_apt_validation(self, record):
+        healthy = "recovery-healthy"
+        incomplete = "recovery-incomplete"
+        unreachable = "recovery-unreachable"
+        targets = {healthy: self.name + "-apt-ok", incomplete: self.name + "-apt-bad", unreachable: self.name + "-apt-away"}
+        addresses = {}
+        credentials = {"username": "fixture-admin", "password": self.password}
+        for name in (healthy, incomplete):
+            target = targets[name]
+            self.docker("run", "-d", "--name", target, "--network", self.network,
+                        "--label", LABEL + "=" + self.owner, "--env", "SLU_FIXTURE_OWNER=" + self.owner,
+                        "--cap-add=SYS_PTRACE", "--pids-limit", "256", "--memory", "768m", self.image)
+            require(self.owned("container", target), "restore validation target ownership mismatch")
+            networks = json.loads(self.docker("inspect", "--format", "{{json .NetworkSettings.Networks}}", target))
+            address = networks[self.network]["IPAddress"]
+            require(address, "restore validation target has no private bridge address")
+            addresses[name] = (address, 22)
+            self.docker("exec", "-i", target, "chpasswd", data=f"root:{self.password}\n".encode())
+
+            def scan_key():
+                try:
+                    return self.api.request("POST", "/api/hostkeys/scan", {"host": address, "port": 22})
+                except AssertionError:
+                    return None
+
+            scan = until(scan_key, "restore validation SSH target did not start")
+            key_files = {"ssh-ed25519": "ed25519", "ssh-rsa": "rsa", "ecdsa-sha2-nistp256": "ecdsa"}
+            path = "/etc/ssh/ssh_host_" + key_files[scan["algorithm"]] + "_key.pub"
+            fingerprint = self.docker("exec", target, "ssh-keygen", "-E", "sha256", "-lf", path).split()[1]
+            require(scan["fingerprint_sha256"] == fingerprint, "validation target key mismatch")
+            self.api.request("POST", "/api/hostkeys/trust",
+                             {"host": address, "port": 22, "fingerprint_sha256": fingerprint})
+        addresses[unreachable] = (addresses[healthy][0], 2222)
+        for name, (address, port) in addresses.items():
+            self.api.request("POST", "/api/servers", {"name": name, "host": address, "port": port,
+                             "user": "root", "pass": self.password}, allowed=(201,))
+
+        passphrase = secrets.token_urlsafe(24)
+        self.redactions.append(passphrase)
+        until(lambda: all(s["status"] != "facts_refresh" for s in self.api.request("GET", "/api/servers")),
+              "pre-archive facts did not settle")
+        archive = self.api.request("POST", "/api/backup/export",
+                                   {"passphrase": passphrase, "include_known_hosts": True}, binary=True)
+        self.stop_app()
+        self.docker("exec", targets[incomplete], "dpkg", "--unpack", "/srv/slu-packages/2.0.deb")
+        require(self.docker("exec", targets[incomplete], "dpkg", "--audit").strip(),
+                "incomplete fixture did not simulate an unfinished package configuration")
+
+        cold = self.work / "cold-recovery"
+        cold.mkdir(mode=0o700)
+        copy_assets(cold)
+        shutil.copy2(self.work / "webserver", cold / "webserver")
+        (cold / "known_hosts").touch(mode=0o600)
+        env = app_environment(Path("/work"), 8080)
+        env.update(DEBIAN_UPDATER_LISTEN_ADDR=":8080", DEBIAN_UPDATER_HOST_FACTS_AUTO_REFRESH_ENABLED="false")
+        cold_name = self.app_name + "-cold"
+        self.docker("run", "-d", "--name", cold_name, "--network", self.network,
+                    "--label", LABEL + "=" + self.owner, "--user", f"{os.getuid()}:{os.getgid()}",
+                    "--pids-limit", "256", "--memory", "512m", "-p", "127.0.0.1::8080",
+                    "--mount", f"type=bind,src={cold},dst=/work", "--workdir", "/work",
+                    "--entrypoint", "/work/webserver",
+                    *(item for key, value in env.items() for item in ("--env", key + "=" + value)), self.image)
+        def check_running(remaining):
+            require(self.docker("inspect", "--format", "{{.State.Running}}", cold_name,
+                                timeout=min(20, remaining)).strip() == "true",
+                    "recovery installation exited before readiness")
+
+        def connect_recovery():
+            require(self.owned("container", cold_name), "recovery installation ownership mismatch")
+            host, port = self.docker("port", cold_name, "8080/tcp").strip().rsplit(":", 1)
+            validate_local_endpoint(host, int(port))
+            client = API(int(port), include_error_body=False)
+            wait_for_app(client, check_running=check_running)
+            return client
+
+        api = connect_recovery()
+        api.request("POST", "/api/auth/setup", credentials)
+
+        def package_state(name):
+            return self.docker("exec", targets[name], "sha256sum", "/var/lib/dpkg/status")
+
+        initial = {name: package_state(name) for name in (healthy, incomplete)}
+        restored = api.backup_archive("restore", archive, passphrase)
+        require(restored["restore_isolated"], "foreign archive did not activate the validation gate")
+        api.request("POST", "/api/auth/login", credentials)
+        api.request("POST", "/api/auth/reauthenticate", {"password": self.password})
+        identities = {name: api.server(name)["server_identity"] for name in targets}
+        for name in targets:
+            fail = api.request("POST", f"/api/update/{name}", allowed=(409,))
+            require(fail["code"] == "restore_isolated", "package work entered during restore validation")
+        route = "/api/backup/restore-isolation/apt-check"
+        for name, expected in ((healthy, "healthy"), (incomplete, "dpkg_incomplete"), (unreachable, "unreachable")):
+            fact = api.request("POST", route, {"name": name, "identity": identities[name]}, timeout=35)
+            require(fact["state"] == expected, "unexpected restoration validation outcome for " + name)
+        require(all(package_state(name) == digest for name, digest in initial.items()), "a validation probe changed package state")
+        api.request("POST", "/api/backup/restore-isolation/resume", {"confirmation": "RESUME"})
+        for name in (incomplete, unreachable):
+            fail = api.request("POST", f"/api/autoremove/{name}", allowed=(409,))
+            require(fail["reason_code"] == "restore_apt_validation_required", "recovery released an unverified host")
+        batch_id = uuid.uuid4().hex
+        api.request("POST", "/api/status/batches", {"id": batch_id, "action": "autoremove", "targets": [
+            {"name": name, "server_identity": identities[name]} for name in (healthy, incomplete)
+        ]}, allowed=(202,))
+
+        def batch_results():
+            batch = api.request("GET", "/api/status/batches/" + batch_id)["batch"]
+            hosts = {row["name"]: row for row in batch["hosts"]}
+            if hosts[healthy].get("job_id") and hosts[incomplete]["state"] not in ("queued", "admitting"):
+                return hosts
+            return None
+
+        hosts = until(batch_results, "batch did not reach partial admission")
+        require(not hosts[incomplete].get("job_id") and package_state(incomplete) == initial[incomplete],
+                "batch dispatched package work for the incomplete host")
+        job, _ = api.wait_job(hosts[healthy]["job_id"], lambda job: job["status"] in TERMINAL)
+        require(job["status"] == "succeeded", "the validated healthy host could not resume package work")
+        self.docker("restart", cold_name)
+        api = connect_recovery()
+        api.request("POST", "/api/auth/login", credentials)
+        fail = api.request("POST", f"/api/update/{incomplete}", allowed=(409,))
+        require(fail["reason_code"] == "restore_apt_validation_required", "restart released an unverified host")
+        record.update(read_only_probes=True, healthy_host_resumed=True, incomplete_host_blocked=True,
+                      unreachable_host_blocked=True, gated_after_restart=True, partial_batch_admission=True)
+
     def offline_recovery_container_args(self):
         require(self.owned("container", self.app_name), "application ownership mismatch")
         return ("--name", self.app_name + "-recovery", "--network", "none",
@@ -1159,6 +1285,8 @@ class Harness:
                 self.qualify_restore_isolation(record)
             except (RuntimeError, OSError, ValueError, sqlite3.Error, subprocess.SubprocessError) as error:
                 raise AssertionError(f"fixture operation failed ({type(error).__name__})") from None
+        with self.scenario(RESTORE_APT_VALIDATION) as record:
+            self.qualify_cold_restore_apt_validation(record)
 
         self.records.extend([
             {"scenario": "systemd-active", "status": "not_executed", "reason": "Container has no systemd PID1; no fake systemctl is installed. Use the VM harness."},
@@ -1201,9 +1329,20 @@ class Harness:
             if "no such" not in str(error).lower(): self.cleanup_errors.append(str(error))
         except Exception as error:
             self.cleanup_errors.append(str(error))
+        try:
+            cold_name = self.app_name + "-cold"
+            if self.owned("container", cold_name):
+                text = self.redact_text(self.docker("logs", cold_name))[-200000:]
+                (self.output / "cold-app.log").write_text(text)
+        except RuntimeError as error:
+            if "no such" not in str(error).lower(): self.cleanup_errors.append(str(error))
+        except Exception as error:
+            self.cleanup_errors.append(str(error))
         # Inspect names even if a create command failed after the daemon created the
         # resource, or SIGTERM arrived before its return value was assigned.
-        for kind, name in (("container", self.app_name + "-recovery"), ("container", self.app_name),
+        for kind, name in (("container", self.app_name + "-cold"),
+                           ("container", self.name + "-apt-ok"), ("container", self.name + "-apt-bad"),
+                           ("container", self.app_name + "-recovery"), ("container", self.app_name),
                            ("container", self.name), ("network", self.network), ("image", self.image)):
             try:
                 require(self.owned(kind, name), f"refusing cleanup of unowned {kind}")

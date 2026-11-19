@@ -25,6 +25,36 @@ func isolateHostMaintenanceSessions(isolation *internalbackup.RestoreIsolation, 
 	})
 }
 
+func guardRestoredAPTSession(validation *restoreAPTValidation) HostMaintenanceSessionFactory {
+	return HostMaintenanceSessionFactoryFunc(func(ctx context.Context, req HostMaintenanceSessionRequest) (HostMaintenanceSession, error) {
+		var key string
+		if req.PackageMaintenance {
+			var err error
+			key, err = validation.authorize(ctx, req.Server)
+			if err != nil {
+				return nil, err
+			}
+			if key != "" {
+				verify := req.VerifyHostKey
+				req.VerifyHostKey = func(fingerprint string) error {
+					if fingerprint != key {
+						return errRestoredAPTKeyChanged
+					}
+					if verify != nil {
+						return verify(fingerprint)
+					}
+					return nil
+				}
+			}
+		}
+		session, err := validation.sessions.Open(ctx, req)
+		if key != "" && err != nil && restoreAPTHostKeyError(err) {
+			validation.invalidateHostKey(ctx, req.Server, key)
+		}
+		return session, err
+	})
+}
+
 func restoreIsolationMiddleware(isolation *internalbackup.RestoreIsolation) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if c.Request.Method == http.MethodPost && requiresExternalWork(c.FullPath()) && isolation.BlocksExternalWork() {
@@ -81,6 +111,12 @@ func handleRestoreIsolationResume(c *gin.Context, deps AppDeps) {
 	}
 	if err := ctx.Err(); err != nil {
 		return
+	}
+	if deps.RestoreAPTValidation != nil {
+		if err := deps.RestoreAPTValidation.approve(ctx, deps.Now()); err != nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "APT validation could not be recorded. External work stays paused."})
+			return
+		}
 	}
 	if err := deps.RestoreIsolation.Reactivate(deps.Now); err != nil {
 		log.Printf("restore isolation release failed: %v", err)

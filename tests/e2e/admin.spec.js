@@ -2747,11 +2747,21 @@ test("admin restore isolation is selectable and resumption requires typed confir
     const state = {};
     let isolation = "active";
     let resumptionCount = 0;
+    let aptState = "pending";
     await ensureAuthenticatedSession(page);
     await stubAdminApi(page, state);
     await page.route("**/api/installation/health", route => fulfillJson(route, {
         state: "ready", checked_at: "2026-11-19T12:00:00Z", restore_isolation: isolation,
+        restore_apt_hosts: [
+            {name: "healthy-host", identity: "host-1", state: isolation === "inactive" ? "approved" : aptState},
+            {name: "offline-host", identity: "host-2", state: "unreachable"},
+        ],
     }));
+    await page.route("**/api/backup/restore-isolation/apt-check", route => {
+        expect(route.request().postDataJSON()).toEqual({name: "healthy-host", identity: "host-1"});
+        aptState = "healthy";
+        return fulfillJson(route, {state: aptState});
+    });
     await page.route("**/api/backup/restore-isolation/resume", route => {
         expect(route.request().postDataJSON()).toEqual({confirmation: "RESUME"});
         isolation = "inactive";
@@ -2770,12 +2780,15 @@ test("admin restore isolation is selectable and resumption requires typed confir
     expect((await restore).postData()).toMatch(/name="isolate"\r\n\r\ntrue\r\n/);
     await page.goto("/admin#admin-section-installation");
     await expect(page.locator("#installation-restore-isolation")).toContainText("SSH and notifications paused");
+    await page.getByRole("button", {name: "Check APT on healthy-host"}).click();
+    await expect(page.locator("#restore-apt-validation").getByRole("row", {name: /healthy-host/})).toContainText("Validated");
     const resume = page.locator("#restore-isolation-resume");
     await dismissTypedConfirm(page, resume);
     expect(resumptionCount).toBe(0);
     await acceptTypedConfirm(page, resume, "RESUME");
     await expect(page.locator("#installation-restore-isolation")).toHaveText("Inactive");
     await expect(resume).toBeHidden();
+    await expect(page.locator("#restore-apt-validation").getByRole("row", {name: /offline-host/})).toContainText("Unreachable");
     expect(resumptionCount).toBe(1);
 });
 

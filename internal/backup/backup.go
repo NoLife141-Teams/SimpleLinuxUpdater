@@ -188,6 +188,9 @@ type RestoreOptions struct {
 	// hand it back to the live runtime after replacement.
 	PrepareReplacement func(context.Context, *sql.DB) error
 	RestoreHandoff     func(context.Context) error
+	// PrepareHostValidation stages the restored inventory's APT admission
+	// requirements. The boolean identifies an archive from another key.
+	PrepareHostValidation func(context.Context, *sql.DB, bool) error
 	// BeforeReplacement runs after the runtime has drained its persistence
 	// users and before the live files can change.
 	BeforeReplacement func() error

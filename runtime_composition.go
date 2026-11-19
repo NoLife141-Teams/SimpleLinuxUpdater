@@ -436,7 +436,7 @@ func (c *runtimeComposition) Compose() AppDeps {
 			},
 		})
 	}
-	if deps.UpdateService == nil {
+	if deps.RestoreAPTValidation == nil {
 		hostMaintenanceSessions := newHostMaintenanceSessionFactory(
 			func(server Server) ([]ssh.AuthMethod, error) {
 				resolved, err := deps.GlobalSSHCredential.Resolve(context.Background(), server.Key)
@@ -453,9 +453,14 @@ func (c *runtimeComposition) Compose() AppDeps {
 				return getDialSSHConnection()(server, config)
 			},
 		)
+		deps.RestoreAPTValidation = &restoreAPTValidation{
+			db: deps.DB, now: deps.Now, isolation: deps.RestoreIsolation, sessions: hostMaintenanceSessions,
+		}
+	}
+	if deps.UpdateService == nil {
 		deps.UpdateService = NewUpdateService(UpdateServiceDeps{
 			ServerState:               deps.ServerState,
-			HostMaintenanceSessions:   isolateHostMaintenanceSessions(deps.RestoreIsolation, hostMaintenanceSessions),
+			HostMaintenanceSessions:   isolateHostMaintenanceSessions(deps.RestoreIsolation, guardRestoredAPTSession(deps.RestoreAPTValidation)),
 			LoadApplicationPostchecks: applicationPostcheckLoader(deps.DB, deps.ServerState),
 			LoadPackageDeferrals:      packageDeferralLoader(deps),
 			PackageDeferralGate:       deps.PackageDeferralGate,
@@ -513,6 +518,7 @@ func (c *runtimeComposition) Compose() AppDeps {
 				return serverpkg.CloneServers(deps.ServerState.Servers()), serverpkg.CloneStatusMap(deps.ServerState.StatusMap())
 			},
 			MaintenanceReadiness:  deps.MaintenanceReadiness,
+			RestoreAPTBlocked:     deps.RestoreAPTValidation.blocked,
 			HostHealthObservation: factsRepo,
 			ProjectPolicySchedule: policyScheduleService.ProjectSchedule,
 		})

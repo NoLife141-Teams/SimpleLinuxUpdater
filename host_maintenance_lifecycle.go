@@ -160,6 +160,12 @@ func (s *lifecycleHostMaintenanceSession) RunUpdatePrechecks(ctx context.Context
 	return summary
 }
 
+func (s *lifecycleHostMaintenanceSession) CheckRestoredAPT(ctx context.Context) string {
+	opCtx, cancel := s.operationContext(ctx)
+	defer cancel()
+	return s.inner.CheckRestoredAPT(opCtx)
+}
+
 func shutdownPrecheckSummary(err error) updatespkg.PrecheckSummary {
 	detail := "application shutdown interrupted maintenance pre-checks"
 	if err != nil {

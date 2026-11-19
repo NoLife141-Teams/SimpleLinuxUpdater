@@ -52,7 +52,7 @@ func buildRoutePermissions() map[string]routePermission {
 	add("settings:write", false, "DELETE", "/api/metrics/token")
 	add("backup:write", false, "GET", "/api/backup/automation", "/api/backup/status", "/api/backup/archives")
 	add("backup:write", false, "PUT", "/api/backup/automation")
-	add("backup:write", false, "POST", "/api/backup/automation/run", "/api/backup/export", "/api/backup/restore", "/api/backup/verify", "/api/backup/archives/:id/download", "/api/backup/archives/:id/verify", restoreIsolationResumeRoute)
+	add("backup:write", false, "POST", "/api/backup/automation/run", "/api/backup/export", "/api/backup/restore", "/api/backup/verify", "/api/backup/archives/:id/download", "/api/backup/archives/:id/verify", restoreIsolationResumeRoute, restoreAPTValidationRoute)
 	add("self", false, "GET", "/api/auth/sessions", "/api/auth/identity", "/api/auth/tokens")
 	add("self", false, "POST", "/api/auth/logout", "/api/auth/sessions/:id/reveal-ip", "/api/auth/reauthenticate", "/api/auth/mfa/enroll", "/api/auth/mfa/confirm", "/api/auth/tokens")
 	add("self", false, "PUT", "/api/auth/password")

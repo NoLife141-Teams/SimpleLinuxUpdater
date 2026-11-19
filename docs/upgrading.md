@@ -292,6 +292,15 @@ that restore isolation is active. It persists locally across restarts and
 subsequent restores. After reviewing SSH trust, scheduled policies and notification
 destinations, select **Resume External Work**, confirm with `RESUME` and
 reauthenticate. Scheduling resumes at the next minute with a rebased watermark.
+Restoring an archive from another installation key activates isolation
+automatically. Under **APT checks after restore**, a recently reauthenticated
+administrator can select one restored Server and check its package state over
+trusted SSH. The check inspects locks, dpkg state and APT dependencies in
+simulation mode. A successful check is valid for 15 minutes before resumption.
+Only checked Servers with an accepted result can start manual, scheduled or
+batch operations that change packages. Select a blocked Server to check again
+after work has resumed. A different SSH endpoint or key requires a new check.
+An existing APT reconciliation incident still requires explicit repair.
 Scheduled work that became due while isolated, including waves of an accepted
 rollout, is skipped. Future waves still depend on their preceding batches.
 Queued notifications undergo normal eligibility checks before sending.

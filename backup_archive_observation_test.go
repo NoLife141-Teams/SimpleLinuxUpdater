@@ -103,6 +103,45 @@ func TestBackupArchiveObservationsDistinguishLossFromUnavailableStorage(t *testi
 	check("missing", "available", 0, 2)
 }
 
+func TestBackupArchiveObservationKeepsStalledStorageUnavailable(t *testing.T) {
+	app, a, now := newBackupAutomationTest(t)
+	if err := a.Tick(t.Context(), true); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.observeArchiveAvailability(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if facts := installationSnapshot(t.Context(), app.Deps).BackupArchives; facts.State != "covered" {
+		t.Fatalf("expected initial coverage: %+v", facts)
+	}
+
+	release := make(chan struct{})
+	defer close(release)
+	var scans atomic.Int32
+	stall := func(context.Context, []ownedBackupArchive) backupArchiveScan {
+		scans.Add(1)
+		<-release
+		return backupArchiveScan{}
+	}
+	for _, advance := range []time.Duration{backupArchiveObservationInterval, 3 * backupArchiveObservationInterval} {
+		*now = now.Add(advance)
+		if err := a.observeArchiveAvailabilityWithScan(t.Context(), stall); err != nil {
+			t.Fatal(err)
+		}
+		facts := installationSnapshot(t.Context(), app.Deps).BackupArchives
+		if facts.Storage != "unavailable" || facts.State != "unknown" || facts.CheckedAt != backupStamp(*now) {
+			t.Fatalf("stalled storage observation = %+v", facts)
+		}
+	}
+	if calls := scans.Load(); calls != 1 {
+		t.Fatalf("stalled storage opened %d filesystem scans", calls)
+	}
+	var losses int
+	if err := app.Deps.DB().QueryRow("SELECT count(*) FROM audit_events WHERE action='backup.verify' AND status='failure'").Scan(&losses); err != nil || losses != 0 {
+		t.Fatalf("stalled storage opened loss episodes: %d, %v", losses, err)
+	}
+}
+
 type archiveObservationDeliveryClient struct {
 	calls atomic.Int32
 }

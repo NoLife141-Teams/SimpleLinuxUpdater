@@ -110,11 +110,15 @@ func (a *backupAutomation) monitorArchiveAvailability(ctx context.Context) {
 }
 
 func (a *backupAutomation) observeArchiveAvailability(ctx context.Context) error {
-	ctx, cancel := context.WithTimeout(ctx, backupArchiveObservationBudget)
-	defer cancel()
+	return a.observeArchiveAvailabilityWithScan(ctx, a.scanBackupArchives)
+}
+
+func (a *backupAutomation) observeArchiveAvailabilityWithScan(ctx context.Context, scanArchives func(context.Context, []ownedBackupArchive) backupArchiveScan) error {
 	if a.deployment.Directory == "" {
 		return nil
 	}
+	scanCtx, cancelScan := context.WithTimeout(ctx, backupArchiveObservationBudget)
+	defer cancelScan()
 	coord := a.deps.MaintenanceCoordinator
 	lease, decision := coord.TryShared(maintenancepkg.WorkScheduled)
 	if !decision.Allowed {
@@ -124,7 +128,7 @@ func (a *backupAutomation) observeArchiveAvailability(ctx context.Context) error
 		lease.Close()
 		return errBackupArchiveObservationDeferred
 	}
-	before, err := a.load(ctx)
+	before, err := a.load(scanCtx)
 	a.mu.Unlock()
 	lease.Close()
 	if err != nil {
@@ -132,25 +136,38 @@ func (a *backupAutomation) observeArchiveAvailability(ctx context.Context) error
 	}
 
 	// The filesystem can stall independently of SQLite. Keep the publication
-	// mutex and maintenance admission free until observations are ready.
-	if !a.scanMu.TryLock() {
-		return errBackupArchiveObservationDeferred
-	}
-	results := make(chan backupArchiveScan, 1)
-	go func() {
-		defer a.scanMu.Unlock()
-		observation, availability := a.scanBackupArchives(ctx, before.Archives)
-		results <- backupArchiveScan{observation, availability}
-	}()
+	// mutex and maintenance admission free until observations are ready. A timed
+	// out probe can outlive its deadline, so keep only one filesystem scan alive.
 	var scan backupArchiveScan
-	select {
-	case scan = <-results:
-		if err := ctx.Err(); err != nil {
-			return err
+	if a.scanMu.TryLock() {
+		results := make(chan backupArchiveScan, 1)
+		go func() {
+			var result backupArchiveScan
+			defer func() {
+				a.scanMu.Unlock()
+				results <- result
+			}()
+			result = scanArchives(scanCtx, before.Archives)
+		}()
+		select {
+		case result := <-results:
+			if scanCtx.Err() == nil {
+				scan = result
+			}
+		case <-scanCtx.Done():
 		}
-	case <-ctx.Done():
+	}
+	cancelScan()
+	if ctx.Err() != nil {
 		return ctx.Err()
 	}
+	if scan.observation.CheckedAt == "" {
+		scan.observation = backupArchiveObservation{CheckedAt: backupStamp(a.now()), Storage: "unavailable"}
+	}
+	// Persist timeouts with a fresh SQLite budget. They describe storage rather
+	// than individual archives, so a partial scan cannot open a loss episode.
+	commitCtx, cancelCommit := context.WithTimeout(ctx, backupArchiveObservationBudget)
+	defer cancelCommit()
 	lease, decision = coord.TryShared(maintenancepkg.WorkScheduled)
 	if !decision.Allowed {
 		return errBackupArchiveObservationDeferred
@@ -160,7 +177,7 @@ func (a *backupAutomation) observeArchiveAvailability(ctx context.Context) error
 		return errBackupArchiveObservationDeferred
 	}
 	defer a.mu.Unlock()
-	current, err := a.readState(ctx)
+	current, err := a.readState(commitCtx)
 	if err != nil {
 		return err
 	}
@@ -178,28 +195,29 @@ func (a *backupAutomation) observeArchiveAvailability(ctx context.Context) error
 		}
 	}
 	current.Observation = scan.observation
-	return a.save(ctx, current, events...)
+	return a.save(commitCtx, current, events...)
 }
 
-func (a *backupAutomation) scanBackupArchives(ctx context.Context, archives []ownedBackupArchive) (backupArchiveObservation, map[int]string) {
-	observation := backupArchiveObservation{CheckedAt: backupStamp(a.now()), Storage: "unavailable"}
+func (a *backupAutomation) scanBackupArchives(ctx context.Context, archives []ownedBackupArchive) backupArchiveScan {
+	scan := backupArchiveScan{observation: backupArchiveObservation{CheckedAt: backupStamp(a.now()), Storage: "unavailable"}}
+	observation := &scan.observation
 	owner, err := a.localIdentity(false)
 	if err != nil {
-		return observation, nil
+		return scan
 	}
 	observation.Owner = owner
 	dir, err := backupRealPath(a.deployment.Directory)
 	if err != nil {
-		return observation, nil
+		return scan
 	}
 	root, err := os.OpenRoot(dir)
 	if err != nil {
-		return observation, nil
+		return scan
 	}
 	defer root.Close()
 	info, err := root.Lstat(".")
 	if err != nil || !backupArchiveDirectoryAccessible(info) {
-		return observation, nil
+		return scan
 	}
 	observation.DirectoryIdentity = backupCatalogFileIdentity(info)
 	probes := make(map[int]string)
@@ -224,7 +242,8 @@ func (a *backupAutomation) scanBackupArchives(ctx context.Context, archives []ow
 	if tracked == 0 || comparable > 0 {
 		observation.Storage = "available"
 	}
-	return observation, probes
+	scan.availability = probes
+	return scan
 }
 
 func archiveAvailabilityLost(availability string) bool {

@@ -25,33 +25,78 @@ func (aptRestoreConflicts) Unwrap() error { return jobs.ErrAPTRecoveryEvidenceCo
 // prepareAPTRestore applies the same reconciliation checks as verification.
 // Only the isolated replacement database is modified.
 func prepareAPTRestore(ctx context.Context, liveDB, stagedDB *sql.DB, now string) error {
-	return reconcileAPTRestore(ctx, liveDB, stagedDB, now, true)
-}
-
-func reconcileAPTRestore(ctx context.Context, liveDB, stagedDB *sql.DB, now string, includeLogs bool) error {
-	if liveDB == nil {
-		return errors.New("live APT evidence is unavailable")
-	}
-	live, err := liveDB.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	live, err := beginAPTRestoreSnapshot(ctx, liveDB)
 	if err != nil {
 		return err
 	}
 	defer live.Rollback()
-	staged := jobs.NewSQLiteRepository(stagedDB)
+	evidence, err := captureAPTRestoreEvidence(ctx, live)
+	if err != nil {
+		return err
+	}
+	return evidence.compare(ctx, stagedDB, now, live)
+}
+
+func previewAPTRestore(ctx context.Context, deps AppDeps, stagedDB *sql.DB, now string) error {
+	evidence, err := captureAPTPreviewEvidence(ctx, deps)
+	if err != nil || (len(evidence.open) == 0 && len(evidence.repairs) == 0) {
+		return err
+	}
+	return evidence.compare(ctx, stagedDB, now, nil)
+}
+
+func captureAPTPreviewEvidence(ctx context.Context, deps AppDeps) (aptRestoreEvidence, error) {
+	// Keep the live connection and maintenance lease only while reading the
+	// snapshot. Archive work can be slow and uses its own isolated database.
+	lease, _, stable := deps.MaintenanceCoordinator.TryProbe()
+	if !stable {
+		return aptRestoreEvidence{}, errors.New("live APT evidence is unavailable during maintenance")
+	}
+	defer lease.Close()
+	live, err := beginAPTRestoreSnapshot(ctx, deps.DB())
+	if err != nil {
+		return aptRestoreEvidence{}, err
+	}
+	defer live.Rollback()
+	return captureAPTRestoreEvidence(ctx, live)
+}
+
+func beginAPTRestoreSnapshot(ctx context.Context, liveDB *sql.DB) (*sql.Tx, error) {
+	if liveDB == nil {
+		return nil, errors.New("live APT evidence is unavailable")
+	}
+	return liveDB.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+}
+
+type aptRestoreEvidence struct {
+	open    []jobs.Record
+	repairs []jobs.Record
+	targets aptRestoreTargets
+}
+
+func captureAPTRestoreEvidence(ctx context.Context, live *sql.Tx) (aptRestoreEvidence, error) {
 	open, err := jobs.ListUnresolvedAPTJobs(ctx, live)
 	if err != nil {
-		return err
-	}
-	if err := staged.MarkInterruptedAPTMutations(now); err != nil {
-		return err
+		return aptRestoreEvidence{}, err
 	}
 	repairs, err := jobs.LatestVerifiedAPTRepairs(ctx, live)
-	if err != nil || (len(open) == 0 && len(repairs) == 0) {
+	if err != nil {
+		return aptRestoreEvidence{}, err
+	}
+	evidence := aptRestoreEvidence{open: open, repairs: repairs}
+	if len(open) != 0 || len(repairs) != 0 {
+		evidence.targets, err = aptRestoreInventory(ctx, live)
+	}
+	return evidence, err
+}
+
+func (evidence aptRestoreEvidence) compare(ctx context.Context, stagedDB *sql.DB, now string, logSource *sql.Tx) error {
+	staged := jobs.NewSQLiteRepository(stagedDB)
+	if err := staged.MarkInterruptedAPTMutations(ctx, now); err != nil {
 		return err
 	}
-	liveTargets, err := aptRestoreInventory(ctx, live)
-	if err != nil {
-		return err
+	if len(evidence.open) == 0 && len(evidence.repairs) == 0 {
+		return nil
 	}
 	stagedTargets, err := aptRestoreInventory(ctx, stagedDB)
 	if err != nil {
@@ -67,9 +112,10 @@ func reconcileAPTRestore(ctx context.Context, liveDB, stagedDB *sql.DB, now stri
 		}
 	}
 	importEvidence := func(record jobs.Record, target Server) error {
-		err := staged.ImportAPTRecoveryEvidence(ctx, live, record.ID, target.Name, includeLogs)
+		record.ServerName = target.Name
+		err := staged.ImportAPTRecoveryEvidence(ctx, record, logSource)
 		if errors.Is(err, jobs.ErrAPTRecoveryEvidenceConflict) {
-			if original, found := liveTargets.byTarget[record.APTTarget]; found {
+			if original, found := evidence.targets.byTarget[record.APTTarget]; found {
 				target = original
 			}
 			addConflict(record, target, "apt_evidence_conflict", "The archive contains conflicting APT job evidence for this server.")
@@ -78,10 +124,10 @@ func reconcileAPTRestore(ctx context.Context, liveDB, stagedDB *sql.DB, now stri
 		return err
 	}
 
-	for _, incident := range open {
+	for _, incident := range evidence.open {
 		server, matches := stagedTargets.byTarget[incident.APTTarget]
 		if !matches {
-			if original, attached := liveTargets.byTarget[incident.APTTarget]; attached {
+			if original, attached := evidence.targets.byTarget[incident.APTTarget]; attached {
 				if stagedTargets.names[original.Name] || stagedTargets.identities[original.Identity] {
 					addConflict(incident, original, "apt_target_changed", "The archive changes the identity or SSH address of this server.")
 				} else {
@@ -100,14 +146,14 @@ func reconcileAPTRestore(ctx context.Context, liveDB, stagedDB *sql.DB, now stri
 			importedOpen[incident.ID] = incident
 		}
 	}
-	for _, repair := range repairs {
+	for _, repair := range evidence.repairs {
 		if server, matches := stagedTargets.byTarget[repair.APTTarget]; matches {
 			if err := importEvidence(repair, server); err != nil {
 				return err
 			}
 		}
 	}
-	remaining, err := staged.ListReconciliationRequired()
+	remaining, err := staged.ListReconciliationRequiredContext(ctx)
 	if err != nil {
 		return err
 	}
@@ -115,7 +161,7 @@ func reconcileAPTRestore(ctx context.Context, liveDB, stagedDB *sql.DB, now stri
 		delete(importedOpen, incident.ID)
 	}
 	for _, incident := range importedOpen {
-		server, liveMatch := liveTargets.byTarget[incident.APTTarget]
+		server, liveMatch := evidence.targets.byTarget[incident.APTTarget]
 		if !liveMatch {
 			server = stagedTargets.byTarget[incident.APTTarget]
 		}

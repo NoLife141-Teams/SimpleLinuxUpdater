@@ -1,12 +1,15 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"debian-updater/internal/jobs"
+	"debian-updater/internal/maintenance"
 )
 
 func TestAPTRestoreComparisonReportsCurrentTargetsAndContradictoryJobs(t *testing.T) {
@@ -16,6 +19,7 @@ func TestAPTRestoreComparisonReportsCurrentTargetsAndContradictoryJobs(t *testin
 		if err != nil {
 			t.Fatal(err)
 		}
+		db.SetMaxOpenConns(1)
 		t.Cleanup(func() { _ = db.Close() })
 		if err := ensureSchema(db); err != nil {
 			t.Fatal(err)
@@ -56,7 +60,52 @@ func TestAPTRestoreComparisonReportsCurrentTargetsAndContradictoryJobs(t *testin
 			insertServer(staged, server)
 		}
 	}
-	err := reconcileAPTRestore(t.Context(), live, staged, created, false)
+	deps := AppDeps{
+		DB:                     func() *sql.DB { return live },
+		MaintenanceCoordinator: maintenance.NewCoordinator(maintenance.Deps{}),
+	}
+	t.Run("busy archive leaves live database available and honors cancellation", func(t *testing.T) {
+		conn, err := staged.Conn(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer conn.Close()
+		baseline := staged.Stats().WaitCount
+		ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+		defer cancel()
+		review := make(chan error, 1)
+		go func() { review <- previewAPTRestore(ctx, deps, staged, created) }()
+		ticker := time.NewTicker(time.Millisecond)
+		defer ticker.Stop()
+		for staged.Stats().WaitCount == baseline {
+			select {
+			case err := <-review:
+				t.Fatalf("preview finished before waiting for the archived database: %v", err)
+			case <-ctx.Done():
+				t.Fatal("preview did not reach the archived database")
+			case <-ticker.C:
+			}
+		}
+		if inUse := live.Stats().InUse; inUse != 0 {
+			t.Errorf("preview holds %d live connections while waiting for the archived database", inUse)
+		}
+		lease, admission := deps.MaintenanceCoordinator.TryExclusive(maintenance.OperationBackupRestore)
+		if !admission.Allowed {
+			t.Error("preview probe still prevents exclusive admission while waiting for the archived database")
+		} else if err := lease.Close(); err != nil {
+			t.Fatal(err)
+		}
+		cancel()
+		select {
+		case err := <-review:
+			if !errors.Is(err, context.Canceled) {
+				t.Fatalf("preview cancellation error = %v", err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("cancelling preview did not release its wait for the archived database")
+		}
+	})
+	err := previewAPTRestore(t.Context(), deps, staged, created)
 	var conflicts aptRestoreConflicts
 	if !errors.As(err, &conflicts) || !errors.Is(err, jobs.ErrAPTRecoveryEvidenceConflict) || len(conflicts) != 3 {
 		t.Fatalf("review conflicts = %+v, %v", conflicts, err)

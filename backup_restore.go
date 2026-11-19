@@ -358,12 +358,7 @@ func handleBackupVerifyWithDeps(c *gin.Context, deps AppDeps) {
 	}
 	canReadReports := contextAllows(c, "logs:read")
 	review := func(ctx context.Context, archive *sql.DB) {
-		lease, _, stable := deps.MaintenanceCoordinator.TryProbe()
-		if !stable {
-			return
-		}
-		defer lease.Close()
-		err := reconcileAPTRestore(ctx, deps.DB(), archive, jobTimestampNow(), false)
+		err := previewAPTRestore(ctx, deps, archive, jobTimestampNow())
 		if err == nil {
 			installation.State = "ready"
 			installation.Message = "No APT reconciliation conflict found. The restore checks again before replacing data."

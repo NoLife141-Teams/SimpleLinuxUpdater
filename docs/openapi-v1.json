@@ -4776,6 +4776,11 @@
             "type": "string",
             "minLength": 1,
             "description": "The exact job ID currently requiring APT reconciliation."
+          },
+          "verified_host_key": {
+            "type": "string",
+            "pattern": "^SHA256:[A-Za-z0-9+/]{43}$",
+            "description": "Independently verified SSH host key fingerprint for this job. Requires inventory permission in addition to maintenance permission."
           }
         }
       },

@@ -181,6 +181,8 @@ func TestPersonalAPIConfirmationRequestContract(t *testing.T) {
 		Status:     jobStatusFailed,
 		ErrorClass: "reconciliation_required",
 		APTTarget:  repairTarget.APTTarget(),
+
+		APTMutationHostKey: testAPTMutationHostKey,
 	})
 	if err != nil {
 		t.Fatal(err)

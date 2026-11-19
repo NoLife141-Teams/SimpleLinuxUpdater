@@ -1615,10 +1615,10 @@ func activeServerActionNames() []string {
 }
 
 func createServerActionJobWithStateAndManager(jm *JobManager, state *serverpkg.State, kind, serverName, actor, clientIP string, policy RetryPolicy) (JobRecord, error) {
-	return createServerActionJobWithAdmission(jm, state, kind, serverName, actor, clientIP, policy, nil)
+	return createServerActionJobWithAdmission(jm, state, kind, serverName, actor, clientIP, policy, "", nil)
 }
 
-func createServerActionJobWithAdmission(jm *JobManager, state *serverpkg.State, kind, serverName, actor, clientIP string, policy RetryPolicy, receipt jobsPkg.AdmissionReceipt) (JobRecord, error) {
+func createServerActionJobWithAdmission(jm *JobManager, state *serverpkg.State, kind, serverName, actor, clientIP string, policy RetryPolicy, previousAPTKey string, receipt jobsPkg.AdmissionReceipt) (JobRecord, error) {
 	if jm == nil {
 		return JobRecord{}, errors.New("job manager is not initialized")
 	}
@@ -1649,6 +1649,8 @@ func createServerActionJobWithAdmission(jm *JobManager, state *serverpkg.State, 
 		RetryPolicyJSON: marshalJobJSON(policy),
 		MetaJSON:        "{}",
 		APTTarget:       aptTarget,
+
+		APTMutationHostKey: previousAPTKey,
 	}, receipt)
 	if err == nil && state != nil && snapshot != nil && !state.BindActionJob(serverName, record.ID, snapshot.ActionGeneration) {
 		return JobRecord{}, errors.New("server action admission changed while creating job")
@@ -2446,18 +2448,24 @@ func registerServerAndActionRoutes(r *gin.Engine, deps AppDeps) {
 	r.POST("/api/repair/:name", func(c *gin.Context) {
 		name := c.Param("name")
 		var req struct {
-			Confirm bool   `json:"confirm"`
-			JobID   string `json:"job_id"`
+			Confirm         bool   `json:"confirm"`
+			JobID           string `json:"job_id"`
+			VerifiedHostKey string `json:"verified_host_key"`
 		}
 		if err := c.ShouldBindJSON(&req); err != nil {
 			audit(c, "apt_repair.start", "server", name, "failure", "Invalid request payload", retryPolicyMeta(loadRetryPolicyFromEnv()))
 			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request payload"})
 			return
 		}
+		if req.VerifiedHostKey != "" && !contextAllows(c, "inventory:write") {
+			audit(c, "apt_repair.start", "server", name, "failure", "Verified SSH host key confirmation requires inventory permission", nil)
+			c.JSON(http.StatusForbidden, gin.H{"error": "Verified SSH host key confirmation requires inventory permission"})
+			return
+		}
 		lifecycle := newServerActionLifecycle(deps, func(action, targetType, targetName, status, message string, meta map[string]any) {
 			audit(c, action, targetType, targetName, status, message, meta)
 		})
-		writeServerActionLifecycleResult(c, lifecycle.StartAptRepair(name, actorFromContext(c), clientIPFromContext(c), req.Confirm, req.JobID))
+		writeServerActionLifecycleResult(c, lifecycle.StartAptRepair(name, actorFromContext(c), clientIPFromContext(c), req.Confirm, req.JobID, req.VerifiedHostKey))
 	})
 
 	r.POST("/api/reboot/:name", func(c *gin.Context) {

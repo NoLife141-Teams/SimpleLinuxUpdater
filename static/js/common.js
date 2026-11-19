@@ -187,6 +187,14 @@
                 <h2 id="action-confirm-title">Confirm action</h2>
                 <p class="muted action-confirm-message" id="action-confirm-message" data-confirm-message></p>
                 ${confirmationSummaryMarkup()}
+                <details data-confirm-verification hidden>
+                    <summary>Confirm an independently verified SSH key</summary>
+                    <p class="muted" id="action-confirm-verification-hint">Use only after verifying the original machine through a trusted console or equivalent source. This confirmation is audited.</p>
+                    <label class="field" for="action-confirm-fingerprint">
+                        <span>Verified SSH host key fingerprint</span>
+                        <input type="text" id="action-confirm-fingerprint" aria-describedby="action-confirm-verification-hint" pattern="SHA256:[A-Za-z0-9+\\/]{43}" autocomplete="off" spellcheck="false">
+                    </label>
+                </details>
                 <div class="modal-actions">
                     <button class="btn-ghost inline-btn" id="action-confirm-cancel" type="button">Cancel</button>
                     <button class="primary-action inline-btn" id="action-confirm-submit" type="button">Confirm</button>
@@ -202,8 +210,13 @@
             const dialog = backdrop.querySelector(".action-confirm-modal");
             const submit = backdrop.querySelector("#action-confirm-submit");
             const cancel = backdrop.querySelector("#action-confirm-cancel");
+            const verification = backdrop.querySelector("[data-confirm-verification]");
+            const fingerprint = backdrop.querySelector("#action-confirm-fingerprint");
+            verification.hidden = typeof options.onVerifiedHostKey !== "function";
+            verification.open = false;
+            fingerprint.value = "";
             const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-            const focusable = () => Array.from(dialog.querySelectorAll("button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex='-1'])"));
+            const focusable = () => Array.from(dialog.querySelectorAll("button:not([disabled]), [href], summary, input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex='-1'])")).filter(element => element.getClientRects().length > 0);
             const close = (confirmed) => {
                 backdrop.classList.remove("active");
                 document.removeEventListener("keydown", onKeydown);
@@ -214,7 +227,13 @@
                 if (previousFocus && typeof previousFocus.focus === "function") previousFocus.focus();
                 resolve(confirmed);
             };
-            const onSubmit = () => close(true);
+            const onSubmit = () => {
+                if (!verification.hidden && verification.open) {
+                    if (!fingerprint.reportValidity()) return;
+                    options.onVerifiedHostKey(fingerprint.value);
+                }
+                close(true);
+            };
             const onCancel = () => close(false);
             const onBackdrop = (event) => { if (event.target === backdrop) close(false); };
             const onKeydown = (event) => {

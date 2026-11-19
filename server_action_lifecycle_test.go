@@ -78,12 +78,13 @@ func newLifecycleTestHarness(t *testing.T, server Server, status *ServerStatus) 
 }
 
 const testAPTReconciliationJobID = "fixture-apt-reconciliation"
+const testAPTMutationHostKey = "SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
 
 func seedAPTReconciliationJob(t *testing.T, jm *JobManager, state *serverpkg.State, server Server) {
 	t.Helper()
 	if err := jm.ImportJobRecord(JobRecord{
 		ID: testAPTReconciliationJobID, ServerName: server.Name, Kind: jobKindUpdate,
-		Status: jobStatusFailed, ErrorClass: "reconciliation_required", APTTarget: server.APTTarget(),
+		Status: jobStatusFailed, ErrorClass: "reconciliation_required", APTTarget: server.APTTarget(), APTMutationHostKey: testAPTMutationHostKey,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -203,7 +204,7 @@ func TestServerActionLifecycleRejectsUnreadyConnectionsBeforeMutationOrJobCreati
 			return l.StartAutoremove(name, "alice", "192.0.2.10")
 		}},
 		{name: "apt repair", status: "needs_reconciliation", start: func(l *serverActionLifecycle, name string) serverActionLifecycleResult {
-			return l.StartAptRepair(name, "alice", "192.0.2.10", true, testAPTReconciliationJobID)
+			return l.StartAptRepair(name, "alice", "192.0.2.10", true, testAPTReconciliationJobID, "")
 		}},
 		{name: "reboot", status: "idle", start: func(l *serverActionLifecycle, name string) serverActionLifecycleResult {
 			return l.StartReboot(name, "alice", "192.0.2.10", true)
@@ -266,7 +267,7 @@ func TestServerActionLifecycleAptRepairRequiresConfirmationAndReconciliationStat
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newLifecycleTestHarness(t, server, &ServerStatus{Name: server.Name, Status: "needs_reconciliation"})
-			result := h.lifecycle().StartAptRepair(server.Name, "alice", "192.0.2.10", tc.confirmed, tc.jobID)
+			result := h.lifecycle().StartAptRepair(server.Name, "alice", "192.0.2.10", tc.confirmed, tc.jobID, "")
 			if result.statusCode != tc.code || result.body["error"] != tc.message || h.runnerRun != nil {
 				t.Fatalf("result = %+v, want rejected confirmation with %q", result, tc.message)
 			}
@@ -281,7 +282,7 @@ func TestServerActionLifecycleAptRepairRequiresConfirmationAndReconciliationStat
 		h := newLifecycleTestHarness(t, server, healthy)
 		seedAPTReconciliationJob(t, h.jobManager, h.state, server)
 		h.state.RestoreStatusSnapshot(server.Name, healthy)
-		result := h.lifecycle().StartAptRepair(server.Name, "alice", "192.0.2.10", true, testAPTReconciliationJobID)
+		result := h.lifecycle().StartAptRepair(server.Name, "alice", "192.0.2.10", true, testAPTReconciliationJobID, "")
 		if result.statusCode != http.StatusConflict || result.body["error"] != "Server does not require APT repair" {
 			t.Fatalf("result = %+v, want current-state conflict", result)
 		}
@@ -297,7 +298,7 @@ func TestServerActionLifecycleAptRepairRequiresConfirmationAndReconciliationStat
 
 	t.Run("reconciliation state dispatches repair job", func(t *testing.T) {
 		h := newLifecycleTestHarness(t, server, &ServerStatus{Name: server.Name, Status: "needs_reconciliation"})
-		result := h.lifecycle().StartAptRepair(server.Name, "alice", "192.0.2.10", true, testAPTReconciliationJobID)
+		result := h.lifecycle().StartAptRepair(server.Name, "alice", "192.0.2.10", true, testAPTReconciliationJobID, "")
 		if result.statusCode != http.StatusOK || result.body["message"] != "APT repair started" {
 			t.Fatalf("result = %+v, want repair start", result)
 		}
@@ -349,12 +350,33 @@ func TestAptReconciliationRecoveryMatchesOriginalServerAndEndpoint(t *testing.T)
 				t.Fatalf("restored status %q from job %q, want attached=%t", got.Status, got.JobID, tc.want)
 			}
 			if !tc.want {
-				result := h.lifecycle().StartAptRepair(server.Name, "operator", "", true, job.ID)
+				result := h.lifecycle().StartAptRepair(server.Name, "operator", "", true, job.ID, "")
 				if result.statusCode != http.StatusConflict || h.runnerRun != nil {
 					t.Fatalf("wrong target admitted: %+v", result)
 				}
 			}
 		})
+	}
+}
+
+func TestAptRepairRequiresIndependentKeyConfirmationForOldJob(t *testing.T) {
+	server := Server{Name: "repair-host", Identity: "fixture-original", Host: "original.example", Port: 22, User: "root"}
+	h := newLifecycleTestHarness(t, server, &ServerStatus{Name: server.Name, Status: "needs_reconciliation"})
+	if _, err := h.db.Exec("UPDATE jobs SET apt_mutation_host_key = '' WHERE id = ?", testAPTReconciliationJobID); err != nil {
+		t.Fatal(err)
+	}
+	lifecycle := h.lifecycle()
+	result := lifecycle.StartAptRepair(server.Name, "admin", "", true, testAPTReconciliationJobID, "")
+	if result.statusCode != http.StatusConflict || h.runnerRun != nil {
+		t.Fatalf("repair without a verified key = %+v", result)
+	}
+	result = lifecycle.StartAptRepair(server.Name, "admin", "", true, testAPTReconciliationJobID, testAPTMutationHostKey)
+	if result.statusCode != http.StatusOK || h.runnerRun == nil {
+		t.Fatalf("repair after independent verification = %+v", result)
+	}
+	audit := h.auditEvents[len(h.auditEvents)-1]
+	if audit.meta["independently_verified_host_key"] != testAPTMutationHostKey || audit.meta["reconciliation_job_id"] != testAPTReconciliationJobID {
+		t.Fatalf("verification was not audited with the source job: %+v", audit)
 	}
 }
 
@@ -370,7 +392,7 @@ func TestAptRepairRejectsTargetChangeWhileCheckingReadiness(t *testing.T) {
 		h.state.SetServers([]Server{replacement})
 		return serverpkg.MaintenanceReadiness{Ready: true}
 	}
-	result := lifecycle.StartAptRepair(server.Name, "operator", "", true, testAPTReconciliationJobID)
+	result := lifecycle.StartAptRepair(server.Name, "operator", "", true, testAPTReconciliationJobID, "")
 	if result.statusCode != http.StatusConflict || h.runnerRun != nil || h.state.CurrentStatusSnapshot(server.Name).Status != "needs_reconciliation" {
 		t.Fatalf("wrong endpoint admitted after readiness check: %+v", result)
 	}

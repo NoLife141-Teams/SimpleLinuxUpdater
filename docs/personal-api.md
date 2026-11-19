@@ -218,7 +218,16 @@ Controlled reboot (`POST /api/reboot/{name}`) and APT repair
 the current server and confirm its reconciliation job with
 `{"confirm":true,"job_id":"<job_id>"}`. Omitted confirmation or job ID returns
 `400` for repair. A stale job or unverifiable target returns `409` before any
-host operation is admitted.
+host operation is admitted. Before sending a repair command, the SSH connection
+must negotiate the host key recorded for the interrupted package mutation.
+
+After independently verifying the original machine through a trusted console or
+equivalent source, an administrator can supply `verified_host_key` with the
+verified OpenSSH SHA256 fingerprint. This requires inventory permission as well
+as maintenance permission and is recorded in the audit trail with the exact
+reconciliation job. Normal SSH trust verification remains required. Use this
+confirmation for a verified key rotation or a known target whose old job lacks
+a recorded key.
 
 ## CVE information for available updates
 

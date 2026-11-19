@@ -616,6 +616,8 @@ func (s *Service) BuildJobMarkdownReport(job jobs.Record) string {
 	}
 	if job.Status == jobs.StatusFailed && job.ErrorClass == "reconciliation_required" && job.APTTarget == "" {
 		fmt.Fprintln(&buf, "- APT recovery: This job has no recorded SSH target. Verify the original machine and package state independently before resuming maintenance.")
+	} else if job.Status == jobs.StatusFailed && job.ErrorClass == "reconciliation_required" && job.APTMutationHostKey == "" {
+		fmt.Fprintln(&buf, "- APT recovery: This job has no recorded SSH host key. An administrator must independently verify the original machine before confirming a key for repair.")
 	}
 	appendJSONBlock(&buf, "Retry Policy", job.RetryPolicyJSON)
 	appendJSONBlock(&buf, "Metadata", job.MetaJSON)

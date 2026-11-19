@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"sync"
 	"time"
 
@@ -58,6 +59,7 @@ type HostMaintenanceSessionRequest struct {
 	DialOperation  string
 	CommandTimeout time.Duration
 	OnRetry        func(HostRetryEvent)
+	VerifyHostKey  func(fingerprint string) error
 }
 
 type HostDialReplayPolicy string
@@ -309,6 +311,14 @@ func (f *productionHostMaintenanceSessionFactory) Open(ctx context.Context, req 
 		Auth:            authMethods,
 		HostKeyCallback: hostKeyCallback,
 		Timeout:         f.deps.SSHConnectTimeout,
+	}
+	if req.VerifyHostKey != nil {
+		config.HostKeyCallback = func(host string, addr net.Addr, key ssh.PublicKey) error {
+			if err := hostKeyCallback(host, addr, key); err != nil {
+				return err
+			}
+			return req.VerifyHostKey(ssh.FingerprintSHA256(key))
+		}
 	}
 	session := &productionHostMaintenanceSession{
 		deps:    f.deps,

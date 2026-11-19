@@ -434,8 +434,23 @@ class Harness:
             self.target("rm", "/run/slu-hold-mutation")
 
         self.target("sh", "-c", "for i in $(seq 1 100); do fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/cache/apt/archives/lock /var/lib/apt/lists/lock >/dev/null 2>&1 || exit 0; sleep .1; done; exit 1")
+        self.target("sh", "-c", "rm /etc/ssh/ssh_host_*; ssh-keygen -A >/dev/null")
+        require(self.owned("container", self.container), "target ownership mismatch")
+        self.docker("kill", "--signal", "HUP", self.container)
+        time.sleep(.3)
+        self.api.request("POST", "/api/hostkeys/clear", {"host": self.ssh_host, "port": self.ssh_port})
+        verified_key = self.trust()
+        require(verified_key != self.original_fingerprint, "fixture did not negotiate a new host key")
+        rejected_id = self.api.request("POST", "/api/repair/" + name,
+                                       {"confirm": True, "job_id": locked_repair_id})["job_id"]
+        rejected, _ = self.api.wait_job(rejected_id, lambda j: j["status"] in TERMINAL)
+        require(rejected["status"] == "failed" and "SSH host key differs" in rejected["logs_text"]
+                and self.api.server(name)["status"] == "needs_reconciliation",
+                "newly trusted host key did not block repair before executing a command")
+        self.api.request("POST", "/api/repair/" + name,
+                         {"confirm": True, "job_id": locked_repair_id, "verified_host_key": verified_key}, allowed=(409,))
         repair_id = self.api.request("POST", "/api/repair/" + name,
-                                    {"confirm": True, "job_id": locked_repair_id})["job_id"]
+                                    {"confirm": True, "job_id": rejected_id, "verified_host_key": verified_key})["job_id"]
         repaired, _ = self.api.wait_job(repair_id, lambda j: j["status"] in TERMINAL)
         require(repaired["status"] == "succeeded" and self.api.server(name)["status"] == "done",
                 "explicit repair did not reconcile the restarted host")
@@ -443,7 +458,7 @@ class Harness:
                 upgrades() == baseline_upgrades + 1, "repair did not verify APT state without replaying the upgrade")
         record.update(batch_id=batch_id, job_id=job_id, error_class=job["error_class"],
                       mutation_attempts=1, locked_repair_job_id=locked_repair_id,
-                      repair_job_id=repair_id, final_version=self.version())
+                      repair_job_id=repair_id, changed_key_rejection_job_id=rejected_id, final_version=self.version())
 
     def qualify(self):
         for user in ("root", "operator"):

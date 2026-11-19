@@ -266,20 +266,27 @@ func validateRecoverySnapshots(root string, paths []string, snapshots []fileRest
 		return nil, errors.New("incomplete recovery manifest")
 	}
 	indexed := make([]*fileRestoreSnapshot, len(paths))
-	for i, entry := range snapshots {
-		same, err := sameRestoreEntry(paths[i], entry.Target)
+	for i, target := range paths {
+		path := filepath.Join(root, "snapshot-"+strconv.Itoa(i))
+		info, statErr := os.Lstat(path)
+		if i >= len(snapshots) {
+			if !errors.Is(statErr, os.ErrNotExist) {
+				return nil, errors.New("unlisted rollback snapshot file")
+			}
+			continue
+		}
+		entry := snapshots[i]
+		same, err := sameRestoreEntry(target, entry.Target)
 		if err != nil || !same {
 			return nil, errors.New("recovery target does not match installation")
 		}
 		if entry.Exists {
-			path := filepath.Join(root, "snapshot-"+strconv.Itoa(i))
 			same, err := sameRestoreEntry(path, entry.BackupPath)
-			info, statErr := os.Lstat(path)
 			if err != nil || !same || statErr != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0077 != 0 {
 				return nil, errors.New("invalid rollback snapshot file")
 			}
 			entry.BackupPath = path
-		} else if entry.BackupPath != "" || i == 0 {
+		} else if entry.BackupPath != "" || i == 0 || !errors.Is(statErr, os.ErrNotExist) {
 			return nil, errors.New("invalid missing rollback snapshot")
 		}
 		indexed[i] = &entry

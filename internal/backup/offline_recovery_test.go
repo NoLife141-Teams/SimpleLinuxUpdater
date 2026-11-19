@@ -69,30 +69,52 @@ func TestOfflineRecoveryInspectsAndAppliesWithDurableDiagnosis(t *testing.T) {
 	}
 }
 
-func TestOfflineRecoveryRejectsUnrelatedSnapshotAndKeepsLatch(t *testing.T) {
-	f, root, id := interruptedRecoveryFixture(t)
-	manifest := filepath.Join(root, id, "recovery.json")
-	raw, err := os.ReadFile(manifest)
-	if err != nil {
-		t.Fatal(err)
+func TestOfflineRecoveryRejectsInvalidManifestAndKeepsLatch(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		mutate func(durabilityFixture, []fileRestoreSnapshot) []fileRestoreSnapshot
+	}{
+		{"unrelated database snapshot", func(f durabilityFixture, entries []fileRestoreSnapshot) []fileRestoreSnapshot {
+			entries[0].BackupPath = f.files["servers.db"]
+			return entries
+		}},
+		{"omitted host trust snapshot", func(_ durabilityFixture, entries []fileRestoreSnapshot) []fileRestoreSnapshot {
+			return entries[:3]
+		}},
+		{"host trust incorrectly marked absent", func(_ durabilityFixture, entries []fileRestoreSnapshot) []fileRestoreSnapshot {
+			entries[3].Exists = false
+			entries[3].BackupPath = ""
+			return entries
+		}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			f, root, id := interruptedRecoveryFixture(t)
+			manifest := filepath.Join(root, id, "recovery.json")
+			raw, err := os.ReadFile(manifest)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var entries []fileRestoreSnapshot
+			if err := json.Unmarshal(raw, &entries); err != nil {
+				t.Fatal(err)
+			}
+			raw, err = json.Marshal(tt.mutate(f, entries))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(manifest, raw, 0600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(f.hosts, []byte(archivedRestoreTrust), 0600); err != nil {
+				t.Fatal(err)
+			}
+			report, err := f.service.OfflineRestoreRecovery(t.Context(), id, offlineRecoveryMergeFixtureJobs)
+			if err == nil || len(report.Sets) != 1 || report.Sets[0].Blocker != "invalid_manifest" || !report.RecoveryRequired {
+				t.Fatalf("apply = %+v, %v", report, err)
+			}
+			requireDurableRestoreState(t, f.db, f.hosts, archivedRestoreServer, archivedRestoreTrust, true)
+		})
 	}
-	var entries []fileRestoreSnapshot
-	if err := json.Unmarshal(raw, &entries); err != nil {
-		t.Fatal(err)
-	}
-	entries[0].BackupPath = f.files["servers.db"]
-	raw, err = json.Marshal(entries)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(manifest, raw, 0600); err != nil {
-		t.Fatal(err)
-	}
-	report, err := f.service.OfflineRestoreRecovery(t.Context(), id, offlineRecoveryMergeFixtureJobs)
-	if err == nil || len(report.Sets) != 1 || report.Sets[0].Blocker != "invalid_manifest" || !report.RecoveryRequired {
-		t.Fatalf("apply = %+v, %v", report, err)
-	}
-	requireDurableRestoreState(t, f.db, f.hosts, archivedRestoreServer, originalRestoreTrust, true)
 }
 
 func TestOfflineRecoveryReleasesOnlyThePhysicalInstallation(t *testing.T) {

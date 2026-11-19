@@ -431,20 +431,23 @@ func (s *Service) applyArchiveFiles(ctx context.Context, files map[string]string
 		knownHostsTarget = path
 	}
 	targets := append([]string{dbTarget}, SQLiteSidecarPaths(dbTarget)...)
-	reservedPaths := append(append([]string{}, targets...), markerPath, dbTarget+".lock")
-	if s.deps.ConfigPath != nil {
-		reservedPaths = append(reservedPaths, s.deps.ConfigPath())
-	}
-	for _, reserved := range reservedPaths {
-		conflict, err := sameRestoreEntry(reserved, knownHostsTarget)
-		if err != nil {
-			return fmt.Errorf("inspect known_hosts restore target: %w", err)
+	knownHosts, replacesKnownHosts := files["known_hosts"]
+	if replacesKnownHosts {
+		reservedPaths := append(append([]string{}, targets...), markerPath, dbTarget+".lock")
+		if s.deps.ConfigPath != nil {
+			reservedPaths = append(reservedPaths, s.deps.ConfigPath())
 		}
-		if conflict {
-			return errors.New("known_hosts restore target conflicts with installation files")
+		for _, reserved := range reservedPaths {
+			conflict, err := sameRestoreEntry(reserved, knownHostsTarget)
+			if err != nil {
+				return fmt.Errorf("inspect known_hosts restore target: %w", err)
+			}
+			if conflict {
+				return errors.New("known_hosts restore target conflicts with installation files")
+			}
 		}
+		targets = append(targets, knownHostsTarget)
 	}
-	targets = append(targets, knownHostsTarget)
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -470,7 +473,10 @@ func (s *Service) applyArchiveFiles(ctx context.Context, files map[string]string
 		}
 	}()
 	manifestPath := filepath.Join(snapshotDir, "recovery.json")
-	seal := sealedRecoveryManifest{Version: restoreSealVersion, SetID: filepath.Base(snapshotDir), Snapshots: snapshots}
+	seal := sealedRecoveryManifest{
+		Version: restoreSealVersion, SetID: filepath.Base(snapshotDir),
+		ReplacesKnownHosts: replacesKnownHosts, Snapshots: snapshots,
+	}
 	manifest, err := json.MarshalIndent(seal, "", "  ")
 	if err == nil {
 		err = fs.writeSnapshot(manifestPath, bytes.NewReader(manifest))
@@ -508,11 +514,7 @@ func (s *Service) applyArchiveFiles(ctx context.Context, files map[string]string
 		if err := s.deps.RestoredRuntime.PreparePersistenceReplacement(rollbackCtx); err != nil {
 			return incomplete(fmt.Errorf("rollback prepare persistence: %w", err))
 		}
-		rollbackSnapshots := snapshots
-		if _, replacedTrust := files["known_hosts"]; !replacedTrust {
-			rollbackSnapshots = rollbackSnapshots[:len(rollbackSnapshots)-1]
-		}
-		if err := fs.restoreFileSnapshots(rollbackSnapshots, s.deps.EnsurePrivateDirForFile); err != nil {
+		if err := fs.restoreFileSnapshots(snapshots, s.deps.EnsurePrivateDirForFile); err != nil {
 			return incomplete(fmt.Errorf("rollback restore snapshots: %w", err))
 		}
 		if restoreHandoff != nil {
@@ -538,7 +540,7 @@ func (s *Service) applyArchiveFiles(ctx context.Context, files map[string]string
 	if err := fs.removeSQLiteSidecars(dbTarget); err != nil {
 		return rollback(err)
 	}
-	if knownHosts, ok := files["known_hosts"]; ok {
+	if replacesKnownHosts {
 		if err := fs.writeAtomicFileFromPath(knownHostsTarget, knownHosts, 0600, s.deps.EnsurePrivateDirForFile); err != nil {
 			return rollback(err)
 		}

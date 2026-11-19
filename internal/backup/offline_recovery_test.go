@@ -15,7 +15,7 @@ import (
 	"debian-updater/internal/maintenance"
 )
 
-func interruptedRecoveryFixture(t *testing.T) (durabilityFixture, string, string) {
+func interruptedRecoveryFixture(t *testing.T, includeKnownHosts bool) (durabilityFixture, string, string) {
 	t.Helper()
 	root := t.TempDir()
 	calls := 0
@@ -24,6 +24,9 @@ func interruptedRecoveryFixture(t *testing.T) (durabilityFixture, string, string
 		return errors.New("fixture reload failure")
 	}})
 	f.service.deps.ConfigPath = func() string { return f.files["config.json"] }
+	if !includeKnownHosts {
+		delete(f.files, "known_hosts")
+	}
 	f.service.syncRestoreFile = func(file *os.File) error {
 		if calls == 1 && filepath.Dir(file.Name()) == root && strings.HasPrefix(filepath.Base(file.Name()), ".restore-") {
 			return syscall.EIO
@@ -69,7 +72,7 @@ func writeLegacyRecoveryFixture(t *testing.T, f durabilityFixture, root, id stri
 }
 
 func TestOfflineRecoveryInspectsAndAppliesWithDurableDiagnosis(t *testing.T) {
-	f, root, id := interruptedRecoveryFixture(t)
+	f, root, id := interruptedRecoveryFixture(t, true)
 	before, err := os.ReadFile(f.db)
 	if err != nil {
 		t.Fatal(err)
@@ -115,7 +118,7 @@ func TestOfflineRecoveryRejectsInvalidManifestAndKeepsLatch(t *testing.T) {
 		}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			f, root, id := interruptedRecoveryFixture(t)
+			f, root, id := interruptedRecoveryFixture(t, true)
 			writeLegacyRecoveryFixture(t, f, root, id, func(entries []fileRestoreSnapshot) []fileRestoreSnapshot {
 				return tt.mutate(f, entries)
 			})
@@ -132,7 +135,7 @@ func TestOfflineRecoveryRejectsInvalidManifestAndKeepsLatch(t *testing.T) {
 }
 
 func TestOfflineRecoveryUsesSealedRollbackWithUnreadableSQLite(t *testing.T) {
-	f, root, id := interruptedRecoveryFixture(t)
+	f, root, id := interruptedRecoveryFixture(t, true)
 	corrupt := []byte("fixture with an invalid SQLite header")
 	// This restore stopped before replacing trust. A read-only deployment
 	// mount containing the original bytes must not need to be replaced.
@@ -169,6 +172,22 @@ func TestOfflineRecoveryUsesSealedRollbackWithUnreadableSQLite(t *testing.T) {
 	requireDurableRestoreState(t, f.db, f.hosts, originalRestoreServer, originalRestoreTrust, false)
 }
 
+func TestOfflineRecoveryOfDatabaseOnlyRestorePreservesUpdatedKnownHosts(t *testing.T) {
+	f, _, id := interruptedRecoveryFixture(t, false)
+	updatedTrust := "# known_hosts refreshed after the interrupted DB-only restore\n"
+	if err := os.WriteFile(f.hosts, []byte(updatedTrust), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(f.db, []byte("unreadable active SQLite"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	report, err := f.service.OfflineRestoreRecovery(t.Context(), id, offlineRecoveryMergeFixtureJobs)
+	if err != nil || report.Applied != id || report.RecoveryRequired || len(report.Sets) != 1 || report.Sets[0].EvidenceSource != "sealed_rollback" {
+		t.Fatalf("apply = %+v, %v", report, err)
+	}
+	requireDurableRestoreState(t, f.db, f.hosts, originalRestoreServer, updatedTrust, false)
+}
+
 func TestOfflineRecoveryRequiresIntactSealForUnreadableSQLite(t *testing.T) {
 	for _, scenario := range []struct {
 		name    string
@@ -179,7 +198,7 @@ func TestOfflineRecoveryRequiresIntactSealForUnreadableSQLite(t *testing.T) {
 		{"changed host trust", "invalid_snapshot"},
 	} {
 		t.Run(scenario.name, func(t *testing.T) {
-			f, root, id := interruptedRecoveryFixture(t)
+			f, root, id := interruptedRecoveryFixture(t, true)
 			if scenario.name == "legacy" {
 				writeLegacyRecoveryFixture(t, f, root, id, func(entries []fileRestoreSnapshot) []fileRestoreSnapshot {
 					return entries
@@ -216,7 +235,7 @@ func TestOfflineRecoveryRequiresIntactSealForUnreadableSQLite(t *testing.T) {
 }
 
 func TestOfflineRecoveryReleasesOnlyThePhysicalInstallation(t *testing.T) {
-	f, root, id := interruptedRecoveryFixture(t)
+	f, root, id := interruptedRecoveryFixture(t, true)
 	child := filepath.Join(root, "child")
 	if err := os.Mkdir(child, 0700); err != nil {
 		t.Fatal(err)
@@ -253,7 +272,7 @@ func TestOfflineRecoveryReleasesOnlyThePhysicalInstallation(t *testing.T) {
 }
 
 func TestOfflineRecoveryMarkerRemovalSyncFailureKeepsSQLiteLatch(t *testing.T) {
-	f, root, id := interruptedRecoveryFixture(t)
+	f, root, id := interruptedRecoveryFixture(t, true)
 	f.service.syncRestoreFile = func(file *os.File) error {
 		if file.Name() == root {
 			if _, err := os.Stat(RestoreRecoveryMarkerPath(f.db)); errors.Is(err, os.ErrNotExist) {
@@ -279,7 +298,7 @@ func TestOfflineRecoveryMarkerRemovalSyncFailureKeepsSQLiteLatch(t *testing.T) {
 }
 
 func TestOfflineRecoveryCanRetryAfterMarkerWriteFailure(t *testing.T) {
-	f, _, id := interruptedRecoveryFixture(t)
+	f, _, id := interruptedRecoveryFixture(t, true)
 	marker := RestoreRecoveryMarkerPath(f.db)
 	if err := os.Remove(marker); err != nil {
 		t.Fatal(err)
@@ -314,7 +333,7 @@ func TestOfflineRecoveryCanRetryAfterMarkerWriteFailure(t *testing.T) {
 }
 
 func TestOfflineRecoveryWriteFailureKeepsCommittedWALState(t *testing.T) {
-	f, root, id := interruptedRecoveryFixture(t)
+	f, root, id := interruptedRecoveryFixture(t, true)
 	// Copy a crash image while its writer is still open so the committed
 	// change is in the WAL and no connection to the installation stays open.
 	crashDB := filepath.Join(t.TempDir(), "crash.db")

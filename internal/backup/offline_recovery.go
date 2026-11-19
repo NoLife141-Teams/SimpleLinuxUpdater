@@ -305,7 +305,13 @@ func loadRecoverySnapshots(root string, marker restoreRecoveryMarker) ([]fileRes
 	}
 	var manifest sealedRecoveryManifest
 	if err := json.Unmarshal(raw, &manifest); err == nil {
-		if manifest.Version != restoreSealVersion || manifest.SetID != marker.ID || len(manifest.Snapshots) != 4 {
+		// The database, WAL and SHM entries are always declared. Trust is
+		// included only when the restore could replace the active trust file.
+		expectedSnapshots := 3
+		if manifest.ReplacesKnownHosts {
+			expectedSnapshots++
+		}
+		if manifest.Version != restoreSealVersion || manifest.SetID != marker.ID || len(manifest.Snapshots) != expectedSnapshots {
 			return nil, false, errors.New("invalid sealed recovery manifest")
 		}
 		for _, entry := range manifest.Snapshots {

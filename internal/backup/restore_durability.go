@@ -20,9 +20,10 @@ type restoreRecoveryMarker struct {
 }
 
 type sealedRecoveryManifest struct {
-	Version   int                   `json:"version"`
-	SetID     string                `json:"set_id"`
-	Snapshots []fileRestoreSnapshot `json:"snapshots"`
+	Version            int                   `json:"version"`
+	SetID              string                `json:"set_id"`
+	ReplacesKnownHosts bool                  `json:"replaces_known_hosts"`
+	Snapshots          []fileRestoreSnapshot `json:"snapshots"`
 }
 
 func recoveryDigest(data []byte) string {

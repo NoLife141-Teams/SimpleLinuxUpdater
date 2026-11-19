@@ -68,7 +68,7 @@ def qualification_overlay(work):
 
     # This marker can only be reached after applying the staged database and
     # removing SQLite sidecars, before host keys, handoff or runtime reload.
-    anchor = '\tif knownHosts, ok := files["known_hosts"]; ok {\n\t\tif err := fs.writeAtomicFileFromPath'
+    anchor = '\tif replacesKnownHosts {\n\t\tif err := fs.writeAtomicFileFromPath'
     instrument("internal/backup/file_restore.go", [
         ('\n\t"strings"\n', '\n\t"strings"\n\t"time"\n'),
         (anchor, """\

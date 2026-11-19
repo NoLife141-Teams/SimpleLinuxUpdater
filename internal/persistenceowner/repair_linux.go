@@ -97,6 +97,10 @@ func repairWith(cfg Config, r *repairer) error {
 			return fmt.Errorf("repair persistence file %q: %w", path, err)
 		}
 	}
+	pendingResume := dbPath + ".restore-isolation.resume-pending"
+	if err := r.repairDirectory(pendingResume, false, ownershipPlan{leafOnly: true}); err != nil && !errors.Is(err, syscall.ENOENT) {
+		return fmt.Errorf("repair restore isolation resumption directory: %w", err)
+	}
 
 	knownHostsRaw := firstConfiguredPath(cfg.KnownHosts)
 	knownHostsConfigured := knownHostsRaw != ""

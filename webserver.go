@@ -1892,6 +1892,7 @@ func registerRoutes(r *gin.Engine, deps AppDeps) error {
 	r.Use(sameOriginWriteMiddleware())
 	r.Use(requestBodyBudgetMiddleware())
 	r.Use(packageDeferralPolicyGate(deps))
+	r.Use(restoreIsolationMiddleware(deps.RestoreIsolation))
 	registerProtectedPageRoutes(r, deps)
 	registerProtectedAuthAndSettingsRoutes(r, deps)
 	registerIdentityRoutes(r)
@@ -2036,6 +2037,9 @@ func registerProtectedAuthAndSettingsRoutes(r *gin.Engine, deps AppDeps) {
 	})
 	r.POST("/api/backup/restore", requireRecentAuthentication(), func(c *gin.Context) {
 		handleBackupRestoreWithDeps(c, deps)
+	})
+	r.POST(restoreIsolationResumeRoute, requireRecentAuthentication(), func(c *gin.Context) {
+		handleRestoreIsolationResume(c, deps)
 	})
 	r.POST("/api/backup/verify", func(c *gin.Context) {
 		handleBackupVerifyWithDeps(c, deps)

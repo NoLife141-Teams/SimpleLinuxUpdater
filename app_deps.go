@@ -9,6 +9,7 @@ import (
 	"time"
 
 	apptimepkg "debian-updater/internal/apptime"
+	internalbackup "debian-updater/internal/backup"
 	"debian-updater/internal/events"
 	healthpkg "debian-updater/internal/health"
 	internaljobs "debian-updater/internal/jobs"
@@ -26,6 +27,7 @@ type AppDeps struct {
 	InstallationHealth  *installationHealth
 	PackageDeferralGate *sync.RWMutex
 	BackupAutomation    *backupAutomation
+	RestoreIsolation    *internalbackup.RestoreIsolation
 	VulnerabilityScans  *vulnerabilityScanLifecycle
 	DB                  func() *sql.DB
 	DBPath              func() string

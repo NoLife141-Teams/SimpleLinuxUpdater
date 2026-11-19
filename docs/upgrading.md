@@ -273,6 +273,9 @@ needed by an operator using the archive.
 
 To restore onto the candidate, initialize an isolated candidate installation,
 log in as its administrator, verify the old `.slubkp` in Admin and restore it.
+On versions with **Restore in isolation**, select this option before applying
+the archive. This keeps SSH actions, automatic host facts, scheduled runs
+and notification delivery paused while you review the restored installation.
 Restoration replaces inventory/persistence and re-encrypts archived secrets with
 the destination installation's encryption key. Sign in with the archived account.
 Browser sessions and personal API credentials are invalidated; archived recovery
@@ -283,6 +286,15 @@ scheduled exports, and review notifications, SSH trust and metrics credentials.
 Legacy v0.4.16 archives have no automated-backup configuration: automation stays
 disabled and unvalidated. Existing candidate restore tests cover suspension of
 archived enabled automation.
+
+Sign in again after restore and open **Admin → Installation Health** to confirm
+that restore isolation is active. It persists locally across restarts and
+subsequent restores. After reviewing SSH trust, scheduled policies and notification
+destinations, select **Resume External Work**, confirm with `RESUME` and
+reauthenticate. Scheduling resumes at the next minute with a rebased watermark.
+Scheduled work that became due while isolated, including waves of an accepted
+rollout, is skipped. Future waves still depend on their preceding batches.
+Queued notifications undergo normal eligibility checks before sending.
 
 When restoring on the running installation, the app keeps live APT
 reconciliation for inventory identities and SSH endpoints that also exist in

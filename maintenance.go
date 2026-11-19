@@ -117,7 +117,7 @@ func maintenanceBypassPath(path string) bool {
 
 func maintenanceExclusivePath(path string) bool {
 	switch path {
-	case "/api/backup/export", "/api/backup/restore":
+	case "/api/backup/export", "/api/backup/restore", restoreIsolationResumeRoute:
 		return true
 	default:
 		return false

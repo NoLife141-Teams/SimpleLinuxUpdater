@@ -434,20 +434,27 @@ func (s *Service) applyArchiveFiles(ctx context.Context, files map[string]string
 	}
 	targets := append([]string{dbTarget}, SQLiteSidecarPaths(dbTarget)...)
 	knownHosts, replacesKnownHosts := files["known_hosts"]
+	var reservedPaths []string
+	if opts.BeforeReplacement != nil || replacesKnownHosts {
+		reservedPaths = append(reservedPaths, RestoreIsolationPath(dbTarget), restoreIsolationPendingPath(dbTarget))
+	}
 	if replacesKnownHosts {
-		reservedPaths := append(append([]string{}, targets...), markerPath, dbTarget+".lock")
+		reservedPaths = append(reservedPaths, targets...)
+		reservedPaths = append(reservedPaths, markerPath, dbTarget+".lock")
 		if s.deps.ConfigPath != nil {
 			reservedPaths = append(reservedPaths, s.deps.ConfigPath())
 		}
-		for _, reserved := range reservedPaths {
-			conflict, err := sameRestoreEntry(reserved, knownHostsTarget)
-			if err != nil {
-				return fmt.Errorf("inspect known_hosts restore target: %w", err)
-			}
-			if conflict {
-				return errors.New("known_hosts restore target conflicts with installation files")
-			}
+	}
+	for _, reserved := range reservedPaths {
+		conflict, err := sameRestoreEntry(reserved, knownHostsTarget)
+		if err != nil {
+			return fmt.Errorf("inspect known_hosts restore target: %w", err)
 		}
+		if conflict {
+			return errors.New("known_hosts restore target conflicts with installation files")
+		}
+	}
+	if replacesKnownHosts {
 		targets = append(targets, knownHostsTarget)
 	}
 	if err := ctx.Err(); err != nil {
@@ -458,6 +465,11 @@ func (s *Service) applyArchiveFiles(ctx context.Context, files map[string]string
 		// Preparation errors leave original persistence usable; no files have
 		// been replaced. Preserve typed recovery errors if a preparer cannot unwind.
 		return fmt.Errorf("prepare restored persistence replacement: %w", err)
+	}
+	if opts.BeforeReplacement != nil {
+		if err := opts.BeforeReplacement(); err != nil {
+			return s.reloadOriginalPersistence(ctx, err, restoreHandoff)
+		}
 	}
 	if stager, ok := s.deps.RestoredRuntime.(ReplacementStager); ok {
 		if err := stageRuntimePersistence(ctx, preparedDB.Path, stager); err != nil {

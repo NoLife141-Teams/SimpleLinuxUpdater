@@ -125,6 +125,7 @@
             beginAdminSnapshot: (...args) => beginAdminSnapshot(...args),
             renderAdminWorkspace: (...args) => renderAdminWorkspace(...args),
             updateFileLabel: (...args) => updateFileLabel(...args),
+            refreshInstallation: () => fetchInstallationHealth(),
         });
         const {
             renderBackupRestoreReview,
@@ -608,6 +609,7 @@
             }
             const fields = {
                 "installation-state": view.state,
+                "installation-restore-isolation": {active: "Active · SSH and notifications paused", inactive: "Inactive", unavailable: "Unavailable · External work paused"}[view.restoreIsolation] || missing,
                 "installation-checked": date(view.checkedAt),
                 "installation-backup": view.backupAvailable ? `${view.backupState}; last verified ${date(view.verifiedAt)}; age ${number(view.backupAgeSeconds)} seconds` : missing,
                 "installation-notifications": notifications.available ? `${notifications.enabled ? "Enabled" : "Disabled"}; ${number(notifications.pending)} pending, ${number(notifications.retrying)} retrying, ${number(notifications.failed)} failed (retained)` : missing,
@@ -617,6 +619,7 @@
                 "installation-storage": `DB ${number(view.storage.dbBytes)} bytes; WAL ${number(view.storage.walBytes)} bytes; available ${number(view.storage.availableBytes)} bytes`
             };
             for (const [id, text] of Object.entries(fields)) document.getElementById(id).textContent = text;
+            document.getElementById("restore-isolation-controls").hidden = !["active", "unavailable"].includes(view.restoreIsolation);
             const body = document.getElementById("installation-workers");
             body.replaceChildren(...view.workers.map(worker => {
                 const row = document.createElement("tr");

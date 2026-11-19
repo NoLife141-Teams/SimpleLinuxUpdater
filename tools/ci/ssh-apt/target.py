@@ -27,7 +27,11 @@ class WebhookReceiver(BaseHTTPRequestHandler):
             if not 0 < size <= 64 * 1024:
                 raise ValueError("invalid receipt size")
             payload = json.loads(self.rfile.read(size))
-            receipt = [payload["event_type"], payload["target_name"], payload["meta"]["job_id"]]
+            event = payload["event_type"]
+            job = payload.get("meta", {}).get("job_id")
+            if event == "apt.reconciliation.required" and not job:
+                raise ValueError("missing APT job identity")
+            receipt = [event, payload["target_name"], job]
         except (ValueError, KeyError, TypeError):
             self.send_error(400)
             return
@@ -129,7 +133,7 @@ def start():
     subprocess.Popen(["python3", "-m", "http.server", "18080", "--bind", "127.0.0.1", "--directory", str(STATE)],
                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     subprocess.Popen(["python3", __file__, "webhook"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    os.execv("/usr/sbin/sshd", ["/usr/sbin/sshd", "-D", "-e"])
+    os.execv("/usr/sbin/sshd", ["/usr/sbin/sshd", "-D", "-e", "-o", "LogLevel=VERBOSE"])
 
 
 if __name__ == "__main__":

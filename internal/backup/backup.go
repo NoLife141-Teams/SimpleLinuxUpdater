@@ -188,6 +188,9 @@ type RestoreOptions struct {
 	// hand it back to the live runtime after replacement.
 	PrepareReplacement func(context.Context, *sql.DB) error
 	RestoreHandoff     func(context.Context) error
+	// BeforeReplacement runs after the runtime has drained its persistence
+	// users and before the live files can change.
+	BeforeReplacement func() error
 }
 
 type ExportStage string

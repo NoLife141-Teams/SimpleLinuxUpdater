@@ -481,8 +481,11 @@ func maintenanceCoordinationMiddleware(coordinator *maintenancepkg.Coordinator, 
 }
 
 func maintenanceOperationForPath(path string) maintenancepkg.OperationClass {
-	if path == "/api/backup/restore" {
+	switch path {
+	case "/api/backup/restore":
 		return maintenancepkg.OperationBackupRestore
+	case restoreIsolationResumeRoute:
+		return maintenancepkg.OperationRestoreResume
 	}
 	return maintenancepkg.OperationBackupExport
 }

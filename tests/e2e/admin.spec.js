@@ -2743,6 +2743,42 @@ test("restore review separates archive compatibility from installation APT confl
     await expect(page.locator("#backup-restore-btn")).toBeEnabled();
 });
 
+test("admin restore isolation is selectable and resumption requires typed confirmation", async ({page}) => {
+    const state = {};
+    let isolation = "active";
+    let resumptionCount = 0;
+    await ensureAuthenticatedSession(page);
+    await stubAdminApi(page, state);
+    await page.route("**/api/installation/health", route => fulfillJson(route, {
+        state: "ready", checked_at: "2026-11-19T12:00:00Z", restore_isolation: isolation,
+    }));
+    await page.route("**/api/backup/restore-isolation/resume", route => {
+        expect(route.request().postDataJSON()).toEqual({confirmation: "RESUME"});
+        isolation = "inactive";
+        resumptionCount++;
+        return fulfillJson(route, {restore_isolation: isolation});
+    });
+    await page.goto("/admin#admin-section-backup");
+    await page.locator("#backup-restore-file").setInputFiles({
+        name: "backup.slubkp", mimeType: "application/octet-stream", buffer: Buffer.from("fixture"),
+    });
+    await page.locator("#backup-restore-passphrase").fill("LongPassphrase123");
+    await page.getByRole("checkbox", {name: "Restore in isolation"}).check();
+    await page.locator("#backup-verify-btn").click();
+    const restore = page.waitForRequest(request => request.url().endsWith("/api/backup/restore"));
+    await acceptTypedConfirm(page, page.locator("#backup-restore-btn"), "RESTORE");
+    expect((await restore).postData()).toMatch(/name="isolate"\r\n\r\ntrue\r\n/);
+    await page.goto("/admin#admin-section-installation");
+    await expect(page.locator("#installation-restore-isolation")).toContainText("SSH and notifications paused");
+    const resume = page.locator("#restore-isolation-resume");
+    await dismissTypedConfirm(page, resume);
+    expect(resumptionCount).toBe(0);
+    await acceptTypedConfirm(page, resume, "RESUME");
+    await expect(page.locator("#installation-restore-isolation")).toHaveText("Inactive");
+    await expect(resume).toBeHidden();
+    expect(resumptionCount).toBe(1);
+});
+
 test("admin typed confirmations gate restore and policy deletion", async ({
     baseURL,
     page,

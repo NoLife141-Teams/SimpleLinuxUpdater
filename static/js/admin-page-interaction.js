@@ -323,7 +323,8 @@
             return { name, available: Boolean(value), enabled: Boolean(value?.enabled), running: Boolean(value?.running),
                 lastTick: timestamp(value?.last_tick), lastProgress: timestamp(value?.last_progress), lastError: timestamp(value?.last_error), errors: count(value?.errors) };
         });
-        return { state: String(data.state || "unavailable"), checkedAt: timestamp(data.checked_at), maintenance: Boolean(data.maintenance), workers,
+        const restoreIsolation = ["active", "inactive", "unavailable"].includes(data.restore_isolation) ? data.restore_isolation : "";
+        return { state: String(data.state || "unavailable"), checkedAt: timestamp(data.checked_at), maintenance: Boolean(data.maintenance), restoreIsolation, workers,
             backupAvailable: Boolean(data.backup_available), backupState: String(data.backup_state || "unavailable"), verifiedAt: timestamp(data.last_verified_backup_at), backupAgeSeconds: count(data.verified_backup_age_seconds),
             notifications: {
                 available: Boolean(notifications.available),

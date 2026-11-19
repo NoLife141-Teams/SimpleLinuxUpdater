@@ -200,6 +200,9 @@ func (c *runtimeComposition) Compose() AppDeps {
 	if deps.DBPath == nil {
 		deps.DBPath = dbPath
 	}
+	if deps.RestoreIsolation == nil {
+		deps.RestoreIsolation = internalbackup.NewRestoreIsolation(deps.DBPath)
+	}
 	if deps.ApplicationTime == nil {
 		deps.ApplicationTime = apptimepkg.New(apptimepkg.Deps{Store: appTimeSQLiteStore{}, Detector: appTimeSystemDetector{}})
 	}
@@ -275,6 +278,9 @@ func (c *runtimeComposition) Compose() AppDeps {
 			ReadConditions: newNotificationConditionSource(deps.DB, deps.Now, deps.PublicOrigin),
 			DB:             deps.DB,
 			RestoreDeliveryBlocked: func() bool {
+				if deps.RestoreIsolation.BlocksExternalWork() {
+					return true
+				}
 				// Initialization publishes the persisted maintenance state
 				// before readiness. Check the phase before reading that state.
 				if deps.InstallationHealth.Phase() == "initializing" {
@@ -418,6 +424,7 @@ func (c *runtimeComposition) Compose() AppDeps {
 				return deps.ApplicationTime.Current().Location
 			},
 			Maintenance:     deps.MaintenanceCoordinator,
+			ScheduledWork:   deps.RestoreIsolation.ScheduledWork,
 			ApplicationTime: deps.ApplicationTime,
 			Now:             deps.Now,
 			SnapshotServers: func() []Server {
@@ -448,7 +455,7 @@ func (c *runtimeComposition) Compose() AppDeps {
 		)
 		deps.UpdateService = NewUpdateService(UpdateServiceDeps{
 			ServerState:               deps.ServerState,
-			HostMaintenanceSessions:   hostMaintenanceSessions,
+			HostMaintenanceSessions:   isolateHostMaintenanceSessions(deps.RestoreIsolation, hostMaintenanceSessions),
 			LoadApplicationPostchecks: applicationPostcheckLoader(deps.DB, deps.ServerState),
 			LoadPackageDeferrals:      packageDeferralLoader(deps),
 			PackageDeferralGate:       deps.PackageDeferralGate,

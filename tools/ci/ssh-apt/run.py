@@ -451,6 +451,13 @@ class Harness:
                          {"confirm": True, "job_id": locked_repair_id, "verified_host_key": verified_key}, allowed=(409,))
         repair_id = self.api.request("POST", "/api/repair/" + name,
                                     {"confirm": True, "job_id": rejected_id, "verified_host_key": verified_key})["job_id"]
+        event, facts = self.audit(name, "apt_repair.start")
+        require(event["actor"] == "account:" + str(self.identity["id"]) and event["status"] == "started" and
+                facts.get("account_id") == self.identity["id"] and
+                facts.get("job_id") == repair_id and facts.get("reconciliation_job_id") == rejected_id and
+                facts.get("previous_host_key") == self.original_fingerprint and
+                facts.get("independently_verified_host_key") == verified_key,
+                "rotated host key confirmation did not retain the operator, job and fingerprint audit evidence")
         repaired, _ = self.api.wait_job(repair_id, lambda j: j["status"] in TERMINAL)
         require(repaired["status"] == "succeeded" and self.api.server(name)["status"] == "done",
                 "explicit repair did not reconcile the restarted host")

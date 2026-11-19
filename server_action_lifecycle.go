@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"errors"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -23,6 +24,7 @@ type serverActionLifecycle struct {
 	startJobRunner         func(func() *JobManager, string, func(), ...func())
 	loadRetryPolicy        func() RetryPolicy
 	audit                  func(action, targetType, targetName, status, message string, meta map[string]any)
+	auditVerifiedRepair    func(targetName, message string, meta map[string]any) error
 	maintenanceReadiness   func(Server) serverpkg.MaintenanceReadiness
 }
 
@@ -364,8 +366,19 @@ func (l *serverActionLifecycle) startAction(name, actor, clientIP, sudoPassword 
 		retryMeta["reconciliation_job_id"] = spec.expectedJobID
 		retryMeta["independently_verified_host_key"] = spec.verifiedAPTKey
 		retryMeta["previous_host_key"] = spec.previousAPTKey
+		if err := l.recordVerifiedRepair(name, spec.successMessage, retryMeta); err != nil {
+			l.serverState.RestoreAdmittedAction(name, admittedGeneration, preStartStatus)
+			log.Printf("cannot audit verified SSH key for APT repair job %q: %v", job.ID, err)
+			status := jobStatusCancelled
+			summary := "APT repair cancelled before SSH because verification could not be audited"
+			if err := l.currentJobManager().Transition(job.ID, jobspkg.Intent{Status: &status, Summary: &summary}); err != nil {
+				log.Printf("cannot cancel undispatched APT repair job %q: %v", job.ID, err)
+			}
+			return jsonResult(http.StatusServiceUnavailable, "Unable to audit SSH host key verification. APT repair was not started.")
+		}
+	} else {
+		l.recordAudit(spec.auditAction, name, "started", spec.successMessage, retryMeta)
 	}
-	l.recordAudit(spec.auditAction, name, "started", spec.successMessage, retryMeta)
 	l.startJobRunner(l.currentJobManager, job.ID, func() {
 		if preserveReconciliation {
 			defer l.serverState.RestoreAdmittedAction(name, admittedGeneration, preStartStatus)
@@ -378,6 +391,13 @@ func (l *serverActionLifecycle) startAction(name, actor, clientIP, sudoPassword 
 		statusCode: http.StatusOK,
 		body:       map[string]any{"message": spec.successMessage, "job_id": job.ID},
 	}
+}
+
+func (l *serverActionLifecycle) recordVerifiedRepair(name, message string, meta map[string]any) error {
+	if l.auditVerifiedRepair == nil {
+		return errors.New("verification audit is unavailable")
+	}
+	return l.auditVerifiedRepair(name, message, meta)
 }
 
 func validHostKeyFingerprint(value string) bool {

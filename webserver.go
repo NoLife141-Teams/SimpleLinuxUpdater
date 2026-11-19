@@ -2465,6 +2465,17 @@ func registerServerAndActionRoutes(r *gin.Engine, deps AppDeps) {
 		lifecycle := newServerActionLifecycle(deps, func(action, targetType, targetName, status, message string, meta map[string]any) {
 			audit(c, action, targetType, targetName, status, message, meta)
 		})
+		lifecycle.auditVerifiedRepair = func(targetName, message string, meta map[string]any) error {
+			service := auditServiceForContext(c)
+			if service == nil {
+				service = deps.AuditService
+			}
+			if service == nil {
+				return errors.New("audit service is unavailable")
+			}
+			return service.Record(actorFromContext(c), clientIPFromContext(c), "apt_repair.start", "server", targetName,
+				"started", message, identityAuditMeta(c, meta))
+		}
 		writeServerActionLifecycleResult(c, lifecycle.StartAptRepair(name, actorFromContext(c), clientIPFromContext(c), req.Confirm, req.JobID, req.VerifiedHostKey))
 	})
 

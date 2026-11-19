@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"net/http"
 	"path/filepath"
 	"strings"
@@ -366,6 +367,10 @@ func TestAptRepairRequiresIndependentKeyConfirmationForOldJob(t *testing.T) {
 		t.Fatal(err)
 	}
 	lifecycle := h.lifecycle()
+	lifecycle.auditVerifiedRepair = func(name, message string, meta map[string]any) error {
+		lifecycle.audit("apt_repair.start", "server", name, "started", message, meta)
+		return nil
+	}
 	result := lifecycle.StartAptRepair(server.Name, "admin", "", true, testAPTReconciliationJobID, "")
 	if result.statusCode != http.StatusConflict || h.runnerRun != nil {
 		t.Fatalf("repair without a verified key = %+v", result)
@@ -377,6 +382,29 @@ func TestAptRepairRequiresIndependentKeyConfirmationForOldJob(t *testing.T) {
 	audit := h.auditEvents[len(h.auditEvents)-1]
 	if audit.meta["independently_verified_host_key"] != testAPTMutationHostKey || audit.meta["reconciliation_job_id"] != testAPTReconciliationJobID {
 		t.Fatalf("verification was not audited with the source job: %+v", audit)
+	}
+}
+
+func TestAptRepairWithIndependentlyVerifiedKeyRequiresAuditBeforeDispatch(t *testing.T) {
+	server := Server{Name: "repair-host", Identity: "fixture-original", Host: "original.example", Port: 22, User: "root"}
+	h := newLifecycleTestHarness(t, server, &ServerStatus{Name: server.Name, Status: "needs_reconciliation"})
+	lifecycle := h.lifecycle()
+	var repairJobID string
+	lifecycle.auditVerifiedRepair = func(_, _ string, meta map[string]any) error {
+		repairJobID, _ = meta["job_id"].(string)
+		return errors.New("audit write failed")
+	}
+	result := lifecycle.StartAptRepair(server.Name, "admin", "", true, testAPTReconciliationJobID, testAPTMutationHostKey)
+	if result.statusCode != http.StatusServiceUnavailable || h.runnerRun != nil {
+		t.Fatalf("unaudited repair = %+v, dispatched = %t", result, h.runnerRun != nil)
+	}
+	status := h.state.CurrentStatusSnapshot(server.Name)
+	if status.Status != "needs_reconciliation" || status.JobID != testAPTReconciliationJobID {
+		t.Fatalf("unaudited repair replaced its source incident: %+v", status)
+	}
+	job, err := h.jobManager.GetJob(repairJobID)
+	if err != nil || job.Status != jobStatusCancelled {
+		t.Fatalf("undispatched repair was not cancelled: %+v, err=%v", job, err)
 	}
 }
 

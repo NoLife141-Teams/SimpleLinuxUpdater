@@ -225,9 +225,10 @@ After independently verifying the original machine through a trusted console or
 equivalent source, an administrator can supply `verified_host_key` with the
 verified OpenSSH SHA256 fingerprint. This requires inventory permission as well
 as maintenance permission and is recorded in the audit trail with the exact
-reconciliation job. Normal SSH trust verification remains required. Use this
-confirmation for a verified key rotation or a known target whose old job lacks
-a recorded key.
+reconciliation job. If the verification cannot be audited, the API returns
+`503` and the reconciliation requirement stays active. Normal SSH trust
+verification remains required. Use this confirmation for a verified key
+rotation or a known target whose old job lacks a recorded key.
 
 ## CVE information for available updates
 

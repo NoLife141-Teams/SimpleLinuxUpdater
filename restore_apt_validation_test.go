@@ -2,8 +2,12 @@ package main
 
 import (
 	"context"
+	"crypto/ed25519"
 	"database/sql"
 	"errors"
+	"io"
+	"net"
+	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -12,8 +16,10 @@ import (
 
 	policypkg "debian-updater/internal/policies"
 	serverpkg "debian-updater/internal/servers"
+	updatespkg "debian-updater/internal/updates"
 
 	"github.com/gin-gonic/gin"
+	"golang.org/x/crypto/ssh"
 )
 
 func TestRestoredAPTProofFencesAdmissionUntilFreshResume(t *testing.T) {
@@ -143,6 +149,9 @@ func TestRestoredAPTInventoryKeepsProofBoundAcrossTargetChanges(t *testing.T) {
 	if err := inventory.Delete(restored.Name); err != nil {
 		t.Fatal(err)
 	}
+	if isolated, err := validation.prepare(t.Context(), app.Deps.DB(), false); err != nil || !isolated {
+		t.Fatalf("second restore omitting the protected endpoint = %t, %v", isolated, err)
+	}
 	replacement, err := inventory.Create(Server{Name: "replacement", Host: restored.Host, User: "root"})
 	if err != nil {
 		t.Fatal(err)
@@ -202,5 +211,154 @@ func TestRestoredAPTCheckReservesHostUntilObservationIsSaved(t *testing.T) {
 	}
 	if active, _ := app.Deps.ServerState.ActionStatusInProgress(server.Name); active {
 		t.Fatal("completed validation left the host busy")
+	}
+	// Another check can complete after admission reads the previous proof.
+	started := false
+	_, _, err = app.Deps.ServerState.BeginActionWithOptions(server.Name, "updating", serverpkg.ActionAdmissionOptions{
+		PackageMutation: true,
+		ValidatePackageMutation: func(Server) error {
+			started = true
+			rec := identityRequest(app, "POST", restoreAPTValidationRoute, admin, "", gin.H{"name": server.Name, "identity": server.Identity})
+			if rec.Code != 200 {
+				t.Fatalf("concurrent check = %d, %s", rec.Code, rec.Body.String())
+			}
+			return nil
+		},
+	})
+	if !started || !errors.Is(err, serverpkg.ErrActionInProgress) {
+		t.Fatalf("admission after newer check = %v, want retry", err)
+	}
+}
+
+func TestRestoreAPTHealthKeepsArchivedReconciliationVisible(t *testing.T) {
+	app := newIsolatedTestApp(t)
+	admin := app.authenticate(t)
+	server, err := app.Deps.ServerInventoryService.Create(Server{Name: "srv", Host: "srv.example.test", User: "root"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	validation := app.Deps.RestoreAPTValidation
+	if _, err := validation.prepare(t.Context(), app.Deps.DB(), true); err != nil {
+		t.Fatal(err)
+	}
+	app.Deps.ServerState.Lock()
+	status := app.Deps.ServerState.StatusMap()[server.Name]
+	status.APTReconciliationPending = true
+	status.APTReconciliationJobID = "archived-incident"
+	app.Deps.ServerState.Unlock()
+	validation.sessions = HostMaintenanceSessionFactoryFunc(func(_ context.Context, req HostMaintenanceSessionRequest) (HostMaintenanceSession, error) {
+		req.OnConnectedHostKey("SHA256:approved")
+		return &HostMaintenanceSessionFuncs{CheckRestoredAPTFunc: func(context.Context) string { return "healthy" }}, nil
+	})
+	rec := identityRequest(app, "POST", restoreAPTValidationRoute, admin, "", gin.H{"name": server.Name, "identity": server.Identity})
+	if rec.Code != 200 || !strings.Contains(rec.Body.String(), `"state":"reconciliation_required"`) {
+		t.Fatalf("restore validation hid the archived incident: %d, %s", rec.Code, rec.Body.String())
+	}
+	facts := validation.hostFacts(t.Context(), app.Deps.ServerState, app.Deps.Now(), false)
+	if len(facts) != 1 || facts[0].State != "reconciliation_required" {
+		t.Fatalf("installation facts hide the archived incident: %+v", facts)
+	}
+}
+
+func TestCancelledRestoreAPTRecheckRevokesAcceptedProof(t *testing.T) {
+	app := newIsolatedTestApp(t)
+	admin := app.authenticate(t)
+	server, err := app.Deps.ServerInventoryService.Create(Server{Name: "srv", Host: "srv.example.test", User: "root"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	validation := app.Deps.RestoreAPTValidation
+	if _, err := validation.prepare(t.Context(), app.Deps.DB(), true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.Deps.DB().Exec(`UPDATE restore_apt_validation SET host_key='SHA256:approved',result='healthy',approved=1 WHERE identity=?`, server.Identity); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := validation.authorize(t.Context(), server); err != nil {
+		t.Fatalf("authorize prior check: %v", err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	validation.sessions = HostMaintenanceSessionFactoryFunc(func(_ context.Context, req HostMaintenanceSessionRequest) (HostMaintenanceSession, error) {
+		req.OnConnectedHostKey("SHA256:approved")
+		return &HostMaintenanceSessionFuncs{CheckRestoredAPTFunc: func(context.Context) string {
+			cancel()
+			return "unavailable"
+		}}, nil
+	})
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", restoreAPTValidationRoute,
+		strings.NewReader(`{"name":"srv","identity":"`+server.Identity+`"}`)).WithContext(ctx)
+	req.Header.Set("Content-Type", "application/json")
+	req.AddCookie(admin)
+	markSameOriginAuthRequest(req)
+	app.Handler.ServeHTTP(rec, req)
+	if !errors.Is(ctx.Err(), context.Canceled) {
+		t.Fatalf("check never reached the host: %d, %s", rec.Code, rec.Body.String())
+	}
+	if _, err := validation.authorize(t.Context(), server); !errors.Is(err, serverpkg.ErrRestoreAPTValidation) {
+		t.Fatalf("cancelled check reused prior permission: %v", err)
+	}
+}
+
+func TestRestoreAPTProofRevokedWhenHostKeyChangesDuringReconnect(t *testing.T) {
+	app := newIsolatedTestApp(t)
+	server, err := app.Deps.ServerInventoryService.Create(Server{Name: "srv", Host: "srv.example.test", User: "root"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	validation := app.Deps.RestoreAPTValidation
+	if _, err := validation.prepare(t.Context(), app.Deps.DB(), true); err != nil {
+		t.Fatal(err)
+	}
+	key, err := ssh.NewPublicKey(ed25519.NewKeyFromSeed(make([]byte, ed25519.SeedSize)).Public())
+	if err != nil {
+		t.Fatal(err)
+	}
+	seed := [ed25519.SeedSize]byte{1}
+	changedKey, err := ssh.NewPublicKey(ed25519.NewKeyFromSeed(seed[:]).Public())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.Deps.DB().Exec(`UPDATE restore_apt_validation SET host_key=?,result='healthy',approved=1 WHERE identity=?`,
+		ssh.FingerprintSHA256(key), server.Identity); err != nil {
+		t.Fatal(err)
+	}
+	dials := 0
+	validation.sessions = updatespkg.NewProductionHostMaintenanceSessionFactory(updatespkg.ProductionHostMaintenanceSessionDeps{
+		BuildAuthMethods: func(Server) ([]ssh.AuthMethod, error) { return nil, nil },
+		HostKeyCallback: func() (ssh.HostKeyCallback, error) {
+			return func(string, net.Addr, ssh.PublicKey) error { return nil }, nil
+		},
+		DialSSH: func(_ context.Context, _ Server, config *ssh.ClientConfig) (sshConnection, error) {
+			dials++
+			presentedKey := key
+			if dials != 1 {
+				presentedKey = changedKey
+			}
+			if err := config.HostKeyCallback("srv.example.test", nil, presentedKey); err != nil {
+				return nil, err
+			}
+			return &scriptedSSHConnection{}, nil
+		},
+		RunCommand: func(context.Context, sshConnection, string, updatespkg.HostCommandEffect, io.Reader, time.Duration) (string, string, error) {
+			return "", "", errors.New("connection reset by peer")
+		},
+		Sleep: func(time.Duration) {},
+	})
+	session, err := guardRestoredAPTSession(validation).Open(t.Context(), HostMaintenanceSessionRequest{
+		Server: server, PackageMaintenance: true, RetryPolicy: RetryPolicy{MaxAttempts: 2},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+	if _, err := session.RunCommand(t.Context(), updatespkg.HostCommandRequest{
+		Operation: "inspect", Command: "inspect", Effect: updatespkg.HostCommandEffectReadOnly,
+	}); !errors.Is(err, errRestoredAPTKeyChanged) {
+		t.Fatalf("reconnect = %v, want changed key rejection", err)
+	}
+	if _, err := validation.authorize(t.Context(), server); !errors.Is(err, serverpkg.ErrRestoreAPTValidation) {
+		t.Fatalf("reconnect retained prior permission: %v", err)
 	}
 }

@@ -36,6 +36,7 @@ func guardRestoredAPTSession(validation *restoreAPTValidation) HostMaintenanceSe
 			}
 			if key != "" {
 				verify := req.VerifyHostKey
+				hostKeyRejected := req.OnHostKeyRejected
 				req.VerifyHostKey = func(fingerprint string) error {
 					if fingerprint != key {
 						return errRestoredAPTKeyChanged
@@ -44,6 +45,12 @@ func guardRestoredAPTSession(validation *restoreAPTValidation) HostMaintenanceSe
 						return verify(fingerprint)
 					}
 					return nil
+				}
+				req.OnHostKeyRejected = func(ctx context.Context) {
+					validation.invalidateHostKey(ctx, req.Server, key)
+					if hostKeyRejected != nil {
+						hostKeyRejected(ctx)
+					}
 				}
 			}
 		}

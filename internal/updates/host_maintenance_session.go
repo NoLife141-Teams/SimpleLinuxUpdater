@@ -61,6 +61,7 @@ type HostMaintenanceSessionRequest struct {
 	OnRetry            func(HostRetryEvent)
 	VerifyHostKey      func(fingerprint string) error
 	OnConnectedHostKey func(fingerprint string)
+	OnHostKeyRejected  func(context.Context)
 	PackageMaintenance bool
 }
 
@@ -391,7 +392,14 @@ func (s *productionHostMaintenanceSession) dialSSH(ctx context.Context) (SSHConn
 	var keyMu sync.Mutex
 	var fingerprint string
 	var verificationErr error
-	config.HostKeyCallback = func(host string, addr net.Addr, key ssh.PublicKey) error {
+	config.HostKeyCallback = func(host string, addr net.Addr, key ssh.PublicKey) (err error) {
+		if s.request.OnHostKeyRejected != nil {
+			defer func() {
+				if err != nil {
+					s.request.OnHostKeyRejected(ctx)
+				}
+			}()
+		}
 		if err := s.config.HostKeyCallback(host, addr, key); err != nil {
 			return err
 		}

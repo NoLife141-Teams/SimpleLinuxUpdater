@@ -665,6 +665,7 @@
             aptPanel.hidden = view.restoreAPTHosts.length === 0;
             const aptStates = {
                 pending: "Check required", healthy: "Validated · ready to resume", approved: "Package maintenance allowed",
+                reconciliation_required: "APT reconciliation required · repair from Status",
                 expired: "Check expired · check again", target_changed: "SSH target changed · check again",
                 unreachable: "Unreachable · check connectivity", host_key_unverified: "SSH key unverified · review host trust",
                 locks_unverified: "APT locks active or unknown · check again", dpkg_incomplete: "Incomplete package state · inspect dpkg",

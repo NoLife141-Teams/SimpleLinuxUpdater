@@ -62,14 +62,18 @@ func ensureRestoreAPTValidationSchema(db *sql.DB) error {
 // The required identities are installed in the staged database. Replacement
 // and rollback therefore move the gate together with its inventory.
 func (v *restoreAPTValidation) prepare(ctx context.Context, staged *sql.DB, isolate bool) (bool, error) {
+	protected, err := loadRestoreAPTTargets(ctx, v.db())
+	if err != nil {
+		return false, err
+	}
+	isolate = isolate || len(protected) != 0
 	if !isolate {
 		var hasInventory bool
-		err := v.db().QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM restore_apt_validation_targets),
-			EXISTS(SELECT 1 FROM servers)`).Scan(&isolate, &hasInventory)
+		err := v.db().QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM servers)`).Scan(&hasInventory)
 		if err != nil {
 			return false, err
 		}
-		if !isolate && !hasInventory {
+		if !hasInventory {
 			// The encryption key can be retained while SQLite is rebuilt.
 			// There is no live inventory to reconcile in that case.
 			err = staged.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM servers)`).Scan(&isolate)
@@ -90,11 +94,35 @@ func (v *restoreAPTValidation) prepare(ctx context.Context, staged *sql.DB, isol
 		return false, err
 	}
 	if isolate {
+		// Keep the destination's prior obligations even when an older archive
+		// omits those endpoints. The copied archive cannot authorize them.
+		for _, endpoint := range protected {
+			if _, err := tx.ExecContext(ctx, `INSERT INTO restore_apt_validation_targets(endpoint) VALUES (?)`, endpoint); err != nil {
+				return false, err
+			}
+		}
 		if err := reconcileRestoredAPTInventory(ctx, tx, true); err != nil {
 			return false, err
 		}
 	}
 	return isolate, tx.Commit()
+}
+
+func loadRestoreAPTTargets(ctx context.Context, db *sql.DB) ([]string, error) {
+	rows, err := db.QueryContext(ctx, `SELECT endpoint FROM restore_apt_validation_targets`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var endpoints []string
+	for rows.Next() {
+		var endpoint string
+		if err := rows.Scan(&endpoint); err != nil {
+			return nil, err
+		}
+		endpoints = append(endpoints, endpoint)
+	}
+	return endpoints, rows.Err()
 }
 
 // Retain the SSH endpoints even if their inventory records are deleted. A
@@ -141,17 +169,22 @@ func (v *restoreAPTValidation) observe(ctx context.Context, server Server) (rest
 	return observation, true, err
 }
 
-func (observation restoreAPTObservation) facts(server Server, now time.Time, isolated bool) restoreAPTHostFacts {
+func (observation restoreAPTObservation) facts(server Server, now time.Time, isolated, needsReconciliation bool) restoreAPTHostFacts {
 	facts := restoreAPTHostFacts{Name: server.Name, Identity: server.Identity, Disabled: server.Disabled, State: observation.result}
+	if needsReconciliation {
+		facts.State = "reconciliation_required"
+	}
 	if observation.target != "" && observation.target != server.APTTarget() {
-		facts.State = "target_changed"
+		if !needsReconciliation {
+			facts.State = "target_changed"
+		}
 		return facts
 	}
 	if observation.checkedAt != 0 {
 		at := time.Unix(observation.checkedAt, 0).UTC()
 		facts.CheckedAt = &at
 	}
-	if observation.result == "healthy" {
+	if !needsReconciliation && observation.result == "healthy" {
 		switch {
 		case observation.approved && !isolated:
 			facts.State = "approved"
@@ -216,7 +249,7 @@ func (v *restoreAPTValidation) hostFacts(ctx context.Context, state *serverpkg.S
 	var facts []restoreAPTHostFacts
 	for _, server := range state.Servers() {
 		if observation, required := observations[server.Identity]; required {
-			facts = append(facts, observation.facts(server, now, isolated))
+			facts = append(facts, observation.facts(server, now, isolated, state.StatusMap()[server.Name].RequiresAPTReconciliation()))
 		}
 	}
 	return facts
@@ -253,6 +286,8 @@ func (v *restoreAPTValidation) invalidateHostKey(ctx context.Context, server Ser
 	// A newer explicit check may have accepted a different key while the
 	// failed connection was being reported. Preserve that newer evidence.
 	if db := v.db(); db != nil {
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+		defer cancel()
 		_, _ = db.ExecContext(ctx, `UPDATE restore_apt_validation
 			SET approved=0,result='host_key_unverified',checked_at=?
 			WHERE identity=? AND target=? AND host_key=?`, v.now().Unix(),
@@ -330,7 +365,13 @@ func handleRestoreAPTValidation(c *gin.Context, deps AppDeps) {
 		c.JSON(http.StatusConflict, gin.H{"error": message})
 		return
 	}
-	defer deps.ServerState.FinishTransientAction(server, runtimepkg.StatusRestoreAPTCheck, previousStatus)
+	checkStarted := false
+	defer func() {
+		deps.ServerState.FinishTransientAction(server, runtimepkg.StatusRestoreAPTCheck, previousStatus)
+		if checkStarted {
+			deps.NotifyDashboardEvent("restore-apt-checked")
+		}
+	}()
 	ctx := c.Request.Context()
 	if _, required, err := v.observe(ctx, server); err != nil || !required {
 		c.JSON(http.StatusConflict, gin.H{"error": "This server has no pending restore validation."})
@@ -341,6 +382,15 @@ func handleRestoreAPTValidation(c *gin.Context, deps AppDeps) {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Restore isolation state is unavailable."})
 		return
 	}
+	// Once a new check starts, only its recorded result may authorize this
+	// host. Cancellation or a failed audit leaves the gate closed.
+	if _, err := v.db().ExecContext(ctx, `UPDATE restore_apt_validation
+		SET result='pending',host_key='',checked_at=0,approved=0
+		WHERE identity=? AND result='healthy'`, server.Identity); err != nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "The previous APT check could not be cleared."})
+		return
+	}
+	checkStarted = true
 	probeCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	observation := v.probe(probeCtx, server)
 	probeErr := probeCtx.Err()
@@ -370,6 +420,6 @@ func handleRestoreAPTValidation(c *gin.Context, deps AppDeps) {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "The APT check could not be saved."})
 		return
 	}
-	deps.NotifyDashboardEvent("restore-apt-checked")
-	c.JSON(http.StatusOK, observation.facts(server, now, isolated))
+	status := deps.ServerState.CurrentStatusSnapshot(server.Name)
+	c.JSON(http.StatusOK, observation.facts(server, now, isolated, status.RequiresAPTReconciliation()))
 }

@@ -529,6 +529,17 @@ type ActionAdmissionOptions struct {
 
 var ErrRestoreAPTValidation = errors.New("APT validation is required after restore; check this server in Installation Health")
 
+func (s *State) packageValidationSnapshot(name string) (Server, uint64, bool) {
+	s.Lock()
+	defer s.Unlock()
+	server, found := s.FindByNameLocked(name)
+	status := (*s.statusMap)[name]
+	if !found || status == nil {
+		return Server{}, 0, false
+	}
+	return server, status.ActionGeneration, true
+}
+
 func (s *State) beginAction(name, newStatus string, packageMutation bool) (Server, error) {
 	server, _, err := s.BeginActionWithOptions(name, newStatus, ActionAdmissionOptions{PackageMutation: packageMutation})
 	return server, err
@@ -538,11 +549,13 @@ func (s *State) beginAction(name, newStatus string, packageMutation bool) (Serve
 // state under the same lock that reserves the next action generation.
 func (s *State) BeginActionWithOptions(name, newStatus string, opts ActionAdmissionOptions) (Server, *ServerStatus, error) {
 	var checkedTarget string
+	var checkedGeneration uint64
 	var validationErr error
 	validate := opts.PackageMutation && opts.ValidatePackageMutation != nil
 	if validate {
-		if candidate, found := s.FindByName(name); found {
+		if candidate, generation, found := s.packageValidationSnapshot(name); found {
 			checkedTarget = candidate.APTTarget()
+			checkedGeneration = generation
 			validationErr = opts.ValidatePackageMutation(candidate)
 		}
 	}
@@ -564,6 +577,9 @@ func (s *State) BeginActionWithOptions(name, newStatus string, opts ActionAdmiss
 	}
 	if validate && server.APTTarget() != checkedTarget {
 		return Server{}, nil, ErrIdentityChanged
+	}
+	if validate && status.ActionGeneration != checkedGeneration {
+		return Server{}, nil, ErrActionInProgress
 	}
 	if validationErr != nil {
 		return Server{}, nil, validationErr

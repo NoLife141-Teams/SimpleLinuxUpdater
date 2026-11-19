@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
 import threading
 import unittest
@@ -15,6 +16,16 @@ import run
 
 
 class HarnessSafetyTests(unittest.TestCase):
+    def test_vm_entry_point_starts_with_its_packaged_files(self):
+        with tempfile.TemporaryDirectory() as directory:
+            installed = Path(directory) / "tools/ci/ssh-apt"
+            installed.mkdir(parents=True)
+            for name in ("vm-reboot.py", "run.py", "images.json"):
+                shutil.copyfile(run.HERE / name, installed / name)
+            result = subprocess.run([sys.executable, "-E", str(installed / "vm-reboot.py"), "--help"],
+                                    cwd=directory, capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_controlled_reboot_baseline_allows_for_a_slower_second_boot(self):
         spec = importlib.util.spec_from_file_location("vm_reboot_baseline", run.HERE / "vm-reboot.py")
         vm = importlib.util.module_from_spec(spec)

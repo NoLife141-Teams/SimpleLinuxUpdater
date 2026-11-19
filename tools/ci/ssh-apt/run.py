@@ -22,8 +22,6 @@ import urllib.parse
 import urllib.request
 import uuid
 
-from target import WEBHOOK_PORT
-
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[2]
 IMAGES = json.loads((HERE / "images.json").read_text())
@@ -651,6 +649,9 @@ class Harness:
                       final_version=self.version())
 
     def qualify_restore_crash(self, record):
+        # The VM runner imports the shared harness without the Docker target.
+        from target import WEBHOOK_PORT
+
         name = "restore-crash"
         credentials = {"username": "fixture-admin", "password": self.password}
         passphrase = secrets.token_urlsafe(24)

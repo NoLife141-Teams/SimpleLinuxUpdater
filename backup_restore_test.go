@@ -26,6 +26,7 @@ import (
 	apptimepkg "debian-updater/internal/apptime"
 	internalbackup "debian-updater/internal/backup"
 	maintenancepkg "debian-updater/internal/maintenance"
+	notificationpkg "debian-updater/internal/notifications"
 	observabilitypkg "debian-updater/internal/observability"
 	policypkg "debian-updater/internal/policies"
 	"debian-updater/internal/vulnerabilities"
@@ -33,6 +34,110 @@ import (
 	"github.com/alexedwards/scs/v2"
 	"github.com/gin-gonic/gin"
 )
+
+func TestBackupVerificationRejectsUnreadableArchivedNotifications(t *testing.T) {
+	const canary = "private-notification-canary"
+	for _, tc := range []struct {
+		name, seed, value, clear string
+	}{
+		{
+			name:  "unreadable conditions",
+			seed:  `INSERT OR REPLACE INTO notification_conditions(id,state_json) VALUES(1,?)`,
+			value: `{"Admissions":"` + canary,
+			clear: `DELETE FROM notification_conditions WHERE id=1`,
+		},
+		{
+			name:  "unreadable settings",
+			seed:  `INSERT OR REPLACE INTO settings(key,value) VALUES('` + notificationpkg.SettingsKey + `',?)`,
+			value: `{"enabled":"` + canary,
+			clear: `DELETE FROM settings WHERE key='` + notificationpkg.SettingsKey + `'`,
+		},
+		{
+			name:  "undecryptable integration credential",
+			seed:  `INSERT OR REPLACE INTO settings(key,value) VALUES('` + notificationpkg.SettingsKey + `',?)`,
+			value: `{"discord_webhook_url_enc":"` + canary + `"}`,
+			clear: `DELETE FROM settings WHERE key='` + notificationpkg.SettingsKey + `'`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			assertUnreadableArchivedNotificationsRejected(t, tc.seed, tc.value, tc.clear, canary)
+		})
+	}
+}
+
+func assertUnreadableArchivedNotificationsRejected(t *testing.T, seed, value, clear, canary string) {
+	t.Helper()
+	app := newTestApp(t, testAppOptions{DBPath: filepath.Join(t.TempDir(), "backup-notification-review.db")})
+	cookie := app.authenticate(t)
+	live := app.Deps.DB()
+	if _, err := live.Exec(seed, value); err != nil {
+		t.Fatal(err)
+	}
+	const passphrase = "fixture-notification-archive-passphrase"
+	export := performContractRequest(app.Handler, http.MethodPost, "/api/backup/export",
+		bytes.NewBufferString(`{"passphrase":"`+passphrase+`"}`), cookie, true)
+	if export.Code != http.StatusOK {
+		t.Fatalf("export status = %d, want an encrypted archive", export.Code)
+	}
+	if _, err := live.Exec(clear + `;
+		INSERT INTO servers(name,host,port,user,pass_enc,key_enc,key_path,tags) VALUES('live-only','invalid.example',22,'root','','','','');`); err != nil {
+		t.Fatal(err)
+	}
+
+	upload := func(path string) *httptest.ResponseRecorder {
+		t.Helper()
+		var body bytes.Buffer
+		form := multipart.NewWriter(&body)
+		part, err := form.CreateFormFile("file", "fixture.slubkp")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := part.Write(export.Body.Bytes()); err != nil {
+			t.Fatal(err)
+		}
+		if err := form.WriteField("passphrase", passphrase); err != nil {
+			t.Fatal(err)
+		}
+		if err := form.Close(); err != nil {
+			t.Fatal(err)
+		}
+		req := httptest.NewRequest(http.MethodPost, path, &body)
+		req.Header.Set("Content-Type", form.FormDataContentType())
+		req.AddCookie(cookie)
+		markSameOriginAuthRequest(req)
+		rec := httptest.NewRecorder()
+		app.Handler.ServeHTTP(rec, req)
+		if strings.Contains(rec.Body.String(), canary) {
+			t.Fatalf("%s exposed raw archived state", path)
+		}
+		return rec
+	}
+
+	verify := upload("/api/backup/verify")
+	var readiness struct {
+		RestoreReady       bool                            `json:"restore_ready"`
+		Blockers           []internalbackup.ReadinessIssue `json:"blockers"`
+		InstallationReview *backupInstallationReview       `json:"installation_review"`
+	}
+	if err := json.Unmarshal(verify.Body.Bytes(), &readiness); err != nil {
+		t.Fatal(err)
+	}
+	if verify.Code != http.StatusOK || readiness.RestoreReady || readiness.InstallationReview != nil ||
+		len(readiness.Blockers) != 1 || readiness.Blockers[0].Code != "invalid_notification_state" ||
+		!strings.Contains(readiness.Blockers[0].Message, "Choose a different verified backup") {
+		t.Fatalf("verify status = %d, readiness = %+v", verify.Code, readiness)
+	}
+	if restore := upload("/api/backup/restore"); restore.Code != http.StatusBadRequest {
+		t.Fatalf("restore status = %d, want invalid archive", restore.Code)
+	}
+	if result := performContractRequest(app.Handler, http.MethodGet, "/api/servers", nil, cookie, false); result.Code != http.StatusOK {
+		t.Fatalf("live session did not survive verification and rejected restore: %d", result.Code)
+	}
+	var count int
+	if err := app.Deps.DB().QueryRow("SELECT COUNT(*) FROM servers WHERE name='live-only'").Scan(&count); err != nil || count != 1 {
+		t.Fatalf("live inventory was replaced: count=%d err=%v", count, err)
+	}
+}
 
 func TestBackupStatusAPIExposesRecoveryHealthAndUnavailableEvidence(t *testing.T) {
 	now := time.Date(2026, 7, 28, 5, 0, 0, 0, time.UTC)

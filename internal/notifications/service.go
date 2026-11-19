@@ -616,11 +616,8 @@ func (s *Service) StageAPTDeliveryEvidence(ctx context.Context, staged *sql.DB) 
 	if conditions == nil || replacement == nil {
 		return errors.New("notification persistence replacement was not prepared")
 	}
-	if err := ensureSchema(ctx, staged); err != nil {
+	if err := PrepareArchivedPersistence(ctx, staged); err != nil {
 		return err
-	}
-	if _, err := loadAndMigrateConditionState(ctx, staged); err != nil {
-		return fmt.Errorf("read staged notification conditions: %w", err)
 	}
 	if len(replacement.APTAdmissions) == 0 {
 		return nil
@@ -1558,6 +1555,60 @@ func (s *Service) encryptStoredSecret(value string) (string, error) {
 	return s.deps.EncryptSecret(value)
 }
 
+func readArchivedNotificationSettings(ctx context.Context, db interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}) (*persistedSettings, error) {
+	var raw string
+	err := db.QueryRowContext(ctx, "SELECT value FROM settings WHERE key = ?", SettingsKey).Scan(&raw)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, errors.New("read restored notification settings")
+	}
+	var stored persistedSettings
+	if err := json.Unmarshal([]byte(raw), &stored); err != nil {
+		return nil, errors.New("parse restored notification settings")
+	}
+	return &stored, nil
+}
+
+func (s *persistedSettings) archivedIntegrationSecrets() [3]*string {
+	return [3]*string{&s.DiscordWebhookURL, &s.TelegramBotToken, &s.TelegramChatID}
+}
+
+// ValidateArchivedSettings checks the saved configuration with the archive
+// key. It does not contact destinations or modify their saved settings.
+func ValidateArchivedSettings(ctx context.Context, db *sql.DB, decrypt func(string) (string, error)) error {
+	stored, err := readArchivedNotificationSettings(ctx, db)
+	if err != nil || stored == nil {
+		return err
+	}
+	if _, err := decryptArchivedNotificationSecret(stored.EncryptedWebhookURL, decrypt, "webhook"); err != nil {
+		return err
+	}
+	for _, secret := range stored.archivedIntegrationSecrets() {
+		if _, err := decryptArchivedNotificationSecret(*secret, decrypt, "integration secret"); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func decryptArchivedNotificationSecret(ciphertext string, decrypt func(string) (string, error), field string) (string, error) {
+	if strings.TrimSpace(ciphertext) == "" {
+		return "", nil
+	}
+	if decrypt == nil {
+		return "", fmt.Errorf("notification %s decryption is unavailable", field)
+	}
+	value, err := decrypt(ciphertext)
+	if err != nil {
+		return "", fmt.Errorf("decrypt restored notification %s", field)
+	}
+	return value, nil
+}
+
 func ReencryptStoredWebhookURL(
 	ctx context.Context,
 	tx *sql.Tx,
@@ -1567,26 +1618,15 @@ func ReencryptStoredWebhookURL(
 	if tx == nil {
 		return errors.New("notification settings transaction is unavailable")
 	}
-	var raw string
-	err := tx.QueryRowContext(ctx, "SELECT value FROM settings WHERE key = ?", SettingsKey).Scan(&raw)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil
-	}
-	if err != nil {
-		return errors.New("read restored notification settings")
-	}
-	var stored persistedSettings
-	if err := json.Unmarshal([]byte(raw), &stored); err != nil {
-		return errors.New("parse restored notification settings")
+	stored, err := readArchivedNotificationSettings(ctx, tx)
+	if err != nil || stored == nil {
+		return err
 	}
 	webhookURL := strings.TrimSpace(stored.LegacyWebhookURL)
 	if strings.TrimSpace(stored.EncryptedWebhookURL) != "" {
-		if decrypt == nil {
-			return errors.New("notification webhook decryption is unavailable")
-		}
-		webhookURL, err = decrypt(stored.EncryptedWebhookURL)
+		webhookURL, err = decryptArchivedNotificationSecret(stored.EncryptedWebhookURL, decrypt, "webhook")
 		if err != nil {
-			return errors.New("decrypt restored notification webhook")
+			return err
 		}
 	}
 	stored.LegacyWebhookURL = ""
@@ -1603,31 +1643,22 @@ func ReencryptStoredWebhookURL(
 			return errors.New("encrypt restored notification webhook")
 		}
 	}
-	rewrap := func(ciphertext string) (string, error) {
-		if strings.TrimSpace(ciphertext) == "" {
-			return "", nil
+	for _, secret := range stored.archivedIntegrationSecrets() {
+		if strings.TrimSpace(*secret) == "" {
+			*secret = ""
+			continue
 		}
-		if decrypt == nil || encrypt == nil {
-			return "", errors.New("notification integration secret protection is unavailable")
+		if encrypt == nil {
+			return errors.New("notification integration secret protection is unavailable")
 		}
-		plaintext, err := decrypt(ciphertext)
+		plaintext, err := decryptArchivedNotificationSecret(*secret, decrypt, "integration secret")
 		if err != nil {
-			return "", errors.New("decrypt restored notification integration secret")
+			return err
 		}
-		protected, err := encrypt(plaintext)
+		*secret, err = encrypt(plaintext)
 		if err != nil {
-			return "", errors.New("encrypt restored notification integration secret")
+			return errors.New("encrypt restored notification integration secret")
 		}
-		return protected, nil
-	}
-	if stored.DiscordWebhookURL, err = rewrap(stored.DiscordWebhookURL); err != nil {
-		return err
-	}
-	if stored.TelegramBotToken, err = rewrap(stored.TelegramBotToken); err != nil {
-		return err
-	}
-	if stored.TelegramChatID, err = rewrap(stored.TelegramChatID); err != nil {
-		return err
 	}
 	body, err := json.Marshal(stored)
 	if err != nil {

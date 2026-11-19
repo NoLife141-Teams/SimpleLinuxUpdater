@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
-	authpkg "debian-updater/internal/auth"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,9 +12,12 @@ import (
 	"path/filepath"
 	"strings"
 
+	authpkg "debian-updater/internal/auth"
 	notificationpkg "debian-updater/internal/notifications"
 	serverpkg "debian-updater/internal/servers"
 )
+
+var errArchivedNotifications = errors.New("archived notification state is unreadable or incompatible")
 
 func (s *Service) ValidateDatabaseFile(ctx context.Context, path string, encryptionKey []byte) error {
 	db, err := sql.Open("sqlite", path)
@@ -67,6 +69,18 @@ func (s *Service) ValidateDatabaseFile(ctx context.Context, path string, encrypt
 	})
 	if _, err := credential.Resolve(ctx, ""); err != nil {
 		return fmt.Errorf("validate restored Global SSH Credential: %w", err)
+	}
+	err = notificationpkg.ValidateArchivedSettings(ctx, db, func(ciphertext string) (string, error) {
+		return s.deps.DecryptSecretWithKey(ciphertext, encryptionKey)
+	})
+	if err == nil {
+		err = notificationpkg.PrepareArchivedPersistence(ctx, db)
+	}
+	if err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		return errArchivedNotifications
 	}
 	return nil
 }
@@ -596,6 +610,13 @@ func (s *Service) VerifyArchiveFileWithReview(ctx context.Context, encrypted Tem
 	}
 	result.ConfigValid = true
 	if err := s.ValidateDatabaseFile(ctx, inspection.Files["servers.db"], backupKey); err != nil {
+		if errors.Is(err, errArchivedNotifications) {
+			result.Blockers = append(result.Blockers, ReadinessIssue{
+				Code:    "invalid_notification_state",
+				Message: "The archived notification state cannot be restored. Choose a different verified backup.",
+			})
+			return result, nil
+		}
 		result.Blockers = append(result.Blockers, ReadinessIssue{Code: "invalid_database", Message: "The archived database is not compatible with this application."})
 		return result, nil
 	}
@@ -648,6 +669,9 @@ func (s *Service) RestoreArchiveFileWithOptions(ctx context.Context, encrypted T
 		opts.BeforeApply()
 	}
 	if err := s.applyArchiveFiles(ctx, inspection.Files, opts); err != nil {
+		if errors.Is(err, errArchivedNotifications) {
+			return RestoreResult{}, &RestoreError{Stage: RestoreStageArchive, Err: err}
+		}
 		return RestoreResult{}, &RestoreError{Stage: RestoreStageApply, Err: err}
 	}
 	globalKeyPresent := false

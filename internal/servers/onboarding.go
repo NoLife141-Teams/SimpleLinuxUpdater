@@ -283,11 +283,7 @@ func OnboardingHostKeyCallback(deps KnownHostsDeps, fingerprint string) (ssh.Hos
 	}
 	if len(existingPaths) > 0 {
 		var err error
-		existing, err = HostKeyCallback(deps)
-		if err != nil {
-			return nil, err
-		}
-		canonicalIPKeys, err = loadKnownHostsCanonicalIPKeys(existingPaths)
+		existing, canonicalIPKeys, err = hostKeyCallback(existingPaths)
 		if err != nil {
 			return nil, err
 		}

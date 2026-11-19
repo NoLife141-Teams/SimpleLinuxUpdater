@@ -259,6 +259,85 @@ func TestKnownHostReadinessHandlesNonLiteralAndInvalidFiles(t *testing.T) {
 	}
 }
 
+func TestKnownHostsRetainsModernKeysAlongsideLegacyDSA(t *testing.T) {
+	legacyEntry, err := os.ReadFile("testdata/legacy-dsa-known-hosts")
+	if err != nil {
+		t.Fatal(err)
+	}
+	modernKey, err := ssh.NewPublicKey(ed25519.NewKeyFromSeed(make([]byte, ed25519.SeedSize)).Public())
+	if err != nil {
+		t.Fatal(err)
+	}
+	modernEntry := knownhosts.Line([]string{"2001:0db8:0:0:0:0:0:1"}, modernKey) + "\n"
+
+	for _, tt := range []struct {
+		name  string
+		files []string
+	}{
+		{"mixed file", []string{string(legacyEntry) + modernEntry}},
+		{"separate legacy file", []string{"# Old keys\r\n" + strings.TrimSpace(string(legacyEntry)), modernEntry}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			var paths []string
+			for i, contents := range tt.files {
+				path := filepath.Join(dir, "known_hosts_"+strconv.Itoa(i))
+				if err := os.WriteFile(path, []byte(contents), 0600); err != nil {
+					t.Fatal(err)
+				}
+				paths = append(paths, path)
+			}
+			t.Setenv("DEBIAN_UPDATER_KNOWN_HOSTS", strings.Join(paths, string(os.PathListSeparator)))
+			deps := KnownHostsDeps{}
+
+			address := "[2001:db8::1]:22"
+			callback, err := HostKeyCallback(deps)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := callback(address, knownHostsRemoteAddr(address), modernKey); err != nil {
+				t.Fatalf("verify Ed25519 key at canonical address: %v", err)
+			}
+
+			check, err := newKnownHostEntryChecker(deps)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if trusted, err := check("2001:db8::1", 22); err != nil || !trusted {
+				t.Errorf("modern host trust = %t, %v", trusted, err)
+			}
+			if trusted, err := check("legacy.example", 22); err != nil || trusted {
+				t.Errorf("legacy host trust = %t, %v", trusted, err)
+			}
+
+			onboard, err := OnboardingHostKeyCallback(deps, ssh.FingerprintSHA256(modernKey))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := onboard(address, knownHostsRemoteAddr(address), modernKey); err != nil {
+				t.Errorf("onboarding verification: %v", err)
+			}
+		})
+	}
+}
+
+func TestKnownHostsRejectsRevocationMislabeledAsDSA(t *testing.T) {
+	key, err := ssh.NewPublicKey(ed25519.NewKeyFromSeed(make([]byte, ed25519.SeedSize)).Public())
+	if err != nil {
+		t.Fatal(err)
+	}
+	trusted := knownhosts.Line([]string{"node.example"}, key)
+	mislabeled := "@revoked " + strings.Replace(trusted, " ssh-ed25519 ", " ssh-dss ", 1)
+	path := filepath.Join(t.TempDir(), "known_hosts")
+	if err := os.WriteFile(path, []byte(trusted+"\n"+mislabeled+"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("DEBIAN_UPDATER_KNOWN_HOSTS", path)
+	if _, err := HostKeyCallback(KnownHostsDeps{}); err == nil {
+		t.Fatal("host key verification accepted a file with an inconsistent revocation")
+	}
+}
+
 func TestKnownHostsRecognizesAndReplacesEquivalentLegacyIPv6Token(t *testing.T) {
 	publicKey, _, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {

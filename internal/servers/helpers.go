@@ -5,9 +5,10 @@ import (
 	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/base64"
 	"errors"
 	"fmt"
-	"io"
+	"math/big"
 	"net"
 	"net/netip"
 	"os"
@@ -308,13 +309,14 @@ func HostKeyCallback(deps KnownHostsDeps) (ssh.HostKeyCallback, error) {
 	if len(existing) == 0 {
 		return nil, errors.New("no known_hosts file found; set DEBIAN_UPDATER_KNOWN_HOSTS or create ~/.ssh/known_hosts")
 	}
-	cb, err := knownhosts.New(existing...)
+	callback, _, err := hostKeyCallback(existing)
+	return callback, err
+}
+
+func hostKeyCallback(paths []string) (ssh.HostKeyCallback, canonicalKnownHostsIPKeys, error) {
+	cb, canonicalIPKeys, err := loadKnownHosts(paths)
 	if err != nil {
-		return nil, fmt.Errorf("load known_hosts: %w", err)
-	}
-	canonicalIPKeys, err := loadKnownHostsCanonicalIPKeys(existing)
-	if err != nil {
-		return nil, err
+		return nil, canonicalKnownHostsIPKeys{}, err
 	}
 	return func(hostname string, remote net.Addr, key ssh.PublicKey) error {
 		checkErr := cb(hostname, remote, key)
@@ -338,7 +340,7 @@ func HostKeyCallback(deps KnownHostsDeps) (ssh.HostKeyCallback, error) {
 			}
 		}
 		return checkErr
-	}, nil
+	}, canonicalIPKeys, nil
 }
 
 type canonicalKnownHostsIPKeys struct {
@@ -363,26 +365,34 @@ func (k canonicalKnownHostsIPKeys) isRevoked(endpoint ServerEndpoint, key ssh.Pu
 	return k.contains(k.revoked, endpoint, key)
 }
 
-func loadKnownHostsCanonicalIPKeys(paths []string) (canonicalKnownHostsIPKeys, error) {
+func loadKnownHosts(paths []string) (ssh.HostKeyCallback, canonicalKnownHostsIPKeys, error) {
 	result := canonicalKnownHostsIPKeys{
 		trusted:    make(map[ServerEndpoint][]ssh.PublicKey),
 		revoked:    make(map[ServerEndpoint][]ssh.PublicKey),
 		revokedAll: make(map[string]struct{}),
 	}
+	matcherPaths := make([]string, 0, len(paths))
 	for _, path := range paths {
 		data, err := os.ReadFile(path)
 		if err != nil {
-			return canonicalKnownHostsIPKeys{}, fmt.Errorf("read known_hosts %q: %w", path, err)
+			return nil, canonicalKnownHostsIPKeys{}, fmt.Errorf("read known_hosts %q: %w", path, err)
 		}
-		for len(data) > 0 {
-			marker, hosts, key, _, rest, err := ssh.ParseKnownHosts(data)
-			if errors.Is(err, io.EOF) {
-				break
+		var hasDSA, hasSupportedKey bool
+		scanner := bufio.NewScanner(bytes.NewReader(data))
+		for scanner.Scan() {
+			line := bytes.Trim(scanner.Bytes(), " \t")
+			if len(line) == 0 || line[0] == '#' {
+				continue
 			}
+			marker, hosts, key, _, _, err := ssh.ParseKnownHosts(line)
 			if err != nil {
-				return canonicalKnownHostsIPKeys{}, fmt.Errorf("parse known_hosts %q: %w", path, err)
+				if isLegacyDSAKnownHostsEntry(line) {
+					hasDSA = true
+					continue
+				}
+				return nil, canonicalKnownHostsIPKeys{}, fmt.Errorf("parse known_hosts %q: %w", path, err)
 			}
-			data = rest
+			hasSupportedKey = true
 			if marker != "" && marker != "revoked" {
 				continue
 			}
@@ -412,7 +422,20 @@ func loadKnownHostsCanonicalIPKeys(paths []string) (canonicalKnownHostsIPKeys, e
 				index[endpoint] = append(index[endpoint], key)
 			}
 		}
+		if err := scanner.Err(); err != nil {
+			return nil, canonicalKnownHostsIPKeys{}, fmt.Errorf("read known_hosts %q: %w", path, err)
+		}
+		// knownhosts.New skips unsupported keys in mixed files, but rejects a
+		// file containing only unsupported keys. Such DSA files add no trust.
+		if !hasDSA || hasSupportedKey {
+			matcherPaths = append(matcherPaths, path)
+		}
 	}
+	callback, err := knownhosts.New(matcherPaths...)
+	if err != nil {
+		return nil, canonicalKnownHostsIPKeys{}, fmt.Errorf("load known_hosts: %w", err)
+	}
+
 	for endpoint, keys := range result.trusted {
 		trusted := keys[:0]
 		for _, key := range keys {
@@ -422,7 +445,28 @@ func loadKnownHostsCanonicalIPKeys(paths []string) (canonicalKnownHostsIPKeys, e
 		}
 		result.trusted[endpoint] = trusted
 	}
-	return result, nil
+	return callback, result, nil
+}
+
+func isLegacyDSAKnownHostsEntry(line []byte) bool {
+	fields := bytes.FieldsFunc(line, func(r rune) bool { return r == ' ' || r == '\t' })
+	if len(fields) > 0 && (string(fields[0]) == "@revoked" || string(fields[0]) == "@cert-authority") {
+		fields = fields[1:]
+	}
+	const dsaKeyType = "ssh-dss"
+	if len(fields) < 3 || fields[0][0] == '@' || string(fields[1]) != dsaKeyType {
+		return false
+	}
+	blob, err := base64.StdEncoding.DecodeString(string(fields[2]))
+	if err != nil {
+		return false
+	}
+	// Check the wire type as well so a mislabeled revocation cannot be ignored.
+	var key struct {
+		Type       string
+		P, Q, G, Y *big.Int
+	}
+	return ssh.Unmarshal(blob, &key) == nil && key.Type == dsaKeyType
 }
 
 func KnownHostsWritePath(deps KnownHostsDeps) (string, error) {
@@ -702,9 +746,9 @@ func newKnownHostEntryChecker(deps KnownHostsDeps) (func(string, int) (bool, err
 }
 
 func generalKnownHostEntryChecker(existingPaths []string) (func(string, int) (bool, error), error) {
-	checkHostKey, err := knownhosts.New(existingPaths...)
+	checkHostKey, canonicalIPKeys, err := loadKnownHosts(existingPaths)
 	if err != nil {
-		return nil, fmt.Errorf("load known_hosts: %w", err)
+		return nil, err
 	}
 	publicProbeKey, _, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
@@ -714,11 +758,6 @@ func generalKnownHostEntryChecker(existingPaths []string) (func(string, int) (bo
 	if err != nil {
 		return nil, fmt.Errorf("create known_hosts probe key: %w", err)
 	}
-	canonicalIPKeys, err := loadKnownHostsCanonicalIPKeys(existingPaths)
-	if err != nil {
-		return nil, err
-	}
-
 	return func(host string, port int) (bool, error) {
 		cleanHost := ServerHostForTransport(host)
 		if cleanHost == "" {

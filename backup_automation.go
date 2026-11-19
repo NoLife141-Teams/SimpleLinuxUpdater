@@ -49,24 +49,31 @@ type ownedBackupArchive struct {
 	Verification       string `json:"verification,omitempty"`
 	Availability       string `json:"availability,omitempty"`
 	FileIdentity       string `json:"file_identity,omitempty"`
+	FileModifiedAt     string `json:"file_modified_at,omitempty"`
+	DirectoryIdentity  string `json:"directory_identity,omitempty"`
+	ObservedAt         string `json:"observed_at,omitempty"`
+	LossEpisode        uint64 `json:"loss_episode,omitempty"`
+	LossActive         bool   `json:"loss_active,omitempty"`
+	LossObservedAt     string `json:"loss_observed_at,omitempty"`
 	JobID              string `json:"job_id,omitempty"`
 }
 
 type backupAutomationState struct {
-	PendingManual bool                 `json:"pending_manual"`
-	Timezone      string               `json:"timezone"`
-	OccurrenceAt  string               `json:"occurrence_at"`
-	Config        backupScheduleConfig `json:"config"`
-	Approval      string               `json:"approval"`
-	NextAt        string               `json:"next_at"`
-	PendingAt     string               `json:"pending_at"`
-	RetryAt       string               `json:"retry_at"`
-	LastAttemptAt string               `json:"last_attempt_at"`
-	LastSuccessAt string               `json:"last_success_at"`
-	Outcome       string               `json:"outcome"`
-	Message       string               `json:"message"`
-	Temporary     string               `json:"temporary"`
-	Archives      []ownedBackupArchive `json:"archives"`
+	PendingManual bool                     `json:"pending_manual"`
+	Timezone      string                   `json:"timezone"`
+	OccurrenceAt  string                   `json:"occurrence_at"`
+	Config        backupScheduleConfig     `json:"config"`
+	Approval      string                   `json:"approval"`
+	NextAt        string                   `json:"next_at"`
+	PendingAt     string                   `json:"pending_at"`
+	RetryAt       string                   `json:"retry_at"`
+	LastAttemptAt string                   `json:"last_attempt_at"`
+	LastSuccessAt string                   `json:"last_success_at"`
+	Outcome       string                   `json:"outcome"`
+	Message       string                   `json:"message"`
+	Temporary     string                   `json:"temporary"`
+	Archives      []ownedBackupArchive     `json:"archives"`
+	Observation   backupArchiveObservation `json:"archive_observation,omitzero"`
 }
 
 type backupAutomationStatus struct {
@@ -88,6 +95,7 @@ type backupAutomation struct {
 	health      installationhealthpkg.Worker
 	copyArchive func(io.Writer, io.Reader) (int64, error)
 	mu          sync.Mutex
+	scanMu      sync.Mutex
 	wg          sync.WaitGroup
 	deps        AppDeps
 	deployment  backupAutomationDeployment
@@ -176,9 +184,16 @@ func (a *backupAutomation) load(ctx context.Context) (backupAutomationState, err
 // readState also serves concurrent installation diagnostics. Keep it free of
 // migrations and writes; load callers hold mu before persisting catalog IDs.
 func (a *backupAutomation) readState(ctx context.Context) (backupAutomationState, error) {
+	return readBackupAutomationState(ctx, a.deps.DB())
+}
+
+func readBackupAutomationState(ctx context.Context, db *sql.DB) (backupAutomationState, error) {
 	s := backupAutomationState{Config: defaultBackupSchedule(), Outcome: "disabled", Message: "Automated backups are disabled."}
+	if db == nil {
+		return s, errors.New("backup automation database is unavailable")
+	}
 	var raw string
-	err := a.deps.DB().QueryRowContext(ctx, "SELECT value FROM settings WHERE key = ?", backupAutomationSettingsKey).Scan(&raw)
+	err := db.QueryRowContext(ctx, "SELECT value FROM settings WHERE key = ?", backupAutomationSettingsKey).Scan(&raw)
 	if errors.Is(err, sql.ErrNoRows) {
 		return s, nil
 	}
@@ -502,6 +517,10 @@ func (a *backupAutomation) SuspendAfterRestore(ctx context.Context) error {
 	s.PendingManual = false
 	s.RetryAt = ""
 	s.Temporary = ""
+	s.Observation = backupArchiveObservation{}
+	for i := range s.Archives {
+		s.Archives[i].ObservedAt = ""
+	}
 	s.Outcome = "suspended"
 	s.Message = "Restored settings require local backup destination and secret revalidation."
 	return a.save(ctx, s)
@@ -899,12 +918,17 @@ func (a *backupAutomation) publish(ctx context.Context, root *os.Root, source in
 	archive.SHA256 = hex.EncodeToString(digest.Sum(nil))
 	archive.PublishedAt = backupStamp(a.now())
 	archive.LastVerifiedAt = archive.PublishedAt
+	archive.ObservedAt = archive.PublishedAt
 	archive.SizeBytes = &written
 	archive.KnownHostsIncluded = &result.KnownHostsIncluded
 	archive.Verification = "verified"
 	archive.Availability = "present"
+	if info, err := root.Lstat("."); err == nil {
+		archive.DirectoryIdentity = backupCatalogFileIdentity(info)
+	}
 	if info, err := root.Lstat(name); err == nil {
 		archive.FileIdentity = backupCatalogFileIdentity(info)
+		archive.FileModifiedAt = backupStamp(info.ModTime())
 	}
 	return archive, nil
 }
@@ -959,6 +983,9 @@ func (a *backupAutomation) retain(root *os.Root, s *backupAutomationState) error
 }
 
 func (a *backupAutomation) Start(ctx context.Context) {
+	if a.deployment.Directory != "" {
+		a.wg.Go(func() { a.monitorArchiveAvailability(ctx) })
+	}
 	a.wg.Add(1)
 	go func() {
 		defer a.wg.Done()

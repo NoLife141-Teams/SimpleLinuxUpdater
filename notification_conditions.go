@@ -232,6 +232,11 @@ func newNotificationConditionSource(dbProvider func() *sql.DB, now func() time.T
 				notificationpkg.ConditionFact{ID: "backup/coverage/stale", EventType: notificationpkg.EventBackupCoverageStale, TargetType: "backup", TargetName: "Application backup", Active: !missing && stale, Message: fmt.Sprintf("Backup recovery evidence is older than %d hours.", health.StaleAfterHours)},
 			)
 		}
+		if catalog, err := readBackupAutomationState(ctx, db); err != nil {
+			batch.Incomplete = true
+		} else {
+			batch.Facts = append(batch.Facts, catalog.archiveLossConditions(previous)...)
+		}
 		raw, _ := json.Marshal(cursor)
 		batch.Cursor = string(raw)
 		return batch, nil
@@ -291,6 +296,7 @@ func notificationAuditFacts(ctx context.Context, db notificationFactQuerier, aft
 			JobID        string `json:"job_id"`
 			Generation   uint64 `json:"approval_generation"`
 			RestoreReady *bool  `json:"restore_ready"`
+			ArchiveLoss  bool   `json:"archive_loss"`
 		}
 		_ = json.Unmarshal([]byte(raw), &meta)
 		switch action {
@@ -307,6 +313,10 @@ func notificationAuditFacts(ctx context.Context, db notificationFactQuerier, aft
 			})
 		case "backup.export", "backup.verify", "backup.automatic.failed", "backup.automatic.succeeded":
 			verify := action == "backup.verify"
+			if verify && meta.ArchiveLoss {
+				// Current per-archive conditions come from the catalog snapshot.
+				continue
+			}
 			event, key, label := notificationpkg.EventBackupExportFailed, "backup/export", "Backup export failed. Review backup recovery health in the authenticated Administration page."
 			if verify {
 				event, key, label = notificationpkg.EventBackupVerifyFailed, "backup/verify", "Backup verification did not produce restore-ready evidence. Review backup recovery health in the authenticated Administration page."

@@ -260,7 +260,7 @@ func TestBackupCatalogRejectsReplacedCorruptSymlinkMissingAndForeign(t *testing.
 				if err != nil {
 					t.Fatal(err)
 				}
-				if !lastConditionFact(batch.Facts, "backup/verify").Active {
+				if !lastConditionFact(batch.Facts, backupArchiveLossConditionPrefix+archive.ID+"/1").Active {
 					t.Fatal("existing backup notification condition not updated")
 				}
 			}
@@ -598,7 +598,7 @@ func TestBackupCatalogRetriesLossAfterAuditWriteFailure(t *testing.T) {
 			}
 			source := newNotificationConditionSource(app.Deps.DB, a.deps.Now, nil)
 			batch, err := source(context.Background(), "", nil)
-			if err != nil || !lastConditionFact(batch.Facts, "backup/verify").Active {
+			if err != nil || !lastConditionFact(batch.Facts, backupArchiveLossConditionPrefix+archive.ID+"/1").Active {
 				t.Fatalf("retried loss notification condition missing: %v", err)
 			}
 			if catalogProtectedState(t, app) != before {

@@ -600,6 +600,18 @@
             const date = value => !value || value.startsWith("0001-") ? "Never observed" : new Date(value).toLocaleString();
             const number = value => value === null ? missing : value.toLocaleString();
             const notifications = view.notifications;
+            const archives = view.backupArchives;
+            const archiveAvailability = {
+                covered: `${number(archives.verified)} verified and present · ${number(archives.lost)} lost`,
+                missing: `No verified archive available · ${number(archives.lost)} lost`,
+                no_registered: "No locally registered archives",
+                unknown: {
+                    available: "Coverage unknown",
+                    unavailable: "Storage unavailable",
+                    stale: "Availability observation is stale",
+                    not_observed: "Never observed",
+                }[archives.storage],
+            }[archives.state];
             const evaluation = {healthy: "Healthy", degraded: "Degraded"}[notifications.evaluationState];
             let queueAge = missing;
             if (notifications.available && notifications.oldestPendingAge !== null) {
@@ -612,6 +624,7 @@
                 "installation-restore-isolation": {active: "Active · SSH and notifications paused", inactive: "Inactive", unavailable: "Unavailable · External work paused"}[view.restoreIsolation] || missing,
                 "installation-checked": date(view.checkedAt),
                 "installation-backup": view.backupAvailable ? `${view.backupState}; last verified ${date(view.verifiedAt)}; age ${number(view.backupAgeSeconds)} seconds` : missing,
+                "installation-backup-archives": archiveAvailability,
                 "installation-notifications": notifications.available ? `${notifications.enabled ? "Enabled" : "Disabled"}; ${number(notifications.pending)} pending, ${number(notifications.retrying)} retrying, ${number(notifications.failed)} failed (retained)` : missing,
                 "installation-notification-evaluation": evaluation ? `${evaluation} · Last success ${date(notifications.lastEvaluationAt)}` : notifications.evaluationState === "not_observed" ? "Never observed" : missing,
                 "installation-notification-delivery": notifications.available ? date(notifications.lastDeliveryAt) : missing,

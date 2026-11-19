@@ -15,6 +15,9 @@ import (
 	"unicode/utf8"
 )
 
+// BackupArchiveLossConditionPrefix identifies conditions keyed by a private archive ID.
+const BackupArchiveLossConditionPrefix = "backup/archive-loss/"
+
 // ConditionFact contains accepted domain facts. An unknown observation can
 // suspend an active fact without resolving its episode.
 type ConditionFact struct {

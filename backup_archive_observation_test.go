@@ -247,10 +247,21 @@ func TestBackupArchiveObservationKeepsStalledStorageUnavailable(t *testing.T) {
 }
 
 type archiveObservationDeliveryClient struct {
-	calls atomic.Int32
+	calls            atomic.Int32
+	disclosedArchive atomic.Bool
+	archiveID        string
+	archiveDirectory string
 }
 
-func (c *archiveObservationDeliveryClient) Do(*http.Request) (*http.Response, error) {
+func (c *archiveObservationDeliveryClient) Do(req *http.Request) (*http.Response, error) {
+	defer req.Body.Close()
+	body, err := io.ReadAll(req.Body)
+	if err != nil {
+		return nil, err
+	}
+	if payload := string(body); strings.Contains(payload, c.archiveID) || strings.Contains(payload, c.archiveDirectory) {
+		c.disclosedArchive.Store(true)
+	}
 	c.calls.Add(1)
 	return &http.Response{StatusCode: 204, Body: io.NopCloser(strings.NewReader("")), Header: http.Header{}}, nil
 }
@@ -261,7 +272,7 @@ func TestBackupArchiveLossNotifiesOnceAcrossWorkerRestartAndReverification(t *te
 	if err := os.Rename(path, path+".saved"); err != nil {
 		t.Fatal(err)
 	}
-	client := &archiveObservationDeliveryClient{}
+	client := &archiveObservationDeliveryClient{archiveID: archive.ID, archiveDirectory: a.deployment.Directory}
 	deps := NotificationServiceDeps{
 		DB: app.Deps.DB, Now: a.deps.Now, HTTPClient: client, ConditionPollInterval: 10 * time.Millisecond,
 		ReadConditions: newNotificationConditionSource(app.Deps.DB, a.deps.Now, nil),
@@ -381,7 +392,7 @@ func TestBackupArchiveLossNotifiesOnceAcrossWorkerRestartAndReverification(t *te
 	}
 	startWorker()
 	var second int
-	secondCondition := backupArchiveLossConditionPrefix + archive.ID + "/2"
+	secondCondition := notificationpkg.BackupArchiveLossConditionPrefix + archive.ID + "/2"
 	for deadline := time.Now().Add(4 * time.Second); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
 		_ = app.Deps.DB().QueryRow(`SELECT count(*) FROM notification_outbox
 		  WHERE event_type=? AND state='succeeded' AND json_extract(meta_json,'$.condition_id')=?`,
@@ -394,6 +405,9 @@ func TestBackupArchiveLossNotifiesOnceAcrossWorkerRestartAndReverification(t *te
 	err := app.Deps.DB().QueryRow("SELECT count(*) FROM audit_events WHERE action='backup.verify' AND status='failure'").Scan(&audits)
 	if err != nil || audits != 2 || second != 1 || client.calls.Load() != 3 {
 		t.Fatalf("loss episodes: audits=%d calls=%d second=%d error=%v", audits, client.calls.Load(), second, err)
+	}
+	if client.disclosedArchive.Load() {
+		t.Fatal("an outbound backup alert disclosed the archive identifier or path")
 	}
 }
 

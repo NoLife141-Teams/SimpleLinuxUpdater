@@ -337,7 +337,7 @@ func notificationAuditFacts(ctx context.Context, db notificationFactQuerier, aft
 			verify := action == "backup.verify"
 			if verify && meta.LossEpisode > 0 && validBackupArchiveID(meta.ArchiveID) {
 				facts = append(facts, notificationpkg.ConditionFact{
-					ID:        backupArchiveLossConditionPrefix + meta.ArchiveID + "/" + strconv.FormatUint(meta.LossEpisode, 10),
+					ID:        notificationpkg.BackupArchiveLossConditionPrefix + meta.ArchiveID + "/" + strconv.FormatUint(meta.LossEpisode, 10),
 					EventType: notificationpkg.EventBackupVerifyFailed, TargetType: "backup", TargetName: "Application backup",
 					Active: true, OneShot: true, CreatedAt: created,
 					Message: "A registered automated backup is missing or has changed. Review the backup catalog in Administration.",

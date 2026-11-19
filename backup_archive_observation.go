@@ -15,7 +15,6 @@ import (
 
 const backupArchiveObservationInterval = 5 * time.Minute
 const backupArchiveObservationBudget = 2 * time.Second
-const backupArchiveLossConditionPrefix = "backup/archive-loss/"
 
 var errBackupArchiveObservationDeferred = errors.New("backup archive observation deferred while catalog changes")
 

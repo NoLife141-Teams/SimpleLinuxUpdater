@@ -20,6 +20,7 @@ BOOT_FACTS_COMMAND = "cat /proc/sys/kernel/random/boot_id; cut -d' ' -f1 /proc/u
 # The updater's verification loop has 24 intervals of five seconds. Give
 # software-emulated guests time to return over SSH and complete verification.
 MINIMUM_BASELINE_UPTIME = 150
+RESTORE_POWER_CUT_PHASES = ("before", "forward", "rollback")
 
 
 def wait_for_reboot_baseline(ssh):
@@ -39,6 +40,8 @@ def main():
     parser.add_argument("--output", type=Path, default=REPO / ".tmp-ssh-apt/vm")
     parser.add_argument("--isolated-app-directory", type=Path,
                         help="candidate app directory in a loopback-only VM runner container")
+    parser.add_argument("--qualify-restore-power-loss", action="store_true",
+                        help="also cut VM power at three checkpoints in backup restore")
     parser.add_argument("--check-prerequisites", action="store_true")
     args = parser.parse_args()
     tools = ("qemu-system-x86_64", "qemu-img", "cloud-localds", "ssh", "ssh-keygen")
@@ -62,6 +65,8 @@ def main():
             app_directory = args.isolated_app_directory.resolve(strict=True)
             require((app_directory / "webserver").is_file() and (app_directory / "templates").is_dir()
                     and (app_directory / "static").is_dir(), "isolated application assets are incomplete")
+            if args.qualify_restore_power_loss:
+                require((app_directory / "restore-power-loss.test").is_file(), "restore fixture binary is missing")
         require(args.image and args.sha256 and len(args.sha256) == 64, "provide a verified cloud image and SHA256")
         image = args.image.resolve(strict=True)
         with image.open("rb") as source:
@@ -93,27 +98,62 @@ def main():
         ssh_port = loopback_port()
         vm_log = (work / "vm.log").open("wb")
         launch = ["qemu-system-x86_64", "-machine", "q35,accel=kvm:tcg", "-m", "1024", "-smp", "2",
-            "-drive", f"file={work / 'overlay.qcow2'},if=virtio,format=qcow2",
+            "-drive", f"file={work / 'overlay.qcow2'},if=virtio,format=qcow2,cache=none",
             "-drive", f"file={work / 'seed.img'},if=virtio,format=raw,readonly=on",
             "-netdev", f"user,id=net0,hostfwd=tcp:127.0.0.1:{ssh_port}-:22", "-device", "virtio-net-pci,netdev=net0", "-nographic"]
         vm = subprocess.Popen(launch, stdout=vm_log, stderr=subprocess.STDOUT)
 
-        def ssh(text):
+        def ssh(text, *, data=None):
             require(vm.poll() is None, "owned QEMU process exited")
             return command(["ssh", "-F", "/dev/null", "-i", str(work / "client"), "-p", str(ssh_port), "-o", "BatchMode=yes",
                 "-o", "IdentitiesOnly=yes", "-o", "IdentityAgent=none", "-o", "GlobalKnownHostsFile=/dev/null",
                 "-o", "ProxyCommand=none", "-o", "ProxyJump=none", "-o", "ControlMaster=no", "-o", "ControlPath=none",
                 "-o", "LogLevel=ERROR", "-o", "StrictHostKeyChecking=accept-new", "-o", "UserKnownHostsFile=" + str(work / "control_known_hosts"),
-                "-o", "ConnectTimeout=3", "root@127.0.0.1", text], timeout=10,
+                "-o", "ConnectTimeout=3", "root@127.0.0.1", text], timeout=10, data=data,
                 env={"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": str(work)})
 
-        end = time.monotonic() + 300
-        while time.monotonic() < end:
-            try:
-                require(ssh("cat /var/lib/slu-fixture-owner").strip() == owner, "VM ownership marker mismatch")
-                break
-            except (RuntimeError, subprocess.TimeoutExpired): time.sleep(2)
-        require(ssh("cat /var/lib/slu-fixture-owner").strip() == owner, "VM not ready")
+        def wait_for_guest(seconds):
+            end = time.monotonic() + seconds
+            while time.monotonic() < end:
+                try:
+                    require(ssh("cat /var/lib/slu-fixture-owner").strip() == owner, "VM ownership marker mismatch")
+                    return
+                except (RuntimeError, subprocess.TimeoutExpired):
+                    time.sleep(2)
+            raise AssertionError("VM not ready")
+
+        wait_for_guest(300)
+        if args.qualify_restore_power_loss:
+            binary = (app_directory if args.isolated_app_directory else work) / "restore-power-loss.test"
+            if not args.isolated_app_directory:
+                command(["go", "test", "-c", "-o", str(binary), "./internal/backup"], timeout=240, cwd=REPO,
+                        env={**os.environ, "CGO_ENABLED": "0", "GOOS": "linux", "GOARCH": "amd64"})
+            fixture_dir = "/var/lib/slu-restore-qualification"
+            ssh(f"install -d -m 0700 {fixture_dir} && cat > {fixture_dir}/fixture && chmod 0700 {fixture_dir}/fixture && sync -f {fixture_dir}",
+                data=binary.read_bytes())
+            phases = report["restore_power_loss"] = {}
+            for phase in RESTORE_POWER_CUT_PHASES:
+                before_cut = ssh("cat /proc/sys/kernel/random/boot_id").strip()
+                phases[phase] = {"status": "failed"}
+                env = f"SLU_RESTORE_VM_PHASE={phase} SLU_RESTORE_VM_OWNER={owner}"
+                run_fixture = f"{fixture_dir}/fixture -test.run '^TestRestoreDurabilityGuest$'"
+                ssh(f"nohup env {env} {run_fixture} > {fixture_dir}/{phase}.log 2>&1 < /dev/null &")
+                end = time.monotonic() + 30
+                while time.monotonic() < end:
+                    if ssh(f"test ! -s {fixture_dir}/{phase}/checkpoint || cat {fixture_dir}/{phase}/checkpoint").strip() == phase:
+                        break
+                    time.sleep(.2)
+                else:
+                    raise AssertionError("restore power-cut checkpoint was not reached: " + phase)
+                phases[phase]["checkpoint_observed"] = True
+                vm.kill()
+                require(vm.wait(timeout=15) == -signal.SIGKILL, "QEMU was not terminated at the checkpoint")
+                vm = subprocess.Popen(launch, stdout=vm_log, stderr=subprocess.STDOUT)
+                wait_for_guest(150)
+                require(ssh("cat /proc/sys/kernel/random/boot_id").strip() != before_cut,
+                        "power-cut test did not boot a new kernel")
+                ssh(f"env {env} SLU_RESTORE_VM_VERIFY=1 {run_fixture}")
+                phases[phase].update(status="passed", disk_verified=True, recovery_required=phase != "before")
         require(ssh("systemctl is-active ssh.service").strip() == "active", "VM SSH unit is not active")
         port = loopback_port()
         api = API(port, include_error_body=not args.isolated_app_directory)

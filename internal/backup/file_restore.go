@@ -270,7 +270,7 @@ type fileRestoreSnapshot struct {
 	Exists     bool
 }
 
-func snapshotFilesToDirectory(tempRoot string, targets []string) (string, []fileRestoreSnapshot, error) {
+func (fs restoreFiles) snapshotFilesToDirectory(tempRoot string, targets []string) (string, []fileRestoreSnapshot, error) {
 	dir, err := os.MkdirTemp(tempRoot, "slu-restore-rollback-*")
 	if err != nil {
 		return "", nil, err
@@ -297,22 +297,28 @@ func snapshotFilesToDirectory(tempRoot string, targets []string) (string, []file
 		}
 		snapshot.Exists = true
 		snapshot.BackupPath = filepath.Join(dir, fmt.Sprintf("snapshot-%d", index))
-		if err := copyPathBounded(target, snapshot.BackupPath, MaxExtractedBytes); err != nil {
+		if err := fs.copySnapshot(snapshot.BackupPath, target); err != nil {
 			_ = os.RemoveAll(dir)
-			return "", nil, err
+			return "", nil, fmt.Errorf("persist rollback snapshot: %w", err)
 		}
 		snapshots = append(snapshots, snapshot)
 	}
 	return dir, snapshots, nil
 }
 
-func writeAtomicFileFromPath(target, source string, mode os.FileMode, ensurePrivateDirForFile func(string) error) error {
+func (fs restoreFiles) writeAtomicFileFromPath(target, source string, mode os.FileMode, ensurePrivateDirForFile func(string) error) error {
+	var createdDirs []string
 	if ensurePrivateDirForFile != nil {
+		var err error
+		createdDirs, err = missingRestoreDirectories(target)
+		if err != nil {
+			return err
+		}
 		if err := ensurePrivateDirForFile(target); err != nil {
 			return err
 		}
 	}
-	tmp, err := os.CreateTemp(filepath.Dir(target), ".restore-*")
+	tmp, err := os.CreateTemp(restoreEntryDirectory(target), ".restore-*")
 	if err != nil {
 		return err
 	}
@@ -335,7 +341,7 @@ func writeAtomicFileFromPath(target, source string, mode os.FileMode, ensurePriv
 		_ = os.Remove(tmpPath)
 		return err
 	}
-	if err := tmp.Close(); err != nil {
+	if err := errors.Join(fs.syncFile(tmp), tmp.Close()); err != nil {
 		_ = os.Remove(tmpPath)
 		return err
 	}
@@ -343,19 +349,27 @@ func writeAtomicFileFromPath(target, source string, mode os.FileMode, ensurePriv
 		_ = os.Remove(tmpPath)
 		return err
 	}
+	if err := fs.syncPath(restoreEntryDirectory(target)); err != nil {
+		return err
+	}
+	for _, dir := range createdDirs {
+		if err := fs.syncPath(restoreEntryDirectory(dir)); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
-func restoreFileSnapshots(snapshots []fileRestoreSnapshot, ensurePrivateDirForFile func(string) error) error {
+func (fs restoreFiles) restoreFileSnapshots(snapshots []fileRestoreSnapshot, ensurePrivateDirForFile func(string) error) error {
 	var errs []error
 	for _, snapshot := range snapshots {
 		if snapshot.Exists {
-			if err := writeAtomicFileFromPath(snapshot.Target, snapshot.BackupPath, 0600, ensurePrivateDirForFile); err != nil {
+			if err := fs.writeAtomicFileFromPath(snapshot.Target, snapshot.BackupPath, 0600, ensurePrivateDirForFile); err != nil {
 				errs = append(errs, err)
 			}
 			continue
 		}
-		if err := os.Remove(snapshot.Target); err != nil && !os.IsNotExist(err) {
+		if err := fs.removeFile(snapshot.Target); err != nil {
 			errs = append(errs, err)
 		}
 	}
@@ -394,6 +408,22 @@ func (s *Service) applyArchiveFiles(ctx context.Context, files map[string]string
 	}
 
 	dbTarget := s.deps.DBPath()
+	fs := restoreFiles{sync: s.syncRestoreFile}
+	markerPath := RestoreRecoveryMarkerPath(dbTarget)
+	pending, err := RestoreRecoveryPending(dbTarget)
+	if err != nil {
+		return fmt.Errorf("inspect restore recovery marker: %w", err)
+	}
+	if pending {
+		return &IncompleteRecoveryError{
+			Cause:    errors.New("restore could not start"),
+			Recovery: errors.New("restore recovery is already pending"),
+		}
+	}
+	snapshotRoot, err := filepath.EvalSymlinks(restoreEntryDirectory(dbTarget))
+	if err != nil {
+		return fmt.Errorf("resolve rollback snapshot directory: %w", err)
+	}
 	knownHostsTarget := filepath.Join(filepath.Dir(dbTarget), "known_hosts")
 	if path, err := s.deps.KnownHostsWritePath(); err == nil && strings.TrimSpace(path) != "" {
 		knownHostsTarget = path
@@ -401,6 +431,13 @@ func (s *Service) applyArchiveFiles(ctx context.Context, files map[string]string
 	targets := []string{dbTarget}
 	targets = append(targets, SQLiteSidecarPaths(dbTarget)...)
 	if _, ok := files["known_hosts"]; ok {
+		conflict, err := sameRestoreEntry(markerPath, knownHostsTarget)
+		if err != nil {
+			return fmt.Errorf("inspect known_hosts restore target: %w", err)
+		}
+		if conflict {
+			return errors.New("known_hosts restore target conflicts with the restore recovery marker")
+		}
 		targets = append(targets, knownHostsTarget)
 	}
 	if err := ctx.Err(); err != nil {
@@ -417,16 +454,8 @@ func (s *Service) applyArchiveFiles(ctx context.Context, files map[string]string
 			return s.reloadOriginalPersistence(ctx, fmt.Errorf("stage restored runtime persistence: %w", err), restoreHandoff)
 		}
 	}
-	snapshotDir, snapshots, err := snapshotFilesToDirectory(filepath.Dir(dbTarget), targets)
+	snapshotDir, snapshots, err := fs.snapshotFilesToDirectory(snapshotRoot, targets)
 	if err != nil {
-		return s.reloadOriginalPersistence(ctx, err, restoreHandoff)
-	}
-	manifest, err := json.MarshalIndent(snapshots, "", "  ")
-	if err == nil {
-		err = os.WriteFile(filepath.Join(snapshotDir, "recovery.json"), manifest, 0600)
-	}
-	if err != nil {
-		_ = os.RemoveAll(snapshotDir)
 		return s.reloadOriginalPersistence(ctx, err, restoreHandoff)
 	}
 	keepSnapshots := false
@@ -435,6 +464,31 @@ func (s *Service) applyArchiveFiles(ctx context.Context, files map[string]string
 			_ = os.RemoveAll(snapshotDir)
 		}
 	}()
+	manifestPath := filepath.Join(snapshotDir, "recovery.json")
+	manifest, err := json.MarshalIndent(snapshots, "", "  ")
+	if err == nil {
+		err = fs.writeSnapshot(manifestPath, bytes.NewReader(manifest))
+	}
+	if err == nil {
+		err = fs.syncPath(snapshotDir)
+	}
+	if err != nil {
+		return s.reloadOriginalPersistence(ctx, fmt.Errorf("persist rollback manifest: %w", err), restoreHandoff)
+	}
+	// Publishing the marker and syncing the database directory also makes
+	// the snapshot directory entry durable before any live file is changed.
+	created, err := fs.publishRecoveryMarker(markerPath, snapshotDir)
+	if err != nil {
+		cause := fmt.Errorf("persist restore recovery marker: %w", err)
+		if created {
+			keepSnapshots = true
+			return &IncompleteRecoveryError{Cause: cause, Recovery: err, SnapshotDir: snapshotDir}
+		}
+		if errors.Is(err, os.ErrExist) {
+			return &IncompleteRecoveryError{Cause: cause, Recovery: err}
+		}
+		return s.reloadOriginalPersistence(ctx, cause, restoreHandoff)
+	}
 	rollback := func(cause error) error {
 		rollbackCtx, cancelRollback := context.WithTimeout(context.WithoutCancel(ctx), rollbackTimeout)
 		defer cancelRollback()
@@ -447,7 +501,7 @@ func (s *Service) applyArchiveFiles(ctx context.Context, files map[string]string
 		if err := s.deps.RestoredRuntime.PreparePersistenceReplacement(rollbackCtx); err != nil {
 			return incomplete(fmt.Errorf("rollback prepare persistence: %w", err))
 		}
-		if err := restoreFileSnapshots(snapshots, s.deps.EnsurePrivateDirForFile); err != nil {
+		if err := fs.restoreFileSnapshots(snapshots, s.deps.EnsurePrivateDirForFile); err != nil {
 			return incomplete(fmt.Errorf("rollback restore snapshots: %w", err))
 		}
 		if restoreHandoff != nil {
@@ -458,19 +512,22 @@ func (s *Service) applyArchiveFiles(ctx context.Context, files map[string]string
 		if err := s.deps.RestoredRuntime.ReloadRestoredState(rollbackCtx); err != nil {
 			return incomplete(fmt.Errorf("rollback reload runtime state: %w", err))
 		}
+		if err := fs.removeFile(markerPath); err != nil {
+			return incomplete(fmt.Errorf("clear restore recovery marker after rollback: %w", err))
+		}
 		return cause
 	}
-	if err := RemoveSQLiteSidecars(dbTarget); err != nil {
+	if err := fs.removeSQLiteSidecars(dbTarget); err != nil {
 		return rollback(err)
 	}
-	if err := writeAtomicFileFromPath(dbTarget, preparedDB.Path, 0600, s.deps.EnsurePrivateDirForFile); err != nil {
+	if err := fs.writeAtomicFileFromPath(dbTarget, preparedDB.Path, 0600, s.deps.EnsurePrivateDirForFile); err != nil {
 		return rollback(err)
 	}
-	if err := RemoveSQLiteSidecars(dbTarget); err != nil {
+	if err := fs.removeSQLiteSidecars(dbTarget); err != nil {
 		return rollback(err)
 	}
 	if knownHosts, ok := files["known_hosts"]; ok {
-		if err := writeAtomicFileFromPath(knownHostsTarget, knownHosts, 0600, s.deps.EnsurePrivateDirForFile); err != nil {
+		if err := fs.writeAtomicFileFromPath(knownHostsTarget, knownHosts, 0600, s.deps.EnsurePrivateDirForFile); err != nil {
 			return rollback(err)
 		}
 	}
@@ -481,6 +538,12 @@ func (s *Service) applyArchiveFiles(ctx context.Context, files map[string]string
 	}
 	if err := s.deps.RestoredRuntime.ReloadRestoredState(ctx); err != nil {
 		return rollback(err)
+	}
+	if err := fs.removeFile(markerPath); err != nil {
+		keepSnapshots = true
+		return &IncompleteRecoveryError{
+			Cause: fmt.Errorf("clear restore recovery marker: %w", err), Recovery: err, SnapshotDir: snapshotDir,
+		}
 	}
 	return nil
 }

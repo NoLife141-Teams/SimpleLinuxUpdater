@@ -333,3 +333,52 @@ func TestDestinationHealthSurvivesRestoreAfterHistoryPrune(t *testing.T) {
 		})
 	}
 }
+
+func TestDestinationHealthRestoreLeavesConflictingTiedOutcomesUnknown(t *testing.T) {
+	live, restored := newConditionHarness(t), newConditionHarness(t)
+	settings, err := live.service.currentSettings()
+	if err != nil {
+		t.Fatal(err)
+	}
+	fingerprint := destinationConfigFingerprint(settings, DestinationWebhook)
+	legacyAt := live.now.Format(time.RFC3339)
+	for _, outcome := range []struct {
+		harness    *conditionHarness
+		state      string
+		statusCode int
+	}{
+		{live, outboxStateFailed, 500},
+		{restored, outboxStateSucceeded, 204},
+	} {
+		if _, err := outcome.harness.db.Exec(`
+			DROP TABLE notification_destination_health;
+			INSERT INTO notification_outbox
+				(id, destination, destination_fingerprint, event_type, action, state, attempted_at, completed_at, status_code, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			outcome.state, DestinationWebhook, fingerprint, EventUpdateComplete, EventUpdateComplete, outcome.state,
+			legacyAt, legacyAt, outcome.statusCode, legacyAt, legacyAt); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for range 2 {
+		if err := MergeOfflineDeliveryEvidence(t.Context(), live.db, restored.db, live.now); err != nil {
+			t.Fatal(err)
+		}
+		_, facts, err := restored.service.InstallationHealth(t.Context())
+		webhook := facts.Destinations[DestinationWebhook]
+		if err != nil || webhook.LastSuccessfulDeliveryAt == nil || !webhook.LastSuccessfulDeliveryAt.Equal(live.now) ||
+			webhook.LastAttemptState != DeliveryHealthUnknown || webhook.LastAttemptAt != nil {
+			t.Fatalf("conflicting restored Webhook outcomes = %+v, %v", webhook, err)
+		}
+	}
+
+	restored.facts = []ConditionFact{rebootFact(true)}
+	restored.reconcile(t)
+	restored.drain(t)
+	_, facts, err := restored.service.InstallationHealth(t.Context())
+	webhook := facts.Destinations[DestinationWebhook]
+	if err != nil || webhook.LastAttemptState != DeliveryOutcomeSucceeded || webhook.LastAttemptAt == nil ||
+		!webhook.LastAttemptAt.Equal(restored.now) {
+		t.Fatalf("new attempt after reconciling restored evidence = %+v, %v", webhook, err)
+	}
+}

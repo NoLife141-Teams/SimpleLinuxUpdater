@@ -112,7 +112,9 @@ func ensureDestinationHealthSchema(ctx context.Context, db *sql.DB) error {
 	return tx.Commit()
 }
 
-func persistDestinationHealth(ctx context.Context, tx *sql.Tx, event destinationHealthEvidence) error {
+func persistDestinationHealth(ctx context.Context, tx *sql.Tx, event destinationHealthEvidence, ordered bool) error {
+	// Worker completions have a known order even at equal clock readings.
+	// A restore can tie two independent observations with conflicting outcomes.
 	_, err := tx.ExecContext(ctx, `
 		INSERT INTO notification_destination_health
 			(destination, fingerprint, last_success_at, last_attempt_at, last_attempt_state)
@@ -120,11 +122,14 @@ func persistDestinationHealth(ctx context.Context, tx *sql.Tx, event destination
 		ON CONFLICT(destination, fingerprint) DO UPDATE SET
 			last_success_at=CASE WHEN rtrim(excluded.last_success_at, 'Z') > rtrim(last_success_at, 'Z')
 				THEN excluded.last_success_at ELSE last_success_at END,
-			last_attempt_state=CASE WHEN rtrim(excluded.last_attempt_at, 'Z') >= rtrim(last_attempt_at, 'Z')
-				THEN excluded.last_attempt_state ELSE last_attempt_state END,
+			last_attempt_state=CASE
+				WHEN rtrim(excluded.last_attempt_at, 'Z') > rtrim(last_attempt_at, 'Z') THEN excluded.last_attempt_state
+				WHEN rtrim(excluded.last_attempt_at, 'Z') = rtrim(last_attempt_at, 'Z') AND excluded.last_attempt_state <> last_attempt_state
+					THEN CASE WHEN ? THEN excluded.last_attempt_state ELSE 'unknown' END
+				ELSE last_attempt_state END,
 			last_attempt_at=CASE WHEN rtrim(excluded.last_attempt_at, 'Z') >= rtrim(last_attempt_at, 'Z')
 				THEN excluded.last_attempt_at ELSE last_attempt_at END
-	`, event.destination, event.fingerprint, event.successAt, event.attemptAt, event.state)
+	`, event.destination, event.fingerprint, event.successAt, event.attemptAt, event.state, ordered)
 	return err
 }
 

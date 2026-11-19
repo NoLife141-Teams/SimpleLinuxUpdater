@@ -280,7 +280,7 @@ func restoreCurrentOutboxRows(ctx context.Context, db *sql.DB, replacement *outb
 		return err
 	}
 	for _, event := range replacement.DestinationHealth {
-		if err := persistDestinationHealth(ctx, tx, event); err != nil {
+		if err := persistDestinationHealth(ctx, tx, event, false); err != nil {
 			return err
 		}
 	}
@@ -605,7 +605,7 @@ func completeOutboxRow(ctx context.Context, db *sql.DB, id string, outcome outbo
 		if success {
 			event.successAt = outcome.CompletedAt
 		}
-		if err := persistDestinationHealth(ctx, tx, event); err != nil {
+		if err := persistDestinationHealth(ctx, tx, event, true); err != nil {
 			return err
 		}
 	}

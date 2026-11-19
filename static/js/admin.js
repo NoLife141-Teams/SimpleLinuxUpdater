@@ -632,6 +632,34 @@
                 "installation-storage": `DB ${number(view.storage.dbBytes)} bytes; WAL ${number(view.storage.walBytes)} bytes; available ${number(view.storage.availableBytes)} bytes`
             };
             for (const [id, text] of Object.entries(fields)) document.getElementById(id).textContent = text;
+            const destinations = document.getElementById("installation-notification-destinations");
+            const labels = {webhook: "Webhook", discord: "Discord", telegram: "Telegram"};
+            const outcomes = {succeeded: "Succeeded", retrying: "Retrying", failed: "Failed"};
+            const describe = (state, at) => at && outcomes[state] ? `${outcomes[state]} · ${date(at)}` : "Unknown";
+            const entries = notifications.available ? notifications.destinations : [];
+            destinations.parentElement.hidden = entries.length === 0;
+            destinations.replaceChildren(...entries.map(destination => {
+                const card = document.createElement("div");
+                card.dataset.destination = destination.name;
+                const title = document.createElement("dt");
+                title.textContent = labels[destination.name];
+                card.append(title);
+                const queuedAge = destination.oldestPendingAge === null ? "No age observed" : `${number(Math.floor(destination.oldestPendingAge))} seconds`;
+                const lines = [
+                    destination.configured ? (destination.enabled ? "Enabled" : "Disabled") : "Unconfigured",
+                    `Last queued attempt · ${describe(destination.lastAttemptState, destination.lastAttemptAt)}`,
+                    `Last queued success · ${destination.lastSuccessAt ? date(destination.lastSuccessAt) : "Unknown"}`,
+                    `Oldest queued delivery · ${queuedAge}`,
+                    `Last manual test · ${describe(destination.lastManualTestState, destination.lastManualTestAt)}`,
+                ];
+                if (destination.historicalSuccessAt) lines.push(`Previous configuration success · ${date(destination.historicalSuccessAt)}`);
+                for (const text of lines) {
+                    const fact = document.createElement("dd");
+                    fact.textContent = text;
+                    card.append(fact);
+                }
+                return card;
+            }));
             document.getElementById("restore-isolation-controls").hidden = !["active", "unavailable"].includes(view.restoreIsolation);
             const body = document.getElementById("installation-workers");
             body.replaceChildren(...view.workers.map(worker => {

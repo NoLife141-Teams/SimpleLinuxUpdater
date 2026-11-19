@@ -334,6 +334,7 @@ func installationMetrics(value installationDiagnostics) string {
 		if age := notifications.OldestPendingAgeSeconds; age != nil {
 			gauge("notifications_oldest_pending_age_seconds", "Age of the oldest pending, claimed or retrying delivery.", *age)
 		}
+		writeNotificationDestinationMetrics(&b, notifications.Destinations)
 	}
 	switch notifications.ConditionEvaluationState {
 	case notificationpkg.ConditionEvaluationHealthy, notificationpkg.ConditionEvaluationDegraded:
@@ -352,6 +353,63 @@ func installationMetrics(value installationDiagnostics) string {
 		gauge("storage_available_bytes", "Available filesystem bytes for SQLite.", *value.Storage.AvailableBytes)
 	}
 	return b.String()
+}
+
+func writeNotificationDestinationMetrics(b *strings.Builder, facts map[string]notificationpkg.DestinationHealth) {
+	if len(facts) == 0 {
+		return
+	}
+	atSeconds := func(at *time.Time) *float64 {
+		if at == nil {
+			return nil
+		}
+		seconds := float64(at.UnixNano()) / 1e9
+		return &seconds
+	}
+	destinations := [...]string{notificationpkg.DestinationWebhook, notificationpkg.DestinationDiscord, notificationpkg.DestinationTelegram}
+	for _, metric := range []struct {
+		name, help string
+		value      func(notificationpkg.DestinationHealth) *float64
+	}{
+		{"last_successful_delivery_timestamp_seconds", "Last persisted queued HTTP success for the current configuration.", func(d notificationpkg.DestinationHealth) *float64 { return atSeconds(d.LastSuccessfulDeliveryAt) }},
+		{"historical_success_timestamp_seconds", "Latest queued HTTP success for a previous destination configuration.", func(d notificationpkg.DestinationHealth) *float64 { return atSeconds(d.HistoricalSuccessAt) }},
+		{"last_attempt_timestamp_seconds", "Completion time of the last queued attempt for the current configuration.", func(d notificationpkg.DestinationHealth) *float64 { return atSeconds(d.LastAttemptAt) }},
+		{"last_manual_test_timestamp_seconds", "Completion time of the last manual test for the current configuration.", func(d notificationpkg.DestinationHealth) *float64 { return atSeconds(d.LastManualTestAt) }},
+		{"oldest_pending_age_seconds", "Age of the oldest nonterminal row for the destination.", func(d notificationpkg.DestinationHealth) *float64 { return d.OldestPendingAgeSeconds }},
+	} {
+		name := "slu_installation_notifications_destination_" + metric.name
+		fmt.Fprintf(b, "# HELP %s %s\n# TYPE %s gauge\n", name, metric.help, name)
+		for _, destination := range destinations {
+			if d, ok := facts[destination]; ok {
+				if value := metric.value(d); value != nil {
+					fmt.Fprintf(b, "%s{destination=%q} %g\n", name, destination, *value)
+				}
+			}
+		}
+	}
+	for _, metric := range []struct {
+		name, help string
+		state      func(notificationpkg.DestinationHealth) notificationpkg.DeliveryOutcome
+	}{
+		{"last_attempt_state", "Observed outcome of the last queued attempt for the current configuration.", func(d notificationpkg.DestinationHealth) notificationpkg.DeliveryOutcome { return d.LastAttemptState }},
+		{"last_manual_test_state", "Observed outcome of the last manual test for the current configuration.", func(d notificationpkg.DestinationHealth) notificationpkg.DeliveryOutcome {
+			return d.LastManualTestState
+		}},
+	} {
+		name := "slu_installation_notifications_destination_" + metric.name
+		fmt.Fprintf(b, "# HELP %s %s\n# TYPE %s gauge\n", name, metric.help, name)
+		for _, destination := range destinations {
+			if d, ok := facts[destination]; ok {
+				state := metric.state(d)
+				switch state {
+				case notificationpkg.DeliveryOutcomeSucceeded, notificationpkg.DeliveryOutcomeRetrying, notificationpkg.DeliveryOutcomeFailed:
+				default:
+					state = notificationpkg.DeliveryHealthUnknown
+				}
+				fmt.Fprintf(b, "%s{destination=%q,state=%q} 1\n", name, destination, state)
+			}
+		}
+	}
 }
 
 var installationWorkerNames = []string{"scheduler", "host_facts", "vulnerabilities", "backup", "notifications", "audit_pruner", "job_log_pruner"}

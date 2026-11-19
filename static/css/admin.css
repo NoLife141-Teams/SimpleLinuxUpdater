@@ -1588,6 +1588,18 @@
     margin-bottom: 16px;
 }
 
+.installation-notification-deliveries {
+    margin-bottom: 16px;
+}
+
+.installation-notification-deliveries h3 {
+    margin: 0 0 8px;
+}
+
+#installation-notification-destinations {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
 .metrics-credential-facts > div {
     min-width: 0;
     padding: 10px;
@@ -1643,6 +1655,10 @@
 @media (max-width: 900px) {
     .metrics-credential-facts {
         grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    #installation-notification-destinations {
+        grid-template-columns: 1fr;
     }
 }
 

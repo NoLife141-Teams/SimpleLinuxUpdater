@@ -316,6 +316,18 @@
         const timestamp = value => typeof value === "string" ? value : "";
         const count = value => Number.isFinite(value) && value >= 0 ? value : null;
         const notifications = data.notifications || {};
+        const deliveryOutcome = value => ["succeeded", "retrying", "failed"].includes(value) ? value : "unknown";
+        const destinations = ["webhook", "discord", "telegram"].flatMap(name => {
+            const value = notifications.destinations?.[name];
+            if (!value) return [];
+            return [{
+                name, enabled: Boolean(value.enabled), configured: Boolean(value.configured),
+                lastAttemptAt: timestamp(value.last_attempt_at), lastAttemptState: deliveryOutcome(value.last_attempt_state),
+                lastSuccessAt: timestamp(value.last_successful_delivery_at), historicalSuccessAt: timestamp(value.historical_success_at),
+                lastManualTestAt: timestamp(value.last_manual_test_at), lastManualTestState: deliveryOutcome(value.last_manual_test_state),
+                oldestPendingAge: count(value.oldest_pending_age_seconds)
+            }];
+        });
         const evaluationState = ["not_observed", "healthy", "degraded"].includes(notifications.condition_evaluation_state)
             ? notifications.condition_evaluation_state
             : "";
@@ -344,7 +356,8 @@
                 evaluationState,
                 lastEvaluationAt: timestamp(notifications.last_condition_evaluation_at),
                 lastDeliveryAt: timestamp(notifications.last_successful_delivery_at),
-                oldestPendingAge: count(notifications.oldest_pending_age_seconds)
+                oldestPendingAge: count(notifications.oldest_pending_age_seconds),
+                destinations
             },
             storage: { dbBytes: count(data.storage?.db_bytes), walBytes: count(data.storage?.wal_bytes), availableBytes: count(data.storage?.available_bytes) } };
     }

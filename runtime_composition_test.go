@@ -13,6 +13,7 @@ import (
 	internaljobs "debian-updater/internal/jobs"
 	notificationpkg "debian-updater/internal/notifications"
 	serverpkg "debian-updater/internal/servers"
+	"debian-updater/internal/vulnerabilities"
 
 	"github.com/alexedwards/scs/v2"
 	_ "modernc.org/sqlite"
@@ -148,6 +149,37 @@ func TestRuntimeCompositionReloadRestoredStateRehydratesNotificationPersistence(
 	}
 	if notifications.prepares != 1 {
 		t.Fatalf("notification persistence preparations=%d, want 1", notifications.prepares)
+	}
+}
+
+func TestRejectedRestoreKeepsNotificationDeliveryPaused(t *testing.T) {
+	notifications := &reloadTrackingNotificationLifecycle{}
+	app := newTestAppWithDeps(t, filepath.Join(t.TempDir(), "restore-audit-failure.db"), AppDeps{NotificationService: notifications})
+	const host = "restored"
+	job, err := app.Deps.CurrentJobManager().CreateJob(JobCreateParams{
+		Kind: internaljobs.KindVulnerabilityScan, ServerName: host, Actor: "operator", Status: jobStatusRunning,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := (vulnerabilities.Repository{DB: app.Deps.DB}).Save(t.Context(), host, vulnerabilities.Scan{
+		ID: job.ID, State: "complete", Scope: "installed_packages", FinishedAt: time.Now().UTC().Format(time.RFC3339),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.Deps.DB().Exec(`CREATE TRIGGER reject_restored_audit
+		BEFORE INSERT ON audit_events WHEN NEW.action = 'server.vulnerabilities.scan'
+		BEGIN SELECT RAISE(ABORT, 'reject restored audit'); END`); err != nil {
+		t.Fatal(err)
+	}
+	composition := newRuntimeComposition(app.Deps)
+	composition.resetCaches = func() {}
+	err = composition.ReloadRestoredState(t.Context())
+	if err == nil || !strings.Contains(err.Error(), "reject restored audit") {
+		t.Fatalf("reload result = %v, want restored audit failure", err)
+	}
+	if notifications.reloads != 0 {
+		t.Fatal("notification deliveries were released before restored audit completed")
 	}
 }
 

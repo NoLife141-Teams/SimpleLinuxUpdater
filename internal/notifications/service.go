@@ -690,7 +690,8 @@ func (s *Service) Accept(intent DeliveryIntent) Admission {
 	if s.conditionMonitoringStarted() {
 		s.signalWorker()
 	}
-	if s.deps.ReadConditions != nil && isConditionEvent(intent.Action) {
+	eventType := strings.TrimSpace(intent.Action)
+	if !eventEnabled(supportedEvents, eventType) || (s.deps.ReadConditions != nil && isConditionEvent(eventType)) {
 		return Admission{State: AdmissionSkipped}
 	}
 	s.lifecycleMu.Lock()

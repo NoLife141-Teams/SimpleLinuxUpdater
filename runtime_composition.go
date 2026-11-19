@@ -139,8 +139,7 @@ func (c *runtimeComposition) ReloadRestoredState(ctx context.Context) (resultErr
 	}
 	deps.SetCurrentJobManager(jm)
 	if deps.VulnerabilityScans != nil {
-		// Recover Job State Transition before generic interruption. Audit hooks
-		// must wait until Notification Delivery Lifecycle persistence resumes.
+		// Recover Job State Transition before generic interruption.
 		if err := deps.VulnerabilityScans.reconcile(ctx, false); err != nil {
 			return fmt.Errorf("restore vulnerability scans: %w", err)
 		}
@@ -179,15 +178,15 @@ func (c *runtimeComposition) ReloadRestoredState(ctx context.Context) (resultErr
 		return fmt.Errorf("rebuild restored auth session manager: %w", err)
 	}
 	deps.SetSessionManager(sm)
-	// Resume notification persistence only after the other restored runtime owners are ready.
-	if reloader, ok := deps.NotificationService.(notificationpkg.PersistenceReloader); ok {
-		if err := reloader.ReloadPersistence(ctx); err != nil {
-			return fmt.Errorf("reload restored Notification Delivery Lifecycle: %w", err)
-		}
-	}
 	if deps.VulnerabilityScans != nil {
 		if err := deps.VulnerabilityScans.Reconcile(ctx); err != nil {
 			return fmt.Errorf("audit restored vulnerability scans: %w", err)
+		}
+	}
+	// Keep deliveries paused until the last fallible recovery step has completed.
+	if reloader, ok := deps.NotificationService.(notificationpkg.PersistenceReloader); ok {
+		if err := reloader.ReloadPersistence(ctx); err != nil {
+			return fmt.Errorf("reload restored Notification Delivery Lifecycle: %w", err)
 		}
 	}
 	return nil

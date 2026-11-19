@@ -240,6 +240,13 @@ func EnsureSchemaConfigured(db *sql.DB, logConfig LogConfig) error {
 	if _, err := db.Exec("CREATE INDEX IF NOT EXISTS idx_jobs_apt_target_created_at ON jobs (apt_target, created_at) WHERE apt_target <> ''"); err != nil {
 		return err
 	}
+	if _, err := db.Exec(`
+		CREATE INDEX IF NOT EXISTS idx_jobs_apt_incident
+		ON jobs (error_class, status, apt_target, created_at, id, kind)
+		WHERE apt_target <> '' AND status = 'failed' AND error_class = 'reconciliation_required'
+	`); err != nil {
+		return err
+	}
 	return nil
 }
 

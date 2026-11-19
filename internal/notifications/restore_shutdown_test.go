@@ -60,3 +60,23 @@ func TestPreparationFailureResumesOriginalNotificationPersistence(t *testing.T) 
 		})
 	}
 }
+
+func TestUnsupportedAuditDoesNotWaitForRestore(t *testing.T) {
+	h := newConditionHarness(t)
+	if err := h.service.PreparePersistenceReplacement(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	result := make(chan Admission, 1)
+	go func() {
+		result <- h.service.Accept(DeliveryIntent{Action: "server.vulnerabilities.scan"})
+	}()
+	t.Cleanup(h.service.resumePersistence)
+	select {
+	case admission := <-result:
+		if admission.State != AdmissionSkipped {
+			t.Fatalf("unsupported audit admission = %+v", admission)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("unsupported audit waited for notification persistence to resume")
+	}
+}

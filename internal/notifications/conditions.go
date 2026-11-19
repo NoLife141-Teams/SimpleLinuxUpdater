@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"net/url"
 	"sort"
 	"strconv"
@@ -515,11 +516,13 @@ func (s *Service) restoreConditions(ctx context.Context, db *sql.DB) error {
 	if err != nil {
 		return err
 	}
-	mergeAPTAdmissions(state, archived.Admissions)
+	restored := *state
+	restored.Admissions = maps.Clone(state.Admissions)
+	mergeAPTAdmissions(&restored, archived.Admissions)
 	// Do not replay historical audit events from the restored database. Current
 	// domain state is revalidated by the source before any pending delivery.
-	state.Cursor = "restore"
-	return saveConditionState(ctx, db, state)
+	restored.Cursor = "restore"
+	return saveConditionState(ctx, db, &restored)
 }
 
 func saveConditionState(ctx context.Context, db *sql.DB, state *conditionState) error {

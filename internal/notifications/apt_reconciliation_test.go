@@ -3,6 +3,7 @@ package notifications
 import (
 	"database/sql"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -65,6 +66,49 @@ func TestAPTAlertsAreOptInAndRevalidateBeforeRetry(t *testing.T) {
 	h.reconcile(t)
 	if h.client.calls != 3 || h.count(t, EventAPTReconciliationRequired) != 4 || h.count(t, EventReminder) != 0 {
 		t.Fatalf("distinct incident or reminder count invalid, attempts: %d", h.client.calls)
+	}
+}
+
+func TestAPTAdmissionFromRejectedArchiveDoesNotSuppressLiveDelivery(t *testing.T) {
+	live := newConditionHarness(t)
+	archive := newConditionHarness(t)
+	fact := ConditionFact{
+		ID: APTReconciliationConditionID("target", "original"), EventType: EventAPTReconciliationRequired,
+		TargetType: "server", TargetName: "node", Active: true,
+	}
+	archive.facts = []ConditionFact{fact}
+	archive.reconcile(t)
+	archive.drain(t)
+	if archive.client.calls != 1 {
+		t.Fatal("fixture archive is missing its delivered alert")
+	}
+	if _, err := archive.db.Exec(`CREATE TRIGGER reject_archive_cleanup
+		BEFORE DELETE ON notification_outbox BEGIN SELECT RAISE(ABORT, 'reject archive cleanup'); END`); err != nil {
+		t.Fatal(err)
+	}
+	live.now = archive.now.Add(defaultOutboxRetention + time.Hour)
+	live.service.deps.Retention = defaultOutboxRetention
+	ctx := t.Context()
+	if err := live.service.PreparePersistenceReplacement(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := live.service.StageAPTDeliveryEvidence(ctx, archive.db); err != nil {
+		t.Fatal(err)
+	}
+	liveDB := live.db
+	live.service.deps.DB = func() *sql.DB { return archive.db }
+	if err := live.service.ReloadPersistence(ctx); err == nil || !strings.Contains(err.Error(), "reject archive cleanup") {
+		t.Fatalf("reload result = %v, want cleanup failure", err)
+	}
+	live.service.deps.DB = func() *sql.DB { return liveDB }
+	if err := live.service.ReloadPersistence(ctx); err != nil {
+		t.Fatal(err)
+	}
+	live.facts = []ConditionFact{fact}
+	live.reconcile(t)
+	live.drain(t)
+	if live.client.calls != 1 {
+		t.Fatalf("rejected archive suppressed the live alert, deliveries = %d", live.client.calls)
 	}
 }
 

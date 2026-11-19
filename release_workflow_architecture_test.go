@@ -92,14 +92,29 @@ func TestReleaseGateMatchesCriticalCIValidation(t *testing.T) {
 	release := readWorkflowForTest(t, ".github/workflows/release.yml")
 	releaseGate := workflowJobForTest(t, release, "release-gate", "publish-release")
 
+	ciTest := workflowJobForTest(t, ci, "test", "quality")
+	for _, shard := range []string{"1", "2", "3"} {
+		if !strings.Contains(ciTest, "cmd: tools/ci/test-race-shard.sh "+shard+" 3\n") {
+			t.Errorf("normal CI lost race shard %s of 3", shard)
+		}
+	}
+	if !strings.Contains(releaseGate, "go test -race -count=1 ./...") {
+		t.Error("release-gate lost the full race test suite")
+	}
+	if !strings.Contains(releaseGate, "go build -o webserver .") {
+		t.Error("release-gate lost the production build")
+	}
+	ciUpgrade := workflowJobForTest(t, ci, "upgrade-qualification", "ci-required")
+	if !strings.Contains(ciUpgrade, `go build -o "$RUNNER_TEMP/upgrade-candidate" .`) {
+		t.Error("normal CI lost the production build for upgrade qualification")
+	}
+
 	criticalCommands := []string{
 		"go vet ./...",
 		"staticcheck ./...",
 		"govulncheck ./...",
 		"actionlint",
-		"go test -race -count=1 ./...",
 		"go test -count=1 -covermode=atomic -coverprofile=coverage.out ./...",
-		"go build -o webserver .",
 		"npm ci",
 		"npm audit --audit-level=moderate",
 		"npm run test:unit",

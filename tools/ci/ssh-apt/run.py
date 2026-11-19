@@ -266,9 +266,7 @@ class Harness:
         env_args = []
         container_env = app_environment(Path("/work"), 8080)
         container_env["DEBIAN_UPDATER_LISTEN_ADDR"] = ":8080"
-        # Keep startup facts refresh from reserving the fixture while the
-        # scenario verifies the recovered APT status and starts its repair.
-        container_env["DEBIAN_UPDATER_HOST_FACTS_AUTO_REFRESH_ENABLED"] = "false"
+        container_env["DEBIAN_UPDATER_HOST_FACTS_AUTO_REFRESH_ENABLED"] = "true"
         for key, value in container_env.items():
             env_args.extend(["--env", key + "=" + value])
         self.docker("run", "-d", "--name", self.app_name, "--network", self.network,
@@ -384,12 +382,25 @@ class Harness:
         self.add_server(name)
         archive_passphrase = secrets.token_urlsafe(24)
 
+        def wait_for_facts():
+            deadline = time.monotonic() + 20
+            while self.api.server(name)["status"] == "facts_refresh":
+                require(time.monotonic() < deadline, "startup facts refresh did not finish")
+                time.sleep(.1)
+
+        def check_latch(expected_job):
+            status = self.api.server(name)
+            require(status.get("apt_reconciliation_required") and status.get("apt_reconciliation_job_id") == expected_job,
+                    "APT latch or exact job disappeared while checking the host")
+
         def export():
+            wait_for_facts()
             archive = self.api.request("POST", "/api/backup/export", {"passphrase": archive_passphrase}, binary=True)
             require(100 < len(archive) <= 16 * 1024 * 1024, "expected a bounded encrypted fixture archive")
             return archive
 
         def restore(archive):
+            wait_for_facts()
             self.api.restore_archive(archive, archive_passphrase)
             require(not self.api.request("GET", "/api/auth/status")["authenticated"], "restore retained the former session")
             self.api.request("POST", "/api/auth/login", {"username": "fixture-admin", "password": self.password})
@@ -445,12 +456,13 @@ class Harness:
                     host.get("job_id") == job_id and host.get("reconciliation_required") and
                     host.get("diagnostic_available") and not host.get("retryable"),
                     "restart did not preserve the batch job and its reconciliation requirement")
-            require(self.api.server(name)["status"] == "needs_reconciliation", "restart did not block the host")
+            check_latch(job_id)
             logs_path = f"/api/jobs/{job_id}/logs"
             log_head = self.api.request("GET", logs_path + "?limit=1")
             require(log_head["has_more"], "interrupted job must have multiple retained log fragments")
             log_tail_path = f"{logs_path}?after_seq={log_head['next_sequence']}&limit=500"
             log_tail = self.api.request("GET", log_tail_path)
+            wait_for_facts()
             conflict = self.api.restore_archive(conflicting_archive, archive_passphrase, allowed=(409,))
             require("conflicts with APT reconciliation evidence" in conflict["error"]
                     and self.api.server(name)["server_identity"] == server_identity
@@ -458,16 +470,14 @@ class Harness:
                     and self.api.job(job_id)["error_class"] == "reconciliation_required",
                     "restore with a reused name did not preserve the live installation and incident")
             restore(pre_incident_archive)
-            status = self.api.server(name)
-            require(status["status"] == "needs_reconciliation" and status.get("job_id") == job_id
-                    and self.api.job(job_id)["error_class"] == "reconciliation_required",
+            check_latch(job_id)
+            require(self.api.job(job_id)["error_class"] == "reconciliation_required",
                     "restore of a pre-incident archive lost the live APT reconciliation job")
             self.docker("restart", "--timeout", "25", self.app_name)
             self.connect_app()
             self.api.request("POST", "/api/auth/login", {"username": "fixture-admin", "password": self.password})
-            status = self.api.server(name)
-            require(status["status"] == "needs_reconciliation" and status.get("job_id") == job_id
-                    and self.api.job(job_id)["status"] == "failed",
+            check_latch(job_id)
+            require(self.api.job(job_id)["status"] == "failed",
                     "restart after restore lost the live APT reconciliation job")
             require(self.api.request("GET", log_tail_path) == log_tail,
                     "restart after restore changed the interrupted job's log fragments or cursor")
@@ -479,13 +489,14 @@ class Harness:
                 require("APT reconciliation is required" in rejection["error"],
                         f"{action} was not blocked by the recovered APT reconciliation requirement")
 
+            wait_for_facts()
             locked_repair_id = self.api.request("POST", "/api/repair/" + name,
                                                 {"confirm": True, "job_id": job_id})["job_id"]
             locked_repair, _ = self.api.wait_job(locked_repair_id, lambda j: j["status"] in TERMINAL, seconds=15)
             require(locked_repair["status"] == "failed" and locked_repair["error_class"] == "reconciliation_required" and
-                    "APT/DPKG repair blocked: package-manager lock is active." in locked_repair["logs_text"] and
-                    self.api.server(name)["status"] == "needs_reconciliation",
+                    "APT/DPKG repair blocked: package-manager lock is active." in locked_repair["logs_text"],
                     "repair did not respect the active lock and preserve the reconciliation requirement")
+            check_latch(locked_repair_id)
             restore(pre_incident_archive)
             require(self.api.server(name).get("job_id") == locked_repair_id
                     and self.api.job(job_id)["error_class"] == "reconciliation_required"
@@ -508,9 +519,9 @@ class Harness:
         rejected_id = self.api.request("POST", "/api/repair/" + name,
                                        {"confirm": True, "job_id": locked_repair_id})["job_id"]
         rejected, _ = self.api.wait_job(rejected_id, lambda j: j["status"] in TERMINAL)
-        require(rejected["status"] == "failed" and "SSH host key differs" in rejected["logs_text"]
-                and self.api.server(name)["status"] == "needs_reconciliation",
+        require(rejected["status"] == "failed" and "SSH host key differs" in rejected["logs_text"],
                 "newly trusted host key did not block repair before executing a command")
+        check_latch(rejected_id)
         self.api.request("POST", "/api/repair/" + name,
                          {"confirm": True, "job_id": locked_repair_id, "verified_host_key": verified_key}, allowed=(409,))
         pending_repair_archive = export()
@@ -524,7 +535,7 @@ class Harness:
                 facts.get("independently_verified_host_fingerprint") == verified_key,
                 "rotated host key confirmation did not retain the operator, job and fingerprint audit evidence")
         repaired, _ = self.api.wait_job(repair_id, lambda j: j["status"] in TERMINAL)
-        require(repaired["status"] == "succeeded" and self.api.server(name)["status"] == "done",
+        require(repaired["status"] == "succeeded" and not self.api.server(name).get("apt_reconciliation_required"),
                 "explicit repair did not reconcile the restarted host")
         require(self.target("dpkg", "--audit").strip() == "" and self.version() == "2.0" and
                 upgrades() == baseline_upgrades + 1, "repair did not verify APT state without replaying the upgrade")
@@ -532,7 +543,7 @@ class Harness:
         # the repair needed to settle the next, newer archive.
         restore(pre_incident_archive)
         restore(pending_repair_archive)
-        require(self.api.server(name)["status"] != "needs_reconciliation" and self.api.job(repair_id)["status"] == "succeeded"
+        require(not self.api.server(name).get("apt_reconciliation_required") and self.api.job(repair_id)["status"] == "succeeded"
                 and upgrades() == baseline_upgrades + 1,
                 "restoring an older pending-repair archive reopened a resolved incident")
         record.update(batch_id=batch_id, job_id=job_id, error_class=job["error_class"],

@@ -200,7 +200,8 @@
         const hasExplicitFactsState = Object.hasOwn(rawTriage, "facts_state") && text(rawTriage.facts_state) !== "";
         const statusValue = text(server.status).toLowerCase();
         const transientFallback = !["updating", "pending_approval", "approved", "upgrading", "autoremove", "repairing", "rebooting", "sudoers", "facts_refresh", "vulnerability_scan", "postchecks_test"].includes(statusValue);
-        const packageMutationFallback = transientFallback && statusValue !== "needs_reconciliation";
+        const reconciliationRequired = !!server.apt_reconciliation_required || statusValue === "needs_reconciliation";
+        const packageMutationFallback = transientFallback && !reconciliationRequired;
         const triage = {
             ...clone(rawTriage),
             eligible: Object.hasOwn(rawTriage, "eligible") ? !!rawTriage.eligible : (pendingApproval && pendingPackages > 0),
@@ -233,7 +234,7 @@
                 : ". Run a fresh update check or inspect logs before approving";
             driftReason = `Timeline is waiting for approval, but runtime status is ${statusLabel(server.status)}${suffix}`;
         }
-        const failed = ["error", "needs_reconciliation"].includes(text(server.status).toLowerCase()) || timeline.state === "error";
+        const failed = reconciliationRequired || statusValue === "error" || timeline.state === "error";
         const failureReason = failed
             ? [timeline.summary, record(intelligence.last_update).failure_cause, record(intelligence.last_failed_update).failure_cause, record(intelligence.last_failed).failure_cause, record(intelligence.last_failure).failure_cause, server.failure_cause]
                 .map(value => text(value))
@@ -242,7 +243,7 @@
         const actions = Object.fromEntries(["update", "autoremove", "repair_apt", "reboot", "enable_apt", "disable_apt", "refresh_facts", "approve_all", "approve_security", "approve_security_kept_back", "approve_full", "cancel"]
             .map(key => [key, actionFor(actionViews, key)]));
         const rawRecommendedAction = record(intelligence.recommended_action);
-        const reconciliationFallback = statusValue === "needs_reconciliation";
+        const reconciliationFallback = reconciliationRequired;
         const failedFallback = statusValue === "error";
         const staleFactsFallback = ["stale", "unknown"].includes(text(triage.facts_state).toLowerCase());
         const fallbackRecommendation = reconciliationFallback

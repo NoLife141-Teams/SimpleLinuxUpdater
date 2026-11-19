@@ -1020,6 +1020,8 @@ func TestActionRoutesRestoreRuntimeSnapshotWhenJobCreationFails(t *testing.T) {
 			if tc.name == "apt repair" {
 				seedAPTReconciliationJob(t, app.Deps.CurrentJobManager(), state, server)
 				original.JobID = testAPTReconciliationJobID
+				original.APTReconciliationPending = true
+				original.APTReconciliationJobID = testAPTReconciliationJobID
 			}
 			if _, err := jobDB.Exec(`CREATE TRIGGER reject_action_job BEFORE INSERT ON jobs BEGIN SELECT RAISE(FAIL, 'fixture job insert failure'); END`); err != nil {
 				t.Fatal(err)

@@ -407,7 +407,7 @@ Notes:
 
 The Status page shows current state and allows you to inspect logs. Logs are updated automatically as the updater runs.
 
-Each selected server also shows one **Recommended action**: **Monitor APT**, **Repair package state**, **Review approval**, **Reboot and verify**, or **Healthy**. An uncertain mutating APT timeout is persisted as `needs_reconciliation`; normal update and cleanup actions remain blocked until an operator reviews the live logs and confirms **Repair APT**. The repair checks package-manager locks, runs `dpkg --configure -a`, repairs dependencies, and verifies `dpkg --audit` plus `apt-get check` before returning the server to `done`.
+Each selected server shows a **Recommended action**. After an uncertain APT mutation, Status shows **APT reconciliation required** alongside any active refresh. Readers with report access can open **APT incident report**. Manual and scheduled updates and cleanup remain blocked until a confirmed repair succeeds. Scheduled Runs identifies an APT skip and links the blocking report when available. If a refresh is active, wait for it to finish before starting **Repair APT**. The repair checks package-manager locks, completes pending configuration, repairs dependencies and checks package health.
 
 When current host facts report that a reboot is required, **Recommended action → Reboot and verify** offers a deliberately confirmed controlled reboot. The reboot command is sent once and is never automatically replayed. SimpleLinuxUpdater then waits for SSH to return and only reports success after proving that uptime reset and the reboot-required marker cleared. A missing uptime baseline or an unverified restart leaves the job in `error` for operator review.
 

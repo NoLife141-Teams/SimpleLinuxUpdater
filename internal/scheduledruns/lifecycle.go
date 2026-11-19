@@ -149,20 +149,6 @@ func (l *Lifecycle) executeRun(run policies.Run, policy policies.Policy, server 
 }
 
 func (l *Lifecycle) executeAdmitted(run policies.Run, policy policies.Policy, server servers.Server) (string, string, error) {
-	if current := l.deps.ServerState.CurrentStatusSnapshot(server.Name); current != nil {
-		active, _ := l.deps.ServerState.ActionStatusInProgress(server.Name)
-		if active {
-			return l.executeByMode(run, policy, server)
-		}
-		readiness := l.deps.MaintenanceReadiness(server)
-		if !readiness.Ready {
-			return l.markReadinessSkipped(run, policy, server, readiness)
-		}
-	}
-	return l.executeByMode(run, policy, server)
-}
-
-func (l *Lifecycle) executeByMode(run policies.Run, policy policies.Policy, server servers.Server) (string, string, error) {
 	releaseAdmission := l.deps.AcquireScheduledAction(server.Name)
 	defer releaseAdmission()
 	switch policy.ExecutionMode {
@@ -290,6 +276,8 @@ func scheduledRunSkippedSummary(reason string) string {
 		return "Scheduled run superseded by higher-priority policy"
 	case policies.RunReasonRolloutGate:
 		return "Scheduled run blocked because an earlier rollout batch did not succeed"
+	case policies.RunReasonAPTReconciliation:
+		return "APT reconciliation is required before scheduled package maintenance"
 	default:
 		return "Scheduled run skipped"
 	}
@@ -331,6 +319,7 @@ func (l *Lifecycle) runPackageMutation(run policies.Run, policy policies.Policy,
 		status := policies.RunFailed
 		reason := policies.RunReasonMissing
 		summary := "Server unavailable for scheduled " + operation
+		var blocker *maintenance.Blocker
 		if errors.Is(err, servers.ErrDisabled) {
 			return l.markReadinessSkipped(run, policy, server, servers.DisabledReadiness())
 		}
@@ -342,12 +331,20 @@ func (l *Lifecycle) runPackageMutation(run policies.Run, policy policies.Policy,
 			reason = policies.RunReasonBusy
 			summary = "Server busy; scheduled " + operation + " skipped"
 		}
+		var reconciliation servers.APTReconciliationError
+		if errors.As(err, &reconciliation) {
+			status = policies.RunSkipped
+			reason = policies.RunReasonAPTReconciliation
+			summary = scheduledRunSkippedSummary(reason)
+			blocker = &maintenance.Blocker{JobID: reconciliation.JobID}
+		}
 		finishedAt := l.deps.JobTimestampNow()
 		updateErr := l.deps.PolicyRepository.UpdateRun(run.ID, policies.RunUpdate{
-			Status:     &status,
-			Reason:     &reason,
-			Summary:    &summary,
-			FinishedAt: &finishedAt,
+			Status:             &status,
+			Reason:             &reason,
+			Summary:            &summary,
+			FinishedAt:         &finishedAt,
+			MaintenanceBlocker: blocker,
 		})
 		_ = l.deps.AuditService.Record("system", "", "schedule.run."+status, "server", server.Name, status, summary, map[string]any{
 			"policy_revision":   policy.Revision,
@@ -358,6 +355,11 @@ func (l *Lifecycle) runPackageMutation(run policies.Run, policy policies.Policy,
 			"scheduled_for_utc": run.ScheduledForUTC,
 		})
 		return status, "", updateErr
+	}
+
+	if readiness := l.deps.MaintenanceReadiness(serverForRun); !readiness.Ready {
+		l.deps.ServerState.RestoreAdmittedAction(server.Name, preStartStatus.ActionGeneration+1, preStartStatus)
+		return l.markReadinessSkipped(run, policy, serverForRun, readiness)
 	}
 
 	retryPolicy := l.deps.LoadRetryPolicy()
@@ -472,6 +474,10 @@ func (l *Lifecycle) runScan(run policies.Run, policy policies.Policy, server ser
 		return status, "", updateErr
 	}
 
+	if readiness := l.deps.MaintenanceReadiness(serverForRun); !readiness.Ready {
+		l.deps.ServerState.RestoreAdmittedAction(server.Name, preStartStatus.ActionGeneration+1, preStartStatus)
+		return l.markReadinessSkipped(run, policy, serverForRun, readiness)
+	}
 	retryPolicy := l.deps.LoadRetryPolicy()
 	meta := l.buildScheduledJobMeta(policy, run.ScheduledForUTC)
 	jm := l.deps.CurrentJobManager()

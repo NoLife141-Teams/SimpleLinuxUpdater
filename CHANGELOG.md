@@ -24,6 +24,7 @@ The format is inspired by Keep a Changelog, and this project uses Semantic Versi
 - Bind APT repair to the original job and SSH endpoint, including after restart or restore.
 - Check the SSH host key used by the interrupted package mutation before repair and audit independently verified key rotations.
 - Keep open APT reconciliation and its job report when restoring an older archive on the same installation.
+- Keep APT reconciliation visible during host facts refresh and explain scheduled skips caused by it.
 - Keep the verified cause of a scheduler refusal across a restart before Scheduled Runs records the skip.
 - Deduplicate approval alerts by exact plan and destination. Preserve scheduled-run Server links across inventory renames.
 

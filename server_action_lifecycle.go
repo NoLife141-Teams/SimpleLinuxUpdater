@@ -49,6 +49,7 @@ type serverActionStartSpec struct {
 	allowedStatuses        map[string]bool
 	invalidStatus          string
 	packageMutation        bool
+	requireResolvedAPT     bool
 	preserveReconciliation bool
 	runWithJob             func(*UpdateService, Server, string, string, RetryPolicy, string, string)
 }
@@ -176,10 +177,7 @@ func (l *serverActionLifecycle) StartAptRepair(name, actor, clientIP string, con
 		startFailure:      "Failed to start APT repair",
 		createFailure:     "Failed to create APT repair job",
 		successMessage:    "APT repair started",
-		allowedStatuses: map[string]bool{
-			runtimepkg.StatusNeedsReconciliation: true,
-		},
-		invalidStatus: "Server does not require APT repair",
+		invalidStatus:     "Server does not require APT repair",
 		runWithJob: func(service *UpdateService, server Server, actor, clientIP string, policy RetryPolicy, jobID, _ string) {
 			service.RunAptRepairJob(AptRepairRunRequest{
 				ExpectedHostKey: expectedKey,
@@ -211,7 +209,8 @@ func (l *serverActionLifecycle) StartReboot(name, actor, clientIP string, confir
 			runtimepkg.StatusError:     true,
 			runtimepkg.StatusCancelled: true,
 		},
-		invalidStatus: "Server is not ready for a controlled reboot",
+		invalidStatus:      "Server is not ready for a controlled reboot",
+		requireResolvedAPT: true,
 		runWithJob: func(service *UpdateService, server Server, actor, clientIP string, policy RetryPolicy, jobID, _ string) {
 			service.RunRebootJob(RebootRunRequest{
 				Server:   server,
@@ -280,12 +279,19 @@ func (l *serverActionLifecycle) startAction(name, actor, clientIP, sudoPassword 
 		l.recordAudit(spec.auditAction, name, "failure", "Server not found", retryMeta)
 		return jsonResult(http.StatusNotFound, "Server not found")
 	}
-	if preStartStatus != nil && spec.packageMutation && strings.EqualFold(strings.TrimSpace(preStartStatus.Status), runtimepkg.StatusNeedsReconciliation) {
+	rejectReconciliation := func() serverActionLifecycleResult {
 		retryMeta["current_status"] = preStartStatus.Status
-		l.recordAudit(spec.auditAction, name, "ignored", "APT reconciliation is required before another package mutation", retryMeta)
-		return jsonResult(http.StatusConflict, "APT reconciliation is required before another package mutation")
+		retryMeta["reason_code"] = "apt_reconciliation_required"
+		l.recordAudit(spec.auditAction, name, "ignored", serverpkg.ErrAPTReconciliation.Error(), retryMeta)
+		return serverActionLifecycleResult{statusCode: http.StatusConflict, body: map[string]any{
+			"error": serverpkg.ErrAPTReconciliation.Error(), "reason_code": "apt_reconciliation_required",
+		}}
 	}
-	if preStartStatus != nil && len(spec.allowedStatuses) > 0 && !spec.allowedStatuses[strings.ToLower(strings.TrimSpace(preStartStatus.Status))] {
+	if spec.packageMutation && preStartStatus.RequiresAPTReconciliation() {
+		return rejectReconciliation()
+	}
+	if (spec.requireResolvedAPT && preStartStatus.RequiresAPTReconciliation()) ||
+		(len(spec.allowedStatuses) > 0 && !spec.allowedStatuses[strings.ToLower(strings.TrimSpace(preStartStatus.Status))]) {
 		message := strings.TrimSpace(spec.invalidStatus)
 		if message == "" {
 			message = "Action is not available for the current server status"
@@ -294,7 +300,7 @@ func (l *serverActionLifecycle) startAction(name, actor, clientIP, sudoPassword 
 		l.recordAudit(spec.auditAction, name, "ignored", message, retryMeta)
 		return jsonResult(http.StatusConflict, message)
 	}
-	if preStartStatus != nil && statusInProgress(preStartStatus.Status) {
+	if spec.expectedAPTTarget == "" && statusInProgress(preStartStatus.Status) {
 		retryMeta["current_status"] = preStartStatus.Status
 		l.recordAudit(spec.auditAction, name, "failure", "Action already in progress", retryMeta)
 		return jsonResult(http.StatusConflict, "Update already in progress")
@@ -314,10 +320,14 @@ func (l *serverActionLifecycle) startAction(name, actor, clientIP, sudoPassword 
 	}
 	server, admittedSnapshot, err := l.serverState.BeginActionWithOptions(name, spec.status, serverpkg.ActionAdmissionOptions{
 		PackageMutation: spec.packageMutation, AllowedStatuses: spec.allowedStatuses,
+		RequireResolvedAPT:     spec.requireResolvedAPT,
 		ExpectedServerIdentity: spec.expectedServerIdentity,
 		ExpectedAPTTarget:      spec.expectedAPTTarget, ExpectedJobID: spec.expectedJobID,
 	})
 	if err != nil {
+		if errors.Is(err, serverpkg.ErrAPTReconciliation) {
+			return rejectReconciliation()
+		}
 		if errors.Is(err, serverpkg.ErrIdentityChanged) {
 			message := "The server has changed. Review the current server before starting an update check."
 			if spec.jobKind != jobKindUpdate {
@@ -344,6 +354,17 @@ func (l *serverActionLifecycle) startAction(name, actor, clientIP, sudoPassword 
 			return jsonResult(http.StatusNotFound, "Server not found")
 		}
 		if errors.Is(err, errActionInProgress) {
+			if spec.expectedAPTTarget != "" {
+				_, activity := l.serverState.ActionStatusInProgress(name)
+				message := "Wait for the active server action to finish before repairing APT"
+				if activity != "" {
+					message = "Wait for " + strings.ReplaceAll(activity, "_", " ") + " to finish before repairing APT"
+				}
+				l.recordAudit(spec.auditAction, name, "ignored", message, map[string]any{"current_status": activity})
+				return serverActionLifecycleResult{statusCode: http.StatusConflict, body: map[string]any{
+					"error": message, "current_activity": activity,
+				}}
+			}
 			l.recordAudit(spec.auditAction, name, "failure", "Action already in progress", retryMeta)
 			return jsonResult(http.StatusConflict, "Update already in progress")
 		}
@@ -360,7 +381,7 @@ func (l *serverActionLifecycle) startAction(name, actor, clientIP, sudoPassword 
 		l.recordAudit(spec.auditAction, name, "failure", "Failed to create job", retryMeta)
 		return jsonResult(http.StatusInternalServerError, spec.createFailure)
 	}
-	preserveReconciliation := spec.preserveReconciliation && preStartStatus != nil && strings.EqualFold(strings.TrimSpace(preStartStatus.Status), runtimepkg.StatusNeedsReconciliation)
+	preserveReconciliation := spec.preserveReconciliation && preStartStatus.RequiresAPTReconciliation()
 	retryMeta["job_id"] = job.ID
 	if spec.verifiedAPTKey != "" {
 		retryMeta["reconciliation_job_id"] = spec.expectedJobID

@@ -174,12 +174,12 @@
         let enabled;
 		if (key === "repair_apt") {
 			const status = String(server && server.status || "").trim().toLowerCase();
-			enabled = !!server && status === "needs_reconciliation";
+			enabled = !!server && (server.apt_reconciliation_required || status === "needs_reconciliation") && !transientBlockingStatuses.has(status);
 		} else if (key === "reboot") {
 			enabled = false;
 		} else if (["update", "autoremove"].includes(key)) {
 			const status = String(server && server.status || "").trim().toLowerCase();
-			enabled = !!server && status !== "needs_reconciliation" && !transientBlockingStatuses.has(status);
+			enabled = !!server && !server.apt_reconciliation_required && status !== "needs_reconciliation" && !transientBlockingStatuses.has(status);
 		} else if (["refresh_facts", "enable_apt", "disable_apt"].includes(key)) {
             const status = String(server && server.status || "").trim().toLowerCase();
             enabled = !!server && !transientBlockingStatuses.has(status);
@@ -538,7 +538,8 @@
             const status = String(server.status || "").toLowerCase();
             const search = filters.search.trim().toLowerCase();
             const dashboardServer = dashboardServerFor(server);
-            if (filters.status && status !== filters.status) return false;
+            if (filters.status && status !== filters.status
+                && !(filters.status === "needs_reconciliation" && server.apt_reconciliation_required)) return false;
             if (filters.tag) {
                 const tags = Array.isArray(server.tags) && server.tags.length ? server.tags : ["untagged"];
                 if (!tags.includes(filters.tag)) return false;

@@ -426,6 +426,42 @@ func TestAptRepairRejectsTargetChangeWhileCheckingReadiness(t *testing.T) {
 	}
 }
 
+func TestAPTReconciliationAdmissionDuringFactsRefresh(t *testing.T) {
+	server := Server{Name: "repair-host", Identity: "fixture-original", Host: "original.example", Port: 22, User: "root"}
+	h := newLifecycleTestHarness(t, server, &ServerStatus{Name: server.Name, Status: "needs_reconciliation"})
+	lifecycle := h.lifecycle()
+	reserved, before, err := h.state.BeginTransientActionForIdentity(server.Name, "facts_refresh", server.Identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	current := h.state.CurrentStatusSnapshot(server.Name)
+	if current.Status != "facts_refresh" || current.ReconciliationJobID() != testAPTReconciliationJobID {
+		t.Fatalf("refresh hid the APT blocker: %+v", current)
+	}
+	for _, rejection := range []serverActionLifecycleResult{
+		lifecycle.StartUpdate(server.Name, "alice", "", server.Identity),
+		lifecycle.startAutoremove(server.Name, "alice", "", server.Identity),
+	} {
+		if rejection.statusCode != http.StatusConflict || rejection.body["reason_code"] != "apt_reconciliation_required" || h.runnerRun != nil {
+			t.Fatalf("package mutation was not rejected for APT reconciliation: %+v", rejection)
+		}
+	}
+	busy := lifecycle.StartAptRepair(server.Name, "alice", "", true, testAPTReconciliationJobID, "")
+	if busy.statusCode != http.StatusConflict || busy.body["current_activity"] != "facts_refresh" || h.runnerRun != nil {
+		t.Fatalf("repair did not explain the active refresh: %+v", busy)
+	}
+	h.state.FinishTransientAction(reserved, "facts_refresh", before)
+	repair := lifecycle.StartAptRepair(server.Name, "alice", "", true, testAPTReconciliationJobID, "")
+	if repair.statusCode != http.StatusOK || h.runnerRun == nil {
+		t.Fatalf("valid repair was not admitted when the host became available: %+v", repair)
+	}
+	h.state.FinishTransientAction(reserved, "facts_refresh", before)
+	current = h.state.CurrentStatusSnapshot(server.Name)
+	if current.Status != "repairing" || current.ReconciliationJobID() != testAPTReconciliationJobID {
+		t.Fatalf("finishing an older activity overwrote the repair reservation: %+v", current)
+	}
+}
+
 func TestServerActionLifecycleSudoersRecoveryPreservesReconciliationRequirement(t *testing.T) {
 	server := Server{Name: "srv-sudoers-recovery", Host: "example.org", Port: 22, User: "operator", Pass: "pw"}
 	tests := []struct {

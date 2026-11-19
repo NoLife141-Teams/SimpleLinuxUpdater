@@ -273,6 +273,18 @@
             return statusFormatting.statusLabel(value);
         }
 
+        function aptReconciliationStatusHtml(server) {
+            if (!server.apt_reconciliation_required && server.status !== "needs_reconciliation") return "";
+            const jobID = server.apt_reconciliation_job_id;
+            const badge = server.status !== "needs_reconciliation"
+                ? '<span class="status-pill status-needs_reconciliation">APT reconciliation required</span>'
+                : "";
+            const report = window.canUseScope("logs:read") && jobID
+                ? `<a class="inline-btn btn-ghost" href="/api/reports/jobs/${encodeURIComponent(jobID)}">APT incident report</a>`
+                : "";
+            return badge + report;
+        }
+
         function formatRelativeTime(date) {
             if (!date) return "Waiting for sync";
             const seconds = Math.max(
@@ -1207,6 +1219,7 @@
             statusRendering.html(panel, `
                 <div class="selected-status-row">
                     <span class="status-pill status-${safeStatus}">${escapeHtml(server.disabled ? "Disabled" : statusLabel(server.status))}</span>
+                    ${aptReconciliationStatusHtml(server)}
                     ${repeatsRuntimeStatus ? "" : `<span class="stage-chip phase-${escapeHtml(timeline.state || "idle")}">${escapeHtml(phaseLabel)}</span>`}
                 </div>
                 ${updateSecuritySummaryHtml(selected, safeDataName)}
@@ -2086,6 +2099,7 @@
             title.textContent = server.name || "Server details";
             statusContainer.innerHTML = `
 	                <span class="status-pill status-${safeStatus}">${safeStatusText}</span>
+                    ${aptReconciliationStatusHtml(server)}
 	                ${drawerState.fromApprovalLink ? `<span class="drawer-status-note">Linked plan · Generation ${escapeHtml(String(server.approval_generation))}</span>` : ""}
 	                ${applicationPostchecksHtml(server, detail?.snapshot)}
  ${driftReason ? `<span class="drawer-status-note pending-drift-note" title="${escapeHtml(driftReason)}">${escapeHtml(driftReason)}</span>` : ""}
@@ -2446,6 +2460,7 @@
                         </td>
                         <td class="status-col">
                             <span class="status-pill status-${safeStatus}">${safeStatusText}</span>
+                            ${server.apt_reconciliation_required && server.status !== "needs_reconciliation" ? '<span class="status-pill status-needs_reconciliation">APT reconciliation required</span>' : ""}
                         </td>
                         <td class="timeline-progress-col">
                             <div class="timeline-progress-content">
@@ -2955,7 +2970,7 @@
         async function repairApt(name) {
             const lifetime = lifecycle.capture();
             const server = getServerByName(name);
-            const jobID = server?.job_id;
+            const jobID = server?.apt_reconciliation_job_id || server?.job_id;
             if (!jobID || !canRepairAptAction(server)) {
                 statusActionAdapter.notify(
                     "APT repair is not available for the current server state.",

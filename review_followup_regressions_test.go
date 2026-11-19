@@ -55,11 +55,13 @@ func TestSecondReviewRebootRechecksReconciliationAtAdmission(t *testing.T) {
 	l := h.lifecycle()
 	l.maintenanceReadiness = func(Server) serverpkg.MaintenanceReadiness {
 		// A concurrent admitted update can finish with an unknown APT outcome while this request checks credentials.
-		h.state.RestoreStatusSnapshot(server.Name, &ServerStatus{Name: server.Name, Status: "needs_reconciliation", Logs: "APT outcome unknown"})
+		h.state.RestoreStatusSnapshot(server.Name, &ServerStatus{
+			Name: server.Name, Status: "error", Logs: "APT outcome unknown", APTReconciliationPending: true,
+		})
 		return serverpkg.MaintenanceReadiness{Ready: true}
 	}
 	result := l.StartReboot(server.Name, "admin", "", true)
-	if result.statusCode != http.StatusConflict {
+	if result.statusCode != http.StatusConflict || result.body["error"] != "Server is not ready for a controlled reboot" || h.runnerRun != nil {
 		t.Fatalf("reboot admitted after reconciliation became required: HTTP %d, state=%s, runner=%t", result.statusCode, h.state.CurrentStatusSnapshot(server.Name).Status, h.runnerRun != nil)
 	}
 }

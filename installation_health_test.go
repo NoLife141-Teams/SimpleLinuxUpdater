@@ -15,6 +15,7 @@ import (
 	authpkg "debian-updater/internal/auth"
 	installationhealthpkg "debian-updater/internal/installationhealth"
 	maintenancepkg "debian-updater/internal/maintenance"
+	notificationpkg "debian-updater/internal/notifications"
 )
 
 func TestInstallationProbesCurrentProviderLifecycleAndBudget(t *testing.T) {
@@ -199,6 +200,27 @@ func TestInstallationMetricsBoundedVocabularyAndUnknowns(t *testing.T) {
 			t.Fatal("unbounded labels: " + line)
 		}
 	}
+	for _, metric := range []string{"condition_evaluation_degraded", "last_condition_evaluation_timestamp_seconds", "last_successful_delivery_timestamp_seconds", "oldest_pending_age_seconds"} {
+		if strings.Contains(body, "slu_installation_notifications_"+metric) {
+			t.Fatalf("unknown %s was exported", metric)
+		}
+	}
+	queueAge := 60.0
+	value.Notifications = installationNotificationFacts{Available: true, InstallationHealthFacts: notificationpkg.InstallationHealthFacts{
+		ConditionEvaluationState: notificationpkg.ConditionEvaluationDegraded, LastConditionEvaluationAt: &now,
+		LastSuccessfulDeliveryAt: &now, OldestPendingAgeSeconds: &queueAge,
+	}}
+	body = installationMetrics(value)
+	for _, observation := range []string{
+		"condition_evaluation_degraded 1",
+		"last_condition_evaluation_timestamp_seconds ",
+		"last_successful_delivery_timestamp_seconds ",
+		"oldest_pending_age_seconds 60",
+	} {
+		if !strings.Contains(body, "\nslu_installation_notifications_"+observation) {
+			t.Fatalf("missing %s:\n%s", observation, body)
+		}
+	}
 }
 
 func TestInstallationReadOnlyMaintenanceProbeNeverRecovers(t *testing.T) {
@@ -253,7 +275,8 @@ func TestInstallationSnapshotCanonicalEvidenceClockAndCounts(t *testing.T) {
 		t.Fatal(err)
 	}
 	value := installationSnapshot(context.Background(), app.Deps)
-	if !value.CheckedAt.Equal(now) || !value.Notifications.Available || value.Notifications.Pending != 2 || value.Notifications.Retrying != 1 || value.Notifications.Failed != 1 || value.Notifications.Enabled {
+	if !value.CheckedAt.Equal(now) || !value.Notifications.Available || value.Notifications.Pending != 2 || value.Notifications.Retrying != 1 || value.Notifications.Failed != 1 || value.Notifications.Enabled ||
+		value.Notifications.OldestPendingAgeSeconds == nil || *value.Notifications.OldestPendingAgeSeconds != 0 {
 		t.Fatalf("canonical outbox facts: %+v", value)
 	}
 	if value.VerifiedBackupAgeSeconds == nil || *value.VerifiedBackupAgeSeconds != 3600 || value.LastVerifiedBackupAt == nil || !value.LastVerifiedBackupAt.Equal(verified) {

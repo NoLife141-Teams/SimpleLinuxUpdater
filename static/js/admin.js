@@ -598,11 +598,22 @@
             const missing = "Unavailable";
             const date = value => !value || value.startsWith("0001-") ? "Never observed" : new Date(value).toLocaleString();
             const number = value => value === null ? missing : value.toLocaleString();
+            const notifications = view.notifications;
+            const evaluation = {healthy: "Healthy", degraded: "Degraded"}[notifications.evaluationState];
+            let queueAge = missing;
+            if (notifications.available && notifications.oldestPendingAge !== null) {
+                queueAge = `${number(Math.floor(notifications.oldestPendingAge))} seconds`;
+            } else if (notifications.available && notifications.pending === 0 && notifications.retrying === 0) {
+                queueAge = "Queue empty";
+            }
             const fields = {
                 "installation-state": view.state,
                 "installation-checked": date(view.checkedAt),
                 "installation-backup": view.backupAvailable ? `${view.backupState}; last verified ${date(view.verifiedAt)}; age ${number(view.backupAgeSeconds)} seconds` : missing,
-                "installation-notifications": view.notifications.available ? `${view.notifications.enabled ? "Enabled" : "Disabled"}; ${number(view.notifications.pending)} pending, ${number(view.notifications.retrying)} retrying, ${number(view.notifications.failed)} failed (retained)` : missing,
+                "installation-notifications": notifications.available ? `${notifications.enabled ? "Enabled" : "Disabled"}; ${number(notifications.pending)} pending, ${number(notifications.retrying)} retrying, ${number(notifications.failed)} failed (retained)` : missing,
+                "installation-notification-evaluation": evaluation ? `${evaluation} · Last success ${date(notifications.lastEvaluationAt)}` : notifications.evaluationState === "not_observed" ? "Never observed" : missing,
+                "installation-notification-delivery": notifications.available ? date(notifications.lastDeliveryAt) : missing,
+                "installation-notification-queue-age": queueAge,
                 "installation-storage": `DB ${number(view.storage.dbBytes)} bytes; WAL ${number(view.storage.walBytes)} bytes; available ${number(view.storage.availableBytes)} bytes`
             };
             for (const [id, text] of Object.entries(fields)) document.getElementById(id).textContent = text;

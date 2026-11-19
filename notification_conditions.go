@@ -215,7 +215,9 @@ func newNotificationConditionSource(dbProvider func() *sql.DB, now func() time.T
 		// Recovery coverage has no cursor or Server identity dependency. Release
 		// the connection before asking its service for this independent projection.
 		health, err := recovery.RecoveryHealth(ctx)
-		if err == nil && health.State != backuppkg.RecoveryStateUnavailable {
+		if err != nil || health.State == backuppkg.RecoveryStateUnavailable {
+			batch.Incomplete = true
+		} else {
 			missing := health.Export.LastSuccessAt == "" || health.Verification.LastSuccessAt == ""
 			stale := false
 			for _, timestamp := range []string{health.Export.LastSuccessAt, health.Verification.LastSuccessAt} {

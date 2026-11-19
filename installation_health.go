@@ -13,6 +13,7 @@ import (
 	"time"
 
 	installationhealthpkg "debian-updater/internal/installationhealth"
+	notificationpkg "debian-updater/internal/notifications"
 	"github.com/gin-gonic/gin"
 )
 
@@ -147,10 +148,7 @@ type installationStorage struct {
 }
 type installationNotificationFacts struct {
 	Available bool `json:"available"`
-	Enabled   bool `json:"enabled"`
-	Pending   int  `json:"pending"`
-	Retrying  int  `json:"retrying"`
-	Failed    int  `json:"failed"`
+	notificationpkg.InstallationHealthFacts
 }
 type installationDiagnostics struct {
 	CheckedAt                time.Time                                       `json:"checked_at"`
@@ -199,13 +197,13 @@ func installationSnapshot(ctx context.Context, deps AppDeps) installationDiagnos
 		}
 	}
 	if service, ok := deps.NotificationService.(interface {
-		InstallationHealth(context.Context) (installationhealthpkg.WorkerSnapshot, bool, int, int, int, error)
+		InstallationHealth(context.Context) (installationhealthpkg.WorkerSnapshot, notificationpkg.InstallationHealthFacts, error)
 	}); ok {
-		worker, enabled, pending, retrying, failed, err := service.InstallationHealth(ctx)
+		worker, facts, err := service.InstallationHealth(ctx)
 		if err == nil {
 			out.Workers["notifications"] = worker
 		}
-		out.Notifications = installationNotificationFacts{err == nil, enabled, pending, retrying, failed}
+		out.Notifications = installationNotificationFacts{Available: err == nil, InstallationHealthFacts: facts}
 	}
 	if deps.BackupService != nil {
 		health, err := deps.BackupService.RecoveryHealth(ctx)
@@ -296,12 +294,26 @@ func installationMetrics(value installationDiagnostics) string {
 	if value.VerifiedBackupAgeSeconds != nil {
 		gauge("backup_verified_age_seconds", "Age of last accepted backup verification.", *value.VerifiedBackupAgeSeconds)
 	}
-	gauge("notifications_available", "Outbox facts could be read.", bit(value.Notifications.Available))
-	if value.Notifications.Available {
-		gauge("notifications_enabled", "At least one notification destination enabled.", bit(value.Notifications.Enabled))
-		gauge("notifications_pending", "Persisted pending and claimed outbox rows.", value.Notifications.Pending)
-		gauge("notifications_retrying", "Persisted retrying outbox rows.", value.Notifications.Retrying)
-		gauge("notifications_failed", "Failed outbox rows within retention.", value.Notifications.Failed)
+	notifications := value.Notifications
+	gauge("notifications_available", "Outbox facts could be read.", bit(notifications.Available))
+	if notifications.Available {
+		gauge("notifications_enabled", "At least one notification destination enabled.", bit(notifications.Enabled))
+		gauge("notifications_pending", "Persisted pending and claimed outbox rows.", notifications.Pending)
+		gauge("notifications_retrying", "Persisted retrying outbox rows.", notifications.Retrying)
+		gauge("notifications_failed", "Failed outbox rows within retention.", notifications.Failed)
+		if at := notifications.LastSuccessfulDeliveryAt; at != nil {
+			gauge("notifications_last_successful_delivery_timestamp_seconds", "Last persisted successful outbox HTTP delivery.", float64(at.UnixNano())/1e9)
+		}
+		if age := notifications.OldestPendingAgeSeconds; age != nil {
+			gauge("notifications_oldest_pending_age_seconds", "Age of the oldest pending, claimed or retrying delivery.", *age)
+		}
+	}
+	switch notifications.ConditionEvaluationState {
+	case notificationpkg.ConditionEvaluationHealthy, notificationpkg.ConditionEvaluationDegraded:
+		gauge("notifications_condition_evaluation_degraded", "Most recent observed condition evaluation failed.", bit(notifications.ConditionEvaluationState == notificationpkg.ConditionEvaluationDegraded))
+	}
+	if at := notifications.LastConditionEvaluationAt; at != nil {
+		gauge("notifications_last_condition_evaluation_timestamp_seconds", "Last successful condition evaluation.", float64(at.UnixNano())/1e9)
 	}
 	if value.Storage.DBBytes != nil {
 		gauge("db_bytes", "Observed SQLite main file size.", *value.Storage.DBBytes)

@@ -44,6 +44,9 @@ type ConditionBatch struct {
 	Rebased bool
 	Facts   []ConditionFact
 	Cursor  string
+	// Incomplete reports an independent read failure. Facts and cursor remain
+	// safe to commit, but the whole evaluation has not succeeded.
+	Incomplete bool
 }
 
 // ConditionSource is supplied by runtime composition. Cursor and facts are
@@ -236,9 +239,19 @@ func conditionList(state conditionState) []Condition {
 	return list
 }
 
-func (s *Service) reconcileConditions(ctx context.Context) error {
+func (s *Service) reconcileConditions(ctx context.Context) (evaluationErr error) {
 	s.conditionMu.Lock()
 	defer s.conditionMu.Unlock()
+	incomplete := false
+	defer func() {
+		if ctx.Err() == nil {
+			now := s.deps.Now()
+			s.conditionHealth.observe(now, incomplete || evaluationErr != nil)
+			if incomplete && evaluationErr == nil {
+				s.health.Error(now)
+			}
+		}
+	}()
 	db := s.database()
 	state, err := loadAndMigrateConditionState(ctx, db)
 	if err != nil {
@@ -252,6 +265,7 @@ func (s *Service) reconcileConditions(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	incomplete = batch.Incomplete
 	settings, err := s.currentSettings()
 	if err != nil {
 		return err

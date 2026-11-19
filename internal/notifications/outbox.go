@@ -151,8 +151,9 @@ func restoreCurrentOutboxRows(ctx context.Context, db *sql.DB, replacement *outb
 	for _, snapshot := range replacement.RetainedRows {
 		row := snapshot.Row
 		outcome := snapshot.Outcome
-		// For a deterministic APT admission, success on either database is
-		// evidence of delivery to the same destination configuration.
+		// Deterministic APT admissions can share delivery history across both
+		// databases. Keep success, and never reopen a terminal result or roll
+		// back the attempt count when the incoming copy is still in progress.
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO notification_outbox (
 				id, destination, event_type, action, target_type, target_name, status, message,
@@ -184,15 +185,20 @@ func restoreCurrentOutboxRows(ctx context.Context, db *sql.DB, replacement *outb
 				duration_ms = excluded.duration_ms,
 				created_at = excluded.created_at,
 				updated_at = excluded.updated_at
-			WHERE NOT (notification_outbox.event_type = ? AND excluded.event_type = ?
-				AND notification_outbox.state = ? AND excluded.state <> ?)
+			WHERE NOT (notification_outbox.event_type = ? AND excluded.event_type = ? AND (
+				(notification_outbox.state = ? AND excluded.state <> ?)
+				OR (excluded.state IN (?, ?, ?) AND (
+					notification_outbox.state IN (?, ?) OR notification_outbox.attempts > excluded.attempts
+				))
+			))
 		`, row.ID, row.Destination, row.EventType, row.Intent.Action, row.Intent.TargetType,
 			row.Intent.TargetName, row.Intent.Status, row.Intent.Message, row.Intent.CreatedAt,
 			row.Intent.Actor, row.Intent.ClientIP, row.Intent.MetaJSON, row.DestinationFingerprint,
 			outcome.State, outcome.Attempts, outcome.NextAttemptAt, row.ClaimedAt,
 			outcome.AttemptedAt, outcome.CompletedAt, outcome.StatusCode, outcome.Error,
 			outcome.DurationMS, snapshot.CreatedAt, now,
-			EventAPTReconciliationRequired, EventAPTReconciliationRequired, outboxStateSucceeded, outboxStateSucceeded); err != nil {
+			EventAPTReconciliationRequired, EventAPTReconciliationRequired, outboxStateSucceeded, outboxStateSucceeded,
+			outboxStatePending, outboxStateClaimed, outboxStateRetrying, outboxStateFailed, outboxStateSkipped); err != nil {
 			return err
 		}
 	}

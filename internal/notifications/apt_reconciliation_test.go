@@ -112,42 +112,62 @@ func TestAPTAdmissionFromRejectedArchiveDoesNotSuppressLiveDelivery(t *testing.T
 	}
 }
 
-func TestAPTRestoreDoesNotRetryAnAlertDeliveredInTheArchive(t *testing.T) {
-	live := newConditionHarness(t)
-	archive := newConditionHarness(t)
-	fact := ConditionFact{
-		ID: APTReconciliationConditionID("target", "original"), EventType: EventAPTReconciliationRequired,
-		TargetType: "server", TargetName: "node", Active: true,
-	}
-	live.facts = []ConditionFact{fact}
-	live.reconcile(t)
+func TestAPTRestorePreservesArchivedDeliveryProgress(t *testing.T) {
+	for _, tc := range []struct {
+		name              string
+		archiveState      string
+		archiveAttempts   int
+		remainingAttempts int
+	}{
+		{name: "already delivered", archiveState: outboxStateSucceeded, archiveAttempts: 1},
+		{name: "attempts exhausted", archiveState: outboxStateFailed, archiveAttempts: defaultAttempts},
+		{name: "attempts remaining", archiveState: outboxStateRetrying, archiveAttempts: defaultAttempts - 1, remainingAttempts: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			live := newConditionHarness(t)
+			archive := newConditionHarness(t)
+			fact := ConditionFact{
+				ID: APTReconciliationConditionID("target", "original"), EventType: EventAPTReconciliationRequired,
+				TargetType: "server", TargetName: "node", Active: true,
+			}
+			live.facts = []ConditionFact{fact}
+			live.reconcile(t)
 
-	archive.facts = []ConditionFact{fact}
-	archive.reconcile(t)
-	archive.drain(t)
-	if archive.client.calls != 1 {
-		t.Fatal("fixture archive is missing its delivered alert")
-	}
+			ctx := t.Context()
+			archive.facts = []ConditionFact{fact}
+			archive.reconcile(t)
+			archive.client.fail = tc.archiveState != outboxStateSucceeded
+			for range tc.archiveAttempts {
+				row, err := claimNextOutboxRow(ctx, archive.db, archive.now)
+				if err != nil || row == nil {
+					t.Fatal(row, err)
+				}
+				archive.service.processOutboxRow(ctx, *row)
+			}
 
-	ctx := t.Context()
-	if err := live.service.PreparePersistenceReplacement(ctx); err != nil {
-		t.Fatal(err)
-	}
-	if err := live.service.StageAPTDeliveryEvidence(ctx, archive.db); err != nil {
-		t.Fatal(err)
-	}
-	live.db = archive.db
-	live.service.deps.DB = func() *sql.DB { return archive.db }
-	if err := live.service.ReloadPersistence(ctx); err != nil {
-		t.Fatal(err)
-	}
-	live.drain(t)
-	if live.client.calls != 0 {
-		t.Fatalf("restore repeated an alert already delivered in the archive, deliveries = %d", live.client.calls)
-	}
-	var state string
-	if err := live.db.QueryRow(`SELECT state FROM notification_outbox WHERE event_type=?`, EventAPTReconciliationRequired).Scan(&state); err != nil || state != outboxStateSucceeded {
-		t.Fatalf("restored APT delivery state = %q, %v, want %q", state, err, outboxStateSucceeded)
+			if err := live.service.PreparePersistenceReplacement(ctx); err != nil {
+				t.Fatal(err)
+			}
+			if err := live.service.StageAPTDeliveryEvidence(ctx, archive.db); err != nil {
+				t.Fatal(err)
+			}
+			live.db = archive.db
+			live.service.deps.DB = func() *sql.DB { return archive.db }
+			if err := live.service.ReloadPersistence(ctx); err != nil {
+				t.Fatal(err)
+			}
+			var state string
+			var attempts int
+			if err := live.db.QueryRow(`SELECT state, attempts FROM notification_outbox WHERE event_type=?`, EventAPTReconciliationRequired).Scan(&state, &attempts); err != nil ||
+				state != tc.archiveState || attempts != tc.archiveAttempts {
+				t.Fatalf("restored APT delivery = %q after %d attempts, %v, want %q after %d attempts", state, attempts, err, tc.archiveState, tc.archiveAttempts)
+			}
+			live.client.fail = true
+			live.drain(t)
+			if live.client.calls != tc.remainingAttempts {
+				t.Fatalf("attempts after restore = %d, want %d", live.client.calls, tc.remainingAttempts)
+			}
+		})
 	}
 }
 

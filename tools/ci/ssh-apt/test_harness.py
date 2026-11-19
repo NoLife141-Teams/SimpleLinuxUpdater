@@ -1,4 +1,5 @@
 import hashlib
+import http.client
 import importlib.util
 import json
 import os
@@ -6,6 +7,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import tempfile
+import threading
 import unittest
 from unittest import mock
 
@@ -132,6 +134,29 @@ class HarnessSafetyTests(unittest.TestCase):
         with self.assertRaisesRegex(AssertionError, 'exited before readiness'):
             harness.wait_for_app()
         harness.api.request.assert_not_called()
+
+    def test_interrupted_restore_releases_inflight_request_before_joining(self):
+        harness, _, _ = self.fake_harness()
+        request_started = threading.Event()
+        request_released = threading.Event()
+
+        def restore(*args, **kwargs):
+            request_started.set()
+            if request_released.wait(2):
+                raise http.client.RemoteDisconnected()
+            raise TimeoutError("restore kept waiting for the parked process")
+
+        def interrupt(*args, **kwargs):
+            self.assertTrue(request_started.wait(5))
+            raise KeyboardInterrupt()
+
+        harness.api = mock.Mock()
+        harness.api.backup_archive.side_effect = restore
+        with mock.patch.object(run, "until", side_effect=interrupt), \
+                mock.patch.object(harness, "kill_app", side_effect=request_released.set), \
+                self.assertRaises(KeyboardInterrupt):
+            harness.crash_during_restore(b"fixture archive", "fixture passphrase")
+        self.assertTrue(request_released.is_set())
 
     def test_container_startup_inspection_and_http_share_deadline(self):
         harness = object.__new__(run.Harness)

@@ -85,8 +85,9 @@ def qualification_overlay(work):
 """ + anchor),
     ])
 
-    # Refresh the proof on each process start, after condition reconciliation
-    # and outbox draining have both run successfully.
+    # Refresh the proof after condition reconciliation and outbox draining.
+    # Record which destination was eligible, since an idle worker alone cannot
+    # establish that the restored configuration still allows this delivery.
     anchor = '\t\tif s.conditionMonitoringStarted() {\n\t\t\tif conditionTicker == nil {'
     failure = '\t\t\t\ts.deps.Logf("notification condition reconciliation failed: %v", err)\n\t\t\t}'
     finish = '\t\ts.health.Finish(s.deps.Now(), nil)\n\t\tif !scheduled {'
@@ -97,7 +98,15 @@ def qualification_overlay(work):
         (finish, """\
 \t\tif qualificationReconciled {
 \t\t\tif _, err := os.Stat("/work/observe-notifications"); err == nil {
-\t\t\t\t_ = os.WriteFile("/work/notification-poll-complete", nil, 0600)
+\t\t\t\tfingerprint := ""
+\t\t\t\tif settings, err := s.currentSettings(); err == nil && destinationEnabled(settings, DestinationWebhook) &&
+\t\t\t\t\teventEnabled(settings.EventTypes, EventAPTReconciliationRequired) {
+\t\t\t\t\tfingerprint = destinationConfigFingerprint(settings, DestinationWebhook)
+\t\t\t\t}
+\t\t\t\tconst marker = "/work/notification-poll-complete"
+\t\t\t\tif err := os.WriteFile(marker+".tmp", []byte(fingerprint), 0600); err == nil {
+\t\t\t\t\t_ = os.Rename(marker+".tmp", marker)
+\t\t\t\t}
 \t\t\t}
 \t\t}
 """ + finish),
@@ -652,6 +661,9 @@ class Harness:
         self.fixture("track-apt")
         self.api.request("POST", "/api/hostkeys/clear", {"host": self.ssh_host, "port": self.ssh_port})
         self.trust()
+        known_hosts = self.work / "known_hosts"
+        trusted_hosts = known_hosts.read_bytes()
+        require(trusted_hosts, "trusted fixture host key was not saved")
         self.add_server(name)
         server_identity = self.api.server(name)["server_identity"]
         template = '{{ (index .NetworkSettings.Networks "' + self.network + '").IPAddress }}'
@@ -734,6 +746,7 @@ class Harness:
                 "original job, logs or successful delivery were missing")
         fingerprint, condition_id = delivered[0][1], delivered[0][4]
         require(fingerprint and condition_id, "delivery was not tied to the incident and configured destination")
+        self.redactions.append(fingerprint)
         admission_id = f"condition/{condition_id}/{fingerprint}"
 
         record["checkpoint"] = "restore-process-kill"
@@ -741,19 +754,9 @@ class Harness:
         review = self.api.backup_archive("verify", archive, passphrase)
         require(review["restore_ready"] and review["installation_review"]["state"] == "ready",
                 "pre-incident archive did not verify for this installation")
-        (self.work / "arm-restore-crash").touch(exist_ok=False)
-        with ThreadPoolExecutor(max_workers=1) as pool:
-            request = pool.submit(self.api.backup_archive, "restore", archive, passphrase, timeout=45)
-            until(lambda: request.done() or (self.work / "restore-db-replaced").is_file(),
-                  "restore did not reach the SQLite replacement checkpoint", seconds=35)
-            require(not request.done(), "restore completed before the crash checkpoint")
-            self.kill_app()
-            try:
-                request.result(timeout=5)
-            except (http.client.RemoteDisconnected, ConnectionResetError):
-                pass
-            else:
-                raise AssertionError("restore request did not lose its connection to the killed process")
+        self.crash_during_restore(archive, passphrase)
+        record["crash_confirmed_after_sqlite_replacement"] = True
+        record["checkpoint"] = "staged-restore-evidence"
         current_incident, current_chunks, current_delivery, state, marker = persistence()
         require(marker.get("recovery_required") and marker.get("kind") == "backup_restore",
                 "replacement database did not persist the recovery latch before runtime reload")
@@ -761,7 +764,6 @@ class Harness:
                 "replacement database lost the exact job, logs or delivery before runtime reload")
         require(state.get("Admissions", {}).get(admission_id) and condition_id not in (state.get("Conditions") or {}),
                 "replacement database did not stage the admission independently of runtime reconciliation")
-        record["crash_confirmed_after_sqlite_replacement"] = True
 
         record["checkpoint"] = "recovery-restarts"
         observe = self.work / "observe-notifications"
@@ -780,6 +782,7 @@ class Harness:
                 blocked = self.api.request(method, path, allowed=(503,))
                 require(blocked.get("recovery_required"), "runtime bypassed the recovery latch")
             until(poll.is_file, "notification worker did not finish condition reconciliation and drain")
+            require(poll.read_text() == fingerprint, "restored worker did not observe the original enabled webhook")
             current_incident, current_chunks, current_delivery, state, _ = persistence()
             fact = (state.get("Conditions") or {}).get(condition_id, {}).get("Fact", {})
             require(fact.get("Active") and fact.get("TargetName") == name
@@ -799,8 +802,8 @@ class Harness:
             require(db.execute("PRAGMA quick_check").fetchall() == [("ok",)]
                     and db.execute("SELECT name, host, port, identity FROM servers").fetchall()
                     == [(name, self.ssh_host, self.ssh_port, server_identity)]
-                    and (self.work / "known_hosts").stat().st_size > 0,
-                    "replacement persistence or inventory failed verification")
+                    and known_hosts.read_bytes() == trusted_hosts,
+                    "replacement persistence, inventory or host trust failed verification")
             require(db.execute("DELETE FROM settings WHERE key='maintenance_state'").rowcount == 1,
                     "offline recovery marker was missing")
         poll.unlink()
@@ -814,11 +817,34 @@ class Harness:
             blocked = self.api.request("POST", f"/api/{action}/{name}", allowed=(409,))
             require("APT reconciliation is required" in blocked["error"], "recovered APT latch did not block " + action)
         until(poll.is_file, "notification worker did not finish after offline recovery")
+        require(poll.read_text() == fingerprint, "recovered worker did not observe the original enabled webhook")
         require(receipts() == expected_receipts and execution_counts() == commands,
                 "offline recovery repeated a webhook delivery or executed another APT command")
         record.update(job_id=job_id, authorized_report_preserved=True, webhook_deliveries=1,
                       extra_update_attempts=0, extra_autoremove_attempts=0)
         del record["checkpoint"]
+
+    def crash_during_restore(self, archive, passphrase):
+        (self.work / "arm-restore-crash").touch(exist_ok=False)
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            request = pool.submit(self.api.backup_archive, "restore", archive, passphrase, timeout=45)
+            killed = False
+            try:
+                until(lambda: request.done() or (self.work / "restore-db-replaced").is_file(),
+                      "restore did not reach the SQLite replacement checkpoint", seconds=35)
+                require(not request.done(), "restore completed before the crash checkpoint")
+            finally:
+                # Release an active request before the executor joins, even if
+                # the controlling thread timed out or received SIGINT/SIGTERM.
+                if not request.cancel() and not request.done():
+                    self.kill_app()
+                    killed = True
+            require(killed, "restore connection closed before the fixture sent SIGKILL")
+            try:
+                request.result(timeout=5)
+            except (http.client.RemoteDisconnected, ConnectionResetError):
+                return
+            raise AssertionError("restore request did not lose its connection to the killed process")
 
     def kill_app(self):
         require(self.owned("container", self.app_name), "application ownership mismatch")
@@ -958,7 +984,7 @@ class Harness:
         with self.scenario(RESTORE_CRASH) as record:
             try:
                 self.qualify_restore_crash(record)
-            except (RuntimeError, OSError, ValueError, sqlite3.Error) as error:
+            except (RuntimeError, OSError, ValueError, sqlite3.Error, subprocess.SubprocessError) as error:
                 # Subprocess and HTTP errors can embed fixture output. Publish only
                 # the failing checkpoint and exception type for this scenario.
                 raise AssertionError(f"fixture operation failed ({type(error).__name__})") from None

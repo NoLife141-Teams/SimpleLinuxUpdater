@@ -152,6 +152,53 @@ func TestDestinationHealthMigratesBoundEvidenceBeforeRetention(t *testing.T) {
 	}
 }
 
+func TestDestinationHealthMigrationLeavesConflictingLegacyAttemptsUnknown(t *testing.T) {
+	h := newConditionHarness(t)
+	settings, err := h.service.currentSettings()
+	if err != nil {
+		t.Fatal(err)
+	}
+	fingerprint := destinationConfigFingerprint(settings, DestinationWebhook)
+	legacyAt := h.now.Format(time.RFC3339)
+	for _, result := range []struct {
+		id, state string
+		code      int
+	}{
+		{"first", outboxStateSucceeded, 204},
+		{"second", outboxStateFailed, 500},
+	} {
+		if _, err := h.db.Exec(`INSERT INTO notification_outbox
+			(id,destination,destination_fingerprint,event_type,action,state,attempted_at,completed_at,status_code,created_at,updated_at)
+			VALUES (?,?,?,?,?,?,?,?,?,?,?)`, result.id, DestinationWebhook, fingerprint, EventUpdateComplete, EventUpdateComplete,
+			result.state, legacyAt, legacyAt, result.code, legacyAt, legacyAt); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := h.db.Exec(`DROP TABLE notification_destination_health`); err != nil {
+		t.Fatal(err)
+	}
+	if err := EnsureSchema(h.db); err != nil {
+		t.Fatal(err)
+	}
+	_, facts, err := h.service.InstallationHealth(t.Context())
+	webhook := facts.Destinations[DestinationWebhook]
+	if err != nil || webhook.LastSuccessfulDeliveryAt == nil || !webhook.LastSuccessfulDeliveryAt.Equal(h.now) ||
+		webhook.LastAttemptState != DeliveryHealthUnknown || webhook.LastAttemptAt != nil {
+		t.Fatalf("tied legacy attempts = %+v, %v", webhook, err)
+	}
+
+	h.now = h.now.Add(time.Second)
+	h.facts = []ConditionFact{rebootFact(true)}
+	h.reconcile(t)
+	h.drain(t)
+	_, facts, err = h.service.InstallationHealth(t.Context())
+	webhook = facts.Destinations[DestinationWebhook]
+	if err != nil || webhook.LastAttemptState != DeliveryOutcomeSucceeded || webhook.LastAttemptAt == nil ||
+		!webhook.LastAttemptAt.Equal(h.now) {
+		t.Fatalf("new attempt following ambiguous legacy outcomes = %+v, %v", webhook, err)
+	}
+}
+
 func TestDestinationHealthRewrapsLegacyArchiveBindingsBeforeReadingHealth(t *testing.T) {
 	h := newConditionHarness(t)
 	h.facts = []ConditionFact{rebootFact(true)}

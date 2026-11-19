@@ -270,7 +270,9 @@ survives a restart and history pruning. A manual test has its own result and tim
 The age by destination includes pending, claimed and retrying rows. A terminal-only
 queue has no age sample. Unknown results have state `unknown` and omit their timestamps.
 Upgrades can recover per-configuration evidence from retained, bound delivery rows.
-Older results without that binding remain unknown at destination scope.
+Older results without that binding remain unknown at destination scope. When
+legacy attempts recorded in the same second disagree, the latest attempt's
+outcome is unknown and any confirmed HTTP success is still reported.
 
 Example alert expressions (tune windows to deployment cadence):
 

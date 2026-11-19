@@ -1,6 +1,7 @@
 package jobs
 
 import (
+	"context"
 	"crypto/rand"
 	"database/sql"
 	"encoding/hex"
@@ -845,7 +846,17 @@ func (r *SQLiteRepository) Upsert(record Record) error {
 		return err
 	}
 	defer tx.Rollback()
-	_, err = tx.Exec(`
+	if err := upsertJobRow(context.Background(), tx, record, false); err != nil {
+		return err
+	}
+	if _, err := r.replaceLogSnapshotTx(tx, record.ID, record.LogsText, LogStreamCombined, record.UpdatedAt); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func upsertJobRow(ctx context.Context, tx *sql.Tx, record Record, restoreAPTEvidence bool) error {
+	statement := `
 		INSERT INTO jobs (
 			id, kind, parent_job_id, server_name, actor, client_ip, status, phase, summary, logs_text,
 			error_class, retry_policy_json, meta_json, created_at, updated_at, started_at, finished_at, revision, apt_target, apt_mutation_host_key
@@ -866,7 +877,11 @@ func (r *SQLiteRepository) Upsert(record Record) error {
 			started_at = excluded.started_at,
 			finished_at = excluded.finished_at,
 			revision = excluded.revision
-	`,
+	`
+	if restoreAPTEvidence {
+		statement += ", apt_mutation_host_key = excluded.apt_mutation_host_key"
+	}
+	_, err := tx.ExecContext(ctx, statement,
 		record.ID,
 		record.Kind,
 		record.ParentJobID,
@@ -887,13 +902,7 @@ func (r *SQLiteRepository) Upsert(record Record) error {
 		record.APTTarget,
 		record.APTMutationHostKey,
 	)
-	if err != nil {
-		return err
-	}
-	if _, err := r.replaceLogSnapshotTx(tx, record.ID, record.LogsText, LogStreamCombined, record.UpdatedAt); err != nil {
-		return err
-	}
-	return tx.Commit()
+	return err
 }
 
 func (r *SQLiteRepository) ApplyTransition(record Record, expectedRevision int64, activeOnly bool) (bool, error) {
@@ -969,8 +978,14 @@ func (r *SQLiteRepository) Get(id string) (Record, error) {
 	if r == nil || r.db == nil {
 		return Record{}, errors.New("job repository is not initialized")
 	}
+	return getJobRow(context.Background(), r.db, id)
+}
+
+func getJobRow(ctx context.Context, db interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}, id string) (Record, error) {
 	var record Record
-	err := r.db.QueryRow(`
+	err := db.QueryRowContext(ctx, `
 		SELECT id, kind, parent_job_id, server_name, actor, client_ip, status, phase, summary, logs_text,
 		       error_class, retry_policy_json, meta_json, created_at, updated_at, started_at, finished_at,
 		       logs_expired, logs_truncated, revision, apt_target, apt_mutation_host_key
@@ -1078,6 +1093,16 @@ func (r *SQLiteRepository) ListUnfinishedServerNames() ([]string, error) {
 }
 
 func (r *SQLiteRepository) ListReconciliationRequired() ([]Record, error) {
+	return r.listAPTReconciliationEvidence(false)
+}
+
+// ListUnresolvedAPTJobs includes the original interrupted mutation and failed
+// repair attempts while their target still requires reconciliation.
+func (r *SQLiteRepository) ListUnresolvedAPTJobs() ([]Record, error) {
+	return r.listAPTReconciliationEvidence(true)
+}
+
+func (r *SQLiteRepository) listAPTReconciliationEvidence(includePrevious bool) ([]Record, error) {
 	if r == nil || r.db == nil {
 		return nil, errors.New("job repository is not initialized")
 	}
@@ -1101,7 +1126,7 @@ func (r *SQLiteRepository) ListReconciliationRequired() ([]Record, error) {
 		          AND later_success.status = ?
 		          AND later_success.created_at > candidate.created_at
 		   )
-		   AND NOT EXISTS (
+		   AND (? OR NOT EXISTS (
 		       SELECT 1
 		         FROM jobs AS later_reconciliation
 		        WHERE later_reconciliation.apt_target = candidate.apt_target
@@ -1110,11 +1135,12 @@ func (r *SQLiteRepository) ListReconciliationRequired() ([]Record, error) {
 		          AND later_reconciliation.error_class = ?
 		          AND later_reconciliation.kind IN (?, ?, ?)
 		          AND later_reconciliation.created_at > candidate.created_at
-		   )
+		   ))
 		 ORDER BY candidate.created_at DESC
 	`,
 		StatusFailed, "reconciliation_required", KindUpdate, KindAutoremove, KindAptRepair,
 		KindUpdate, KindAutoremove, KindAptRepair, StatusSucceeded,
+		includePrevious,
 		StatusFailed, "reconciliation_required", KindUpdate, KindAutoremove, KindAptRepair,
 	)
 	if err != nil {
@@ -1151,22 +1177,7 @@ func (r *SQLiteRepository) MarkUnfinishedInterrupted(now string) error {
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	if _, err := tx.Exec(`
-		UPDATE jobs
-		   SET status = ?, phase = ?, summary = ?, error_class = ?, finished_at = ?, updated_at = ?, revision = revision + 1
-		 WHERE status = ?
-		   AND (
-		       (kind = ? AND phase = ?)
-		       OR (kind = ? AND phase = ?)
-		       OR (kind = ? AND phase = ?)
-		   )
-	`,
-		StatusFailed, PhaseComplete, "APT reconciliation required after restart interruption", "reconciliation_required", now, now,
-		StatusRunning,
-		KindUpdate, PhaseAptUpgrade,
-		KindAutoremove, PhaseAutoremove,
-		KindAptRepair, PhaseReconcile,
-	); err != nil {
+	if err := markInterruptedAPTMutations(tx, now); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(`

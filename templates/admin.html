@@ -1008,6 +1008,7 @@
                     <input class="file-input" type="file" id="backup-restore-file" accept=".slubkp,application/octet-stream">
                     <label class="file-btn" for="backup-restore-file">Choose backup file</label>
                     <input type="password" id="backup-restore-passphrase" aria-label="Backup restore passphrase" placeholder="Backup passphrase">
+                    <label class="checkbox-inline"><input type="checkbox" id="backup-restore-isolated"> Restore in isolation</label>
                     <button class="btn-ghost" type="button" id="backup-verify-btn">Review Restore Readiness</button>
                     <div class="backup-review-empty" id="backup-review-empty">Select an archive and review its restore impact before replacement.</div>
                     <section class="backup-restore-review" id="backup-restore-review" aria-labelledby="backup-review-title" hidden>
@@ -1072,6 +1073,7 @@
             <div class="admin-section-content" id="admin-section-installation-content" data-admin-section-content="installation">
                 <dl class="metrics-credential-facts" id="installation-health-facts">
                     <div><dt>Readiness</dt><dd id="installation-state">Unavailable</dd></div>
+                    <div><dt>Restore isolation</dt><dd id="installation-restore-isolation">Unavailable</dd></div>
                     <div><dt>Observed</dt><dd id="installation-checked">Unavailable</dd></div>
                     <div><dt>Verified backup evidence</dt><dd id="installation-backup">Unavailable</dd></div>
                     <div><dt>Notifications</dt><dd id="installation-notifications">Unavailable</dd></div>
@@ -1080,6 +1082,13 @@
                     <div><dt>Oldest queued delivery</dt><dd id="installation-notification-queue-age">Unavailable</dd></div>
                     <div><dt>Local storage</dt><dd id="installation-storage">Unavailable</dd></div>
                 </dl>
+                <div id="restore-isolation-controls" hidden>
+                    <div class="backup-review-section">
+                        <p>Review SSH trust, scheduled policies and notification destinations before resuming SSH and queued deliveries.</p>
+                        <div><button class="btn-danger" type="button" id="restore-isolation-resume">Resume External Work</button></div>
+                        <p id="restore-isolation-feedback" class="muted" role="status" aria-live="polite"></p>
+                    </div>
+                </div>
                 <div class="table-wrap"><table><thead><tr><th>Worker</th><th>State</th><th>Last tick</th><th>Last progress</th><th>Last error</th><th>Observed errors</th></tr></thead><tbody id="installation-workers"></tbody></table></div>
                 <p class="muted">Never observed and unavailable are unknown, not a zero age or proof of health. Worker errors reset on process restart. Backup evidence does not revalidate archives on disk.</p>
             </div>
@@ -1233,14 +1242,14 @@
     <script src="/static/js/scheduled-policy-administration-interaction.js?v=scheduled-autoremove-20261020"></script>
     <script src="/static/js/section-navigation.js?v=section-navigation-20261029"></script>
     <script src="/static/js/section-navigation-adapter.js?v=admin-horizontal-20261104"></script>
-    <script src="/static/js/admin-page-interaction.js?v=notification-health-635"></script>
+    <script src="/static/js/admin-page-interaction.js?v=restore-isolation-642"></script>
     <script src="/static/js/admin-session-ip-reveal.js?v=frontend-isolation-20261027"></script>
     <script src="/static/js/application-postcheck-adapter.js?v=admin-profile-test-eligibility-20261029"></script>
     <script src="/static/js/package-deferrals.js?v=frontend-isolation-20261027"></script>
 <script src="/static/js/admin-notifications-adapter.js?v=notification-apt-reconciliation-619"></script>
 <script src="/static/js/admin-account-adapter.js?v=frontend-isolation-20261027"></script>
-<script src="/static/js/admin-backup-adapter.js?v=apt-restore-preview-625"></script>
+<script src="/static/js/admin-backup-adapter.js?v=restore-isolation-642"></script>
 <script src="/static/js/admin-policies-adapter.js?v=apt-reconciliation-624"></script>
-<script src="/static/js/admin.js?v=notification-health-635"></script>
+<script src="/static/js/admin.js?v=restore-isolation-642"></script>
 </body>
 </html>

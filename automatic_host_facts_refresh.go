@@ -103,6 +103,9 @@ func automaticHostFactsRefreshAttempt(ctx context.Context, deps AppDeps, candida
 		return healthpkg.RefreshAttempt{State: healthpkg.RefreshAttemptDeferred, Reason: "exclusive application maintenance is active", ReasonCode: "maintenance_active"}
 	}
 	defer lease.Close()
+	if deps.RestoreIsolation.BlocksExternalWork() {
+		return healthpkg.RefreshAttempt{State: healthpkg.RefreshAttemptDeferred, Reason: "installation is isolated after restore", ReasonCode: "restore_isolated"}
+	}
 
 	if deps.ServerState == nil || deps.UpdateService == nil {
 		attempt := healthpkg.RefreshAttempt{State: healthpkg.RefreshAttemptFailed, Reason: "automatic host facts refresh is unavailable", ReasonCode: "runtime_unavailable"}

@@ -31,6 +31,7 @@ type ServiceDeps struct {
 	HandleScheduledRun  func(ScheduledRunRequest) ScheduledRunResult
 	CurrentLocation     func() *time.Location
 	Maintenance         *maintenancepkg.Coordinator
+	BlocksScheduledRun  func(time.Time) bool
 	ApplicationTime     *apptimepkg.Module
 	MarkInterruptedRuns func() error
 	Now                 func() time.Time
@@ -1266,6 +1267,9 @@ func (s *Service) ProcessDue(now time.Time) (resultErr error) {
 	deps := s.EnsureDeps()
 	s.tickMu.Lock()
 	defer s.tickMu.Unlock()
+	if deps.BlocksScheduledRun != nil && deps.BlocksScheduledRun(now) {
+		return nil
+	}
 	if deps.Maintenance != nil {
 		lease, decision := deps.Maintenance.TryShared(maintenancepkg.WorkScheduled)
 		if !decision.Allowed {
@@ -1273,6 +1277,9 @@ func (s *Service) ProcessDue(now time.Time) (resultErr error) {
 			return nil
 		}
 		defer lease.Close()
+	}
+	if deps.BlocksScheduledRun != nil && deps.BlocksScheduledRun(now) {
+		return nil
 	}
 
 	return s.processDueWithoutDurableRecovery(now)

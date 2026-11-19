@@ -1227,6 +1227,16 @@ func (s *Service) TestDelivery(ctx context.Context) (DeliveryStatus, error) {
 }
 
 func (s *Service) TestDestination(ctx context.Context, destination string) (DeliveryStatus, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if !s.beginPersistence(ctx) {
+		return DeliveryStatus{}, errors.New("notification delivery is unavailable")
+	}
+	defer s.endPersistence()
+	if s.deps.RestoreDeliveryBlocked != nil && s.deps.RestoreDeliveryBlocked() {
+		return DeliveryStatus{}, errors.New("notification delivery is paused after restore")
+	}
 	evt := DeliveryIntent{
 		CreatedAt:  s.deps.Now().UTC().Format(time.RFC3339),
 		Actor:      "admin",

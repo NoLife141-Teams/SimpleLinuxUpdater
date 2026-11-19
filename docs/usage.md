@@ -721,7 +721,8 @@ Restore:
 1. Verify the `.slubkp` file and passphrase in Admin; verification does not mutate application state.
 2. Upload the verified archive for restore.
 3. Enter the backup passphrase.
-4. Confirm replacing `servers.db` and optional `known_hosts`.
+4. Select **Restore in isolation** if you want to review the restored installation before permitting SSH connections and notifications.
+5. Confirm replacing `servers.db` and optional `known_hosts`.
 
 Notes:
 

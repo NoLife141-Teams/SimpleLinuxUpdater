@@ -35,7 +35,7 @@ func newServerOnboardingService(deps AppDeps) *serverpkg.OnboardingService {
 			factory := newHostMaintenanceSessionFactory(serverpkg.BuildAuthMethods, func() (ssh.HostKeyCallback, error) { return callback, nil }, func(server Server, config *ssh.ClientConfig) (sshConnection, error) {
 				return getDialSSHConnection()(server, config)
 			})
-			session, err := factory.Open(ctx, HostMaintenanceSessionRequest{Server: server, CommandTimeout: 8 * time.Second, RetryPolicy: RetryPolicy{MaxAttempts: 1}, DialOperation: "server_onboarding"})
+			session, err := isolateHostMaintenanceSessions(deps.RestoreIsolation, factory).Open(ctx, HostMaintenanceSessionRequest{Server: server, CommandTimeout: 8 * time.Second, RetryPolicy: RetryPolicy{MaxAttempts: 1}, DialOperation: "server_onboarding"})
 			if err != nil {
 				return nil, err
 			}

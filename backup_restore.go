@@ -515,6 +515,11 @@ func handleBackupRestoreWithLifecycle(c *gin.Context, lifecycle *backupOperation
 	if c.Request.MultipartForm != nil {
 		defer c.Request.MultipartForm.RemoveAll()
 	}
+	isolate := c.PostForm("isolate")
+	if isolate != "" && isolate != "true" && isolate != "false" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "isolate must be true or false"})
+		return
+	}
 	passphrase := strings.TrimSpace(c.PostForm("passphrase"))
 	if err := validateBackupPassphrase(passphrase); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -543,6 +548,7 @@ func handleBackupRestoreWithLifecycle(c *gin.Context, lifecycle *backupOperation
 		ClientIP:   clientIPFromContext(c),
 		File:       upload,
 		Passphrase: passphrase,
+		Isolate:    isolate == "true",
 		Lease:      maintenanceExclusiveLeaseFromContext(c),
 	})
 	switch outcome.Kind {
@@ -558,6 +564,7 @@ func handleBackupRestoreWithLifecycle(c *gin.Context, lifecycle *backupOperation
 			"sessions_invalidated": outcome.SessionsInvalidated,
 			"global_key_present":   outcome.GlobalKeyPresent,
 			"known_hosts_restored": outcome.KnownHostsRestored,
+			"restore_isolated":     outcome.RestoreIsolated,
 		})
 	case backupOperationActiveServerActions:
 		c.JSON(http.StatusConflict, gin.H{

@@ -154,6 +154,7 @@ type installationDiagnostics struct {
 	CheckedAt                time.Time                                       `json:"checked_at"`
 	State                    string                                          `json:"state"`
 	Maintenance              bool                                            `json:"maintenance"`
+	RestoreIsolation         string                                          `json:"restore_isolation"`
 	Workers                  map[string]installationhealthpkg.WorkerSnapshot `json:"workers"`
 	BackupAvailable          bool                                            `json:"backup_available"`
 	BackupState              string                                          `json:"backup_state"`
@@ -165,7 +166,7 @@ type installationDiagnostics struct {
 
 func installationSnapshot(ctx context.Context, deps AppDeps) installationDiagnostics {
 	now := deps.Now().UTC()
-	out := installationDiagnostics{CheckedAt: now, State: deps.InstallationHealth.probe(ctx, deps), Maintenance: deps.MaintenanceCoordinator.Snapshot().Active, Workers: map[string]installationhealthpkg.WorkerSnapshot{}, BackupState: "unavailable"}
+	out := installationDiagnostics{CheckedAt: now, State: deps.InstallationHealth.probe(ctx, deps), Maintenance: deps.MaintenanceCoordinator.Snapshot().Active, Workers: map[string]installationhealthpkg.WorkerSnapshot{}, BackupState: "unavailable", RestoreIsolation: "unavailable"}
 	out.Workers["audit_pruner"] = deps.InstallationHealth.auditPruner.Snapshot(true)
 	out.Workers["job_log_pruner"] = deps.InstallationHealth.jobLogPruner.Snapshot(true)
 	out.Workers["scheduler"] = deps.PolicyService.WorkerHealth()
@@ -190,6 +191,14 @@ func installationSnapshot(ctx context.Context, deps AppDeps) installationDiagnos
 	defer lease.Close()
 	ctx, cancel := context.WithTimeout(ctx, 750*time.Millisecond)
 	defer cancel()
+	if deps.RestoreIsolation != nil {
+		if active, err := deps.RestoreIsolation.State(); err == nil {
+			out.RestoreIsolation = "inactive"
+			if active {
+				out.RestoreIsolation = "active"
+			}
+		}
+	}
 	if deps.BackupAutomation != nil {
 		facts, err := deps.BackupAutomation.installationFacts(ctx)
 		if err == nil {

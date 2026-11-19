@@ -112,6 +112,9 @@ func (s *Service) ProcessDueWithRecovery(now time.Time, store SchedulerWatermark
 	deps := s.EnsureDeps()
 	s.tickMu.Lock()
 	defer s.tickMu.Unlock()
+	if deps.BlocksScheduledRun != nil && deps.BlocksScheduledRun(now) {
+		return nil
+	}
 
 	if deps.Maintenance != nil {
 		lease, decision := deps.Maintenance.TryShared(maintenancepkg.WorkScheduled)
@@ -119,6 +122,9 @@ func (s *Service) ProcessDueWithRecovery(now time.Time, store SchedulerWatermark
 			return s.recordSchedulerDenial(now, decision, store)
 		}
 		defer lease.Close()
+	}
+	if deps.BlocksScheduledRun != nil && deps.BlocksScheduledRun(now) {
+		return nil
 	}
 
 	if store.Load == nil || store.Save == nil {

@@ -435,7 +435,7 @@ func (s *Service) applyArchiveFiles(ctx context.Context, files map[string]string
 	targets := append([]string{dbTarget}, SQLiteSidecarPaths(dbTarget)...)
 	knownHosts, replacesKnownHosts := files["known_hosts"]
 	if replacesKnownHosts {
-		reservedPaths := append(append([]string{}, targets...), markerPath, dbTarget+".lock")
+		reservedPaths := append(append([]string{}, targets...), markerPath, dbTarget+".lock", RestoreIsolationPath(dbTarget))
 		if s.deps.ConfigPath != nil {
 			reservedPaths = append(reservedPaths, s.deps.ConfigPath())
 		}

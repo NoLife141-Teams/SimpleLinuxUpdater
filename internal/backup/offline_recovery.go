@@ -136,7 +136,7 @@ func (s *Service) OfflineRestoreRecovery(ctx context.Context, selection string, 
 		hosts = path
 	}
 	targets := append([]string{database}, SQLiteSidecarPaths(database)...)
-	for _, reserved := range append(append([]string{}, targets...), marker, s.deps.ConfigPath(), database+".lock") {
+	for _, reserved := range append(append([]string{}, targets...), marker, s.deps.ConfigPath(), database+".lock", RestoreIsolationPath(database)) {
 		if same, err := sameRestoreEntry(reserved, hosts); err != nil || same {
 			return report, errors.New("installation host trust path conflicts with recovery files")
 		}

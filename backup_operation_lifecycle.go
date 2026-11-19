@@ -61,6 +61,7 @@ type backupOperationLifecycleDeps struct {
 	ActivateMaintenance     func(kind, jobID, actor, message string) error
 	DeactivateMaintenance   func() error
 	PrepareRestoredState    func(context.Context, *sql.DB) error
+	RestoreIsolation        *internalbackup.RestoreIsolation
 	RecordAudit             func(backupOperationAuditRecord)
 	EnsureEncryptionKey     func() []byte
 	JobTimestampNow         func() string
@@ -88,6 +89,7 @@ type backupRestoreCommand struct {
 	Blob       []byte
 	File       internalbackup.TemporaryFile
 	Passphrase string
+	Isolate    bool
 	Lease      *maintenancepkg.ExclusiveLease
 }
 
@@ -102,6 +104,7 @@ type backupOperationOutcome struct {
 	GlobalKeyPresent    bool
 	KnownHostsRestored  bool
 	SessionsInvalidated bool
+	RestoreIsolated     bool
 	Err                 error
 }
 
@@ -110,6 +113,7 @@ func newBackupOperationLifecycle(deps AppDeps) *backupOperationLifecycle {
 	return newBackupOperationLifecycleWithDeps(backupOperationLifecycleDeps{
 		Archive:           deps.BackupService,
 		CurrentJobManager: deps.CurrentJobManager,
+		RestoreIsolation:  deps.RestoreIsolation,
 		PrepareRestoredState: func(ctx context.Context, staged *sql.DB) error {
 			if err := policypkg.ClearSchedulerDenials(staged); err != nil {
 				return err
@@ -502,7 +506,16 @@ func (l *backupOperationLifecycle) Restore(ctx context.Context, cmd backupRestor
 					return err
 				}
 			}
-			return cmd.Lease.PrepareReplacement(ctx, db)
+			if err := cmd.Lease.PrepareReplacement(ctx, db); err != nil {
+				return err
+			}
+			if cmd.Isolate {
+				if deps.RestoreIsolation == nil {
+					return errors.New("restore isolation is unavailable")
+				}
+				return deps.RestoreIsolation.Activate()
+			}
+			return nil
 		},
 		RestoreHandoff: func(ctx context.Context) error {
 			if cmd.Lease == nil {
@@ -537,6 +550,7 @@ func (l *backupOperationLifecycle) Restore(ctx context.Context, cmd backupRestor
 		return l.failRestoreArchive(job, cmd, err)
 	}
 	jm = deps.CurrentJobManager()
+	isolated := deps.RestoreIsolation.BlocksExternalWork()
 	deps.RecordAudit(backupOperationAuditRecord{
 		Actor:      cmd.Actor,
 		ClientIP:   cmd.ClientIP,
@@ -549,6 +563,7 @@ func (l *backupOperationLifecycle) Restore(ctx context.Context, cmd backupRestor
 			"manifest_files":       len(result.Manifest.Files),
 			"global_key_present":   result.GlobalKeyPresent,
 			"known_hosts_restored": result.KnownHostsRestored,
+			"restore_isolated":     isolated,
 		},
 	})
 	status := jobStatusSucceeded
@@ -560,6 +575,7 @@ func (l *backupOperationLifecycle) Restore(ctx context.Context, cmd backupRestor
 		"global_key_present":   result.GlobalKeyPresent,
 		"known_hosts_restored": result.KnownHostsRestored,
 		"sessions_invalidated": true,
+		"restore_isolated":     isolated,
 	})
 	if jm != nil {
 		job.Status = status
@@ -575,6 +591,7 @@ func (l *backupOperationLifecycle) Restore(ctx context.Context, cmd backupRestor
 		GlobalKeyPresent:    result.GlobalKeyPresent,
 		KnownHostsRestored:  result.KnownHostsRestored,
 		SessionsInvalidated: true,
+		RestoreIsolated:     isolated,
 	}
 }
 

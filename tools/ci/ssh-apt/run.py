@@ -31,10 +31,11 @@ PACKAGE = "slu-ci-fixture"
 TERMINAL = {"succeeded", "failed", "cancelled", "interrupted"}
 APT_EVENT = "apt.reconciliation.required"
 RESTORE_CRASH = "restore-crash-after-sqlite-replacement"
+RESTORE_ISOLATION = "isolated-restore"
 SCENARIOS = ("root-upgrade", "operator-upgrade", "misconfigured-helper", "apt-lock",
              "plan-drift-and-obsolete-approval", "ssh-disconnect-during-mutation-and-repair",
              "batch-app-interruption-during-mutation-and-repair", "changed-host-key",
-             RESTORE_CRASH, "systemd-active", "controlled-reboot", "official-provenance")
+             RESTORE_CRASH, RESTORE_ISOLATION, "systemd-active", "controlled-reboot", "official-provenance")
 
 
 def require(condition, message):
@@ -251,13 +252,16 @@ class API:
     def server(self, name):
         return next(s for s in self.request("GET", "/api/servers") if s["name"] == name)
 
-    def backup_archive(self, operation, archive, passphrase, *, allowed=(200,), timeout=20):
+    def backup_archive(self, operation, archive, passphrase, *, allowed=(200,), timeout=20, isolate=False):
         require(operation in ("verify", "restore"), "invalid fixture archive operation")
         boundary = "slu-" + uuid.uuid4().hex
         body = (f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="fixture.slubkp"\r\n'
                 'Content-Type: application/octet-stream\r\n\r\n').encode() + archive
         body += (f'\r\n--{boundary}\r\nContent-Disposition: form-data; name="passphrase"\r\n\r\n'
-                 f'{passphrase}\r\n--{boundary}--\r\n').encode()
+                 f'{passphrase}\r\n').encode()
+        if isolate:
+            body += (f'--{boundary}\r\nContent-Disposition: form-data; name="isolate"\r\n\r\ntrue\r\n').encode()
+        body += f'--{boundary}--\r\n'.encode()
         return self.request("POST", "/api/backup/" + operation, raw=body,
                             content_type=f"multipart/form-data; boundary={boundary}", allowed=allowed, timeout=timeout)
 
@@ -902,6 +906,84 @@ class Harness:
                 return
             raise AssertionError("restore request did not lose its connection to the killed process")
 
+    def qualify_restore_isolation(self, record):
+        # The previous qualification preserves an APT incident, so reuse its
+        # healthy SSH target without deleting the blocked inventory entry.
+        name = "restore-crash"
+        credentials = {"username": "fixture-admin", "password": self.password}
+        passphrase = secrets.token_urlsafe(24)
+        self.redactions.append(passphrase)
+        self.api.include_error_body = False
+        self.api.request("PUT", "/api/notifications/settings", {
+            "enabled": True, "webhook_url_intent": "preserve", "event_types": ["backup.restore"],
+        })
+        # Get a current facts observation so a refresh already under admission
+        # cannot race the start of exclusive backup work.
+        self.api.request("POST", f"/api/servers/{name}/facts/refresh", allowed=(200, 409))
+        until(lambda: self.api.server(name)["status"] != "facts_refresh", "pre-restore facts did not settle")
+        archive = self.api.request("POST", "/api/backup/export", {"passphrase": passphrase}, binary=True)
+        paused = self.work / "notification-restore-paused"
+        paused.unlink(missing_ok=True)
+        record["checkpoint"] = "isolated-restore"
+
+        def ssh_connections():
+            return self.docker("logs", self.container).count("Connection from ")
+
+        def receipts():
+            raw = self.target("cat", "/var/lib/slu-fixture/webhook-receipts")
+            return [json.loads(line) for line in raw.splitlines()]
+
+        baseline_ssh, baseline_receipts = ssh_connections(), receipts()
+        require(baseline_ssh > 0, "SSH fixture did not instrument connections")
+        restored = self.api.backup_archive("restore", archive, passphrase, isolate=True)
+        require(restored["restore_isolated"], "restore did not enter isolation")
+        self.api.request("POST", "/api/auth/login", credentials)
+        require(self.api.request("GET", "/api/installation/health")["restore_isolation"] == "active"
+                and self.api.server(name)["name"] == name,
+                "restored inventory was unavailable or isolation was inactive")
+        self.api.request("GET", "/api/update-policies")
+        self.api.request("GET", f'/api/reports/jobs/{restored["job_id"]}', binary=True)
+        until(paused.is_file, "isolation was not observed by the notification worker")
+        for path in (f"/api/update/{name}", f"/api/servers/{name}/facts/refresh",
+                     "/api/status/batches", "/api/hostkeys/scan", "/api/notifications/test"):
+            failure = self.api.request("POST", path, {}, allowed=(409,))
+            require(failure["code"] == "restore_isolated", "an outbound API bypassed isolation")
+
+        record["checkpoint"] = "restart-and-restore"
+        self.stop_app()
+        paused.unlink(missing_ok=True)
+        self.docker("start", self.app_name)
+        self.connect_app(include_error_body=False)
+        self.api.request("POST", "/api/auth/login", credentials)
+        require(self.api.request("GET", "/api/installation/health")["restore_isolation"] == "active",
+                "restart lost local isolation")
+        self.api.request("POST", "/api/auth/reauthenticate", {"password": self.password})
+        repeated = self.api.backup_archive("restore", archive, passphrase)
+        require(repeated["restore_isolated"], "restored settings cleared existing isolation")
+        self.api.request("POST", "/api/auth/login", credentials)
+        until(paused.is_file, "notification pause was lost during restart")
+        require(ssh_connections() == baseline_ssh and receipts() == baseline_receipts,
+                "SSH or webhook traffic left the isolated installation")
+        queued = self.api.request("GET", "/api/notifications/delivery-history")["items"]
+        require(any(row["event_type"] == "backup.restore" and row["state"] == "pending" for row in queued),
+                "the receipt fixture never had an eligible delivery queued")
+
+        record["checkpoint"] = "explicit-resumption"
+        route = "/api/backup/restore-isolation/resume"
+        anonymous = API(int(self.api.base.rsplit(":", 1)[1]), include_error_body=False)
+        anonymous.request("POST", route, {"confirmation": "RESUME"}, allowed=(401,))
+        self.api.request("POST", route, {"confirmation": ""}, allowed=(400,))
+        self.api.request("POST", "/api/auth/reauthenticate", {"password": self.password})
+        require(self.api.request("POST", route, {"confirmation": "RESUME"})["restore_isolation"] == "inactive",
+                "authorized resumption did not lift isolation")
+        self.api.request("POST", "/api/hostkeys/scan", {"host": self.ssh_host, "port": self.ssh_port})
+        require(ssh_connections() > baseline_ssh, "authorized SSH did not return after resumption")
+        until(lambda: any(row[0] == "backup.restore" for row in receipts()[len(baseline_receipts):]),
+              "queued notification did not return after resumption")
+        record.update(verified_restart=True, verified_subsequent_restore=True, isolated_ssh_connections=0,
+                      isolated_webhook_deliveries=0, authorized_work_resumed=True)
+        del record["checkpoint"]
+
     def offline_recovery_container_args(self):
         require(self.owned("container", self.app_name), "application ownership mismatch")
         return ("--name", self.app_name + "-recovery", "--network", "none",
@@ -1071,6 +1153,11 @@ class Harness:
             except (RuntimeError, OSError, ValueError, sqlite3.Error, subprocess.SubprocessError) as error:
                 # Subprocess and HTTP errors can embed fixture output. Publish only
                 # the failing checkpoint and exception type for this scenario.
+                raise AssertionError(f"fixture operation failed ({type(error).__name__})") from None
+        with self.scenario(RESTORE_ISOLATION) as record:
+            try:
+                self.qualify_restore_isolation(record)
+            except (RuntimeError, OSError, ValueError, sqlite3.Error, subprocess.SubprocessError) as error:
                 raise AssertionError(f"fixture operation failed ({type(error).__name__})") from None
 
         self.records.extend([

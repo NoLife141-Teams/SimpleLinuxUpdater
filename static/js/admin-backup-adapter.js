@@ -24,6 +24,7 @@
             beginAdminSnapshot,
             renderAdminWorkspace,
             updateFileLabel,
+            refreshInstallation,
         } = options;
         const commandPlans = new Set();
         function beginAdminCommand(...args) {
@@ -328,6 +329,42 @@
                 const button = event.target.closest("button[data-backup-archive]");
                 if (button) void operateBackupArchive(button.dataset.backupArchive, button.dataset.backupOperation);
             });
+            const resume = document.getElementById("restore-isolation-resume");
+            lifecycle.listen(resume, "click", () => void resumeExternalWork(resume));
+        }
+
+        async function resumeExternalWork(button) {
+            if (button.disabled) return;
+            const lifetime = lifecycle.capture();
+            const feedback = document.getElementById("restore-isolation-feedback");
+            button.disabled = true;
+            feedback.textContent = "";
+            try {
+                const confirmed = await window.confirmTypedAction(
+                    "Review the restored settings before resuming external work.",
+                    "RESUME",
+                    {
+                        title: "Resume external work",
+                        operation: "Lift restore isolation",
+                        consequences: "SSH and queued notifications may resume. New scheduled runs become eligible next minute.",
+                        authentication: "Recent administrator reauthentication is required.",
+                        confirmLabel: "Resume External Work",
+                    },
+                );
+                if (!confirmed || !lifecycle.isCurrent(lifetime)) return;
+                await reauthentication.sensitive(
+                    "/api/backup/restore-isolation/resume",
+                    {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({confirmation: "RESUME"})},
+                    "Resume external work",
+                );
+                if (!lifecycle.isCurrent(lifetime)) return;
+                window.notifyApp("Restore isolation lifted.");
+                await refreshInstallation();
+            } catch (error) {
+                if (lifecycle.isCurrent(lifetime)) feedback.textContent = error.message || "Could not resume external work.";
+            } finally {
+                if (lifecycle.isCurrent(lifetime)) button.disabled = false;
+            }
         }
 
         function renderBackupAutomation(updateForm = false) {
@@ -693,6 +730,7 @@
                 }
                 const review = adminPageView().backup.review;
                 const counts = review?.safeCounts || {};
+                const isolate = document.getElementById("backup-restore-isolated")?.checked === true;
                 if (
                     !(await window.confirmTypedAction(
                         "Type the confirmation text only after verifying this backup.",
@@ -703,7 +741,8 @@
                                 "Replace application data from an encrypted backup",
                             resources: `${file.name}; ${Number(counts.servers) || 0} servers, ${Number(counts.policies) || 0} policies, ${Number(counts.jobs) || 0} jobs, ${Number(counts.sessions) || 0} archived sessions`,
                             consequences:
-                                "Current application data is replaced, all active Admin sessions are invalidated, the Metrics API credential is replaced, and requests pause during exclusive maintenance.",
+                                "Current application data is replaced, all active Admin sessions are invalidated, the Metrics API credential is replaced, and requests pause during exclusive maintenance." +
+                                (isolate ? " SSH and notification delivery stay paused after restore until an administrator resumes them." : ""),
                             reversibility:
                                 "Not automatically reversible. Export a current backup first if rollback may be needed.",
                             authentication:
@@ -729,6 +768,7 @@
                 const form = new FormData();
                 form.append("file", file);
                 form.append("passphrase", pass);
+                form.append("isolate", String(isolate));
                 clearCredential = true;
                 const payload = await reauthentication.sensitive(
                     "/api/backup/restore",

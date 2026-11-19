@@ -22,6 +22,7 @@ type OperationClass string
 const (
 	OperationBackupExport  OperationClass = "backup_export"
 	OperationBackupRestore OperationClass = "backup_restore"
+	OperationRestoreResume OperationClass = "restore_isolation_resume"
 
 	exclusiveLeaseReleaseAttempts       = 5
 	exclusiveLeaseReleaseDelay          = 5 * time.Millisecond

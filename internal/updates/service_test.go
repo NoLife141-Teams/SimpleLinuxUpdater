@@ -35,7 +35,11 @@ func TestAPTMutationPinsHostKeyAcrossSSHRekey(t *testing.T) {
 		CurrentJobManager: func() *jobs.Manager { return jm },
 		HostMaintenanceSessions: HostMaintenanceSessionFactoryFunc(func(_ context.Context, req HostMaintenanceSessionRequest) (HostMaintenanceSession, error) {
 			verify = req.VerifyHostKey
-			return &HostMaintenanceSessionFuncs{}, verify(original)
+			if err := verify(original); err != nil {
+				return nil, err
+			}
+			req.OnConnectedHostKey(original)
+			return &HostMaintenanceSessionFuncs{}, nil
 		}),
 	})}
 	if !runner.setupSSH("update.ssh_dial") {

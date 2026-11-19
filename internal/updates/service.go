@@ -646,6 +646,7 @@ func (r *withActorRunner) setupSSH(dialOpName string) bool {
 	}
 	r.retryLogFormats[dialOpName] = "\nSSH dial attempt %d/%d failed: %v; retrying in %s"
 	var verifyHostKey func(string) error
+	var recordHostKey func(string)
 	switch r.jobKind {
 	case jobs.KindUpdate, jobs.KindAutoremove, jobs.KindAptRepair:
 		r.hostKeyMu.Lock()
@@ -657,17 +658,22 @@ func (r *withActorRunner) setupSSH(dialOpName string) bool {
 			if r.expectedHostKey != "" && r.expectedHostKey != fingerprint {
 				return errors.New("SSH host key differs from the key confirmed for APT maintenance. Verify the original host independently before confirming a key in the repair dialog.")
 			}
-			r.hostKeyFingerprint = fingerprint
 			return nil
+		}
+		recordHostKey = func(fingerprint string) {
+			r.hostKeyMu.Lock()
+			defer r.hostKeyMu.Unlock()
+			r.hostKeyFingerprint = fingerprint
 		}
 	}
 	session, err := deps.HostMaintenanceSessions.Open(r.maintenanceContext(), HostMaintenanceSessionRequest{
-		Server:         r.server,
-		RetryPolicy:    r.policy,
-		DialOperation:  dialOpName,
-		CommandTimeout: r.commandTimeout,
-		OnRetry:        r.onHostRetry,
-		VerifyHostKey:  verifyHostKey,
+		Server:             r.server,
+		RetryPolicy:        r.policy,
+		DialOperation:      dialOpName,
+		CommandTimeout:     r.commandTimeout,
+		OnRetry:            r.onHostRetry,
+		VerifyHostKey:      verifyHostKey,
+		OnConnectedHostKey: recordHostKey,
 	})
 	if err != nil {
 		var sessionErr *HostMaintenanceError

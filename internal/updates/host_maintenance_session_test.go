@@ -2,9 +2,11 @@ package updates
 
 import (
 	"context"
+	"crypto/ed25519"
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"reflect"
 	"strings"
 	"testing"
@@ -18,6 +20,74 @@ import (
 
 type maintenanceTestConnection struct {
 	closed int
+}
+
+func TestHostMaintenanceRecordsOnlySuccessfullyConnectedHostKeys(t *testing.T) {
+	var keys []ssh.PublicKey
+	for index := byte(0); index < 3; index++ {
+		var seed [ed25519.SeedSize]byte
+		seed[0] = index
+		key, err := ssh.NewPublicKey(ed25519.NewKeyFromSeed(seed[:]).Public())
+		if err != nil {
+			t.Fatal(err)
+		}
+		keys = append(keys, key)
+	}
+	authFailure := errors.New("authentication failed")
+	var callbacks []ssh.HostKeyCallback
+	factory := NewProductionHostMaintenanceSessionFactory(ProductionHostMaintenanceSessionDeps{
+		BuildAuthMethods: func(servers.Server) ([]ssh.AuthMethod, error) { return nil, nil },
+		HostKeyCallback: func() (ssh.HostKeyCallback, error) {
+			return func(string, net.Addr, ssh.PublicKey) error { return nil }, nil
+		},
+		DialSSH: func(_ context.Context, _ servers.Server, config *ssh.ClientConfig) (SSHConnection, error) {
+			index := len(callbacks)
+			callbacks = append(callbacks, config.HostKeyCallback)
+			if err := config.HostKeyCallback("test", nil, keys[min(index, 2)]); err != nil {
+				return nil, err
+			}
+			if index == 2 {
+				return nil, authFailure
+			}
+			return &maintenanceTestConnection{}, nil
+		},
+	})
+	var expected, connected string
+	pinMismatch := errors.New("unexpected fingerprint")
+	ctx := context.Background()
+	session, err := factory.Open(ctx, HostMaintenanceSessionRequest{
+		VerifyHostKey: func(fingerprint string) error {
+			if expected != "" && fingerprint != expected {
+				return pinMismatch
+			}
+			return nil
+		},
+		OnConnectedHostKey: func(fingerprint string) { connected = fingerprint },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+	transport := session.(*productionHostMaintenanceSession)
+	if err := transport.reconnect(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := callbacks[0]("test", nil, keys[0]); err != nil {
+		t.Fatalf("retired transport rejected its own key: %v", err)
+	}
+	if err := callbacks[1]("test", nil, keys[0]); err == nil {
+		t.Fatal("active transport accepted a different key during rekey")
+	}
+	if err := transport.reconnect(ctx); !errors.Is(err, authFailure) {
+		t.Fatalf("failed reconnect error = %v, want %v", err, authFailure)
+	}
+	expected = ssh.FingerprintSHA256(keys[1])
+	if connected != expected {
+		t.Fatalf("recorded SSH host key = %q, want %q", connected, expected)
+	}
+	if err := transport.reconnect(ctx); !errors.Is(err, pinMismatch) {
+		t.Fatalf("reconnect with a different host key error = %v, want %v", err, pinMismatch)
+	}
 }
 
 func TestReconnectUsesOperationCancellation(t *testing.T) {

@@ -7,12 +7,12 @@
     <link rel="icon" type="image/png" href="/static/logo.png">
     <link rel="stylesheet" href="/static/css/base.css?v=select-spacing-global-20261104">
     <link rel="stylesheet" href="/static/css/pending-updates.css?v=top-pagination-20261103">
-    <link rel="stylesheet" href="/static/css/index.css?v=compact-cve-20261103b">
+    <link rel="stylesheet" href="/static/css/index.css?v=batch-history-586">
     <link rel="stylesheet" href="/static/css/status-polish.css?v=select-spacing-global-20261104">
 <link rel="stylesheet" href="/static/css/package-deferrals.css?v=ui-components-515-20261029">
     <link rel="stylesheet" href="/static/css/operator-workspace.css?v=admin-horizontal-20261104">
 </head>
-<body class="status-page" data-account-role="{{.Role}}" data-linked-server-identity="{{.LinkedServerIdentity}}">
+<body class="status-page" data-account-role="{{.Role}}" data-linked-server-identity="{{.LinkedServerIdentity}}"{{with .StatusReturnTo}} data-status-return-to="{{.}}"{{end}}{{with .LinkedApproval}} data-linked-approval-job="{{.JobID}}" data-linked-approval-generation="{{.Generation}}"{{end}}>
     <div class="dashboard-shell">
         {{template "operator-application-shell" .}}
 
@@ -89,6 +89,7 @@
 	                        <button class="inline-btn" type="button" id="bulk-autoremove" disabled>Autoremove</button>
 	                        <button class="inline-btn facts-refresh-action" type="button" id="refresh-all-facts" aria-label="Refresh facts for visible selected hosts" title="Select visible hosts first">Refresh facts</button>
 	                        <p class="bulk-hint" id="bulk-action-hint" role="status" aria-live="polite" aria-atomic="true">No hosts selected</p>
+                            <div id="bulk-removal-review" hidden></div>
 	                    </div>
 	                </div>
 	                <div class="rail-section">
@@ -267,6 +268,29 @@
                     </div>
                     </section>
 
+                    <details class="supporting-details" id="status-batch-panel" hidden>
+                        <summary>Maintenance batch <strong id="status-batch-label"></strong></summary>
+                        <div class="supporting-details-body">
+                            <p id="status-batch-unavailable" class="muted" role="status" hidden>This maintenance batch is unavailable.</p>
+                            <a id="status-batch-link" href="/">Link to this batch</a>
+                            <ul id="status-batch-rows" aria-label="Batch results by host"></ul>
+                        </div>
+                    </details>
+                    <details class="supporting-details" id="status-batch-history" hidden>
+                        <summary>
+                            <span class="supporting-summary-copy"><strong>Maintenance batch history</strong></span>
+                            <span class="supporting-summary-action" aria-hidden="true"></span>
+                        </summary>
+                        <div class="supporting-details-body">
+                            <p id="status-batch-history-state" class="muted" role="status" hidden></p>
+                            <ul id="status-batch-history-list" aria-label="Maintenance batches"></ul>
+                            <nav class="status-batch-history-nav" aria-label="Batch history pages">
+                                <button type="button" class="inline-btn btn-ghost" id="status-batch-history-newer" disabled>Newer</button>
+                                <button type="button" class="inline-btn btn-ghost" id="status-batch-history-older" disabled>Older</button>
+                                <button type="button" class="inline-btn btn-ghost" id="status-batch-history-retry" hidden>Retry history</button>
+                            </nav>
+                        </div>
+                    </details>
                     <details class="supporting-details fade-in" id="status-supporting-details">
                         <summary>
                             <span class="supporting-summary-copy">
@@ -418,23 +442,23 @@
             </div>
         </form>
     </div>
-    <script src="/static/auth.js"></script>
+    <script src="/static/auth.js?v=batch-history-586"></script>
     <script src="/static/js/browser-effects.js?v=frontend-isolation-20261027"></script>
-    <script src="/static/js/common.js?v=quality-pass-20260711a"></script>
+    <script src="/static/js/common.js?v=apt-host-key-616"></script>
     <div class="phase-tooltip hidden" id="phase-tooltip" role="tooltip"></div>
-    <script src="/static/js/dashboard-projection-consumption.js?v=status-projection-569"></script>
+    <script src="/static/js/dashboard-projection-consumption.js?v=apt-reconciliation-624"></script>
     <script src="/static/js/pending-updates-interaction.js?v=dense-packages-20261103"></script>
     <script src="/static/js/pending-updates-view.js?v=top-pagination-20261103"></script>
-    <script src="/static/js/status-page-interaction.js?v=status-projection-569"></script>
+    <script src="/static/js/status-page-interaction.js?v=apt-reconciliation-624"></script>
     <script src="/static/js/status-formatting.js?v=job-log-stream-20260724"></script>
-    <script src="/static/js/status-transport.js?v=frontend-isolation-20261027"></script>
+    <script src="/static/js/status-transport.js?v=targeted-status-587"></script>
     <script src="/static/js/status-rendering.js?v=apt-update-cve-scope-20261103"></script>
     <script src="/static/js/status-drawer-adapter.js?v=quality-pass-20260711b"></script>
     <script src="/static/js/status-table-adapter.js?v=quality-pass-20260711b"></script>
-    <script src="/static/js/status-action-adapter.js?v=quality-pass-20260711b"></script>
-    <script src="/static/js/index-bulk-actions.js?v=status-projection-569"></script>
+    <script src="/static/js/status-action-adapter.js?v=bulk-removal-review-576"></script>
+    <script src="/static/js/index-bulk-actions.js?v=apt-target-608"></script>
     <script src="/static/js/package-deferrals.js?v=frontend-isolation-20261027"></script>
-<script src="/static/js/status-snapshot-adapter.js?v=status-projection-569"></script>
-<script src="/static/js/index.js?v=status-projection-569"></script>
+<script src="/static/js/status-snapshot-adapter.js?v=targeted-status-587"></script>
+    <script src="/static/js/index.js?v=apt-reconciliation-624"></script>
 </body>
 </html>

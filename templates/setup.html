@@ -9,7 +9,7 @@
     <link rel="stylesheet" href="/static/css/auth-common.css?v=vscode-dark-20260601b">
     <link rel="stylesheet" href="/static/css/setup.css?v=vscode-dark-20260601b">
 </head>
-<body>
+<body data-return-to="{{.ReturnTo}}" data-login-url="{{.LoginURL}}">
     <main class="auth-shell">
         <section class="auth-hero fade-in">
             <a class="brand-lockup auth-brand" href="/" aria-label="SimpleLinuxUpdater setup">
@@ -32,7 +32,7 @@
             <div class="panel-kicker">Setup</div>
             <h2>Provision local access</h2>
             <p class="muted">Create your local administrator. Additional named accounts and optional MFA can be configured later from Account.</p>
-            <form id="setup-form" method="post" action="/api/auth/setup" autocomplete="on">
+            <form id="setup-form" method="post" action="{{.SubmitURL}}" autocomplete="on">
                 <label for="username">Username</label>
                 <input id="username" name="username" type="text" required maxlength="64" autocomplete="username">
                 <label for="password">Password</label>
@@ -45,6 +45,6 @@
         </section>
     </main>
     <script src="/static/js/common.js?v=typed-confirm-20260617a"></script>
-    <script src="/static/js/setup.js"></script>
+    <script src="/static/js/setup.js?v=approval-link-579"></script>
 </body>
 </html>

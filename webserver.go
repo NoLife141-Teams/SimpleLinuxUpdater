@@ -313,6 +313,9 @@ func ensureSchema(db *sql.DB) error {
 	if err := ensureJobSchema(db); err != nil {
 		return err
 	}
+	if _, err := db.Exec(statusBatchSchema); err != nil {
+		return err
+	}
 	return ensureUpdatePolicySchema(db)
 }
 
@@ -1079,59 +1082,79 @@ func handleServerFactsRefreshWithDeps(c *gin.Context, deps AppDeps) {
 	if state == nil {
 		state = globalServerState()
 	}
-	if state.CurrentStatusSnapshot(name) == nil {
-		audit(c, serverFactsRefreshAction, "server", name, "failure", "Server not found", nil)
-		c.JSON(http.StatusNotFound, gin.H{"error": "Server not found"})
+	record, failure := runServerFactsRefresh(c.Request.Context(), deps, state, name, "", func(status, message string, meta map[string]any) {
+		audit(c, serverFactsRefreshAction, "server", name, status, message, meta)
+	}, serverFactsRefreshPersistence{})
+	if failure.statusCode != http.StatusOK {
+		writeServerActionLifecycleResult(c, failure)
 		return
 	}
+	c.JSON(http.StatusOK, record)
+}
+
+type serverFactsRefreshPersistence struct {
+	save        func(serverFactsRecord) error
+	recordError func(string)
+}
+
+func runServerFactsRefresh(ctx context.Context, deps AppDeps, state *serverpkg.State, name, expectedIdentity string, recordAudit func(string, string, map[string]any), persistence serverFactsRefreshPersistence) (serverFactsRecord, serverActionLifecycleResult) {
+	if state.CurrentStatusSnapshot(name) == nil {
+		recordAudit("failure", "Server not found", nil)
+		return serverFactsRecord{}, jsonResult(http.StatusNotFound, "Server not found")
+	}
 	if active, status := state.ActionStatusInProgress(name); active {
-		audit(c, serverFactsRefreshAction, "server", name, "failure", "Server action already in progress", map[string]any{"status": status})
-		c.JSON(http.StatusConflict, gin.H{"error": "wait for the active server action to finish before refreshing host facts"})
-		return
+		recordAudit("failure", "Server action already in progress", map[string]any{"status": status})
+		return serverFactsRecord{}, jsonResult(http.StatusConflict, "wait for the active server action to finish before refreshing host facts")
 	}
 	serverForReadiness, found := serverByName(state, name)
 	if !found {
-		audit(c, serverFactsRefreshAction, "server", name, "failure", "Server not found", nil)
-		c.JSON(http.StatusNotFound, gin.H{"error": "Server not found"})
-		return
+		recordAudit("failure", "Server not found", nil)
+		return serverFactsRecord{}, jsonResult(http.StatusNotFound, "Server not found")
 	}
 	readiness := deps.MaintenanceReadiness([]Server{serverForReadiness})[serverForReadiness.Name]
 	if !readiness.Ready {
-		audit(c, serverFactsRefreshAction, "server", name, "ignored", readiness.Message, map[string]any{"reason_code": readiness.Code})
-		c.JSON(http.StatusConflict, gin.H{"error": readiness.Message})
-		return
+		recordAudit("ignored", readiness.Message, map[string]any{"reason_code": readiness.Code})
+		return serverFactsRecord{}, jsonResult(http.StatusConflict, readiness.Message)
 	}
-	server, preRefreshStatus, err := state.BeginTransientAction(name, "facts_refresh")
+	server, preRefreshStatus, err := state.BeginTransientActionForIdentity(name, "facts_refresh", expectedIdentity)
+	if errors.Is(err, serverpkg.ErrIdentityChanged) {
+		message := "The server has changed. Review the current server before refreshing host facts."
+		recordAudit("ignored", message, map[string]any{"reason_code": serverpkg.MaintenanceReadinessIdentityChanged})
+		return serverFactsRecord{}, jsonResult(http.StatusConflict, message)
+	}
 	if errors.Is(err, serverpkg.ErrDisabled) {
-		audit(c, serverFactsRefreshAction, "server", name, "ignored", err.Error(), map[string]any{"reason_code": serverpkg.MaintenanceReadinessDisabled})
-		c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
-		return
+		recordAudit("ignored", err.Error(), map[string]any{"reason_code": serverpkg.MaintenanceReadinessDisabled})
+		return serverFactsRecord{}, jsonResult(http.StatusConflict, err.Error())
 	}
 	if errors.Is(err, sql.ErrNoRows) {
-		audit(c, serverFactsRefreshAction, "server", name, "failure", "Server not found", nil)
-		c.JSON(http.StatusNotFound, gin.H{"error": "Server not found"})
-		return
+		recordAudit("failure", "Server not found", nil)
+		return serverFactsRecord{}, jsonResult(http.StatusNotFound, "Server not found")
 	}
 	if errors.Is(err, errActionInProgress) {
 		_, status := state.ActionStatusInProgress(name)
-		audit(c, serverFactsRefreshAction, "server", name, "failure", "Server action already in progress", map[string]any{"status": status})
-		c.JSON(http.StatusConflict, gin.H{"error": "wait for the active server action to finish before refreshing host facts"})
-		return
+		recordAudit("failure", "Server action already in progress", map[string]any{"status": status})
+		return serverFactsRecord{}, jsonResult(http.StatusConflict, "wait for the active server action to finish before refreshing host facts")
 	}
 	if err != nil {
-		audit(c, serverFactsRefreshAction, "server", name, "failure", "Facts refresh unavailable", map[string]any{"error": err.Error()})
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to start host facts refresh"})
-		return
+		recordAudit("failure", "Facts refresh unavailable", map[string]any{"error": err.Error()})
+		return serverFactsRecord{}, jsonResult(http.StatusInternalServerError, "failed to start host facts refresh")
 	}
-	defer state.RestoreStatusSnapshot(name, preRefreshStatus)
+	defer state.FinishTransientAction(server, "facts_refresh", preRefreshStatus)
 
-	record, err := refreshServerFactsWithUpdateDeps(c.Request.Context(), server, updateServiceEnsureDeps(deps.UpdateService))
-	if err != nil {
-		audit(c, serverFactsRefreshAction, "server", name, "failure", "Facts refresh failed", map[string]any{"error": err.Error()})
-		c.JSON(http.StatusBadGateway, gin.H{"error": fmt.Sprintf("failed to refresh host facts: %v", err)})
-		return
+	updateDeps := updateServiceEnsureDeps(deps.UpdateService)
+	if persistence.save != nil {
+		updateDeps.SaveServerFacts = persistence.save
 	}
-	audit(c, serverFactsRefreshAction, "server", name, "success", "Host facts refreshed", map[string]any{
+	record, err := refreshServerFactsWithUpdateDeps(ctx, server, updateDeps)
+	if err != nil {
+		message := fmt.Sprintf("failed to refresh host facts: %v", err)
+		if persistence.recordError != nil {
+			persistence.recordError(message)
+		}
+		recordAudit("failure", "Facts refresh failed", map[string]any{"error": err.Error(), "collection_attempted": true})
+		return serverFactsRecord{}, jsonResult(http.StatusBadGateway, message)
+	}
+	recordAudit("success", "Host facts refreshed", map[string]any{
 		"collected_at":                    record.CollectedAt,
 		"disk_status":                     record.DiskStatus,
 		"apt_status":                      record.AptStatus,
@@ -1141,7 +1164,7 @@ func handleServerFactsRefreshWithDeps(c *gin.Context, deps AppDeps) {
 		"running_kernel_version":          record.RunningKernelVersion,
 		"latest_installed_kernel_version": record.LatestInstalledKernelVersion,
 	})
-	c.JSON(http.StatusOK, record)
+	return record, serverActionLifecycleResult{statusCode: http.StatusOK, body: map[string]any{"message": "Host facts refreshed"}}
 }
 
 func handleDashboardSummaryWithService(c *gin.Context, service *ObservabilityService, now func() time.Time) {
@@ -1208,17 +1231,17 @@ func writeDashboardSummaryResponse(c *gin.Context, summary any) {
 	c.Header("Content-Encoding", "gzip")
 	c.Header("Content-Type", "application/json; charset=utf-8")
 	c.Status(http.StatusOK)
-	compressed, err := gzip.NewWriterLevel(c.Writer, gzip.BestSpeed)
+	if err := encodeGzipDashboardSummary(c.Writer, summary); err != nil {
+		log.Printf("writeDashboardSummaryResponse: %v", err)
+	}
+}
+
+func encodeGzipDashboardSummary(writer io.Writer, summary any) error {
+	compressed, err := gzip.NewWriterLevel(writer, gzip.BestSpeed)
 	if err != nil {
-		log.Printf("writeDashboardSummaryResponse: create gzip writer: %v", err)
-		return
+		return err
 	}
-	if err := json.NewEncoder(compressed).Encode(summary); err != nil {
-		log.Printf("writeDashboardSummaryResponse: encode summary: %v", err)
-	}
-	if err := compressed.Close(); err != nil {
-		log.Printf("writeDashboardSummaryResponse: close gzip writer: %v", err)
-	}
+	return errors.Join(json.NewEncoder(compressed).Encode(summary), compressed.Close())
 }
 
 func acceptsGzipEncoding(raw string) bool {
@@ -1592,6 +1615,10 @@ func activeServerActionNames() []string {
 }
 
 func createServerActionJobWithStateAndManager(jm *JobManager, state *serverpkg.State, kind, serverName, actor, clientIP string, policy RetryPolicy) (JobRecord, error) {
+	return createServerActionJobWithAdmission(jm, state, kind, serverName, actor, clientIP, policy, "", nil)
+}
+
+func createServerActionJobWithAdmission(jm *JobManager, state *serverpkg.State, kind, serverName, actor, clientIP string, policy RetryPolicy, previousAPTKey string, receipt jobsPkg.AdmissionReceipt) (JobRecord, error) {
 	if jm == nil {
 		return JobRecord{}, errors.New("job manager is not initialized")
 	}
@@ -1605,7 +1632,14 @@ func createServerActionJobWithStateAndManager(jm *JobManager, state *serverpkg.S
 	if snapshot != nil {
 		initialLogs = snapshot.Logs
 	}
-	record, err := jm.CreateJob(JobCreateParams{
+	var aptTarget string
+	switch kind {
+	case jobKindUpdate, jobKindAutoremove, jobKindAptRepair:
+		if server, found := serverByName(state, serverName); found {
+			aptTarget = server.APTTarget()
+		}
+	}
+	record, err := jm.CreateJobWithAdmission(JobCreateParams{
 		Kind:            kind,
 		ServerName:      serverName,
 		Actor:           actor,
@@ -1614,7 +1648,10 @@ func createServerActionJobWithStateAndManager(jm *JobManager, state *serverpkg.S
 		LogsText:        initialLogs,
 		RetryPolicyJSON: marshalJobJSON(policy),
 		MetaJSON:        "{}",
-	})
+		APTTarget:       aptTarget,
+
+		APTMutationHostKey: previousAPTKey,
+	}, receipt)
 	if err == nil && state != nil && snapshot != nil && !state.BindActionJob(serverName, record.ID, snapshot.ActionGeneration) {
 		return JobRecord{}, errors.New("server action admission changed while creating job")
 	}
@@ -1886,10 +1923,28 @@ func registerProtectedPageRoutes(r *gin.Engine, deps AppDeps) {
 			operatorApplicationShellView
 			LinkedServerIdentity string
 			LinkedServerError    string
+			LinkedApproval       *approvalLink
+			StatusReturnTo       string
 		}{
 			operatorApplicationShellView: operatorShellForContext(c, "status", "Status"),
 		}
-		if identity := c.Query("server_identity"); identity != "" {
+		if destination := statusReturnDestination(c.Request.URL.RequestURI()); destination != "/" {
+			view.StatusReturnTo = destination
+		}
+		query := c.Request.URL.Query()
+		if query.Has("job_id") || query.Has("approval_generation") {
+			link, valid := parseApprovalLink(query)
+			if !valid {
+				view.LinkedServerError = "This approval link is incomplete or invalid."
+			} else {
+				if problem := approvalLinkProblemAtOpen(deps, link); problem != "" {
+					view.LinkedServerError = problem
+				} else {
+					view.LinkedServerIdentity = link.ServerIdentity
+					view.LinkedApproval = &link
+				}
+			}
+		} else if identity := query.Get("server_identity"); identity != "" {
 			view.LinkedServerIdentity = identity
 			if _, exists := deps.ServerState.InventoryIdentities()[identity]; !exists {
 				view.LinkedServerError = "The linked server is no longer in the inventory."
@@ -1969,6 +2024,9 @@ func registerProtectedAuthAndSettingsRoutes(r *gin.Engine, deps AppDeps) {
 	})
 	r.GET("/api/notifications/delivery-diagnostics", func(c *gin.Context) {
 		handleNotificationDeliveryDiagnostics(c, deps.NotificationService)
+	})
+	r.GET("/api/notifications/delivery-history", func(c *gin.Context) {
+		handleNotificationDeliveryHistory(c, deps)
 	})
 	r.POST("/api/notifications/test", func(c *gin.Context) {
 		handleNotificationTest(c, deps.NotificationService)
@@ -2153,6 +2211,8 @@ func registerServerAndActionRoutes(r *gin.Engine, deps AppDeps) {
 	registerServerInventoryImportRoutes(r, deps, inventoryCommands)
 	registerServerInventoryBulkRoutes(r, deps, inventoryCommands)
 	registerServerAvailabilityRoutes(r, deps, inventoryCommands)
+	registerStatusBatchRoutes(r, deps)
+	r.GET("/api/status/changed-hosts", func(c *gin.Context) { handleStatusChangedHosts(c, deps) })
 	registerServerOnboardingRoutes(r, deps)
 	serverState := func() *serverpkg.State {
 		return deps.ServerState
@@ -2171,6 +2231,7 @@ func registerServerAndActionRoutes(r *gin.Engine, deps AppDeps) {
 			if !canReadLogs {
 				statuses[i].Logs = ""
 				statuses[i].ApplicationPostcheckProfile = nil
+				statuses[i].APTReconciliationJobID = ""
 			}
 		}
 		c.JSON(http.StatusOK, statuses)
@@ -2388,17 +2449,35 @@ func registerServerAndActionRoutes(r *gin.Engine, deps AppDeps) {
 	r.POST("/api/repair/:name", func(c *gin.Context) {
 		name := c.Param("name")
 		var req struct {
-			Confirm bool `json:"confirm"`
+			Confirm         bool   `json:"confirm"`
+			JobID           string `json:"job_id"`
+			VerifiedHostKey string `json:"verified_host_key"`
 		}
 		if err := c.ShouldBindJSON(&req); err != nil {
 			audit(c, "apt_repair.start", "server", name, "failure", "Invalid request payload", retryPolicyMeta(loadRetryPolicyFromEnv()))
 			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request payload"})
 			return
 		}
+		if req.VerifiedHostKey != "" && !contextAllows(c, "inventory:write") {
+			audit(c, "apt_repair.start", "server", name, "failure", "Verified SSH host key confirmation requires inventory permission", nil)
+			c.JSON(http.StatusForbidden, gin.H{"error": "Verified SSH host key confirmation requires inventory permission"})
+			return
+		}
 		lifecycle := newServerActionLifecycle(deps, func(action, targetType, targetName, status, message string, meta map[string]any) {
 			audit(c, action, targetType, targetName, status, message, meta)
 		})
-		writeServerActionLifecycleResult(c, lifecycle.StartAptRepair(name, actorFromContext(c), clientIPFromContext(c), req.Confirm))
+		lifecycle.auditVerifiedRepair = func(targetName, message string, meta map[string]any) error {
+			service := auditServiceForContext(c)
+			if service == nil {
+				service = deps.AuditService
+			}
+			if service == nil {
+				return errors.New("audit service is unavailable")
+			}
+			return service.Record(actorFromContext(c), clientIPFromContext(c), "apt_repair.start", "server", targetName,
+				"started", message, identityAuditMeta(c, meta))
+		}
+		writeServerActionLifecycleResult(c, lifecycle.StartAptRepair(name, actorFromContext(c), clientIPFromContext(c), req.Confirm, req.JobID, req.VerifiedHostKey))
 	})
 
 	r.POST("/api/reboot/:name", func(c *gin.Context) {

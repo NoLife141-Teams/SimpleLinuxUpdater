@@ -17,6 +17,8 @@ import (
 	"testing"
 	"time"
 
+	internalbackup "debian-updater/internal/backup"
+	maintenancepkg "debian-updater/internal/maintenance"
 	policypkg "debian-updater/internal/policies"
 	updatespkg "debian-updater/internal/updates"
 
@@ -782,6 +784,113 @@ func TestScheduledRunUpdateCheckFollowsServerIdentity(t *testing.T) {
 	if run.UpdateCheckURL != "" || run.UpdateCheckMessage == "" ||
 		!strings.Contains(request(oldLink), "The linked server is no longer in the inventory.") {
 		t.Fatalf("deleted server association should not be actionable: %+v", run)
+	}
+}
+
+func TestScheduledRunHistoryKeepsObservedBackupAfterRestart(t *testing.T) {
+	dbFile := filepath.Join(t.TempDir(), "scheduled-backup.db")
+	slot := time.Date(2026, 11, 18, 3, 0, 0, 0, time.UTC)
+	var backupID, identity string
+	if !t.Run("record while exporting", func(t *testing.T) {
+		useDefaultAppLocation(t, time.UTC)
+		app := newTestAppWithDeps(t, dbFile, AppDeps{
+			Now: func() time.Time { return slot },
+			StartJobRunner: func(string, func(), ...func()) {
+				t.Error("blocked slot launched a scheduled job")
+			},
+		})
+		app.authenticate(t)
+		server, err := app.Deps.ServerInventoryService.Create(Server{Name: "backup-blocked-host", Host: "backup-blocked.invalid", User: "root"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		identity = server.Identity
+		policy, err := app.Deps.PolicyRepository.CreatePolicy(UpdatePolicy{
+			Name: "Nightly backup overlap", Enabled: true, TargetServers: []string{server.Name},
+			ExecutionMode: updatePolicyExecutionScanOnly, PackageScope: updatePolicyPackageScopeSecurity,
+			CadenceKind: updatePolicyCadenceDaily, TimeLocal: "03:00",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		lease, decision := app.Deps.MaintenanceCoordinator.TryExclusive(maintenancepkg.OperationBackupExport)
+		if !decision.Allowed {
+			t.Fatalf("backup lease denied: %+v", decision)
+		}
+		defer lease.Close()
+		outcome := newBackupOperationLifecycle(app.Deps).Export(context.Background(), backupExportCommand{
+			Actor: "admin", Lease: lease, Request: backupExportRequest{Passphrase: "backup-test-passphrase"},
+			Finalize: func(_ context.Context, archive internalbackup.TemporaryFile) error {
+				if archive.Size == 0 {
+					t.Error("expected a real encrypted archive during finalization")
+				}
+				return app.Deps.PolicyService.ProcessDue(slot)
+			},
+		})
+		defer outcome.ExportFile.Remove()
+		if outcome.Kind != backupOperationSucceeded {
+			t.Fatalf("backup outcome = %+v", outcome)
+		}
+		backupID = outcome.JobID
+		if err := app.Deps.PolicyService.ProcessDue(slot.Add(time.Minute)); err != nil {
+			t.Fatal(err)
+		}
+		run, err := app.Deps.PolicyRepository.FindRun(policy.ID, server.Name, slot.Format(jobTimestampLayout))
+		if err != nil || run.Status != updatePolicyRunSkipped || run.Reason != updatePolicyRunReasonMaintenance ||
+			run.MaintenanceCause != maintenancepkg.BlockBackupExport || run.BlockingJobID != backupID || run.JobID != "" {
+			t.Fatalf("skipped run = %+v, err = %v, want observed export %q without a scheduled job", run, err, backupID)
+		}
+	}) {
+		return
+	}
+
+	app := newUpdatePolicyTestApp(t, dbFile)
+	login := httptest.NewRequest(http.MethodPost, "/api/auth/login", strings.NewReader(`{"username":"admin","password":"`+testPasswordStrong+`"}`))
+	markSameOriginAuthRequest(login)
+	login.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	app.Handler.ServeHTTP(response, login)
+	if response.Code != http.StatusOK {
+		t.Fatalf("login after restart: HTTP %d", response.Code)
+	}
+	cookie := testSessionCookieFromRecorder(t, response)
+	request := func(path string) *httptest.ResponseRecorder {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req.AddCookie(cookie)
+		rec := httptest.NewRecorder()
+		app.Handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET %s: HTTP %d: %s", path, rec.Code, rec.Body.String())
+		}
+		return rec
+	}
+	readRun := func() UpdatePolicyRun {
+		t.Helper()
+		rec := request("/api/update-policies/runs")
+		var page policypkg.RunPage
+		if err := json.Unmarshal(rec.Body.Bytes(), &page); err != nil || len(page.Items) != 1 {
+			t.Fatalf("history = %+v, err = %v", page, err)
+		}
+		return page.Items[0]
+	}
+	run := readRun()
+	if run.ExactSkipReason != updatePolicyRunReasonMaintenance || run.MaintenanceCause != maintenancepkg.BlockBackupExport ||
+		run.MaintenanceJobID != backupID || run.UpdateCheckURL != "/?server_identity="+identity {
+		t.Fatalf("restarted history did not retain exact backup and manual check: %+v", run)
+	}
+	var detail struct {
+		Job JobRecord `json:"job"`
+	}
+	if err := json.Unmarshal(request("/api/jobs/"+run.MaintenanceJobID).Body.Bytes(), &detail); err != nil ||
+		detail.Job.ID != backupID || detail.Job.Kind != jobKindBackupExport {
+		t.Fatalf("blocking details = %+v, err = %v", detail.Job, err)
+	}
+	if _, err := app.Deps.DB().Exec("DELETE FROM jobs WHERE id = ?", backupID); err != nil {
+		t.Fatal(err)
+	}
+	if run := readRun(); run.MaintenanceCause != maintenancepkg.BlockBackupExport || run.MaintenanceJobID != "" {
+		t.Fatalf("history after job deletion = %+v, want cause with no job link", run)
 	}
 }
 

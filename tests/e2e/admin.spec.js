@@ -712,6 +712,46 @@ test("a skipped Scheduled Run opens a fresh update check for the current host", 
     expect(updates).toEqual([{ name: target, identity: identities[target] }]);
 });
 
+test("admin scheduled runs show the observed maintenance cause and open the exact blocking job", async ({ page }) => {
+    await ensureAuthenticatedSession(page);
+    await stubAdminApi(page);
+    const runs = [
+        { policy_name: "Export overlap", maintenance_cause: "backup_export", maintenance_job_id: "blocking-backup" },
+        { policy_name: "Restore overlap", maintenance_cause: "backup_restore" },
+        { policy_name: "Recovery latch", maintenance_cause: "recovery_required" },
+        { policy_name: "Historical skip" },
+    ].map((run, id) => ({
+        id: id + 1,
+        server_name: "srv-web-01",
+        status: "skipped",
+        exact_skip_reason: "maintenance",
+        ...run,
+    }));
+    await page.route("**/api/update-policies/runs?*", (route) =>
+        fulfillJson(route, { items: runs, page: 1, total: runs.length, total_pages: 1 }),
+    );
+    await page.route("**/api/jobs/blocking-backup", (route) =>
+        fulfillJson(route, { job: { id: "blocking-backup", kind: "backup_export", status: "succeeded", summary: "Backup export completed" } }),
+    );
+    await page.goto("/admin");
+    await navigateSection(page, "admin", "scheduled-runs");
+    const table = page.locator("#scheduled-runs-table");
+    for (const [policy, reason] of [
+        ["Export overlap", "Backup export in progress"],
+        ["Restore overlap", "Backup restore in progress"],
+        ["Recovery latch", "Backup recovery required"],
+        ["Historical skip", "maintenance"],
+    ]) {
+        await expect(table.getByRole("row", { name: new RegExp(policy) })).toContainText("Reason: " + reason);
+    }
+    const blockingJob = table.getByRole("button", { name: "Blocking job details" });
+    await expect(blockingJob).toHaveCount(1);
+    await blockingJob.click();
+    await expect(page.locator("#job-detail-modal")).toBeVisible();
+    await expect(page.locator("#job-detail-summary")).toHaveText("Backup export completed");
+    await expect(page.locator("#job-detail-report")).toHaveAttribute("href", "/api/reports/jobs/blocking-backup");
+});
+
 test("admin scheduled run history filters, paginates, and exposes existing investigation details", async ({
     baseURL,
     page,
@@ -1998,6 +2038,91 @@ test("application post-check profiles edit, persist and test with bounded expect
     }
 });
 
+test("delivery history opens on demand, filters by job and navigates retained results", async ({ page }) => {
+    await ensureAuthenticatedSession(page);
+    await stubAdminApi(page, {});
+    const job = "6383ba6587c34f1190c2d906396a1d3e";
+    const item = {
+        destination: "webhook", state: "retrying", event_type: "approval.published",
+        job_id: job, approval_generation: 7, attempts: 2, created_at: "2026-11-18T18:00:00Z",
+        next_attempt_at: "2026-11-18T18:05:00Z", reason: "Destination returned HTTP 503.",
+    };
+    const incidentJob = "2d28c63fd8924e7c84b0264f05e12424";
+    const requests = [];
+    let failOnce = true;
+    let olderDeliveryState = "pending";
+    const skippedReasons = {
+        destination_disabled: "Destination was disabled before delivery.",
+        destination_unconfigured: "Destination was not configured before delivery.",
+        destination_configuration_changed: "Destination configuration changed after admission.",
+        condition_ineligible: "The notification condition was no longer eligible.",
+    };
+    await page.route("**/api/notifications/delivery-history*", route => {
+        expect(route.request().method()).toBe("GET");
+        const params = Object.fromEntries(new URL(route.request().url()).searchParams);
+        requests.push(params);
+        if (failOnce) {
+            failOnce = false;
+            return fulfillJson(route, { error: "Delivery history is temporarily unavailable." }, 503);
+        }
+        if (params.before) return fulfillJson(route, { retention_seconds: 2592000, items: [
+            { ...item, destination: "telegram", state: "skipped", next_attempt_at: "", reason: "Delivery was no longer eligible." },
+            ...Object.entries(skippedReasons).map(([reason_code, reason]) => ({
+                ...item, state: "skipped", attempts: 0, next_attempt_at: "", reason_code, reason,
+            })),
+            { ...item, destination: "webhook", state: olderDeliveryState, next_attempt_at: "", reason: "" },
+        ] });
+        if (params.job_id) return fulfillJson(route, { retention_seconds: 2592000, items: [] });
+        return fulfillJson(route, { retention_seconds: 2592000, next_cursor: "older-cursor", items: [
+            item, {
+                destination: "discord", state: "succeeded", event_type: "apt.reconciliation.required",
+                job_id: incidentJob, job_report_url: `/api/reports/jobs/${incidentJob}`, attempts: 1,
+                created_at: item.created_at,
+            },
+        ] });
+    });
+    await page.goto("/admin#admin-section-notifications");
+    await navigateSection(page, "admin", "notifications");
+    await expect(page.locator('[data-admin-section-lifecycle="notifications"]')).toHaveAttribute("data-status", "current");
+    expect(requests).toEqual([]);
+    const history = page.locator("#notification-history");
+    const disclosure = history.getByText("Delivery history", { exact: true });
+    const results = history.getByRole("list", { name: "Delivery results" });
+    await disclosure.click();
+    await expect(history.getByRole("status")).toHaveText("Delivery history is temporarily unavailable.");
+    await history.getByRole("button", { name: "Retry history" }).click();
+    await expect(results.getByRole("listitem")).toHaveCount(2);
+    await expect(history).toContainText("Completed deliveries are kept for 30 days.");
+    await expect(history).toContainText("Plan generation 7");
+    await expect(history.getByText("Next retry ·", { exact: false })).toBeVisible();
+    await expect(results.getByText("Delivered", { exact: true })).toBeVisible();
+    const incident = results.getByRole("listitem").filter({ hasText: "APT reconciliation required" });
+    await expect(incident.getByRole("link", { name: "Job report" })).toHaveAttribute("href", `/api/reports/jobs/${incidentJob}`);
+    await page.setViewportSize({ width: 390, height: 840 });
+    expect(await history.evaluate(panel => panel.scrollWidth <= panel.clientWidth)).toBe(true);
+    await history.getByRole("button", { name: "Older" }).click();
+    await expect(history.getByText("Delivery was no longer eligible.", { exact: true })).toBeVisible();
+    for (const reason of Object.values(skippedReasons)) {
+        await expect(results.getByText(reason, { exact: true })).toBeVisible();
+    }
+    await expect(results.getByText("Pending", { exact: true })).toBeVisible();
+    expect(requests.at(-1)).toEqual({ before: "older-cursor" });
+    await disclosure.click();
+    olderDeliveryState = "succeeded";
+    await disclosure.click();
+    await expect(results.getByText("Delivered", { exact: true })).toBeVisible();
+    expect(requests.at(-1)).toEqual({ before: "older-cursor" });
+    await history.getByRole("button", { name: "Newer" }).click();
+    await expect(history.getByText("Destination returned HTTP 503.", { exact: true })).toBeVisible();
+    expect(requests.at(-1)).toEqual({});
+    await history.getByLabel("Destination").selectOption("webhook");
+    await history.getByLabel("Delivery state").selectOption("retrying");
+    await history.getByRole("searchbox", { name: "Job ID" }).fill(job);
+    await history.getByRole("button", { name: "Apply filters" }).click();
+    await expect(history.getByRole("status")).toHaveText("No matching deliveries.");
+    expect(requests.at(-1)).toEqual({ destination: "webhook", state: "retrying", job_id: job });
+});
+
 test("notification conditions stay opt-in and grouped reminders validate and save", async ({
     baseURL,
     page,
@@ -2018,6 +2143,9 @@ test("notification conditions stay opt-in and grouped reminders validate and sav
     ).not.toBeChecked();
     await page.locator("#notification-event-approval-published").check();
     await page.locator("#notification-event-reboot-required").check();
+    const aptEvent = page.getByLabel("APT reconciliation required", { exact: true });
+    await expect(aptEvent).not.toBeChecked();
+    await aptEvent.check();
     await page.locator("#notification-reminders-enabled").check();
     await page.locator("#notification-reminder-interval").fill("4");
     await expect(page.locator("#notification-save")).toBeDisabled();
@@ -2036,6 +2164,7 @@ test("notification conditions stay opt-in and grouped reminders validate and sav
         "approval.published",
     );
     expect(state.notificationPayload.event_types).toContain("reboot.required");
+    expect(state.notificationPayload.event_types).toContain("apt.reconciliation.required");
     await expect(page.locator("#notification-reminders-enabled")).toBeChecked();
     await expect(page.locator("#notification-reminder-interval")).toHaveValue(
         "60",
@@ -2572,6 +2701,46 @@ test("admin section drafts support save eligibility, discard, replacement confir
     await page.locator("#policy-discard-btn").click();
     await expect(page.locator("#policy-name")).toHaveValue("Nightly security");
     await expect(page.locator("#policy-draft-action-bar")).toBeHidden();
+});
+
+test("restore review separates archive compatibility from installation APT conflicts", async ({ page }) => {
+    const job = "5".repeat(32);
+    const report = `/api/reports/jobs/${job}`;
+    const state = { verifyResponse: {
+        valid: true, compatible: true, restore_ready: true,
+        installation_review: {
+            state: "blocked",
+            message: "Resolve APT reconciliation on this installation or choose another archive, then review it again.",
+            conflicts: [{
+                code: "apt_target_changed", server: "database-01",
+                message: "The archive changes the identity or SSH address of this server.",
+                report_url: report,
+            }],
+        },
+    } };
+    await ensureAuthenticatedSession(page);
+    await stubAdminApi(page, state);
+    await page.goto("/admin#admin-section-backup");
+    await page.locator("#backup-restore-file").setInputFiles({
+        name: "backup.slubkp", mimeType: "application/octet-stream", buffer: Buffer.from("fixture"),
+    });
+    await page.locator("#backup-restore-passphrase").fill("LongPassphrase123");
+    await page.locator("#backup-verify-btn").click();
+    const panel = page.locator("#backup-review-installation");
+    await expect(panel).toContainText("Archive compatible");
+    await expect(panel).toContainText("database-01");
+    await expect(panel.getByRole("link", { name: "Job report" })).toHaveAttribute("href", report);
+    await expect(page.locator("#backup-restore-btn")).toBeDisabled();
+
+    state.verifyResponse.installation_review = { state: "unavailable", message: "APT compatibility could not be checked." };
+    await page.locator("#backup-verify-btn").click();
+    await expect(page.locator("#backup-review-readiness")).toHaveText("Check unavailable");
+    await expect(page.locator("#backup-restore-btn")).toBeDisabled();
+
+    state.verifyResponse.installation_review = { state: "ready", message: "No APT reconciliation conflict found." };
+    await page.locator("#backup-verify-btn").click();
+    await expect(page.locator("#backup-review-readiness")).toHaveText("Ready for confirmation");
+    await expect(page.locator("#backup-restore-btn")).toBeEnabled();
 });
 
 test("admin typed confirmations gate restore and policy deletion", async ({

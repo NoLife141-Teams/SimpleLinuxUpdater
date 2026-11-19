@@ -35,7 +35,10 @@ func (r *withActorRunner) commitPendingApproval(snapshot *servers.ServerStatus, 
 	if r.automaticApproval {
 		generation = 0
 	}
-	committed, err := jm.CommitPendingApprovalPlan(r.jobID, appendLog, replacement, generation, map[string]any{"upgrade_plan": servers.CloneUpgradePlan(snapshot.UpgradePlan), "deferral_revision": snapshot.UpgradePlan.PackageDeferrals.Revision})
+	committed, err := jm.CommitPendingApprovalPlan(r.jobID, appendLog, replacement, generation, map[string]any{
+		"upgrade_plan": servers.CloneUpgradePlan(snapshot.UpgradePlan), "deferral_revision": snapshot.UpgradePlan.PackageDeferrals.Revision,
+		"server_identity": r.server.Identity,
+	})
 	if err != nil {
 		return err
 	}

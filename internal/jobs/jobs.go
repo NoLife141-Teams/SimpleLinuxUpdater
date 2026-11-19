@@ -1,6 +1,7 @@
 package jobs
 
 import (
+	"context"
 	"crypto/rand"
 	"database/sql"
 	"encoding/hex"
@@ -90,11 +91,17 @@ type Record struct {
 	LogsExpired     bool   `json:"logs_expired"`
 	LogsTruncated   bool   `json:"logs_truncated"`
 	Revision        int64  `json:"-"`
-	logReplacement  *string
-	logAppend       string
+	APTTarget       string `json:"-"`
+
+	APTMutationHostKey string `json:"-"`
+
+	logReplacement *string
+	logAppend      string
 }
 
 type Intent struct {
+	APTMutationHostKey *string
+
 	Kind       IntentKind
 	Status     *string
 	Phase      *string
@@ -118,7 +125,14 @@ type CreateParams struct {
 	ErrorClass      string
 	RetryPolicyJSON string
 	MetaJSON        string
+	APTTarget       string
+
+	APTMutationHostKey string
 }
+
+// AdmissionReceipt records an operation's durable admission in the same
+// transaction as the job mutation, before it can be published or dispatched.
+type AdmissionReceipt func(*sql.Tx, Record) error
 
 type Repository interface {
 	Create(record Record) error
@@ -139,6 +153,7 @@ type SQLiteRepository struct {
 
 type ManagerOptions struct {
 	Notify                func(string)
+	NotifyJob             func(string, Record)
 	NotifyLog             func(LogEvent)
 	SyncRuntime           func(Record)
 	SyncInterruptedServer func([]string)
@@ -197,12 +212,14 @@ func EnsureSchemaConfigured(db *sql.DB, logConfig LogConfig) error {
 			logs_truncated INTEGER NOT NULL DEFAULT 0,
 			log_next_sequence INTEGER NOT NULL DEFAULT 1,
 			log_source_bytes INTEGER NOT NULL DEFAULT 0,
-			revision INTEGER NOT NULL DEFAULT 0
+			revision INTEGER NOT NULL DEFAULT 0,
+			apt_target TEXT NOT NULL DEFAULT '',
+			apt_mutation_host_key TEXT NOT NULL DEFAULT ''
 		)
 	`); err != nil {
 		return err
 	}
-	if err := ensureRevisionColumn(db); err != nil {
+	if err := ensureJobRecoveryColumns(db); err != nil {
 		return err
 	}
 	if err := EnsureSchemaWithLogConfig(db, logConfig); err != nil {
@@ -218,6 +235,16 @@ func EnsureSchemaConfigured(db *sql.DB, logConfig LogConfig) error {
 		return err
 	}
 	if _, err := db.Exec("CREATE INDEX IF NOT EXISTS idx_jobs_kind_created_at ON jobs (kind, created_at DESC)"); err != nil {
+		return err
+	}
+	if _, err := db.Exec("CREATE INDEX IF NOT EXISTS idx_jobs_apt_target_created_at ON jobs (apt_target, created_at) WHERE apt_target <> ''"); err != nil {
+		return err
+	}
+	if _, err := db.Exec(`
+		CREATE INDEX IF NOT EXISTS idx_jobs_apt_incident
+		ON jobs (error_class, status, apt_target, created_at, id, kind)
+		WHERE apt_target <> '' AND status = 'failed' AND error_class = 'reconciliation_required'
+	`); err != nil {
 		return err
 	}
 	return nil
@@ -237,12 +264,13 @@ func RenameServerTx(tx *sql.Tx, oldServerName, newServerName string) error {
 	return err
 }
 
-func ensureRevisionColumn(db *sql.DB) error {
+func ensureJobRecoveryColumns(db *sql.DB) error {
 	rows, err := db.Query("PRAGMA table_info(jobs)")
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
+	var revision, target, mutationKey bool
 	for rows.Next() {
 		var cid int
 		var name, columnType string
@@ -251,14 +279,29 @@ func ensureRevisionColumn(db *sql.DB) error {
 		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
 			return err
 		}
-		if name == "revision" {
-			return rows.Err()
-		}
+		revision = revision || name == "revision"
+		target = target || name == "apt_target"
+		mutationKey = mutationKey || name == "apt_mutation_host_key"
 	}
 	if err := rows.Err(); err != nil {
 		return err
 	}
-	_, err = db.Exec("ALTER TABLE jobs ADD COLUMN revision INTEGER NOT NULL DEFAULT 0")
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	if !revision {
+		if _, err := db.Exec("ALTER TABLE jobs ADD COLUMN revision INTEGER NOT NULL DEFAULT 0"); err != nil {
+			return err
+		}
+	}
+	if !target {
+		if _, err := db.Exec("ALTER TABLE jobs ADD COLUMN apt_target TEXT NOT NULL DEFAULT ''"); err != nil {
+			return err
+		}
+	}
+	if !mutationKey {
+		_, err = db.Exec("ALTER TABLE jobs ADD COLUMN apt_mutation_host_key TEXT NOT NULL DEFAULT ''")
+	}
 	return err
 }
 
@@ -301,6 +344,10 @@ func (m *Manager) now() time.Time {
 }
 
 func (m *Manager) CreateJob(params CreateParams) (Record, error) {
+	return m.CreateJobWithAdmission(params, nil)
+}
+
+func (m *Manager) CreateJobWithAdmission(params CreateParams, receipt AdmissionReceipt) (Record, error) {
 	if m == nil || m.repo == nil {
 		return Record{}, errors.New("job manager is not initialized")
 	}
@@ -331,8 +378,12 @@ func (m *Manager) CreateJob(params CreateParams) (Record, error) {
 		ErrorClass:      strings.TrimSpace(params.ErrorClass),
 		RetryPolicyJSON: params.RetryPolicyJSON,
 		MetaJSON:        params.MetaJSON,
-		CreatedAt:       now,
-		UpdatedAt:       now,
+		APTTarget:       params.APTTarget,
+
+		APTMutationHostKey: params.APTMutationHostKey,
+
+		CreatedAt: now,
+		UpdatedAt: now,
 	}
 	if record.Status == StatusRunning {
 		record.StartedAt = now
@@ -341,7 +392,17 @@ func (m *Manager) CreateJob(params CreateParams) (Record, error) {
 		record.Phase = PhaseComplete
 		record.FinishedAt = now
 	}
-	if err := m.repo.Create(record); err != nil {
+	var err error
+	if receipt == nil {
+		err = m.repo.Create(record)
+	} else if repo, ok := m.repo.(interface {
+		createWithAdmission(Record, AdmissionReceipt) error
+	}); ok {
+		err = repo.createWithAdmission(record, receipt)
+	} else {
+		err = errors.New("job repository does not support transactional admission receipts")
+	}
+	if err != nil {
 		return Record{}, err
 	}
 	m.notify("job.create")
@@ -580,7 +641,7 @@ func (m *Manager) transition(id string, intent Intent, activeOnly bool) (bool, e
 		m.syncRuntime(id)
 	}
 	m.notifyLogResult(id, logResult)
-	m.notify("job.update")
+	m.notifyJobUpdate(next)
 	return true, nil
 }
 
@@ -600,6 +661,9 @@ func (m *Manager) applyIntent(current Record, intent Intent) (Record, bool, erro
 	next.Status = target
 	next.UpdatedAt = now
 	next.Revision = current.Revision + 1
+	if intent.APTMutationHostKey != nil {
+		next.APTMutationHostKey = *intent.APTMutationHostKey
+	}
 	if intent.Phase != nil {
 		next.Phase = strings.TrimSpace(*intent.Phase)
 	}
@@ -718,7 +782,19 @@ func (m *Manager) notify(reason string) {
 	}
 }
 
+func (m *Manager) notifyJobUpdate(job Record) {
+	if m.opts.NotifyJob == nil {
+		m.notify("job.update")
+		return
+	}
+	m.opts.NotifyJob("job.update", job)
+}
+
 func (r *SQLiteRepository) Create(record Record) error {
+	return r.createWithAdmission(record, nil)
+}
+
+func (r *SQLiteRepository) createWithAdmission(record Record, receipt AdmissionReceipt) error {
 	if r == nil || r.db == nil {
 		return errors.New("job repository is not initialized")
 	}
@@ -731,8 +807,8 @@ func (r *SQLiteRepository) Create(record Record) error {
 		INSERT INTO jobs (
 			id, kind, parent_job_id, server_name, actor, client_ip, status, phase, summary, logs_text,
 			error_class, retry_policy_json, meta_json, created_at, updated_at, started_at, finished_at,
-			logs_expired, logs_truncated, log_next_sequence, log_source_bytes, revision
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?, ?, ?, ?, ?, ?, 0, 0, 1, 0, ?)
+			logs_expired, logs_truncated, log_next_sequence, log_source_bytes, revision, apt_target, apt_mutation_host_key
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?, ?, ?, ?, ?, ?, 0, 0, 1, 0, ?, ?, ?)
 	`,
 		record.ID,
 		record.Kind,
@@ -751,12 +827,19 @@ func (r *SQLiteRepository) Create(record Record) error {
 		record.StartedAt,
 		record.FinishedAt,
 		record.Revision,
+		record.APTTarget,
+		record.APTMutationHostKey,
 	)
 	if err != nil {
 		return err
 	}
 	if _, err := r.replaceLogSnapshotTx(tx, record.ID, record.LogsText, LogStreamCombined, record.UpdatedAt); err != nil {
 		return err
+	}
+	if receipt != nil {
+		if err := receipt(tx, record); err != nil {
+			return err
+		}
 	}
 	return tx.Commit()
 }
@@ -770,11 +853,21 @@ func (r *SQLiteRepository) Upsert(record Record) error {
 		return err
 	}
 	defer tx.Rollback()
-	_, err = tx.Exec(`
+	if err := upsertJobRow(context.Background(), tx, record, false); err != nil {
+		return err
+	}
+	if _, err := r.replaceLogSnapshotTx(tx, record.ID, record.LogsText, LogStreamCombined, record.UpdatedAt); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func upsertJobRow(ctx context.Context, tx *sql.Tx, record Record, restoreAPTEvidence bool) error {
+	statement := `
 		INSERT INTO jobs (
 			id, kind, parent_job_id, server_name, actor, client_ip, status, phase, summary, logs_text,
-			error_class, retry_policy_json, meta_json, created_at, updated_at, started_at, finished_at, revision
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?, ?, ?, ?, ?, ?, ?)
+			error_class, retry_policy_json, meta_json, created_at, updated_at, started_at, finished_at, revision, apt_target, apt_mutation_host_key
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			kind = excluded.kind,
 			parent_job_id = excluded.parent_job_id,
@@ -791,7 +884,11 @@ func (r *SQLiteRepository) Upsert(record Record) error {
 			started_at = excluded.started_at,
 			finished_at = excluded.finished_at,
 			revision = excluded.revision
-	`,
+	`
+	if restoreAPTEvidence {
+		statement += ", apt_mutation_host_key = excluded.apt_mutation_host_key"
+	}
+	_, err := tx.ExecContext(ctx, statement,
 		record.ID,
 		record.Kind,
 		record.ParentJobID,
@@ -809,14 +906,10 @@ func (r *SQLiteRepository) Upsert(record Record) error {
 		record.StartedAt,
 		record.FinishedAt,
 		record.Revision,
+		record.APTTarget,
+		record.APTMutationHostKey,
 	)
-	if err != nil {
-		return err
-	}
-	if _, err := r.replaceLogSnapshotTx(tx, record.ID, record.LogsText, LogStreamCombined, record.UpdatedAt); err != nil {
-		return err
-	}
-	return tx.Commit()
+	return err
 }
 
 func (r *SQLiteRepository) ApplyTransition(record Record, expectedRevision int64, activeOnly bool) (bool, error) {
@@ -825,6 +918,10 @@ func (r *SQLiteRepository) ApplyTransition(record Record, expectedRevision int64
 }
 
 func (r *SQLiteRepository) applyTransitionWithLogResult(record Record, expectedRevision int64, activeOnly bool) (bool, logAppendResult, error) {
+	return r.applyTransitionWithAdmission(record, expectedRevision, activeOnly, nil)
+}
+
+func (r *SQLiteRepository) applyTransitionWithAdmission(record Record, expectedRevision int64, activeOnly bool, receipt AdmissionReceipt) (bool, logAppendResult, error) {
 	if r == nil || r.db == nil || strings.TrimSpace(record.ID) == "" {
 		return false, logAppendResult{}, nil
 	}
@@ -834,9 +931,9 @@ func (r *SQLiteRepository) applyTransitionWithLogResult(record Record, expectedR
 	}
 	defer tx.Rollback()
 	query := `UPDATE jobs SET status=?, phase=?, summary=?, error_class=?, meta_json=?,
-		updated_at=?, started_at=?, finished_at=?, revision=? WHERE id=? AND revision=?`
+		updated_at=?, started_at=?, finished_at=?, revision=?, apt_mutation_host_key=? WHERE id=? AND revision=?`
 	args := []any{record.Status, record.Phase, record.Summary, record.ErrorClass, record.MetaJSON,
-		record.UpdatedAt, record.StartedAt, record.FinishedAt, record.Revision, record.ID, expectedRevision}
+		record.UpdatedAt, record.StartedAt, record.FinishedAt, record.Revision, record.APTMutationHostKey, record.ID, expectedRevision}
 	if activeOnly {
 		query += " AND status IN (?, ?, ?)"
 		args = append(args, StatusQueued, StatusRunning, StatusWaitingApproval)
@@ -864,6 +961,11 @@ func (r *SQLiteRepository) applyTransitionWithLogResult(record Record, expectedR
 			return false, logAppendResult{}, err
 		}
 	}
+	if receipt != nil {
+		if err := receipt(tx, record); err != nil {
+			return false, logAppendResult{}, err
+		}
+	}
 	if err := tx.Commit(); err != nil {
 		return false, logAppendResult{}, err
 	}
@@ -883,14 +985,22 @@ func (r *SQLiteRepository) Get(id string) (Record, error) {
 	if r == nil || r.db == nil {
 		return Record{}, errors.New("job repository is not initialized")
 	}
-	var record Record
-	err := r.db.QueryRow(`
-		SELECT id, kind, parent_job_id, server_name, actor, client_ip, status, phase, summary, logs_text,
+	return getJobRow(context.Background(), r.db, id)
+}
+
+const jobRecordColumns = `id, kind, parent_job_id, server_name, actor, client_ip, status, phase, summary, logs_text,
 		       error_class, retry_policy_json, meta_json, created_at, updated_at, started_at, finished_at,
-		       logs_expired, logs_truncated, revision
-		  FROM jobs
-		 WHERE id = ?
-	`, id).Scan(
+		       logs_expired, logs_truncated, revision, apt_target, apt_mutation_host_key`
+
+func getJobRow(ctx context.Context, db interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}, id string) (Record, error) {
+	return scanJobRecord(db.QueryRowContext(ctx, `SELECT `+jobRecordColumns+` FROM jobs WHERE id = ?`, id))
+}
+
+func scanJobRecord(row interface{ Scan(...any) error }) (Record, error) {
+	var record Record
+	err := row.Scan(
 		&record.ID,
 		&record.Kind,
 		&record.ParentJobID,
@@ -911,6 +1021,7 @@ func (r *SQLiteRepository) Get(id string) (Record, error) {
 		&record.LogsExpired,
 		&record.LogsTruncated,
 		&record.Revision,
+		&record.APTTarget, &record.APTMutationHostKey,
 	)
 	return record, err
 }
@@ -923,7 +1034,7 @@ func (r *SQLiteRepository) FindLatestActiveByServerAndKind(serverName, kind stri
 	err := r.db.QueryRow(`
 		SELECT id, kind, parent_job_id, server_name, actor, client_ip, status, phase, summary, logs_text,
 		       error_class, retry_policy_json, meta_json, created_at, updated_at, started_at, finished_at,
-		       logs_expired, logs_truncated, revision
+		       logs_expired, logs_truncated, revision, apt_target, apt_mutation_host_key
 		  FROM jobs
 		 WHERE server_name = ?
 		   AND kind = ?
@@ -951,6 +1062,7 @@ func (r *SQLiteRepository) FindLatestActiveByServerAndKind(serverName, kind stri
 		&record.LogsExpired,
 		&record.LogsTruncated,
 		&record.Revision,
+		&record.APTTarget, &record.APTMutationHostKey,
 	)
 	if err == sql.ErrNoRows {
 		return nil, err
@@ -990,41 +1102,69 @@ func (r *SQLiteRepository) ListUnfinishedServerNames() ([]string, error) {
 }
 
 func (r *SQLiteRepository) ListReconciliationRequired() ([]Record, error) {
+	return r.ListReconciliationRequiredContext(context.Background())
+}
+
+func (r *SQLiteRepository) ListReconciliationRequiredContext(ctx context.Context) ([]Record, error) {
 	if r == nil || r.db == nil {
 		return nil, errors.New("job repository is not initialized")
 	}
-	rows, err := r.db.Query(`
+	return listAPTReconciliationEvidence(ctx, r.db, false)
+}
+
+// ListUnresolvedAPTJobs includes the original interrupted mutation and failed
+// repair attempts while their target still requires reconciliation.
+func ListUnresolvedAPTJobs(ctx context.Context, read *sql.Tx) ([]Record, error) {
+	return listAPTReconciliationEvidence(ctx, read, true)
+}
+
+const unresolvedAPTJobPredicate = `WHERE candidate.status = ?
+		   AND candidate.error_class = ?
+		   AND candidate.kind IN (?, ?, ?)
+		   AND candidate.apt_target <> ''
+		   AND NOT EXISTS (
+		       SELECT 1
+		         FROM jobs AS later_success
+		        WHERE later_success.apt_target = candidate.apt_target
+		          AND later_success.apt_target <> ''
+		          AND later_success.kind IN (?, ?, ?)
+		          AND later_success.status = ?
+		          AND later_success.created_at > candidate.created_at
+		   )`
+
+func unresolvedAPTJobArgs() []any {
+	return []any{
+		StatusFailed, "reconciliation_required", KindUpdate, KindAutoremove, KindAptRepair,
+		KindUpdate, KindAutoremove, KindAptRepair, StatusSucceeded,
+	}
+}
+
+func listAPTReconciliationEvidence(ctx context.Context, db interface {
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+}, includePrevious bool) ([]Record, error) {
+	rows, err := db.QueryContext(ctx, `
 		SELECT candidate.id, candidate.kind, candidate.parent_job_id, candidate.server_name,
 		       candidate.actor, candidate.client_ip, candidate.status, candidate.phase, candidate.summary,
 		       candidate.logs_text, candidate.error_class, candidate.retry_policy_json, candidate.meta_json,
 		       candidate.created_at, candidate.updated_at, candidate.started_at, candidate.finished_at,
-		       candidate.logs_expired, candidate.logs_truncated, candidate.revision
+		       candidate.logs_expired, candidate.logs_truncated, candidate.revision, candidate.apt_target, candidate.apt_mutation_host_key
 		  FROM jobs AS candidate
-		 WHERE candidate.status = ?
-		   AND candidate.error_class = ?
-		   AND candidate.kind IN (?, ?, ?)
-		   AND NOT EXISTS (
-		       SELECT 1
-		         FROM jobs AS later_success
-		        WHERE later_success.server_name = candidate.server_name
-		          AND later_success.kind IN (?, ?, ?)
-		          AND later_success.status = ?
-		          AND later_success.created_at > candidate.created_at
-		   )
-		   AND NOT EXISTS (
+		  `+unresolvedAPTJobPredicate+`
+		   AND (? OR NOT EXISTS (
 		       SELECT 1
 		         FROM jobs AS later_reconciliation
-		        WHERE later_reconciliation.server_name = candidate.server_name
+		        WHERE later_reconciliation.apt_target = candidate.apt_target
+		          AND later_reconciliation.apt_target <> ''
 		          AND later_reconciliation.status = ?
 		          AND later_reconciliation.error_class = ?
 		          AND later_reconciliation.kind IN (?, ?, ?)
 		          AND later_reconciliation.created_at > candidate.created_at
-		   )
+		   ))
 		 ORDER BY candidate.created_at DESC
 	`,
-		StatusFailed, "reconciliation_required", KindUpdate, KindAutoremove, KindAptRepair,
-		KindUpdate, KindAutoremove, KindAptRepair, StatusSucceeded,
-		StatusFailed, "reconciliation_required", KindUpdate, KindAutoremove, KindAptRepair,
+		append(unresolvedAPTJobArgs(),
+			includePrevious, StatusFailed, "reconciliation_required", KindUpdate, KindAutoremove, KindAptRepair,
+		)...,
 	)
 	if err != nil {
 		return nil, err
@@ -1033,13 +1173,8 @@ func (r *SQLiteRepository) ListReconciliationRequired() ([]Record, error) {
 
 	var records []Record
 	for rows.Next() {
-		var record Record
-		if err := rows.Scan(
-			&record.ID, &record.Kind, &record.ParentJobID, &record.ServerName, &record.Actor, &record.ClientIP,
-			&record.Status, &record.Phase, &record.Summary, &record.LogsText, &record.ErrorClass,
-			&record.RetryPolicyJSON, &record.MetaJSON, &record.CreatedAt, &record.UpdatedAt,
-			&record.StartedAt, &record.FinishedAt, &record.LogsExpired, &record.LogsTruncated, &record.Revision,
-		); err != nil {
+		record, err := scanJobRecord(rows)
+		if err != nil {
 			return nil, err
 		}
 		records = append(records, record)
@@ -1059,22 +1194,7 @@ func (r *SQLiteRepository) MarkUnfinishedInterrupted(now string) error {
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	if _, err := tx.Exec(`
-		UPDATE jobs
-		   SET status = ?, phase = ?, summary = ?, error_class = ?, finished_at = ?, updated_at = ?, revision = revision + 1
-		 WHERE status = ?
-		   AND (
-		       (kind = ? AND phase = ?)
-		       OR (kind = ? AND phase = ?)
-		       OR (kind = ? AND phase = ?)
-		   )
-	`,
-		StatusFailed, PhaseComplete, "APT reconciliation required after restart interruption", "reconciliation_required", now, now,
-		StatusRunning,
-		KindUpdate, PhaseAptUpgrade,
-		KindAutoremove, PhaseAutoremove,
-		KindAptRepair, PhaseReconcile,
-	); err != nil {
+	if err := markInterruptedAPTMutations(context.Background(), tx, now); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(`

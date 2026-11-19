@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"net/url"
 	"sync"
 	"time"
 
@@ -65,6 +66,7 @@ type AppDeps struct {
 	MetricsRateLimiter        *AuthRateLimiter
 
 	TrustedProxies                    func() []string
+	PublicOrigin                      *url.URL
 	Now                               func() time.Time
 	JobTimestampNow                   func() string
 	LoadRetryPolicy                   func() RetryPolicy
@@ -72,6 +74,7 @@ type AppDeps struct {
 	StartScheduledRunReconciliation   func(int64, string)
 	ScheduledRunReconciliationContext context.Context
 	NotifyDashboardEvent              func(string)
+	NotifyDashboardJob                func(string, JobRecord)
 	NotifyDashboardLogEvent           func(internaljobs.LogEvent)
 	DashboardEventBroker              *events.Broker
 }

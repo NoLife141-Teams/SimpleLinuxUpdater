@@ -202,6 +202,11 @@ type withActorRunner struct {
 	startedAt  time.Time
 	approvedAt time.Time
 
+	// SSH calls the host-key verifier from its key exchange goroutine, including on rekey.
+	hostKeyMu          sync.Mutex
+	hostKeyFingerprint string
+	expectedHostKey    string
+
 	automaticApproval        bool
 	approvalGeneration       uint64
 	approvalScope            string
@@ -461,11 +466,7 @@ func (r *withActorRunner) setSudoPolicyErrorLogs(logs string) {
 func (r *withActorRunner) setCommandErrorLogs(logs string, err error) {
 	var reconciliation interface{ RequiresReconciliation() bool }
 	if r.jobKind == jobs.KindAptRepair || (errors.As(err, &reconciliation) && reconciliation.RequiresReconciliation()) {
-		r.lastErrClass = "reconciliation_required"
-		_ = r.withStatus(func(status *servers.ServerStatus) {
-			status.Status = runtimepkg.StatusNeedsReconciliation
-			status.Logs = logs + "\nAPT outcome requires reconciliation before another package mutation."
-		})
+		r.setReconciliationRequired(logs)
 		return
 	}
 	if !strings.EqualFold(strings.TrimSpace(r.server.User), "root") && IsSudoPolicyError(logs+"\n"+err.Error()) {
@@ -473,6 +474,16 @@ func (r *withActorRunner) setCommandErrorLogs(logs string, err error) {
 		return
 	}
 	r.setErrorLogs(logs)
+}
+
+func (r *withActorRunner) setReconciliationRequired(logs string) {
+	r.lastErrClass = "reconciliation_required"
+	_ = r.withStatus(func(status *servers.ServerStatus) {
+		status.APTReconciliationPending = true
+		status.APTReconciliationJobID = r.jobID
+		status.Status = runtimepkg.StatusNeedsReconciliation
+		status.Logs = logs + "\nAPT outcome requires reconciliation before another package mutation."
+	})
 }
 
 func (r *withActorRunner) currentLogs() string {
@@ -556,7 +567,19 @@ func (r *withActorRunner) requireMutationPhase(phase string) bool {
 	var err error
 	if jm := r.currentJobManager(); jm != nil && strings.TrimSpace(r.jobID) != "" && phase != "" {
 		status := jobs.StatusRunning
-		err = jm.Transition(r.jobID, jobs.Intent{Status: &status, Phase: &phase})
+		intent := jobs.Intent{Status: &status, Phase: &phase}
+		r.hostKeyMu.Lock()
+		fingerprint := r.hostKeyFingerprint
+		if fingerprint != "" {
+			r.expectedHostKey = fingerprint
+			intent.APTMutationHostKey = &fingerprint
+		}
+		r.hostKeyMu.Unlock()
+		var committed bool
+		committed, err = jm.TransitionActive(r.jobID, intent)
+		if err == nil && !committed {
+			err = jobs.ErrTransitionConflict
+		}
 	} else {
 		r.jobPhase = phase
 	}
@@ -624,12 +647,35 @@ func (r *withActorRunner) setupSSH(dialOpName string) bool {
 		r.retryLogFormats = map[string]string{}
 	}
 	r.retryLogFormats[dialOpName] = "\nSSH dial attempt %d/%d failed: %v; retrying in %s"
+	var verifyHostKey func(string) error
+	var recordHostKey func(string)
+	switch r.jobKind {
+	case jobs.KindUpdate, jobs.KindAutoremove, jobs.KindAptRepair:
+		r.hostKeyMu.Lock()
+		r.hostKeyFingerprint = ""
+		r.hostKeyMu.Unlock()
+		verifyHostKey = func(fingerprint string) error {
+			r.hostKeyMu.Lock()
+			defer r.hostKeyMu.Unlock()
+			if r.expectedHostKey != "" && r.expectedHostKey != fingerprint {
+				return errors.New("SSH host key differs from the key confirmed for APT maintenance. Verify the original host independently before confirming a key in the repair dialog")
+			}
+			return nil
+		}
+		recordHostKey = func(fingerprint string) {
+			r.hostKeyMu.Lock()
+			defer r.hostKeyMu.Unlock()
+			r.hostKeyFingerprint = fingerprint
+		}
+	}
 	session, err := deps.HostMaintenanceSessions.Open(r.maintenanceContext(), HostMaintenanceSessionRequest{
-		Server:         r.server,
-		RetryPolicy:    r.policy,
-		DialOperation:  dialOpName,
-		CommandTimeout: r.commandTimeout,
-		OnRetry:        r.onHostRetry,
+		Server:             r.server,
+		RetryPolicy:        r.policy,
+		DialOperation:      dialOpName,
+		CommandTimeout:     r.commandTimeout,
+		OnRetry:            r.onHostRetry,
+		VerifyHostKey:      verifyHostKey,
+		OnConnectedHostKey: recordHostKey,
 	})
 	if err != nil {
 		var sessionErr *HostMaintenanceError
@@ -651,6 +697,14 @@ func (r *withActorRunner) setupSSH(dialOpName string) bool {
 		return false
 	}
 	r.session = session
+	r.hostKeyMu.Lock()
+	verified := r.expectedHostKey == "" || r.hostKeyFingerprint == r.expectedHostKey
+	r.hostKeyMu.Unlock()
+	if !verified {
+		r.setReconciliationRequired("The SSH host key could not be verified for this repair.")
+		r.closeSession()
+		return false
+	}
 	r.maintenanceCtx = maintenanceContextForSession(session)
 	r.sshDialAttempts += session.Stats().DialAttempts
 	return true
@@ -683,21 +737,22 @@ func (s *Service) runWithActorShared(
 	initStatus func(*servers.ServerStatus, RetryPolicy),
 	auditMeta func(*withActorRunner, string) map[string]any,
 	outcomeForStatus func(string) string,
-	dialOpName string,
+	dialOpName, expectedHostKey string,
 	runSteps func(*withActorRunner),
 ) {
 	deps := s.EnsureDeps()
 	runner := &withActorRunner{
-		service:        s,
-		server:         server,
-		actor:          actor,
-		clientIP:       clientIP,
-		policy:         policy,
-		jobID:          strings.TrimSpace(jobID),
-		jobKind:        strings.TrimSpace(jobKind),
-		commandTimeout: deps.LoadCommandTimeout(),
-		lastErrClass:   "none",
-		startedAt:      deps.Now(),
+		service:         s,
+		server:          server,
+		actor:           actor,
+		clientIP:        clientIP,
+		policy:          policy,
+		jobID:           strings.TrimSpace(jobID),
+		jobKind:         strings.TrimSpace(jobKind),
+		expectedHostKey: expectedHostKey,
+		commandTimeout:  deps.LoadCommandTimeout(),
+		lastErrClass:    "none",
+		startedAt:       deps.Now(),
 	}
 	if deps.ServerState != nil {
 		generation, accepted := deps.ServerState.BeginActionRunner(server.Name, runner.jobID)
@@ -921,7 +976,7 @@ func (s *Service) RunUpdateJob(req UpdateRunRequest) {
 			return meta
 		},
 		UpdateCompletionOutcome,
-		"update.ssh_dial",
+		"update.ssh_dial", "",
 		func(r *withActorRunner) {
 			r.publishRemediationPlan = req.PublishPlan
 			maintenanceCtx := r.maintenanceContext()
@@ -1579,7 +1634,7 @@ func applyPostcheckPolicy(results []PrecheckResult, cfg PostUpdateCheckConfig, i
 }
 
 func (s *Service) RunSudoersBootstrapJob(req SudoersRunRequest) {
-	s.runCommandJob(req.Server, req.Actor, req.ClientIP, req.JobID, jobs.KindSudoersEnable, req.Policy, "sudoers.enable.complete", "sudoers.enable.ssh_dial", "Configuring passwordless apt sudoers...", func(r *withActorRunner) {
+	s.runCommandJob(req.Server, req.Actor, req.ClientIP, req.JobID, jobs.KindSudoersEnable, req.Policy, "sudoers.enable.complete", "sudoers.enable.ssh_dial", "", "Configuring passwordless apt sudoers...", func(r *withActorRunner) {
 		r.setJobPhase(jobs.PhaseApply)
 		cmd, err := BuildSudoersBootstrapCommand(r.server.User)
 		if err != nil {
@@ -1594,7 +1649,7 @@ func (s *Service) RunSudoersBootstrapJob(req SudoersRunRequest) {
 }
 
 func (s *Service) RunSudoersDisableJob(req SudoersRunRequest) {
-	s.runCommandJob(req.Server, req.Actor, req.ClientIP, req.JobID, jobs.KindSudoersDisable, req.Policy, "sudoers.disable.complete", "sudoers.disable.ssh_dial", "Disabling passwordless apt sudoers...", func(r *withActorRunner) {
+	s.runCommandJob(req.Server, req.Actor, req.ClientIP, req.JobID, jobs.KindSudoersDisable, req.Policy, "sudoers.disable.complete", "sudoers.disable.ssh_dial", "", "Disabling passwordless apt sudoers...", func(r *withActorRunner) {
 		r.setJobPhase(jobs.PhaseApply)
 		cmd, err := BuildSudoersDisableCommand(r.server.User)
 		if err != nil {
@@ -1609,7 +1664,7 @@ func (s *Service) RunSudoersDisableJob(req SudoersRunRequest) {
 }
 
 func (s *Service) RunAutoremoveJob(req AutoremoveRunRequest) {
-	s.runCommandJob(req.Server, req.Actor, req.ClientIP, req.JobID, jobs.KindAutoremove, req.Policy, "autoremove.complete", "autoremove.ssh_dial", "Running apt autoremove...\n"+AptInteractionStrategySummary, func(r *withActorRunner) {
+	s.runCommandJob(req.Server, req.Actor, req.ClientIP, req.JobID, jobs.KindAutoremove, req.Policy, "autoremove.complete", "autoremove.ssh_dial", "", "Running apt autoremove...\n"+AptInteractionStrategySummary, func(r *withActorRunner) {
 		release, allowed := r.guardUnplannedPackageMutation()
 		defer release()
 		if !allowed {
@@ -1623,7 +1678,7 @@ func (s *Service) RunAutoremoveJob(req AutoremoveRunRequest) {
 }
 
 func (s *Service) RunAptRepairJob(req AptRepairRunRequest) {
-	s.runCommandJob(req.Server, req.Actor, req.ClientIP, req.JobID, jobs.KindAptRepair, req.Policy, "apt_repair.complete", "apt_repair.ssh_dial", "Inspecting and repairing APT/DPKG state...\n"+AptInteractionStrategySummary, func(r *withActorRunner) {
+	s.runCommandJob(req.Server, req.Actor, req.ClientIP, req.JobID, jobs.KindAptRepair, req.Policy, "apt_repair.complete", "apt_repair.ssh_dial", req.ExpectedHostKey, "Inspecting and repairing APT/DPKG state...\n"+AptInteractionStrategySummary, func(r *withActorRunner) {
 		release, allowed := r.guardUnplannedPackageMutation()
 		defer release()
 		if !allowed {
@@ -1646,7 +1701,7 @@ func (s *Service) RunRebootJob(req RebootRunRequest) {
 		},
 		commandRunnerAuditMeta,
 		DoneOnlyOutcome,
-		"reboot.ssh_dial",
+		"reboot.ssh_dial", "",
 		func(r *withActorRunner) {
 			maintenanceCtx := r.maintenanceContext()
 			baseline := r.session.CollectServerFacts(maintenanceCtx)
@@ -1723,7 +1778,7 @@ func (s *Service) RunRebootJob(req RebootRunRequest) {
 	)
 }
 
-func (s *Service) runCommandJob(server servers.Server, actor, clientIP, jobID, jobKind string, policy RetryPolicy, auditAction, dialOpName, description string, runSteps func(*withActorRunner)) {
+func (s *Service) runCommandJob(server servers.Server, actor, clientIP, jobID, jobKind string, policy RetryPolicy, auditAction, dialOpName, expectedHostKey, description string, runSteps func(*withActorRunner)) {
 	s.runWithActorShared(
 		server,
 		actor,
@@ -1754,7 +1809,7 @@ func (s *Service) runCommandJob(server servers.Server, actor, clientIP, jobID, j
 		},
 		commandRunnerAuditMeta,
 		DoneOnlyOutcome,
-		dialOpName,
+		dialOpName, expectedHostKey,
 		runSteps,
 	)
 }

@@ -315,24 +315,49 @@ func TestDeferralRemovalConfirmationAndFinalMutationGate(t *testing.T) {
 }
 
 func TestPackageDeferralsBlockUnplannedRepairAndAutoremove(t *testing.T) {
-	for _, kind := range []string{"repair", "autoremove"} {
-		t.Run(kind, func(t *testing.T) {
+	for _, tc := range []struct {
+		kind, runtimeStatus, errorClass string
+	}{
+		{jobs.KindAptRepair, "needs_reconciliation", "reconciliation_required"},
+		{jobs.KindAutoremove, "error", "package_deferral_conflict"},
+	} {
+		t.Run(tc.kind, func(t *testing.T) {
 			state, statuses := testState()
 			statuses["srv"].Status = "idle"
+			server := servers.Server{Name: "srv", Identity: "test-host", Host: "example.invalid"}
+			jm := newShutdownJobManager(t, "blocked-mutation")
+			job, err := jm.CreateJob(jobs.CreateParams{Kind: tc.kind, ServerName: server.Name, Status: jobs.StatusRunning, APTTarget: server.APTTarget()})
+			if err != nil {
+				t.Fatal(err)
+			}
 			commands := 0
 			var meta map[string]any
 			now := time.Now().UTC()
-			service := NewService(ServiceDeps{ServerState: state, CurrentJobManager: func() *jobs.Manager { return nil }, HostMaintenanceSessions: testHostMaintenanceSessionFactory(&HostMaintenanceSessionFuncs{RunCommandFunc: func(context.Context, HostCommandRequest) (HostCommandResult, error) {
-				commands++
-				return HostCommandResult{}, nil
-			}}), LoadPackageDeferrals: func(servers.Server, string) (deferrals.Snapshot, error) { return testDeferralSnapshot(now), nil }, PackageDeferralGate: &sync.RWMutex{}, AuditWithActor: func(_, _, _, _, _, _, _ string, m map[string]any) { meta = m }})
-			if kind == "repair" {
-				service.RunAptRepairJob(AptRepairRunRequest{Server: servers.Server{Name: "srv"}})
+			service := NewService(ServiceDeps{
+				ServerState:       state,
+				CurrentJobManager: func() *jobs.Manager { return jm },
+				HostMaintenanceSessions: testHostMaintenanceSessionFactory(&HostMaintenanceSessionFuncs{
+					RunCommandFunc: func(context.Context, HostCommandRequest) (HostCommandResult, error) {
+						commands++
+						return HostCommandResult{}, nil
+					},
+				}),
+				LoadPackageDeferrals: func(servers.Server, string) (deferrals.Snapshot, error) { return testDeferralSnapshot(now), nil },
+				PackageDeferralGate:  &sync.RWMutex{},
+				AuditWithActor:       func(_, _, _, _, _, _, _ string, m map[string]any) { meta = m },
+			})
+			if tc.kind == jobs.KindAptRepair {
+				service.RunAptRepairJob(AptRepairRunRequest{Server: server, JobID: job.ID})
 			} else {
-				service.RunAutoremoveJob(AutoremoveRunRequest{Server: servers.Server{Name: "srv"}})
+				service.RunAutoremoveJob(AutoremoveRunRequest{Server: server, JobID: job.ID})
 			}
-			if commands != 0 || state.CurrentStatusSnapshot("srv").Status != "error" || meta["deferral_decision"] != "blocked" {
-				t.Fatal(commands, statuses["srv"], meta)
+			status := state.CurrentStatusSnapshot(server.Name)
+			if commands != 0 || status.Status != tc.runtimeStatus || meta["deferral_decision"] != "blocked" || meta["last_error_class"] != tc.errorClass {
+				t.Fatalf("commands=%d status=%+v audit=%+v", commands, status, meta)
+			}
+			job, err = jm.GetJob(job.ID)
+			if err != nil || job.Status != jobs.StatusFailed || job.ErrorClass != tc.errorClass || job.APTTarget != server.APTTarget() {
+				t.Fatalf("blocked package mutation job=%+v err=%v", job, err)
 			}
 		})
 	}

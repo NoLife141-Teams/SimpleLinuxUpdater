@@ -27,19 +27,20 @@ const (
 	DestinationDiscord  = "discord"
 	DestinationTelegram = "telegram"
 
-	EventUpdateComplete        = "update.complete"
-	EventScheduleRunFailed     = "schedule.run.failed"
-	EventScheduleRunSkipped    = "schedule.run.skipped"
-	EventBackupRestore         = "backup.restore"
-	EventTest                  = "notification.test"
-	EventApprovalPublished     = "approval.published"
-	EventApprovalExpired       = "approval.expired"
-	EventRebootRequired        = "reboot.required"
-	EventBackupExportFailed    = "backup.export.failed"
-	EventBackupVerifyFailed    = "backup.verify.failed"
-	EventBackupCoverageMissing = "backup.coverage.missing"
-	EventBackupCoverageStale   = "backup.coverage.stale"
-	EventReminder              = "notification.reminder"
+	EventUpdateComplete            = "update.complete"
+	EventScheduleRunFailed         = "schedule.run.failed"
+	EventScheduleRunSkipped        = "schedule.run.skipped"
+	EventBackupRestore             = "backup.restore"
+	EventTest                      = "notification.test"
+	EventApprovalPublished         = "approval.published"
+	EventApprovalExpired           = "approval.expired"
+	EventRebootRequired            = "reboot.required"
+	EventAPTReconciliationRequired = "apt.reconciliation.required"
+	EventBackupExportFailed        = "backup.export.failed"
+	EventBackupVerifyFailed        = "backup.verify.failed"
+	EventBackupCoverageMissing     = "backup.coverage.missing"
+	EventBackupCoverageStale       = "backup.coverage.stale"
+	EventReminder                  = "notification.reminder"
 
 	defaultAttempts                     = 3
 	defaultSQLiteContentionAttempts     = 20
@@ -57,7 +58,7 @@ var legacyEvents = []string{
 	EventBackupRestore,
 }
 
-var supportedEvents = append(append([]string(nil), legacyEvents...), EventApprovalPublished, EventApprovalExpired, EventRebootRequired, EventBackupExportFailed, EventBackupVerifyFailed, EventBackupCoverageMissing, EventBackupCoverageStale)
+var supportedEvents = append(append([]string(nil), legacyEvents...), EventApprovalPublished, EventApprovalExpired, EventRebootRequired, EventAPTReconciliationRequired, EventBackupExportFailed, EventBackupVerifyFailed, EventBackupCoverageMissing, EventBackupCoverageStale)
 
 var errUnsupportedEvent = errors.New("unsupported notification event type")
 
@@ -580,12 +581,21 @@ func (s *Service) PreparePersistenceReplacement(ctx context.Context) error {
 	if alreadyPrepared {
 		return nil
 	}
-	conditions, err := loadConditionState(ctx, s.database())
+	conditions, err := loadAndMigrateConditionState(ctx, s.database())
 	if err != nil {
 		s.resumePersistence()
 		return err
 	}
+	if err := migrateApprovalOutboxHistory(ctx, s.database(), &conditions); err != nil {
+		s.resumePersistence()
+		return err
+	}
 	rows, err := loadCurrentOutboxRows(ctx, s.database())
+	if err != nil {
+		s.resumePersistence()
+		return err
+	}
+	rows.APTAdmissions, err = loadAPTAdmissions(ctx, s.database())
 	if err != nil {
 		s.resumePersistence()
 		return err
@@ -595,6 +605,36 @@ func (s *Service) PreparePersistenceReplacement(ctx context.Context) error {
 	s.replacementConditions = &conditions
 	s.persistenceMu.Unlock()
 	return nil
+}
+
+// StageAPTDeliveryEvidence carries confirmed admissions and their retained
+// outcomes before the archive can replace SQLite, even if reload never runs.
+func (s *Service) StageAPTDeliveryEvidence(ctx context.Context, staged *sql.DB) error {
+	s.persistenceMu.Lock()
+	conditions, replacement := s.replacementConditions, s.replacementRows
+	s.persistenceMu.Unlock()
+	if conditions == nil || replacement == nil {
+		return errors.New("notification persistence replacement was not prepared")
+	}
+	if err := ensureSchema(ctx, staged); err != nil {
+		return err
+	}
+	if _, err := loadAndMigrateConditionState(ctx, staged); err != nil {
+		return fmt.Errorf("read staged notification conditions: %w", err)
+	}
+	if len(replacement.APTAdmissions) == 0 {
+		return nil
+	}
+	aptRows := outboxReplacement{
+		RetainedRows:  make(map[string]outboxSnapshot),
+		APTAdmissions: replacement.APTAdmissions,
+	}
+	for id, snapshot := range replacement.RetainedRows {
+		if snapshot.Row.EventType == EventAPTReconciliationRequired {
+			aptRows.RetainedRows[id] = snapshot
+		}
+	}
+	return restoreCurrentOutboxRows(ctx, staged, &aptRows, s.deps.Now().UTC().Format(time.RFC3339Nano))
 }
 
 // ReloadPersistence reinitializes the outbox after runtime persistence has
@@ -618,8 +658,11 @@ func (s *Service) ReloadPersistence(ctx context.Context) error {
 	if db == nil {
 		return errors.New("notification outbox database is unavailable")
 	}
-	if err := EnsureSchema(db); err != nil {
+	if err := ensureSchema(ctx, db); err != nil {
 		return err
+	}
+	if _, err := loadAndMigrateConditionState(ctx, db); err != nil {
+		return fmt.Errorf("read restored notification conditions: %w", err)
 	}
 	if err := recoverExpiredOutboxClaims(ctx, db, s.deps.Now(), s.deps.ClaimTTL); err != nil {
 		return err
@@ -649,7 +692,8 @@ func (s *Service) Accept(intent DeliveryIntent) Admission {
 	if s.conditionMonitoringStarted() {
 		s.signalWorker()
 	}
-	if s.deps.ReadConditions != nil && isConditionEvent(intent.Action) {
+	eventType := strings.TrimSpace(intent.Action)
+	if !eventEnabled(supportedEvents, eventType) || (s.deps.ReadConditions != nil && isConditionEvent(eventType)) {
 		return Admission{State: AdmissionSkipped}
 	}
 	s.lifecycleMu.Lock()
@@ -766,39 +810,37 @@ func (s *Service) processOutboxRow(ctx context.Context, row outboxRow) {
 		s.releaseClaim(row, err)
 		return
 	}
-	eligible, eligibilityErr := s.conditionDeliveryEligible(ctx, &row, settings)
+	eligibility, eligibilityErr := s.revalidateOutboxCondition(ctx, &row, settings)
 	if eligibilityErr != nil {
 		s.releaseClaim(row, eligibilityErr)
 		return
 	}
-	if !eligible || !destinationEnabled(settings, row.Destination) || !destinationConfigured(settings, row.Destination) {
+	var skipReason string
+	switch {
+	case eligibility == conditionIneligible:
+		skipReason = outboxSkipConditionIneligible
+	case !destinationEnabled(settings, row.Destination):
+		skipReason = outboxSkipDestinationDisabled
+	case !destinationConfigured(settings, row.Destination):
+		skipReason = outboxSkipDestinationUnconfigured
+	case row.DestinationFingerprint != "" && row.DestinationFingerprint != destinationConfigFingerprint(settings, row.Destination):
+		skipReason = outboxSkipDestinationChanged
+	case eligibility == reminderSuperseded:
+		skipReason = outboxSkipConditionIneligible
+	}
+	if skipReason != "" {
 		now := s.deps.Now().UTC().Format(time.RFC3339Nano)
 		persistCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
 		err := s.retrySQLiteContention(func() error {
 			return completeOutboxRow(persistCtx, s.database(), row.ID, outboxOutcome{
 				State: outboxStateSkipped, Attempts: row.Attempts, CompletedAt: now,
+				Error: skipReason,
 			}, now)
 		})
 		if err != nil {
 			s.health.Error(s.deps.Now())
 			s.deps.Logf("notification outbox skip persistence failed for %q: %v", row.ID, err)
-		}
-		return
-	}
-	if currentFingerprint := destinationConfigFingerprint(settings, row.Destination); row.DestinationFingerprint != "" && row.DestinationFingerprint != currentFingerprint {
-		now := s.deps.Now().UTC().Format(time.RFC3339Nano)
-		persistCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		err := s.retrySQLiteContention(func() error {
-			return completeOutboxRow(persistCtx, s.database(), row.ID, outboxOutcome{
-				State: outboxStateSkipped, Attempts: row.Attempts, CompletedAt: now,
-				Error: "destination configuration changed after notification admission",
-			}, now)
-		})
-		if err != nil {
-			s.health.Error(s.deps.Now())
-			s.deps.Logf("notification outbox destination-change persistence failed for %q: %v", row.ID, err)
 		}
 		return
 	}

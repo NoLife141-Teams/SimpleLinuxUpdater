@@ -1,9 +1,37 @@
 [Documentation map](README.md) | [Deployment](deployment.md) | [Accounts and API](personal-api.md) | [CI](ci-and-release.md)
 
-# Upgrading to v0.5.8
+# Upgrading SimpleLinuxUpdater
 
 Use the image digest recorded in the published release's `publication.json`,
 or download the matching versioned binary archive and checksum list.
+
+## From v0.5.8 to a candidate with Maintenance batch history
+
+Before upgrading, finish or cancel maintenance and verify an encrypted backup
+with `known_hosts` included. Preserve the v0.5.8 image digest or binary and use
+the matching executable and web assets for each installation. The candidate
+adds batch tables and a notification-delivery history index to the local
+database. An upgraded v0.5.8 installation starts with an empty batch history.
+
+After migrating, reload open tabs and sign in. Verify inventory, SSH trust,
+policy settings and **Admin → Notifications → Delivery history**. On a
+disposable Server, run a maintenance batch, open its result from the owning
+account and confirm its history after an application restart. A batch whose
+job was interrupted retains its job link. Review the job result and any APT
+reconciliation requirement before deciding on another action. Review and
+approve a newly discovered package plan after an interrupted approval.
+
+Repair APT requires the current reconciliation job and its recorded SSH
+endpoint. The repair connection verifies the SSH host key captured during
+mutation. After confirming the original machine through a trusted console,
+an administrator can enter an independently verified key fingerprint in the
+repair dialog. This confirmation is audited. A historical job without a recorded target remains available as a
+report. Verify the original machine and its package state independently before
+resuming maintenance for that history.
+
+For rollback, restore the verified pre-upgrade archive into a separate
+v0.5.8 installation as described in [Restore and rollback](#restore-and-rollback).
+Keep the candidate volume available for inspection until rollback is verified.
 
 ## From v0.5.7
 
@@ -179,10 +207,10 @@ application as `app`; do not bypass it during normal startup. Do not restart
 the retained old container on the migrated volume.
 
 The Docker smoke gate checks non-root startup and account persistence when
-recreating a container with the same named volume. The upgrade harness checks
-the actual published old archive and candidate executable inside a separate
-networkless container; it does not qualify every operator's Compose/proxy setup
-or claim an old-GHCR-image migration test.
+recreating a container with the same named volume. Operational qualification
+upgrades a copy of the pinned published image's volume and verifies archive
+restoration on both the candidate and the published image in separate volumes
+on the private qualification bridge.
 
 ## Binary archive
 
@@ -256,6 +284,18 @@ Legacy v0.4.16 archives have no automated-backup configuration: automation stays
 disabled and unvalidated. Existing candidate restore tests cover suspension of
 archived enabled automation.
 
+When restoring on the running installation, the app keeps live APT
+reconciliation for inventory identities and SSH endpoints that also exist in
+the archive. The original job and failed attempts for the unresolved incident
+remain available after restart. An archive that
+would replace an affected identity, change its SSH endpoint, or contradict its
+open evidence is rejected before files are replaced. A later successful
+explicit repair with recorded SSH host-key proof can settle the corresponding
+archived incident. Restore does not contact the remote package manager.
+A separate recovery installation can only recover incidents recorded in the
+archive. Verify remote package state before resuming maintenance if the archive
+predates an interruption.
+
 Rollback means restoring the **pre-upgrade archive** into a separate installation
 of the recorded old version, with its matching assets, a new data directory or
 Docker volume, and a restricted listener. Initialize that installation, verify
@@ -267,6 +307,15 @@ explicit compatibility guarantee. Keep both recovery installations isolated
 from target hosts until policy and credential review is complete.
 
 ## Reproduce qualification
+
+The [SSH/APT qualification](../tools/ci/ssh-apt/) exports real encrypted archives
+on an isolated Docker installation. It interrupts a batch during package
+mutation, rejects an archive with a reused inventory name, restores an archive
+from before the incident, and checks the exact block and report after restart.
+It also restores the pre-incident and pre-repair archives in succession after
+a verified repair and checks that the upgrade was attempted exactly once. The
+report omits archive credentials and checks that the temporary resources are
+removed.
 
 ### Qualify a Docker volume upgrade and VM reboot
 
@@ -283,13 +332,46 @@ python3 tools/ci/upgrade/operational.py \
 The script seeds the published image pinned in
 [`operational-release.json`](../tools/ci/upgrade/operational-release.json),
 copies its stopped volume, upgrades the copy and restores an encrypted archive
-into a third volume. Application containers share a private internal Docker
-bridge and use generated, disabled fixture hosts and policies. The VM runs the
-same candidate binary in a container with only loopback. The guest image is
-verified by SHA-256 before boot.
+into a third volume on the candidate. A fourth volume starts with the pinned
+published image and restores the same pre-upgrade archive to qualify rollback.
+Both restores invalidate the temporary administrator's session and verify the
+archived account, inventory, policies and SSH host-key trust across a restart.
+Application containers share a private internal Docker bridge and use generated
+fixture hosts and disabled policies. On the migrated volume, a batch targeting
+a disabled fixture is refused and survives a restart.
+The scenario enables a loopback-only probe, verifies account isolation and a
+single admitted retry under concurrent submissions and replay, then abruptly
+stops the candidate while its job waits for SSH negotiation. After restart,
+it verifies the same job and its interrupted outcome. The probe holds the TCP
+connection without proceeding with SSH. A stopped, labeled volume receives
+two undelivered notification fixtures through the pinned Python image. One
+retains an earlier approval admission linked to the now-interrupted job. The
+candidate then exports a new archive containing those deliveries and batches.
+A fresh candidate volume restores that archive and retains the owner, exact
+job, retry lineage, and account isolation across restart. Replaying the accepted
+retry returns its existing attempt, and a distinct request for that retry causes
+no new admission or SSH contact.
+
+In-place restore preserves a delivery that the source completed after export,
+so the source loopback receiver counts one request. An independently restored
+archive contains only the evidence saved at export and processes its own
+eligible pending delivery. Both restored installations record the obsolete
+approval as skipped before delivery. The scenario makes each fixture due at its
+checkpoint, and the application's worker records the result. Disposable receivers
+count requests without retaining their contents.
+
+The VM runs the same candidate binary in a container with only loopback. The
+guest image is verified by SHA-256 before boot.
 
 The CI and release gate retain `report.json` and `vm-report.json`. The reports
-record the candidate commit, image identifiers, outcomes and cleanup. Missing
+record the candidate commit, image identifiers, outcomes and cleanup. The
+`docker_upgrade` result records the copied-volume migration and the separate
+candidate archive restore. `docker_rollback` records the restore to the
+published image. `maintenance_batches` records history, account isolation,
+retry admission and interrupted-job recovery. `candidate_backup_restore`
+records the new archive, restored history and retry admission, live delivery
+continuity, and obsolete approval suppression. Cleanup verifies removal of
+labeled containers, volumes, and the private network. Missing
 runner prerequisites are reported as `not_executed` and return a nonzero exit
 code. Update the published image pin after each release. The v0.4.16 migration
 qualification below covers the older schema and authentication transition.

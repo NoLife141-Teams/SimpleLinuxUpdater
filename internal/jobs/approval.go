@@ -9,6 +9,10 @@ import (
 // job revision. It never replaces logs. Its caller owns pending-plan validation
 // and runtime publication; publishing here would re-enter that caller's lock.
 func (m *Manager) ResolvePendingApproval(id string, expectedRevision int64, cancelled bool, summary string) (Record, error) {
+	return m.ResolvePendingApprovalWithAdmission(id, expectedRevision, cancelled, summary, nil)
+}
+
+func (m *Manager) ResolvePendingApprovalWithAdmission(id string, expectedRevision int64, cancelled bool, summary string, receipt AdmissionReceipt) (Record, error) {
 	if m == nil || m.repo == nil {
 		return Record{}, errors.New("job manager is not initialized")
 	}
@@ -29,14 +33,23 @@ func (m *Manager) ResolvePendingApproval(id string, expectedRevision int64, canc
 	if err != nil {
 		return Record{}, err
 	}
-	updated, err := m.repo.ApplyTransition(next, expectedRevision, true)
+	var updated bool
+	if receipt == nil {
+		updated, err = m.repo.ApplyTransition(next, expectedRevision, true)
+	} else if repo, ok := m.repo.(interface {
+		applyTransitionWithAdmission(Record, int64, bool, AdmissionReceipt) (bool, logAppendResult, error)
+	}); ok {
+		updated, _, err = repo.applyTransitionWithAdmission(next, expectedRevision, true, receipt)
+	} else {
+		err = errors.New("job repository does not support transactional admission receipts")
+	}
 	if err != nil {
 		return Record{}, err
 	}
 	if !updated {
 		return Record{}, ErrTransitionConflict
 	}
-	m.notify("job.update")
+	m.notifyJobUpdate(next)
 	return next, nil
 }
 
@@ -96,6 +109,6 @@ func (m *Manager) commitPendingApproval(id, appendLog string, replacementLogs *s
 		return Record{}, ErrTransitionConflict
 	}
 	m.notifyLogResult(id, logResult)
-	m.notify("job.update")
+	m.notifyJobUpdate(next)
 	return next, nil
 }

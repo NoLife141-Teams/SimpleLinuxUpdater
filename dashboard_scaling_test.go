@@ -150,28 +150,11 @@ func newScalingRuntime(t testing.TB, n int, metered, bootstrap bool) *scalingApp
 	state.SetServers(d.Servers)
 	state.SetStatusMap(d.Statuses)
 	state.Unlock()
-	login := func(endpoint, user string) *http.Cookie {
-		req := httptest.NewRequest("POST", endpoint, strings.NewReader(fmt.Sprintf(`{"username":%q,"password":"SyntheticPass475!"}`, user)))
-		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Origin", "http://example.com")
-		rec := httptest.NewRecorder()
-		a.handler.ServeHTTP(rec, req)
-		if rec.Code != 200 {
-			t.Fatalf("scaling login: %d %s", rec.Code, rec.Body.String())
-		}
-		for _, c := range rec.Result().Cookies() {
-			if c.Name == authpkg.DefaultSessionCookieName {
-				return c
-			}
-		}
-		t.Fatal("no scaling cookie")
-		return nil
-	}
-	a.cookie = login("/api/auth/setup", "scaling-admin")
+	a.cookie = a.login(t, "/api/auth/setup", "scaling-admin")
 	if _, err = deps.AuthService.CreateAccount("scaling-viewer", "SyntheticPass475!", "reader"); err != nil {
 		t.Fatal(err)
 	}
-	a.viewer = login("/api/auth/login", "scaling-viewer")
+	a.viewer = a.login(t, "/api/auth/login", "scaling-viewer")
 	admin, err := deps.AuthService.AccountByName("scaling-admin")
 	if err != nil {
 		t.Fatal(err)
@@ -181,6 +164,25 @@ func newScalingRuntime(t testing.TB, n int, metered, bootstrap bool) *scalingApp
 		t.Fatal(err)
 	}
 	return a
+}
+
+func (a *scalingApp) login(t testing.TB, endpoint, user string) *http.Cookie {
+	t.Helper()
+	req := httptest.NewRequest("POST", endpoint, strings.NewReader(fmt.Sprintf(`{"username":%q,"password":"SyntheticPass475!"}`, user)))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Origin", "http://example.com")
+	rec := httptest.NewRecorder()
+	a.handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("scaling login: %d %s", rec.Code, rec.Body.String())
+	}
+	for _, c := range rec.Result().Cookies() {
+		if c.Name == authpkg.DefaultSessionCookieName {
+			return c
+		}
+	}
+	t.Fatal("no scaling cookie")
+	return nil
 }
 
 func (a *scalingApp) get(t testing.TB, path, credential string) *httptest.ResponseRecorder {
@@ -435,6 +437,24 @@ func TestStatusHostDetailBindsSnapshotAndRedactsByRole(t *testing.T) {
 		}
 		query.Set(key, current)
 	}
+
+	query.Set("view", "packages")
+	query.Set("require_pending_approval", "true")
+	if detail := read("viewer"); len(detail.PendingUpdates) != 20 {
+		t.Fatal("reader lost the linked approval plan")
+	}
+	// Approval can start after the compact snapshot, without changing any of
+	// the values that identified the packages shown to the operator.
+	status.Status = "approved"
+	a.deps.ServerState.RestoreStatusSnapshot(name, status)
+	if rec := request("viewer"); rec.Code != http.StatusConflict {
+		t.Errorf("linked detail returned HTTP %d after approval", rec.Code)
+	}
+	query.Del("require_pending_approval")
+	query.Set("view", "logs")
+	if detail := read("admin"); detail.Logs != status.Logs {
+		t.Fatal("ordinary detail lost the accepted job's logs")
+	}
 }
 
 // Opt-in measurements keep shared CI independent of absolute timing.
@@ -495,7 +515,14 @@ func BenchmarkDashboardScaling(b *testing.B) {
 	for _, n := range []int{10, 100, 1000} {
 		b.Run(strconv.Itoa(n), func(b *testing.B) {
 			a := newScalingAppMode(b, n, false)
-			for _, endpoint := range []struct{ name, path string }{{"InventoryHTTP", "/api/servers"}, {"DashboardHTTP", "/api/dashboard/summary?include_command_history=false"}} {
+			broker := a.deps.DashboardEventBroker
+			broker.PublishEvent(events.Event{Reason: "job.update", ServerName: "synthetic-0003"})
+			scoped := "/api/status/changed-hosts?server=synthetic-0003&revision=" + strconv.FormatUint(broker.Revision(), 10)
+			for _, endpoint := range []struct{ name, path string }{
+				{"InventoryHTTP", "/api/servers"},
+				{"DashboardHTTP", "/api/dashboard/summary?include_command_history=false"},
+				{"TargetedHTTP", scoped},
+			} {
 				b.Run(endpoint.name, func(b *testing.B) {
 					b.ReportAllocs()
 					b.ResetTimer()
@@ -559,6 +586,48 @@ func TestDashboardScalingServe(t *testing.T) {
 		}
 		if r.URL.Path == "/__scaling/event" {
 			a.deps.DashboardEventBroker.Publish("synthetic.refresh")
+			w.WriteHeader(204)
+			return
+		}
+		if r.URL.Path == "/__scaling/hosts" && r.Method == http.MethodPost {
+			names := []string{"synthetic-0003"}
+			if r.URL.Query().Get("burst") == "1" {
+				names = append(names, "synthetic-0004", "synthetic-0005")
+			}
+			state := a.deps.ServerState
+			changed := make(map[string]string, len(names))
+			state.Lock()
+			for _, name := range names {
+				host := state.StatusMap()[name]
+				if host.Status == "idle" {
+					host.Status = "done"
+				} else {
+					host.Status = "idle"
+				}
+				changed[name] = host.Status
+			}
+			state.Unlock()
+			for _, name := range names {
+				a.deps.DashboardEventBroker.PublishEvent(events.Event{Reason: "job.update", ServerName: name})
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(changed)
+			return
+		}
+		if r.URL.Path == "/__scaling/burst" {
+			state := a.deps.ServerState
+			state.Lock()
+			host := state.StatusMap()["synthetic-0003"]
+			if host.Status == "idle" {
+				host.Status = "done"
+			} else {
+				host.Status = "idle"
+			}
+			state.Unlock()
+			for range 12 {
+				a.deps.DashboardEventBroker.Publish("job.update")
+				time.Sleep(8 * time.Millisecond)
+			}
 			w.WriteHeader(204)
 			return
 		}
@@ -681,8 +750,119 @@ func readScalingEvent(t *testing.T, s *bufio.Scanner) {
 	t.Fatalf("SSE ended before event: %v", s.Err())
 }
 
-// Run the historical browser suite against the real router with empty owned
-// persistence, normal setup/auth and no process startup workers or SSH transport.
+func seedBrowserApprovalLink(t *testing.T, deps AppDeps) {
+	t.Helper()
+	server := Server{Name: "renamed-edge", Host: "edge.invalid", Port: 22, User: "synthetic", Identity: "stable-notification-host"}
+	if _, err := deps.DB().Exec(`INSERT INTO servers(name,host,port,user,pass_enc,identity) VALUES(?,?,?,?,'',?)`,
+		server.Name, server.Host, server.Port, server.User, server.Identity); err != nil {
+		t.Fatal(err)
+	}
+	job := JobRecord{
+		ID: "6383ba6587c34f1190c2d906396a1d3e", Kind: jobKindUpdate, ServerName: server.Name, Actor: "synthetic",
+		Status: jobStatusWaitingApproval, Phase: jobPhaseApprovalWait,
+		MetaJSON: `{"approval_generation":4,"server_identity":"stable-notification-host"}`,
+	}
+	if err := deps.CurrentJobManager().ImportJobRecord(job); err != nil {
+		t.Fatal(err)
+	}
+	created := deps.Now().UTC().Format(time.RFC3339Nano)
+	if _, err := deps.DB().Exec(`INSERT INTO notification_outbox
+		(id,destination,event_type,action,meta_json,state,attempts,created_at,updated_at,completed_at)
+		VALUES (?, 'webhook', 'approval.published', 'approval.published', ?, 'succeeded', 1, ?, ?, ?),
+		       (?, 'discord', 'update.complete', 'update.complete', ?, 'succeeded', 1, ?, ?, ?)`,
+		fmt.Sprintf("%064x", 2), marshalJobJSON(map[string]any{"job_id": job.ID, "approval_generation": 4}), created, created, created,
+		fmt.Sprintf("%064x", 1), marshalJobJSON(map[string]any{"job_id": strings.Repeat("f", 32)}), created, created, created); err != nil {
+		t.Fatal(err)
+	}
+	state := deps.ServerState
+	state.Lock()
+	defer state.Unlock()
+	state.SetServers([]Server{server})
+	status := serverpkg.NewIdleStatus(server)
+	status.Status = "pending_approval"
+	status.JobID = job.ID
+	status.ApprovalGeneration = 4
+	status.PendingUpdates = []serverpkg.PendingUpdate{
+		{Package: "openssl", CurrentVersion: "3.0.1", CandidateVersion: "3.0.2", Security: true},
+		{Package: "curl", CurrentVersion: "8.4.0", CandidateVersion: "8.5.0", Security: true},
+		{Package: "tzdata", CurrentVersion: "2026a", CandidateVersion: "2026b"},
+	}
+	status.UpgradePlan = serverpkg.UpgradePlan{StandardPackageCount: 3, StandardSecurityCount: 2, TotalSecurityCount: 2}
+	state.StatusMap()[server.Name] = status
+}
+
+func seedBrowserBatchHistory(t *testing.T, deps AppDeps) {
+	t.Helper()
+	db := deps.DB()
+	oldID := fmt.Sprintf("%032x", 1)
+	for i := 1; i <= 21; i++ {
+		id := fmt.Sprintf("%032x", i)
+		seedStatusBatchRetryHistory(t, db, id, "", "update", "completed", statusBatchTarget{
+			Name: fmt.Sprintf("batch-host-%02d", i), ServerIdentity: fmt.Sprintf("inventory-%02d", i),
+		})
+	}
+	if err := deps.CurrentJobManager().ImportJobRecord(JobRecord{
+		ID: "history-waiting-job", Kind: jobKindUpdate, ServerName: "approval-host", Status: jobStatusWaitingApproval,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO status_action_batch_hosts
+		(batch_id, name, server_identity, approval_job_id, approval_generation, deferral_revision, remediation_digest, state, job_id)
+		VALUES (?, 'approval-host', 'inventory-approval', '', 0, '', '', 'accepted', 'history-waiting-job'),
+		(?, 'interrupted-host', 'inventory-interrupted', '', 0, '', '', 'admitting', '')`, oldID, oldID); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func seedBrowserBatchRecovery(t *testing.T, deps AppDeps) {
+	t.Helper()
+	batchID := fmt.Sprintf("%032x", 2)
+	oldNames := []string{"before-rename", "replaced-host"}
+	for i, oldName := range oldNames {
+		identity := "previous-" + oldName
+		server := Server{Name: "renamed-host", Host: oldName + ".invalid", Port: 22, User: "synthetic", Identity: identity}
+		if i == 1 {
+			server.Name, server.Identity = oldName, "replacement-identity"
+		} else {
+			server.Pass = "fixture-credential"
+			key, err := ssh.NewPublicKey(ed25519.NewKeyFromSeed(make([]byte, 32)).Public())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := serverpkg.AppendKnownHostLine(appKnownHostsDeps(deps.DBPath), serverpkg.BuildKnownHostsLine(server.Host, server.Port, key)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if _, err := deps.DB().Exec(`INSERT INTO servers(name,host,port,user,pass_enc,identity) VALUES(?,?,?,?,'',?)`,
+			server.Name, server.Host, server.Port, server.User, server.Identity); err != nil {
+			t.Fatal(err)
+		}
+		original := server
+		original.Identity = identity
+		job := JobRecord{ID: "recovery-job-" + oldName, Kind: jobKindUpdate, ServerName: server.Name,
+			Status: jobStatusFailed, ErrorClass: "reconciliation_required", APTTarget: original.APTTarget()}
+		if err := deps.CurrentJobManager().ImportJobRecord(job); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := deps.DB().Exec(`INSERT INTO status_action_batch_hosts
+			(batch_id, name, server_identity, approval_job_id, approval_generation, deferral_revision, remediation_digest, state, job_id)
+			VALUES (?, ?, ?, '', 0, '', '', 'accepted', ?)`, batchID, oldName, identity, job.ID); err != nil {
+			t.Fatal(err)
+		}
+		state := deps.ServerState
+		state.Lock()
+		state.SetServers(append(state.Servers(), server))
+		status := serverpkg.NewIdleStatus(server)
+		if i == 0 {
+			status.Status, status.JobID = "needs_reconciliation", job.ID
+		}
+		state.StatusMap()[server.Name] = status
+		state.Unlock()
+	}
+}
+
+// Run the browser suite against the real router with owned persistence, normal
+// setup/auth and no process startup workers or SSH transport.
 func TestDashboardScalingE2EServe(t *testing.T) {
 	addr := os.Getenv("SLU_SCALING_E2E_LISTEN")
 	if addr == "" {
@@ -693,6 +873,13 @@ func TestDashboardScalingE2EServe(t *testing.T) {
 		t.Fatal("E2E helper requires explicit IPv4 loopback")
 	}
 	a := newScalingRuntime(t, 0, false, false)
+	if os.Getenv("SLU_E2E_APPROVAL_LINK") == "1" {
+		seedBrowserApprovalLink(t, a.deps)
+	}
+	if os.Getenv("SLU_E2E_BATCH_HISTORY") == "1" {
+		seedBrowserBatchHistory(t, a.deps)
+		seedBrowserBatchRecovery(t, a.deps)
+	}
 	if os.Getenv("SLU_E2E_BACKUP_CATALOG") == "1" {
 		automation := a.deps.BackupAutomation
 		automation.deployment = backupAutomationDeployment{Directory: t.TempDir(), SecretFile: filepath.Join(t.TempDir(), "catalog-passphrase")}

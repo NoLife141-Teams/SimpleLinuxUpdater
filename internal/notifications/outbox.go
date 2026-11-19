@@ -21,6 +21,11 @@ const (
 	outboxStateFailed    = "failed"
 	outboxStateSkipped   = "skipped"
 
+	outboxSkipConditionIneligible     = "condition_ineligible"
+	outboxSkipDestinationDisabled     = "destination_disabled"
+	outboxSkipDestinationUnconfigured = "destination_unconfigured"
+	outboxSkipDestinationChanged      = "destination_configuration_changed"
+
 	defaultOutboxClaimTTL  = 2 * time.Minute
 	defaultOutboxRetention = 30 * 24 * time.Hour
 )
@@ -55,13 +60,14 @@ type outboxSnapshot struct {
 }
 
 type outboxReplacement struct {
-	ActiveRows       map[string]outboxSnapshot
+	RetainedRows     map[string]outboxSnapshot
 	TerminalOutcomes map[string]outboxOutcome
+	APTAdmissions    []string
 }
 
 func loadCurrentOutboxRows(ctx context.Context, db *sql.DB) (outboxReplacement, error) {
 	replacement := outboxReplacement{
-		ActiveRows:       make(map[string]outboxSnapshot),
+		RetainedRows:     make(map[string]outboxSnapshot),
 		TerminalOutcomes: make(map[string]outboxOutcome),
 	}
 	if db == nil {
@@ -94,7 +100,9 @@ func loadCurrentOutboxRows(ctx context.Context, db *sql.DB) (outboxReplacement, 
 		}
 		if snapshot.Outcome.State == outboxStateSucceeded || snapshot.Outcome.State == outboxStateFailed || snapshot.Outcome.State == outboxStateSkipped {
 			replacement.TerminalOutcomes[snapshot.Row.ID] = snapshot.Outcome
-			continue
+			if snapshot.Row.EventType != EventAPTReconciliationRequired {
+				continue
+			}
 		}
 		if snapshot.Outcome.State == outboxStateClaimed {
 			snapshot.Outcome.State = outboxStateRetrying
@@ -107,13 +115,61 @@ func loadCurrentOutboxRows(ctx context.Context, db *sql.DB) (outboxReplacement, 
 		snapshot.Row.State = snapshot.Outcome.State
 		snapshot.Row.Attempts = snapshot.Outcome.Attempts
 		snapshot.Row.NextAttemptAt = snapshot.Outcome.NextAttemptAt
-		replacement.ActiveRows[snapshot.Row.ID] = snapshot
+		replacement.RetainedRows[snapshot.Row.ID] = snapshot
 	}
 	return replacement, rows.Err()
 }
 
+func (replacement *outboxReplacement) suppressExpiredAPTDeliveries(ctx context.Context, tx *sql.Tx, now string) error {
+	if len(replacement.APTAdmissions) == 0 {
+		return nil
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT id FROM notification_outbox WHERE event_type=? AND state IN (?, ?, ?)`,
+		EventAPTReconciliationRequired, outboxStatePending, outboxStateClaimed, outboxStateRetrying)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	pending := make(map[string]bool)
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return err
+		}
+		if _, retained := replacement.RetainedRows[id]; !retained {
+			pending[id] = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, identity := range replacement.APTAdmissions {
+		if len(pending) == 0 {
+			break
+		}
+		for _, destination := range []string{DestinationWebhook, DestinationDiscord, DestinationTelegram} {
+			id := outboxDeliveryID(identity, destination)
+			if pending[id] {
+				// The live ledger knows this admission even after its history has
+				// expired. An older archive cannot put it back into the queue.
+				if _, err := tx.ExecContext(ctx, `UPDATE notification_outbox
+					SET state=?, attempts=0, next_attempt_at='', claimed_at='', attempted_at='', completed_at=?,
+					    status_code=0, error=?, duration_ms=0, updated_at=?
+					WHERE id=?`, outboxStateSkipped, now, outboxSkipConditionIneligible, now, id); err != nil {
+					return err
+				}
+				delete(pending, id)
+			}
+		}
+	}
+	return nil
+}
+
 func restoreCurrentOutboxRows(ctx context.Context, db *sql.DB, replacement *outboxReplacement, now string) error {
-	if db == nil || replacement == nil || (len(replacement.ActiveRows) == 0 && len(replacement.TerminalOutcomes) == 0) {
+	if db == nil || replacement == nil {
+		return nil
+	}
+	if len(replacement.RetainedRows) == 0 && len(replacement.TerminalOutcomes) == 0 && len(replacement.APTAdmissions) == 0 {
 		return nil
 	}
 	tx, err := db.BeginTx(ctx, nil)
@@ -121,9 +177,12 @@ func restoreCurrentOutboxRows(ctx context.Context, db *sql.DB, replacement *outb
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	for _, snapshot := range replacement.ActiveRows {
+	for _, snapshot := range replacement.RetainedRows {
 		row := snapshot.Row
 		outcome := snapshot.Outcome
+		// Deterministic APT admissions can share delivery history across both
+		// databases. Keep success, and never reopen a terminal result or roll
+		// back the attempt count when the incoming copy is still in progress.
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO notification_outbox (
 				id, destination, event_type, action, target_type, target_name, status, message,
@@ -155,12 +214,20 @@ func restoreCurrentOutboxRows(ctx context.Context, db *sql.DB, replacement *outb
 				duration_ms = excluded.duration_ms,
 				created_at = excluded.created_at,
 				updated_at = excluded.updated_at
+			WHERE NOT (notification_outbox.event_type = ? AND excluded.event_type = ? AND (
+				(notification_outbox.state = ? AND excluded.state <> ?)
+				OR (excluded.state IN (?, ?, ?) AND (
+					notification_outbox.state IN (?, ?) OR notification_outbox.attempts > excluded.attempts
+				))
+			))
 		`, row.ID, row.Destination, row.EventType, row.Intent.Action, row.Intent.TargetType,
 			row.Intent.TargetName, row.Intent.Status, row.Intent.Message, row.Intent.CreatedAt,
 			row.Intent.Actor, row.Intent.ClientIP, row.Intent.MetaJSON, row.DestinationFingerprint,
 			outcome.State, outcome.Attempts, outcome.NextAttemptAt, row.ClaimedAt,
 			outcome.AttemptedAt, outcome.CompletedAt, outcome.StatusCode, outcome.Error,
-			outcome.DurationMS, snapshot.CreatedAt, now); err != nil {
+			outcome.DurationMS, snapshot.CreatedAt, now,
+			EventAPTReconciliationRequired, EventAPTReconciliationRequired, outboxStateSucceeded, outboxStateSucceeded,
+			outboxStatePending, outboxStateClaimed, outboxStateRetrying, outboxStateFailed, outboxStateSkipped); err != nil {
 			return err
 		}
 	}
@@ -175,6 +242,12 @@ func restoreCurrentOutboxRows(ctx context.Context, db *sql.DB, replacement *outb
 			outboxStatePending, outboxStateClaimed, outboxStateRetrying); err != nil {
 			return err
 		}
+	}
+	if err := replacement.suppressExpiredAPTDeliveries(ctx, tx, now); err != nil {
+		return err
+	}
+	if err := mergeAPTAdmissionsTx(ctx, tx, replacement.APTAdmissions); err != nil {
+		return err
 	}
 	return tx.Commit()
 }
@@ -193,13 +266,17 @@ func newOutboxID() string {
 }
 
 func EnsureSchema(db *sql.DB) error {
+	return ensureSchema(context.Background(), db)
+}
+
+func ensureSchema(ctx context.Context, db *sql.DB) error {
 	if db == nil {
 		return nil
 	}
-	if err := ensureConditionSchema(db); err != nil {
+	if err := ensureConditionSchema(ctx, db); err != nil {
 		return err
 	}
-	if _, err := db.Exec(`
+	if _, err := db.ExecContext(ctx, `
 		CREATE TABLE IF NOT EXISTS notification_outbox (
 			id TEXT PRIMARY KEY,
 			destination TEXT NOT NULL,
@@ -229,22 +306,28 @@ func EnsureSchema(db *sql.DB) error {
 	`); err != nil {
 		return fmt.Errorf("create notification outbox: %w", err)
 	}
-	if err := ensureOutboxDestinationFingerprintColumn(db); err != nil {
+	if err := ensureOutboxDestinationFingerprintColumn(ctx, db); err != nil {
 		return fmt.Errorf("migrate notification outbox destination binding: %w", err)
 	}
-	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_notification_outbox_due
+	if _, err := db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_notification_outbox_due
 		ON notification_outbox (state, next_attempt_at, created_at, id)`); err != nil {
 		return fmt.Errorf("index notification outbox due rows: %w", err)
 	}
-	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_notification_outbox_terminal
+	if _, err := db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_notification_outbox_terminal
 		ON notification_outbox (state, completed_at)`); err != nil {
 		return fmt.Errorf("index notification outbox terminal rows: %w", err)
+	}
+	// RFC3339Nano omits trailing fractional zeroes. Removing the final Z
+	// preserves chronological ordering for both whole and fractional seconds.
+	if _, err := db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_notification_outbox_history
+		ON notification_outbox (rtrim(created_at, 'Z') DESC, id DESC)`); err != nil {
+		return fmt.Errorf("index notification outbox history: %w", err)
 	}
 	return nil
 }
 
-func ensureOutboxDestinationFingerprintColumn(db *sql.DB) error {
-	rows, err := db.Query(`PRAGMA table_info(notification_outbox)`)
+func ensureOutboxDestinationFingerprintColumn(ctx context.Context, db *sql.DB) error {
+	rows, err := db.QueryContext(ctx, `PRAGMA table_info(notification_outbox)`)
 	if err != nil {
 		return err
 	}
@@ -272,7 +355,7 @@ func ensureOutboxDestinationFingerprintColumn(db *sql.DB) error {
 	if found {
 		return nil
 	}
-	_, err = db.Exec(`ALTER TABLE notification_outbox ADD COLUMN destination_fingerprint TEXT NOT NULL DEFAULT ''`)
+	_, err = db.ExecContext(ctx, `ALTER TABLE notification_outbox ADD COLUMN destination_fingerprint TEXT NOT NULL DEFAULT ''`)
 	return err
 }
 
@@ -297,6 +380,11 @@ func destinationConfigFingerprint(settings Settings, destination string) string 
 	return hex.EncodeToString(digest[:])
 }
 
+func outboxDeliveryID(intentID, destination string) string {
+	digest := sha256.Sum256([]byte(intentID + "\x00" + destination))
+	return hex.EncodeToString(digest[:])
+}
+
 func buildOutboxRows(intent DeliveryIntent, eventType string, destinations []string, now time.Time) ([]outboxRow, error) {
 	if strings.TrimSpace(intent.ID) == "" {
 		return nil, errors.New("notification delivery identity is required")
@@ -316,9 +404,8 @@ func buildOutboxRows(intent DeliveryIntent, eventType string, destinations []str
 	rows := make([]outboxRow, 0, len(destinations))
 	for _, destination := range destinations {
 		destination = strings.TrimSpace(destination)
-		digest := sha256.Sum256([]byte(intent.ID + "\x00" + destination))
 		rows = append(rows, outboxRow{
-			ID:          hex.EncodeToString(digest[:]),
+			ID:          outboxDeliveryID(intent.ID, destination),
 			Destination: destination,
 			EventType:   eventType,
 			Intent:      intent,

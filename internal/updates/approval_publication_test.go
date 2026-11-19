@@ -61,7 +61,7 @@ func TestPendingApprovalIsNotPublishedBeforeJobCommit(t *testing.T) {
 	}
 	syncCalls.Store(0)
 	var mu sync.Mutex
-	inventory := []servers.Server{{Name: "approval", User: "root"}}
+	inventory := []servers.Server{{Name: "approval", User: "root", Identity: "stable-host"}}
 	statuses := map[string]*servers.ServerStatus{"approval": {Name: "approval", Status: "updating", JobID: job.ID, Logs: BoundStatusLogs(fullLog)}}
 	state := servers.NewState(&mu, &inventory, &statuses, nil)
 	runner := &withActorRunner{server: inventory[0], jobID: job.ID, service: NewService(ServiceDeps{
@@ -100,6 +100,9 @@ func TestPendingApprovalIsNotPublishedBeforeJobCommit(t *testing.T) {
 	saved, err := jm.GetJob(job.ID)
 	if err != nil || saved.Status != jobs.StatusWaitingApproval || published.Status != "pending_approval" || published.ApprovalGeneration != 1 {
 		t.Fatalf("committed pending plan mismatch: %+v %+v %v", published, saved, err)
+	}
+	if !strings.Contains(saved.MetaJSON, `"server_identity":"stable-host"`) {
+		t.Fatalf("waiting job does not bind the plan to the inventory identity: %s", saved.MetaJSON)
 	}
 	logs, expired, truncated, err := baseRepository.ReadFullLog(job.ID)
 	if err != nil || expired || truncated || logs != fullLog+"\nUpgradable packages:\nopenssl" {

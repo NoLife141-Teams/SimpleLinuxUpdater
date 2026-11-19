@@ -3,8 +3,10 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -12,6 +14,236 @@ import (
 
 	notificationpkg "debian-updater/internal/notifications"
 )
+
+func TestNotificationDeliveryHistoryIsScopedRedactedAndPaged(t *testing.T) {
+	const endpoint = "/api/notifications/delivery-history"
+	job := strings.Repeat("a", 32)
+	now := time.Date(2026, 10, 25, 12, 0, 0, 0, time.UTC)
+	app := newTestAppWithDeps(t, filepath.Join(t.TempDir(), "notification-history.db"), AppDeps{
+		Now: func() time.Time { return now },
+	})
+	admin := app.authenticate(t)
+	db := app.Deps.DB()
+	seed := func(id int, destination, state, jobID, reason string) {
+		t.Helper()
+		metadata, err := json.Marshal(map[string]any{
+			"job_id": jobID, "approval_generation": 7, "approval_url": "https://secret.example/?token=secret-value",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		created := now.Format(time.RFC3339Nano)
+		next := now.Add(time.Hour).Format(time.RFC3339Nano)
+		if _, err := db.Exec(`INSERT INTO notification_outbox
+			(id,destination,event_type,action,message,destination_fingerprint,meta_json,state,attempts,created_at,updated_at,
+			next_attempt_at,claimed_at,attempted_at,completed_at,status_code,error)
+			VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, fmt.Sprintf("%064x", id), destination, "approval.published", "approval.published",
+			"secret-value", "secret-fingerprint", string(metadata), state, id, created, created, next, next, created, created, 503, reason); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i := 1; i <= 22; i++ {
+		seed(i, "telegram", "succeeded", "", "")
+	}
+	seed(23, "webhook", "retrying", job, "webhook returned HTTP 503 https://secret.example/?token=secret-value")
+	seed(24, "discord", "succeeded", job, "")
+	seed(25, "telegram", "skipped", job, "destination configuration changed after notification admission")
+	query := func(filters url.Values) notificationpkg.DeliveryHistoryPage {
+		t.Helper()
+		rec := identityRequest(app, "GET", endpoint+"?"+filters.Encode(), admin, "", nil)
+		var result notificationpkg.DeliveryHistoryPage
+		if rec.Code != http.StatusOK || !strings.Contains(rec.Header().Get("Cache-Control"), "no-store") || json.Unmarshal(rec.Body.Bytes(), &result) != nil {
+			t.Fatalf("read delivery history: %d %s", rec.Code, rec.Body.String())
+		}
+		for _, secret := range []string{"secret.example", "secret-value", "secret-fingerprint", "meta_json", "approval_url"} {
+			if strings.Contains(rec.Body.String(), secret) {
+				t.Fatalf("history exposed %q", secret)
+			}
+		}
+		return result
+	}
+	byJob := query(url.Values{"job_id": {job}})
+	if len(byJob.Items) != 3 || byJob.RetentionSeconds != int64(30*24*time.Hour/time.Second) {
+		t.Fatalf("unexpected result for the job: %+v", byJob)
+	}
+	skipped, delivered, retrying := byJob.Items[0], byJob.Items[1], byJob.Items[2]
+	if skipped.State != "skipped" || skipped.ReasonCode != "destination_configuration_changed" || skipped.Reason != "Destination configuration changed after admission." ||
+		delivered.State != "succeeded" || delivered.Destination != "discord" || delivered.ApprovalGeneration != 7 ||
+		retrying.State != "retrying" || retrying.Reason != "Destination returned HTTP 503." || retrying.NextAttemptAt == "" {
+		t.Fatalf("delivery states or evidence were lost: %+v", byJob.Items)
+	}
+	filtered := query(url.Values{"job_id": {job}, "state": {"retrying"}, "destination": {"webhook"}})
+	if len(filtered.Items) != 1 || filtered.Items[0] != retrying {
+		t.Fatalf("combined filters failed: %+v", filtered)
+	}
+	first := query(url.Values{})
+	if len(first.Items) != 20 || first.NextCursor == "" {
+		t.Fatalf("unexpected first page: %+v", first)
+	}
+	seed(26, "telegram", "succeeded", "", "")
+	if _, err := db.Exec(`UPDATE notification_outbox SET created_at = ? WHERE id = ?`,
+		now.Add(100*time.Millisecond).Format(time.RFC3339Nano), fmt.Sprintf("%064x", 26)); err != nil {
+		t.Fatal(err)
+	}
+	older := query(url.Values{"before": {first.NextCursor}})
+	if len(older.Items) != 5 || older.NextCursor != "" || older.Items[0].Attempts != 5 || older.Items[4].Attempts != 1 {
+		t.Fatalf("pagination drifted after a new delivery: %+v", older)
+	}
+	var retained int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM notification_outbox`).Scan(&retained); err != nil || retained != 26 {
+		t.Fatalf("read history changed the outbox: rows=%d err=%v", retained, err)
+	}
+	seed(27, "discord", "skipped", "", "")
+	seed(28, "discord", "skipped", "", "legacy error https://secret.example/?token=secret-value")
+	legacy := query(url.Values{"destination": {"discord"}, "state": {"skipped"}})
+	if len(legacy.Items) != 2 {
+		t.Fatalf("missing legacy skips: %+v", legacy)
+	}
+	for _, item := range legacy.Items {
+		if item.ReasonCode != "" || item.Reason != "Delivery was no longer eligible." {
+			t.Fatalf("unexpected legacy skip reason: %+v", item)
+		}
+	}
+	for _, generation := range []string{`"7unknown"`, "7.9", "true", "9223372036854775808"} {
+		metadata := fmt.Sprintf(`{"job_id":%q,"approval_generation":%s}`, job, generation)
+		if _, err := db.Exec("UPDATE notification_outbox SET meta_json = ? WHERE id = ?", metadata, fmt.Sprintf("%064x", 23)); err != nil {
+			t.Fatal(err)
+		}
+		rows := query(url.Values{"job_id": {job}, "destination": {"webhook"}}).Items
+		if len(rows) != 1 || rows[0].JobID != job || rows[0].ApprovalGeneration != 0 {
+			t.Fatalf("inexact generation %s was exposed: %+v", generation, rows)
+		}
+	}
+	if _, err := db.Exec("UPDATE notification_outbox SET meta_json = ? WHERE id = ?", `{"malformed":`, fmt.Sprintf("%064x", 23)); err != nil {
+		t.Fatal(err)
+	}
+	malformed := query(url.Values{"destination": {"webhook"}}).Items
+	if len(malformed) != 1 || malformed[0].JobID != "" || malformed[0].ApprovalGeneration != 0 {
+		t.Fatalf("malformed metadata prevented safe history: %+v", malformed)
+	}
+	for _, invalid := range []string{"destination=unknown", "state=sent", "job_id=short", "before=garbage"} {
+		if rec := identityRequest(app, "GET", endpoint+"?"+invalid, admin, "", nil); rec.Code != http.StatusBadRequest {
+			t.Fatalf("invalid filter %s: %d", invalid, rec.Code)
+		}
+	}
+	for _, role := range []string{"operator", "reader"} {
+		if _, err := app.Deps.AuthService.CreateAccount(role, testPasswordStrong, role); err != nil {
+			t.Fatal(err)
+		}
+		cookie := identityLogin(t, app, role)
+		if rec := identityRequest(app, "GET", endpoint, cookie, "", nil); rec.Code != http.StatusForbidden {
+			t.Fatalf("%s could read delivery history: %d", role, rec.Code)
+		}
+	}
+	if rec := identityRequest(app, "GET", endpoint, nil, "", nil); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("anonymous delivery history access: %d", rec.Code)
+	}
+}
+
+func TestDeliveryHistoryLinksRetainedJobsAndRevalidatesTheExactPlan(t *testing.T) {
+	const endpoint = "/api/notifications/delivery-history"
+	app := newIsolatedTestApp(t)
+	admin := app.authenticate(t)
+	server, err := app.Deps.ServerInventoryService.Create(Server{Name: "old-name", Host: "approval-fixture.invalid", User: "root"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldName := server.Name
+	server.Name = "renamed"
+	server, err = app.Deps.ServerInventoryService.Update(oldName, server)
+	if err != nil {
+		t.Fatal(err)
+	}
+	planID := strings.Repeat("a", 32)
+	completedID := "job-1700000000000000000"
+	planMeta := func(generation int) string {
+		return marshalJobJSON(map[string]any{"server_identity": server.Identity, "approval_generation": generation})
+	}
+	jm := app.Deps.CurrentJobManager()
+	if err := jm.ImportJobRecord(JobRecord{ID: planID, Kind: jobKindUpdate, ServerName: server.Name,
+		Status: jobStatusWaitingApproval, Phase: jobPhaseApprovalWait, MetaJSON: planMeta(7)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := jm.ImportJobRecord(JobRecord{ID: completedID, Kind: jobKindUpdate, Status: jobStatusSucceeded}); err != nil {
+		t.Fatal(err)
+	}
+	state := app.Deps.ServerState
+	status := state.CurrentStatusSnapshot(server.Name)
+	status.Status, status.JobID, status.ApprovalGeneration = "pending_approval", planID, 7
+	state.RestoreStatusSnapshot(server.Name, status)
+
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	seed := func(id int, event, job string, generation int) {
+		t.Helper()
+		metadata := marshalJobJSON(map[string]any{
+			"job_id": job, "approval_generation": generation, "approval_url": "https://destination.invalid/?token=redacted",
+		})
+		if _, err := app.Deps.DB().Exec(`INSERT INTO notification_outbox
+			(id,destination,event_type,action,meta_json,state,attempts,created_at,updated_at,completed_at)
+			VALUES (?, 'webhook', ?, ?, ?, 'succeeded', 1, ?, ?, ?)`,
+			fmt.Sprintf("%064x", id), event, event, metadata, now, now, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	seed(5, notificationpkg.EventApprovalPublished, planID, 7)
+	seed(4, notificationpkg.EventApprovalPublished, planID, 6)
+	seed(3, notificationpkg.EventApprovalExpired, planID, 7)
+	seed(2, notificationpkg.EventAPTReconciliationRequired, completedID, 0)
+	seed(1, notificationpkg.EventUpdateComplete, "//destination.invalid/path", 0)
+	read := func() []notificationpkg.DeliveryHistoryItem {
+		t.Helper()
+		rec := identityRequest(app, "GET", endpoint, admin, "", nil)
+		var page notificationpkg.DeliveryHistoryPage
+		if rec.Code != http.StatusOK || json.Unmarshal(rec.Body.Bytes(), &page) != nil || len(page.Items) != 5 {
+			t.Fatalf("delivery history: %d %s", rec.Code, rec.Body.String())
+		}
+		if strings.Contains(rec.Body.String(), "destination.invalid") {
+			t.Fatal("delivery history exposed a raw destination URL")
+		}
+		return page.Items
+	}
+	items := read()
+	link := (approvalLink{ServerIdentity: server.Identity, JobID: planID, Generation: 7}).url(url.URL{})
+	if items[0].ApprovalPlanURL != link || items[0].JobReportURL != "/api/reports/jobs/"+planID ||
+		items[1].ApprovalPlanURL != "" || items[2].ApprovalPlanURL != "" ||
+		items[3].EventType != notificationpkg.EventAPTReconciliationRequired ||
+		items[3].JobReportURL != "/api/reports/jobs/"+completedID || items[3].ApprovalPlanURL != "" || items[4].JobReportURL != "" {
+		t.Fatalf("invalid links in retained deliveries: %+v", items)
+	}
+	page := identityRequest(app, "GET", link, admin, "", nil)
+	if page.Code != http.StatusOK || !strings.Contains(page.Body.String(), `data-linked-approval-generation="7"`) {
+		t.Fatalf("current approval link did not open after rename, status %d", page.Code)
+	}
+
+	// A link may already be in the browser when the persisted plan changes.
+	// Keep the runtime projection stale to verify that opening checks the job again.
+	for _, tt := range []struct {
+		status     string
+		generation int
+		wantNotice string
+	}{
+		{jobStatusWaitingApproval, 8, approvalLinkReplaced},
+		{jobStatusCancelled, 7, approvalLinkExpired},
+	} {
+		if _, err := app.Deps.DB().Exec("UPDATE jobs SET status = ?, meta_json = ? WHERE id = ?", tt.status, planMeta(tt.generation), planID); err != nil {
+			t.Fatal(err)
+		}
+		page := identityRequest(app, "GET", link, admin, "", nil)
+		if page.Code != http.StatusOK || !strings.Contains(page.Body.String(), tt.wantNotice) ||
+			strings.Contains(page.Body.String(), "data-linked-approval-generation=") {
+			t.Fatalf("obsolete link was not rejected for %s generation %d", tt.status, tt.generation)
+		}
+		if item := read()[0]; item.ApprovalPlanURL != "" || item.JobReportURL != "/api/reports/jobs/"+planID {
+			t.Fatalf("resolved plan still linked or report lost: %+v", item)
+		}
+	}
+	if _, err := app.Deps.DB().Exec("DELETE FROM jobs WHERE id = ?", planID); err != nil {
+		t.Fatal(err)
+	}
+	if item := read()[0]; item.JobID != planID || item.State != "succeeded" || item.JobReportURL != "" || item.ApprovalPlanURL != "" {
+		t.Fatalf("purged job suppressed delivery evidence or stayed linked: %+v", item)
+	}
+}
 
 func TestNotificationSettingsAPIAndAuditDelivery(t *testing.T) {
 	received := make(chan notificationpkg.WebhookPayload, 4)

@@ -25,10 +25,12 @@ func buildRoutePermissions() map[string]routePermission {
 			out[method+" "+p] = routePermission{scope, bearer}
 		}
 	}
-	add("operational:read", false, "GET", "/", "/observability", "/vulnerabilities", "/vulnerabilities/all", "/remediation", "/account", "/api/dashboard/events", "/api/servers/status-detail")
+	add("operational:read", false, "GET", "/", "/observability", "/vulnerabilities", "/vulnerabilities/all", "/remediation", "/account", "/api/dashboard/events", "/api/servers/status-detail", "/api/status/changed-hosts")
 	add("inventory:write", false, "GET", "/manage")
 	add("operational:read", true, "GET", "/api/servers/:name/remediation", "/api/servers/:name/remediation/:plan_id", "/api/servers/:name/remediation/:plan_id/evidence", "/api/security-actions", "/api/vulnerabilities", "/api/vulnerabilities/:id", "/api/vulnerabilities/plan", "/api/servers", "/api/servers/:name/vulnerabilities", "/api/dashboard/summary", "/api/observability/summary", "/api/observability/health-trends", "/api/app-settings/timezone", "/api/package-deferral-snapshots/:revision", "/api/servers/:name/package-deferrals")
 	add("logs:read", true, "GET", "/api/jobs/:id", "/api/jobs/:id/logs", "/api/reports/jobs/:id")
+	add("logs:read", false, "GET", "/api/status/batches", "/api/status/batches/latest", "/api/status/batches/:id")
+	add("maintenance:write", false, "POST", "/api/status/batches")
 	add("audit:read", true, "POST", "/api/audit-events/export")
 	add("audit:read", true, "GET", "/api/audit-events", "/api/reports/audit/:id")
 	add("maintenance:write", true, "POST", "/api/servers/:name/remediation/prepare", "/api/servers/:name/remediation/:plan_id/retry", "/api/servers/:name/vulnerabilities/reviews", "/api/update/:name", "/api/autoremove/:name", "/api/repair/:name", "/api/reboot/:name", "/api/servers/:name/facts/refresh", "/api/servers/:name/vulnerabilities/scan", "/api/servers/:name/vulnerabilities/scans/:scan_id/cancel", "/api/servers/:name/postchecks/test")
@@ -44,7 +46,7 @@ func buildRoutePermissions() map[string]routePermission {
 	add("policies:write", false, "POST", "/api/update-policies", "/api/update-policies/preview", "/api/package-deferrals")
 	add("policies:write", false, "PUT", "/api/update-policies/settings", "/api/update-policies/:id/overrides/:server", "/api/update-policies/:id", "/api/postcheck-profiles")
 	add("policies:write", false, "DELETE", "/api/update-policies/:id", "/api/package-deferrals/:id")
-	add("settings:write", false, "GET", "/admin", "/api/installation/health", "/api/metrics/token", "/api/notifications/settings", "/api/notifications/delivery-diagnostics", "/api/auth/accounts")
+	add("settings:write", false, "GET", "/admin", "/api/installation/health", "/api/metrics/token", "/api/notifications/settings", "/api/notifications/delivery-diagnostics", "/api/notifications/delivery-history", "/api/auth/accounts")
 	add("settings:write", false, "POST", "/api/metrics/token", "/api/notifications/test", "/api/audit-events/prune", "/api/auth/accounts")
 	add("settings:write", false, "PUT", "/api/notifications/settings", "/api/app-settings/timezone", "/api/auth/accounts/:id")
 	add("settings:write", false, "DELETE", "/api/metrics/token")

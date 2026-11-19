@@ -2,24 +2,30 @@ package main
 
 import (
 	"database/sql"
+	"encoding/base64"
 	"errors"
+	"log"
 	"net/http"
 	"strings"
 	"time"
 
+	jobspkg "debian-updater/internal/jobs"
 	runtimepkg "debian-updater/internal/runtime"
 	serverpkg "debian-updater/internal/servers"
 )
 
 type serverActionLifecycle struct {
-	validateRemediation  func(*ServerStatus, Server, string, bool) error
-	serverState          *serverpkg.State
-	updateService        *UpdateService
-	currentJobManager    func() *JobManager
-	startJobRunner       func(func() *JobManager, string, func(), ...func())
-	loadRetryPolicy      func() RetryPolicy
-	audit                func(action, targetType, targetName, status, message string, meta map[string]any)
-	maintenanceReadiness func(Server) serverpkg.MaintenanceReadiness
+	admissionReceipt       jobspkg.AdmissionReceipt
+	expectedServerIdentity string
+	validateRemediation    func(*ServerStatus, Server, string, bool) error
+	serverState            *serverpkg.State
+	updateService          *UpdateService
+	currentJobManager      func() *JobManager
+	startJobRunner         func(func() *JobManager, string, func(), ...func())
+	loadRetryPolicy        func() RetryPolicy
+	audit                  func(action, targetType, targetName, status, message string, meta map[string]any)
+	auditVerifiedRepair    func(targetName, message string, meta map[string]any) error
+	maintenanceReadiness   func(Server) serverpkg.MaintenanceReadiness
 }
 
 type serverActionLifecycleResult struct {
@@ -29,6 +35,10 @@ type serverActionLifecycleResult struct {
 
 type serverActionStartSpec struct {
 	expectedServerIdentity string
+	expectedAPTTarget      string
+	previousAPTKey         string
+	verifiedAPTKey         string
+	expectedJobID          string
 	status                 string
 	jobKind                string
 	auditAction            string
@@ -39,6 +49,7 @@ type serverActionStartSpec struct {
 	allowedStatuses        map[string]bool
 	invalidStatus          string
 	packageMutation        bool
+	requireResolvedAPT     bool
 	preserveReconciliation bool
 	runWithJob             func(*UpdateService, Server, string, string, RetryPolicy, string, string)
 }
@@ -97,14 +108,19 @@ func (l *serverActionLifecycle) StartUpdate(name, actor, clientIP, expectedServe
 }
 
 func (l *serverActionLifecycle) StartAutoremove(name, actor, clientIP string) serverActionLifecycleResult {
+	return l.startAutoremove(name, actor, clientIP, "")
+}
+
+func (l *serverActionLifecycle) startAutoremove(name, actor, clientIP, expectedIdentity string) serverActionLifecycleResult {
 	return l.startAction(name, actor, clientIP, "", serverActionStartSpec{
-		status:          "autoremove",
-		packageMutation: true,
-		jobKind:         jobKindAutoremove,
-		auditAction:     "autoremove.start",
-		startFailure:    "Failed to start autoremove",
-		createFailure:   "Failed to create autoremove job",
-		successMessage:  "Autoremove started",
+		expectedServerIdentity: expectedIdentity,
+		status:                 "autoremove",
+		packageMutation:        true,
+		jobKind:                jobKindAutoremove,
+		auditAction:            "autoremove.start",
+		startFailure:           "Failed to start autoremove",
+		createFailure:          "Failed to create autoremove job",
+		successMessage:         "Autoremove started",
 		runWithJob: func(service *UpdateService, server Server, actor, clientIP string, policy RetryPolicy, jobID, _ string) {
 			service.RunAutoremoveJob(AutoremoveRunRequest{
 				Server:   server,
@@ -117,29 +133,59 @@ func (l *serverActionLifecycle) StartAutoremove(name, actor, clientIP string) se
 	})
 }
 
-func (l *serverActionLifecycle) StartAptRepair(name, actor, clientIP string, confirmed bool) serverActionLifecycleResult {
-	if !confirmed {
-		l.recordAudit("apt_repair.start", name, "failure", "APT repair confirmation required", retryPolicyMeta(l.retryPolicy()))
-		return jsonResult(http.StatusBadRequest, "APT repair confirmation required")
+func (l *serverActionLifecycle) StartAptRepair(name, actor, clientIP string, confirmed bool, jobID, verifiedHostKey string) serverActionLifecycleResult {
+	reject := func(code int, outcome, message string) serverActionLifecycleResult {
+		l.recordAudit("apt_repair.start", name, outcome, message, retryPolicyMeta(l.retryPolicy()))
+		return jsonResult(code, message)
 	}
+	if !confirmed {
+		return reject(http.StatusBadRequest, "failure", "APT repair confirmation required")
+	}
+	if strings.TrimSpace(jobID) == "" {
+		return reject(http.StatusBadRequest, "failure", "Confirm the job requiring APT reconciliation")
+	}
+	jm := l.currentJobManager()
+	if jm == nil {
+		return reject(http.StatusServiceUnavailable, "failure", "APT reconciliation jobs are unavailable")
+	}
+	job, err := jm.GetJob(jobID)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return reject(http.StatusServiceUnavailable, "failure", "APT reconciliation job is unavailable")
+	}
+	if err != nil || job.Status != jobStatusFailed || job.ErrorClass != "reconciliation_required" || job.APTTarget == "" {
+		return reject(http.StatusConflict, "ignored", "The original APT repair target could not be verified. Review the job report.")
+	}
+	expectedKey := job.APTMutationHostKey
+	if verifiedHostKey != "" {
+		if !validHostKeyFingerprint(verifiedHostKey) {
+			return reject(http.StatusBadRequest, "failure", "Enter the independently verified SHA256 SSH host key fingerprint")
+		}
+		expectedKey = verifiedHostKey
+	}
+	if !validHostKeyFingerprint(expectedKey) {
+		return reject(http.StatusConflict, "ignored", "The original SSH host key was not recorded. Verify the host independently and follow the documented APT repair confirmation for a verified key.")
+	}
+
 	return l.startAction(name, actor, clientIP, "", serverActionStartSpec{
-		status:         runtimepkg.StatusRepairing,
-		jobKind:        jobKindAptRepair,
-		auditAction:    "apt_repair.start",
-		startFailure:   "Failed to start APT repair",
-		createFailure:  "Failed to create APT repair job",
-		successMessage: "APT repair started",
-		allowedStatuses: map[string]bool{
-			runtimepkg.StatusNeedsReconciliation: true,
-		},
-		invalidStatus: "Server does not require APT repair",
+		expectedAPTTarget: job.APTTarget,
+		previousAPTKey:    job.APTMutationHostKey,
+		verifiedAPTKey:    verifiedHostKey,
+		expectedJobID:     job.ID,
+		status:            runtimepkg.StatusRepairing,
+		jobKind:           jobKindAptRepair,
+		auditAction:       "apt_repair.start",
+		startFailure:      "Failed to start APT repair",
+		createFailure:     "Failed to create APT repair job",
+		successMessage:    "APT repair started",
+		invalidStatus:     "Server does not require APT repair",
 		runWithJob: func(service *UpdateService, server Server, actor, clientIP string, policy RetryPolicy, jobID, _ string) {
 			service.RunAptRepairJob(AptRepairRunRequest{
-				Server:   server,
-				Actor:    actor,
-				ClientIP: clientIP,
-				Policy:   policy,
-				JobID:    jobID,
+				ExpectedHostKey: expectedKey,
+				Server:          server,
+				Actor:           actor,
+				ClientIP:        clientIP,
+				Policy:          policy,
+				JobID:           jobID,
 			})
 		},
 	})
@@ -163,7 +209,8 @@ func (l *serverActionLifecycle) StartReboot(name, actor, clientIP string, confir
 			runtimepkg.StatusError:     true,
 			runtimepkg.StatusCancelled: true,
 		},
-		invalidStatus: "Server is not ready for a controlled reboot",
+		invalidStatus:      "Server is not ready for a controlled reboot",
+		requireResolvedAPT: true,
 		runWithJob: func(service *UpdateService, server Server, actor, clientIP string, policy RetryPolicy, jobID, _ string) {
 			service.RunRebootJob(RebootRunRequest{
 				Server:   server,
@@ -232,12 +279,19 @@ func (l *serverActionLifecycle) startAction(name, actor, clientIP, sudoPassword 
 		l.recordAudit(spec.auditAction, name, "failure", "Server not found", retryMeta)
 		return jsonResult(http.StatusNotFound, "Server not found")
 	}
-	if preStartStatus != nil && spec.packageMutation && strings.EqualFold(strings.TrimSpace(preStartStatus.Status), runtimepkg.StatusNeedsReconciliation) {
+	rejectReconciliation := func() serverActionLifecycleResult {
 		retryMeta["current_status"] = preStartStatus.Status
-		l.recordAudit(spec.auditAction, name, "ignored", "APT reconciliation is required before another package mutation", retryMeta)
-		return jsonResult(http.StatusConflict, "APT reconciliation is required before another package mutation")
+		retryMeta["reason_code"] = "apt_reconciliation_required"
+		l.recordAudit(spec.auditAction, name, "ignored", serverpkg.ErrAPTReconciliation.Error(), retryMeta)
+		return serverActionLifecycleResult{statusCode: http.StatusConflict, body: map[string]any{
+			"error": serverpkg.ErrAPTReconciliation.Error(), "reason_code": "apt_reconciliation_required",
+		}}
 	}
-	if preStartStatus != nil && len(spec.allowedStatuses) > 0 && !spec.allowedStatuses[strings.ToLower(strings.TrimSpace(preStartStatus.Status))] {
+	if spec.packageMutation && preStartStatus.RequiresAPTReconciliation() {
+		return rejectReconciliation()
+	}
+	if (spec.requireResolvedAPT && preStartStatus.RequiresAPTReconciliation()) ||
+		(len(spec.allowedStatuses) > 0 && !spec.allowedStatuses[strings.ToLower(strings.TrimSpace(preStartStatus.Status))]) {
 		message := strings.TrimSpace(spec.invalidStatus)
 		if message == "" {
 			message = "Action is not available for the current server status"
@@ -246,7 +300,7 @@ func (l *serverActionLifecycle) startAction(name, actor, clientIP, sudoPassword 
 		l.recordAudit(spec.auditAction, name, "ignored", message, retryMeta)
 		return jsonResult(http.StatusConflict, message)
 	}
-	if preStartStatus != nil && statusInProgress(preStartStatus.Status) {
+	if spec.expectedAPTTarget == "" && statusInProgress(preStartStatus.Status) {
 		retryMeta["current_status"] = preStartStatus.Status
 		l.recordAudit(spec.auditAction, name, "failure", "Action already in progress", retryMeta)
 		return jsonResult(http.StatusConflict, "Update already in progress")
@@ -266,11 +320,22 @@ func (l *serverActionLifecycle) startAction(name, actor, clientIP, sudoPassword 
 	}
 	server, admittedSnapshot, err := l.serverState.BeginActionWithOptions(name, spec.status, serverpkg.ActionAdmissionOptions{
 		PackageMutation: spec.packageMutation, AllowedStatuses: spec.allowedStatuses,
+		RequireResolvedAPT:     spec.requireResolvedAPT,
 		ExpectedServerIdentity: spec.expectedServerIdentity,
+		ExpectedAPTTarget:      spec.expectedAPTTarget, ExpectedJobID: spec.expectedJobID,
 	})
 	if err != nil {
+		if errors.Is(err, serverpkg.ErrAPTReconciliation) {
+			return rejectReconciliation()
+		}
 		if errors.Is(err, serverpkg.ErrIdentityChanged) {
 			message := "The server has changed. Review the current server before starting an update check."
+			if spec.jobKind != jobKindUpdate {
+				message = "The server has changed. Review the current server before starting maintenance."
+			}
+			if spec.jobKind == jobKindAptRepair {
+				message = "The APT repair target has changed. Review the current reconciliation job."
+			}
 			retryMeta["reason_code"] = serverpkg.MaintenanceReadinessIdentityChanged
 			l.recordAudit(spec.auditAction, name, "ignored", message, retryMeta)
 			return jsonResult(http.StatusConflict, message)
@@ -289,6 +354,17 @@ func (l *serverActionLifecycle) startAction(name, actor, clientIP, sudoPassword 
 			return jsonResult(http.StatusNotFound, "Server not found")
 		}
 		if errors.Is(err, errActionInProgress) {
+			if spec.expectedAPTTarget != "" {
+				_, activity := l.serverState.ActionStatusInProgress(name)
+				message := "Wait for the active server action to finish before repairing APT"
+				if activity != "" {
+					message = "Wait for " + strings.ReplaceAll(activity, "_", " ") + " to finish before repairing APT"
+				}
+				l.recordAudit(spec.auditAction, name, "ignored", message, map[string]any{"current_status": activity})
+				return serverActionLifecycleResult{statusCode: http.StatusConflict, body: map[string]any{
+					"error": message, "current_activity": activity,
+				}}
+			}
 			l.recordAudit(spec.auditAction, name, "failure", "Action already in progress", retryMeta)
 			return jsonResult(http.StatusConflict, "Update already in progress")
 		}
@@ -298,14 +374,32 @@ func (l *serverActionLifecycle) startAction(name, actor, clientIP, sudoPassword 
 	}
 	preStartStatus = admittedSnapshot
 	admittedGeneration := admittedSnapshot.ActionGeneration + 1
-	job, err := createServerActionJobWithStateAndManager(l.currentJobManager(), l.serverState, spec.jobKind, name, actor, clientIP, policy)
+	job, err := createServerActionJobWithAdmission(l.currentJobManager(), l.serverState, spec.jobKind, name, actor, clientIP, policy, spec.previousAPTKey, l.admissionReceipt)
 	if err != nil {
 		l.serverState.RestoreAdmittedAction(name, admittedGeneration, preStartStatus)
 		retryMeta["error"] = err.Error()
 		l.recordAudit(spec.auditAction, name, "failure", "Failed to create job", retryMeta)
 		return jsonResult(http.StatusInternalServerError, spec.createFailure)
 	}
-	preserveReconciliation := spec.preserveReconciliation && preStartStatus != nil && strings.EqualFold(strings.TrimSpace(preStartStatus.Status), runtimepkg.StatusNeedsReconciliation)
+	preserveReconciliation := spec.preserveReconciliation && preStartStatus.RequiresAPTReconciliation()
+	retryMeta["job_id"] = job.ID
+	if spec.verifiedAPTKey != "" {
+		retryMeta["reconciliation_job_id"] = spec.expectedJobID
+		retryMeta["independently_verified_host_fingerprint"] = spec.verifiedAPTKey
+		retryMeta["previous_host_fingerprint"] = spec.previousAPTKey
+		if err := l.recordVerifiedRepair(name, spec.successMessage, retryMeta); err != nil {
+			l.serverState.RestoreAdmittedAction(name, admittedGeneration, preStartStatus)
+			log.Printf("cannot audit verified SSH key for APT repair job %q: %v", job.ID, err)
+			status := jobStatusCancelled
+			summary := "APT repair cancelled before SSH because verification could not be audited"
+			if err := l.currentJobManager().Transition(job.ID, jobspkg.Intent{Status: &status, Summary: &summary}); err != nil {
+				log.Printf("cannot cancel undispatched APT repair job %q: %v", job.ID, err)
+			}
+			return jsonResult(http.StatusServiceUnavailable, "Unable to audit SSH host key verification. APT repair was not started.")
+		}
+	} else {
+		l.recordAudit(spec.auditAction, name, "started", spec.successMessage, retryMeta)
+	}
 	l.startJobRunner(l.currentJobManager, job.ID, func() {
 		if preserveReconciliation {
 			defer l.serverState.RestoreAdmittedAction(name, admittedGeneration, preStartStatus)
@@ -314,11 +408,26 @@ func (l *serverActionLifecycle) startAction(name, actor, clientIP, sudoPassword 
 	}, func() {
 		l.serverState.RestoreAdmittedAction(name, admittedGeneration, preStartStatus)
 	})
-	l.recordAudit(spec.auditAction, name, "started", spec.successMessage, retryMeta)
 	return serverActionLifecycleResult{
 		statusCode: http.StatusOK,
 		body:       map[string]any{"message": spec.successMessage, "job_id": job.ID},
 	}
+}
+
+func (l *serverActionLifecycle) recordVerifiedRepair(name, message string, meta map[string]any) error {
+	if l.auditVerifiedRepair == nil {
+		return errors.New("verification audit is unavailable")
+	}
+	return l.auditVerifiedRepair(name, message, meta)
+}
+
+func validHostKeyFingerprint(value string) bool {
+	encoded, ok := strings.CutPrefix(value, "SHA256:")
+	if !ok || len(encoded) != 43 {
+		return false
+	}
+	decoded, err := base64.RawStdEncoding.Strict().DecodeString(encoded)
+	return err == nil && len(decoded) == 32
 }
 
 func (l *serverActionLifecycle) retryPolicy() RetryPolicy {

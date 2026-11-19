@@ -18,9 +18,21 @@
     }
 
     function create(windowRef) {
+        let confirmationPending = false;
+        async function confirm(message, options) {
+            // A late plan response must not replace the decision the operator is reading.
+            if (confirmationPending) return false;
+            confirmationPending = true;
+            try {
+                return await windowRef.confirmAction(message, options);
+            } finally {
+                confirmationPending = false;
+            }
+        }
+
         return Object.freeze({
             notify: (message, options) => windowRef.notifyApp(message, options),
-            confirm: (message, options) => windowRef.confirmAction(message, options),
+            confirm,
             approvalImpact
         });
     }

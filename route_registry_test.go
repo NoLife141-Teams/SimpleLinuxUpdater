@@ -38,6 +38,7 @@ func criticalRouteInventory() []routeInventoryEntry {
 		{http.MethodGet, "/api/notifications/settings"},
 		{http.MethodPut, "/api/notifications/settings"},
 		{http.MethodGet, "/api/notifications/delivery-diagnostics"},
+		{http.MethodGet, "/api/notifications/delivery-history"},
 		{http.MethodPost, "/api/notifications/test"},
 		{http.MethodPost, "/api/backup/export"},
 		{http.MethodPost, "/api/backup/restore"},

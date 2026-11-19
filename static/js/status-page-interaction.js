@@ -80,6 +80,15 @@
             .map(item => cloneValue(item));
     }
 
+    function dashboardRowsMatchVersion(rows, version) {
+        let combined = 0n;
+        for (const row of rows) {
+            if (typeof row.version !== "string" || !/^[a-f0-9]{1,16}$/.test(row.version)) return false;
+            combined ^= BigInt(`0x${row.version}`);
+        }
+        return combined.toString(16) === version;
+    }
+
     function normalizeCanonicalAction(action) {
         if (!action || typeof action !== "object" || Array.isArray(action) || typeof action.enabled !== "boolean") {
             return null;
@@ -118,6 +127,11 @@
         return `${count} ${count === 1 ? singular : `${singular}s`}`;
     }
 
+    function keptBackApprovalHasRemovals(server) {
+        const plan = server?.upgrade_plan;
+        return Boolean(plan?.kept_back_security_has_removals || plan?.kept_back_security_removed_packages?.length);
+    }
+
     function defaultActionReason(key, server, action, approvalCounts) {
         if (action && action.reason) return action.reason;
         if (!server) return "Host is no longer loaded";
@@ -129,8 +143,8 @@
             if (key === "approve_all") return `${pluralized(counts.standard, "standard update")} ready for approval.`;
             if (key === "approve_security") return `${pluralized(counts.standardSecurity, "standard security update")} ready for approval.`;
             if (key === "approve_security_kept_back") {
-                const removalNote = (server.upgrade_plan?.kept_back_security_has_removals || counts.keptBackSecurityRemovedPackages.length > 0)
-                    ? " Package removals will be confirmed from the previewed plan."
+                const removalNote = keptBackApprovalHasRemovals(server)
+                    ? " Package removals require individual confirmation."
                     : "";
                 return `${pluralized(counts.keptBackSecurity, "kept-back security update")} ready for targeted approval.${removalNote}`;
             }
@@ -160,12 +174,12 @@
         let enabled;
 		if (key === "repair_apt") {
 			const status = String(server && server.status || "").trim().toLowerCase();
-			enabled = !!server && status === "needs_reconciliation";
+			enabled = !!server && (server.apt_reconciliation_required || status === "needs_reconciliation") && !transientBlockingStatuses.has(status);
 		} else if (key === "reboot") {
 			enabled = false;
 		} else if (["update", "autoremove"].includes(key)) {
 			const status = String(server && server.status || "").trim().toLowerCase();
-			enabled = !!server && status !== "needs_reconciliation" && !transientBlockingStatuses.has(status);
+			enabled = !!server && !server.apt_reconciliation_required && status !== "needs_reconciliation" && !transientBlockingStatuses.has(status);
 		} else if (["refresh_facts", "enable_apt", "disable_apt"].includes(key)) {
             const status = String(server && server.status || "").trim().toLowerCase();
             enabled = !!server && !transientBlockingStatuses.has(status);
@@ -228,6 +242,8 @@
         let primaryServerName = "";
         let linkedServerIdentity = normalizedString(options.linkedServerIdentity, "", 200);
         let pendingLinkedServerReveal = Boolean(linkedServerIdentity);
+        let linkedApproval = linkedServerIdentity && options.linkedApproval?.jobId
+            ? { ...options.linkedApproval, opened: false } : null;
         let selectedServerNames = new Set();
         let drawer = { open: false, serverName: "", serverIdentity: "", tab: "logs", logFollow: true };
         const pendingUpdatesInteraction = pendingUpdates.createStore();
@@ -247,15 +263,21 @@
         let streams = {
             servers: createStreamState(),
             dashboard: createStreamState(),
+            hosts: createStreamState(),
             commandHistory: createStreamState(),
             audit: createStreamState(),
             observability: createStreamState(),
             policies: createStreamState(),
             globalKey: createStreamState()
         };
-        let interaction = { depth: 0, releasePending: false, deferredRender: false, actionContext: null };
+        let interaction = {
+            depth: 0, releasePending: false, deferredRender: false,
+            renderedHeldActions: false, actionContext: null
+        };
         let nextActionPlanId = 1;
         let inFlightActions = new Map();
+        let batchAdmissions = new Map();
+        let observedBulkAction = null;
         let bulkAction = null;
         let lastBulkResult = null;
         let jobLogsByServer = new Map();
@@ -466,11 +488,12 @@
             return effects;
         }
 
-        function replaceDashboard(snapshot) {
-            dashboardSnapshot = snapshot && typeof snapshot === "object" && !Array.isArray(snapshot) ? cloneValue(snapshot) : {};
-            const items = normalizeNamedItems(snapshot && snapshot.servers);
-            dashboardServers = items;
-            dashboardByName = new Map(items.map(server => [server.name, server]));
+        function replaceDashboard(snapshot, rows = normalizeNamedItems(snapshot?.servers)) {
+            const envelope = snapshot && typeof snapshot === "object" && !Array.isArray(snapshot) ? { ...snapshot } : {};
+            delete envelope.servers;
+            dashboardServers = rows;
+            dashboardSnapshot = { ...cloneValue(envelope), servers: rows };
+            dashboardByName = new Map(rows.map(server => [server.name, server]));
             commandHistoryLoadedNames = new Set();
         }
 
@@ -515,7 +538,8 @@
             const status = String(server.status || "").toLowerCase();
             const search = filters.search.trim().toLowerCase();
             const dashboardServer = dashboardServerFor(server);
-            if (filters.status && status !== filters.status) return false;
+            if (filters.status && status !== filters.status
+                && !(filters.status === "needs_reconciliation" && server.apt_reconciliation_required)) return false;
             if (filters.tag) {
                 const tags = Array.isArray(server.tags) && server.tags.length ? server.tags : ["untagged"];
                 if (!tags.includes(filters.tag)) return false;
@@ -578,7 +602,7 @@
                 const server = serversByName.get(drawer.serverName);
                 if (!loadedNames.has(drawer.serverName) || (drawer.serverIdentity && drawer.serverIdentity !== server?.server_identity)) {
                     drawer = { open: false, serverName: "", serverIdentity: "", tab: "logs", logFollow: true };
-                } else if (drawer.tab === "pending" && !hasPendingUpdates(server)) {
+                } else if (drawer.tab === "pending" && !drawer.fromApprovalLink && !hasPendingUpdates(server)) {
                     drawer = { ...drawer, tab: "logs" };
                 }
             }
@@ -601,11 +625,22 @@
 
         function renderEffects(options = {}) {
             const priority = normalizedRefreshPriority(options.priority);
-            if (options.scope === "serverState" && priority !== "immediate" && (interaction.depth > 0 || interaction.releasePending)) {
-                interaction.deferredRender = true;
-                return [];
+            if (options.scope === "serverState" && (interaction.depth > 0 || interaction.releasePending)) {
+                if (priority !== "immediate") {
+                    interaction.deferredRender = true;
+                    return [];
+                }
+                // Immediate renders can still project the held bulk action controls.
+                if (interaction.actionContext) interaction.renderedHeldActions = true;
             }
             return [{ type: "render", scope: options.scope || "navigation", priority }];
+        }
+
+        function settleActionControls() {
+            if (interaction.depth > 0 || (!interaction.deferredRender && !interaction.renderedHeldActions)) return [];
+            interaction.deferredRender = false;
+            interaction.renderedHeldActions = false;
+            return [{ type: "render", scope: "serverState", priority: "deferable" }];
         }
 
         function stateEffects(options = {}) {
@@ -625,7 +660,10 @@
             if (view === "logs" && options.canReadLogs === false) return null;
             const identity = approvalIdentity(server);
             const key = hostDetailKey(server, view, identity);
-            return { name, view, key, serverIdentity: server.server_identity, approvalIdentity: identity };
+            return {
+                name, view, key, serverIdentity: server.server_identity, approvalIdentity: identity,
+                ...(isDrawer && drawer.fromApprovalLink ? { requirePendingApproval: true } : {}),
+            };
         }
 
         function hostDetailKey(server, view, identity = approvalIdentity(server)) {
@@ -671,6 +709,21 @@
             const detail = hostDetails.drawer;
             if (detail?.key !== hostDetailRequest("drawer")?.key || !detail?.snapshot?.upgrade_plan) return null;
             return { ...server, ...detail.snapshot };
+        }
+
+        function refreshFleet(priority, reason) {
+            streams.hosts.inFlight = null;
+            return startRefreshes(["servers", "dashboard"], priority, reason);
+        }
+
+        function startRefreshes(requestedStreams, priority, reason) {
+            const names = new Set(requestedStreams.map(stream => String(stream || "")));
+            if (streams.hosts.inFlight && (names.has("servers") || names.has("dashboard"))) {
+                streams.hosts.inFlight = null;
+                names.add("servers");
+                names.add("dashboard");
+            }
+            return [...names].flatMap(stream => startRefresh(stream, priority, reason));
         }
 
         function startRefresh(streamName, priority, reason, context = {}) {
@@ -759,9 +812,17 @@
         }
 
         function drawerLogEffects(serverName) {
-            return drawer.open && drawer.tab === "logs" && drawer.serverName === serverName
+            return isOpenJobLog(serverName)
                 ? [{ type: "renderDrawerLogs", serverName }]
                 : [];
+        }
+
+        function isOpenJobLog(serverName) {
+            return drawer.open && drawer.tab === "logs" && drawer.serverName === serverName;
+        }
+
+        function isCurrentJobLog(serverName, jobId) {
+            return jobLogsByServer.get(serverName)?.jobId === jobId;
         }
 
         function receiveJobLogEvent(event) {
@@ -884,7 +945,46 @@
 
         function dispatch(event) {
             if (!event || typeof event !== "object") return [];
-            if (event.type === "serversSnapshotReceived") {
+            // Explicit navigation supersedes the selection held after an action press.
+            if (interaction.releasePending && ["filtersChanged", "sortChanged", "pageChanged", "selectionChanged", "pageSelectionChanged", "primaryServerSelected"].includes(event.type)) {
+                interaction.actionContext = null;
+            }
+            if (event.type === "targetedRefreshRequested") {
+                const { names, revision } = event;
+                const canPatch = !streams.hosts.inFlight
+                    && typeof dashboardSnapshot.rows_version === "string"
+                    && [streams.servers, streams.dashboard].every(stream => stream.lastAcceptedRequestId && !stream.inFlight && !stream.lastError)
+                    && names.every(name => serversByName.has(name) && dashboardByName.has(name));
+                return canPatch
+                    ? startRefresh("hosts", "immediate", "sse", { names, revision })
+                    : refreshFleet("immediate", "host snapshot unavailable");
+            } else if (event.type === "hostsSnapshotReceived") {
+                const request = streams.hosts.inFlight;
+                if (!request || request.requestId !== event.requestId) return [];
+                const { snapshot, receivedAt } = event;
+                const hostRows = new Map(normalizeNamedItems(snapshot?.servers).map(row => [row.name, row]));
+                const dashboardRows = new Map(normalizeNamedItems(snapshot?.dashboard?.servers).map(row => [row.name, row]));
+                if (!snapshot?.dashboard?.fleet || hostRows.size !== request.names.length || dashboardRows.size !== request.names.length
+                    || request.names.some(name => !hostRows.has(name) || !dashboardRows.has(name)
+                        || !hostRows.get(name).server_identity || hostRows.get(name).server_identity !== serversByName.get(name)?.server_identity)) {
+                    return refreshFleet(request.priority, "host snapshot changed");
+                }
+                const mergedDashboardRows = dashboardServers.map(row => dashboardRows.get(row.name) ?? row);
+                if (!dashboardRowsMatchVersion(mergedDashboardRows, snapshot.dashboard.rows_version)) {
+                    return refreshFleet(request.priority, "dashboard rows changed outside the host refresh");
+                }
+                finishRefresh("hosts", request.requestId, receivedAt);
+                for (const stream of [streams.servers, streams.dashboard]) {
+                    stream.lastSuccessfulAt = receivedAt;
+                    stream.lastError = "";
+                }
+                replaceDashboard(snapshot.dashboard, mergedDashboardRows);
+                return dispatch({
+                    type: "serversSnapshotReceived",
+                    priority: request.priority,
+                    servers: servers.map(row => hostRows.get(row.name) ?? row)
+                });
+            } else if (event.type === "serversSnapshotReceived") {
                 const requestId = Number(event.requestId || 0);
                 const stream = streams.servers;
                 if (requestId && (!stream.inFlight || stream.inFlight.requestId !== requestId || requestId < stream.lastAcceptedRequestId)) return [];
@@ -913,10 +1013,33 @@
                     primaryServerName = linkedServer.name;
                     page = 1;
                 }
+                let approvalEffect;
+                if (linkedApproval) {
+                    let reason;
+                    if (!linkedServer) {
+                        reason = "removed";
+                    } else if (linkedServer.status !== "pending_approval" || linkedServer.job_id !== linkedApproval.jobId) {
+                        reason = "expired";
+                    } else if (String(linkedServer.approval_generation) !== linkedApproval.generation) {
+                        reason = "replaced";
+                    }
+                    if (reason) {
+                        const closeDrawer = drawer.open && drawer.fromApprovalLink;
+                        if (closeDrawer) drawer = { ...drawer, open: false };
+                        linkedApproval = null;
+                        if (!linkedServer) linkedServerIdentity = "";
+                        approvalEffect = { type: "linkedApprovalUnavailable", reason, closeDrawer };
+                    } else if (!linkedApproval.opened) {
+                        linkedApproval.opened = true;
+                        approvalEffect = { type: "openLinkedApproval", name: linkedServer.name };
+                    } else if (drawer.open && drawer.fromApprovalLink) {
+                        drawer = { ...drawer, serverName: linkedServer.name };
+                    }
+                }
                 const persistenceChanged = reconcileNavigation();
                 return [
-                    ...stateEffects({ persist: !linkedServerIdentity && persistenceChanged, scope: "serverState", priority: linkedServerChanged ? "immediate" : priority, refreshHostDetails: true }),
-                    ...(linkedServerChanged ? [{ type: "revealLinkedServer", found: Boolean(linkedServer) }] : []),
+                    ...stateEffects({ persist: !linkedServerIdentity && !approvalEffect && persistenceChanged, scope: "serverState", priority: linkedServerChanged || approvalEffect ? "immediate" : priority, refreshHostDetails: true }),
+                    ...(approvalEffect ? [approvalEffect] : linkedServerChanged ? [{ type: "revealLinkedServer", found: Boolean(linkedServer) }] : []),
                     { type: "renderSyncState" },
                     ...(requestId ? finishRefresh("servers", requestId, event.receivedAt) : []),
                     ...logEffects,
@@ -928,6 +1051,16 @@
                     || current.key !== hostDetailRequest(event.surface)?.key) return [];
                 current.loading = false;
                 current.snapshot = event.stale ? null : (event.snapshot ?? current.snapshot);
+                if (event.stale && event.surface === "drawer" && drawer.fromApprovalLink && linkedApproval) {
+                    const effects = [{ type: "renderHostDetail", surface: "drawer" }];
+                    // Refresh the compact identity once per rejected detail key.
+                    // The resulting snapshot can distinguish replacement from expiry or removal.
+                    if (linkedApproval.recheckedDetailKey !== current.key) {
+                        linkedApproval.recheckedDetailKey = current.key;
+                        effects.push(...startRefreshes(["servers"], "immediate", "linked approval detail changed"));
+                    }
+                    return effects;
+                }
                 // Host detail renders include fleet facts. Apply them on the
                 // deferred fleet render to keep pressed actions stable.
                 if (interaction.deferredRender && (interaction.depth > 0 || interaction.releasePending)) return [];
@@ -955,10 +1088,6 @@
                 const history = Array.isArray(event.history) ? cloneValue(event.history) : [];
                 const dashboardServer = dashboardByName.get(serverName);
                 if (dashboardServer) dashboardServer.command_history = history;
-                const snapshotServer = Array.isArray(dashboardSnapshot.servers)
-                    ? dashboardSnapshot.servers.find(server => server && server.name === serverName)
-                    : null;
-                if (snapshotServer) snapshotServer.command_history = cloneValue(history);
                 commandHistoryLoadedNames.add(serverName);
                 return [
                     ...stateEffects({ scope: "serverState", priority: stream.inFlight.priority }),
@@ -980,6 +1109,10 @@
                     ...finishRefresh(streamName, requestId, event.receivedAt)
                 ];
             } else if (event.type === "snapshotFailed") {
+                if (event.stream === "hosts") {
+                    const request = streams.hosts.inFlight;
+                    return request?.requestId === event.requestId ? refreshFleet(request.priority, "host snapshot failed") : [];
+                }
                 return failRefresh(String(event.stream || ""), Number(event.requestId || 0), event.error);
             } else if (event.type === "jobLogReceived") {
                 return receiveJobLogEvent(event.event || event);
@@ -1011,9 +1144,9 @@
                 return recoverKnownJobLogs();
             } else if (event.type === "refreshRequested") {
                 const requestedStreams = Array.isArray(event.streams) ? event.streams : [event.stream];
-                return requestedStreams.flatMap(stream => startRefresh(String(stream || ""), event.priority, event.reason));
+                return startRefreshes(requestedStreams, event.priority, event.reason);
             } else if (event.type === "interactionStarted") {
-                if (interaction.depth === 0 && (!interaction.releasePending || !interaction.deferredRender)) {
+                if (interaction.depth === 0 && (!interaction.actionContext || !interaction.releasePending || !interaction.deferredRender)) {
                     const projection = projectView();
                     interaction.actionContext = {
                         serversByName: new Map(Array.from(serversByName.entries()).map(([name, server]) => [name, cloneValue(server)])),
@@ -1038,19 +1171,12 @@
             } else if (event.type === "interactionReleased") {
                 interaction.releasePending = false;
                 interaction.actionContext = null;
-                if (!interaction.deferredRender || interaction.depth > 0) return [];
-                interaction.deferredRender = false;
-                return [{ type: "render", scope: "serverState", priority: "deferable" }];
+                return settleActionControls();
             } else if (event.type === "interactionReset") {
                 interaction.depth = 0;
                 interaction.releasePending = false;
                 interaction.actionContext = null;
-                const effects = [{ type: "cancelInteractionRelease" }];
-                if (interaction.deferredRender) {
-                    interaction.deferredRender = false;
-                    effects.push({ type: "render", scope: "serverState", priority: "deferable" });
-                }
-                return effects;
+                return [{ type: "cancelInteractionRelease" }, ...settleActionControls()];
             } else if (event.type === "actionStarted") {
                 const plan = event.plan && typeof event.plan === "object" ? event.plan : {};
                 const names = Array.isArray(plan.serverNames) ? plan.serverNames.filter(name => !!actionServer(name)) : [];
@@ -1087,6 +1213,31 @@
                     };
                 }
                 return [{ type: "render", scope: "serverState", priority: "immediate" }];
+            } else if (event.type === "bulkAdmissionsObserved") {
+                const admissions = new Map(event.pendingHosts.map(host => [host.name, host.server_identity]));
+                const batchID = admissions.size ? event.batch.id : undefined;
+                if (admissions.size === batchAdmissions.size && batchID === observedBulkAction?.operationId &&
+                    [...admissions].every(([name, identity]) => batchAdmissions.get(name) === identity)) return [];
+                batchAdmissions = admissions;
+                observedBulkAction = admissions.size ? {
+                    operationId: event.batch.id,
+                    actionKey: event.batch.action,
+                    actionLabel: event.actionLabel,
+                    selectedCount: event.batch.hosts.length + event.batch.skipped_count,
+                    eligibleCount: event.batch.hosts.length,
+                    skippedCount: event.batch.skipped_count,
+                } : null;
+                return [{ type: "render", scope: "serverState", priority: "immediate" }];
+            } else if (event.type === "bulkHostAdmissionsResolved") {
+                if (!bulkAction || bulkAction.operationId !== event.operationId) return [];
+                let changed = false;
+                for (const name of event.serverNames) {
+                    if (inFlightActions.get(name)?.operationId === event.operationId) {
+                        inFlightActions.delete(name);
+                        changed = true;
+                    }
+                }
+                return changed ? [{ type: "render", scope: "serverState", priority: "immediate" }] : [];
             } else if (event.type === "actionCompleted" || event.type === "actionFailed") {
                 const operationId = String(event.operationId || "");
                 Array.from(inFlightActions.entries()).forEach(([name, action]) => {
@@ -1111,6 +1262,7 @@
                 const wasLinked = Boolean(linkedServerIdentity);
                 linkedServerIdentity = "";
                 pendingLinkedServerReveal = false;
+                linkedApproval = null;
                 lastBulkResult = null;
                 const patch = event.patch && typeof event.patch === "object" ? event.patch : {};
                 filters = {
@@ -1167,6 +1319,7 @@
                 if (leavingLinkedServer) {
                     linkedServerIdentity = "";
                     pendingLinkedServerReveal = false;
+                    linkedApproval = null;
                     filters = { ...filters, search: "", availability: selectedServer.disabled ? "disabled" : "enabled" };
                 }
                 primaryServerName = selectedServer?.name || "";
@@ -1184,19 +1337,21 @@
                         open: true,
                         serverName: name,
                         serverIdentity: String(server.server_identity || ""),
-                        tab: event.tab === "pending" && hasPendingUpdates(server) ? "pending" : "logs",
-                        logFollow: drawer.serverName === name ? drawer.logFollow : true
+                        tab: event.tab === "pending" && (event.fromApprovalLink || hasPendingUpdates(server)) ? "pending" : "logs",
+                        logFollow: drawer.serverName === name ? drawer.logFollow : true,
+                        ...(event.fromApprovalLink ? { fromApprovalLink: true } : {}),
                     };
                 }
                 return [
                     ...stateEffects(),
-                    ...logRecoveryEffect(name, jobLogsByServer.get(name))
+                    ...(event.fromApprovalLink ? [] : logRecoveryEffect(name, jobLogsByServer.get(name)))
                 ];
             } else if (event.type === "drawerClosed") {
+                if (drawer.fromApprovalLink) linkedApproval = null;
                 drawer = { ...drawer, open: false };
                 return stateEffects();
             } else if (event.type === "drawerTabChanged") {
-                const tab = event.tab === "pending" && hasPendingUpdates(serversByName.get(drawer.serverName)) ? "pending" : "logs";
+                const tab = event.tab === "pending" && (drawer.fromApprovalLink || hasPendingUpdates(serversByName.get(drawer.serverName))) ? "pending" : "logs";
                 drawer = { ...drawer, tab };
                 return [
                     ...stateEffects(),
@@ -1253,7 +1408,9 @@
             if (server?.disabled) {
                 return { ...cloneValue(action), enabled: false, reason: "Server is disabled; enable it in Manage Servers to resume maintenance.", readiness: "unavailable", blocking_status: "server_disabled" };
             }
-            if (!options.ignoreInFlight && inFlightActions.has(normalizedName)) {
+            const pendingIdentity = batchAdmissions.get(normalizedName);
+            if (!options.ignoreInFlight && (inFlightActions.has(normalizedName) ||
+                (pendingIdentity && serversByName.get(normalizedName)?.server_identity === pendingIdentity))) {
                 return {
                     ...cloneValue(action),
                     enabled: false,
@@ -1275,7 +1432,6 @@
             return {
                 serverIdentity: String(server?.server_identity || ""),
                 detailsDeferred: Boolean(server?.package_counts),
-                keptBackSecurityHasRemovals: Boolean(server?.upgrade_plan?.kept_back_security_has_removals || counts.keptBackSecurityRemovedPackages.length > 0),
                 counts,
                 approvalIdentity: approvalIdentity(server),
                 pendingUpdates: cloneValue(server?.pending_updates || [])
@@ -1313,15 +1469,23 @@
             const eligibleNames = [];
             const eligibleHosts = [];
             const ineligible = [];
+            const removalReviews = [];
             visibleSelectedNames.forEach(name => {
                 const server = actionServer(name);
                 const action = getAction(name, actionKey) || { enabled: false, reason: "Action is unavailable", readiness: "blocked" };
+                const auth = canonicalAuthFacts(server, globalKeyAvailable).label;
+                if (actionKey === "approve_security_kept_back" && keptBackApprovalHasRemovals(server)
+                    && (action.enabled || (action.readiness === "in_progress" && getAction(name, actionKey, { ignoreInFlight: true })?.enabled))) {
+                    ineligible.push({ name, auth, reason: "Package removals require individual confirmation" });
+                    removalReviews.push({ name, serverIdentity: String(server.server_identity || "") });
+                    return;
+                }
                 const reason = defaultActionReason(actionKey, server, action, canonicalApprovalCounts);
                 if (action.enabled) {
                     eligibleNames.push(name);
-                    eligibleHosts.push({ name, auth: canonicalAuthFacts(server, globalKeyAvailable).label, readiness: reason });
+                    eligibleHosts.push({ name, auth, readiness: reason });
                 } else {
-                    ineligible.push({ name, auth: canonicalAuthFacts(server, globalKeyAvailable).label, reason });
+                    ineligible.push({ name, auth, reason });
                 }
             });
             const hiddenHosts = hiddenSelectedNames.map(name => ({
@@ -1341,15 +1505,26 @@
                 serverNames: cloneValue(eligibleNames),
                 eligibleHosts,
                 ineligible,
+                removalReviews,
                 skippedHosts: [...hiddenHosts, ...ineligible],
                 payloadFacts: Object.fromEntries(eligibleNames.map(name => [name, actionPayloadFacts(actionServer(name))]))
             };
         }
 
+        function planBatchRetry(actionKey, name, expectedIdentity) {
+            const server = projectNavigation().pageServers.find(item => item.name === name);
+            if (!server || !expectedIdentity || server.server_identity !== expectedIdentity
+                || (actionKey === "approve_security_kept_back" && keptBackApprovalHasRemovals(server))) {
+                return null;
+            }
+            const plan = planAction(name, actionKey);
+            return plan.enabled && plan.payloadFacts.serverIdentity === expectedIdentity ? plan.payloadFacts : null;
+        }
+
         function actionLifecycleEffects(event, status) {
             const effects = [{ type: "render", scope: "serverState", priority: "immediate" }];
             const refreshStreams = Array.isArray(event.refreshStreams) ? event.refreshStreams : ["servers"];
-            refreshStreams.forEach(stream => effects.push(...startRefresh(stream, "immediate", `action-${status}`)));
+            effects.push(...startRefreshes(refreshStreams, "immediate", `action-${status}`));
             if (event.message) effects.push({ type: "announceResult", status, message: String(event.message) });
             return effects;
         }
@@ -1388,11 +1563,12 @@
             const groups = filters.groupBy
                 ? Array.from(grouped.entries()).map(([key, items]) => ({ key, items: cloneValue(items) }))
                 : [{ key: "", items: cloneValue(pageServers) }];
+            const dashboard = cloneValue(dashboardSnapshot);
             return {
                 servers: cloneValue(servers),
                 availabilityServers: cloneValue(servers.filter(matchesAvailability)),
-                dashboardSnapshot: cloneValue(dashboardSnapshot),
-                dashboardServers: cloneValue(dashboardServers),
+                dashboardSnapshot: dashboard,
+                dashboardServers: dashboard.servers || [],
                 globalKeyAvailable,
                 extras: cloneValue(secondarySnapshots),
                 actionViews: Object.fromEntries(servers.map(server => [
@@ -1416,7 +1592,8 @@
                     open: drawer.open,
                     serverName: drawer.serverName,
                     tab: drawer.tab,
-                    logFollow: drawer.logFollow
+                    logFollow: drawer.logFollow,
+                    ...(drawer.fromApprovalLink ? { fromApprovalLink: true } : {}),
                 },
                 pendingUpdates: pendingUpdatesView(),
                 jobLogs: Object.fromEntries(Array.from(jobLogsByServer.entries()).map(([name, state]) => [name, {
@@ -1429,17 +1606,11 @@
                     truncated: state.truncated,
                     recovering: state.recovering
                 }])),
-                sync: {
-                    streams: cloneValue(streams),
-                    interactionDepth: interaction.depth,
-                    interactionReleasePending: interaction.releasePending,
-                    interactionActive: interaction.depth > 0 || interaction.releasePending,
-                    deferredRender: interaction.deferredRender
-                },
+                sync: getSyncState(),
                 actions: {
                     inFlightServerNames: Array.from(inFlightActions.keys()),
                     inFlight: Array.from(inFlightActions.entries()).map(([serverName, action]) => ({ serverName, ...cloneValue(action) })),
-                    bulk: cloneValue(bulkAction),
+                    bulk: cloneValue(bulkAction || observedBulkAction),
                     lastBulkResult: cloneValue(lastBulkResult)
                 },
                 persistence: persistenceValue()
@@ -1449,6 +1620,16 @@
         function getView() {
             reconcileNavigation();
             return projectView();
+        }
+
+        function getSyncState() {
+            return {
+                streams: cloneValue(streams),
+                interactionDepth: interaction.depth,
+                interactionReleasePending: interaction.releasePending,
+                interactionActive: interaction.depth > 0 || interaction.releasePending,
+                deferredRender: interaction.deferredRender
+            };
         }
 
         function pendingUpdatesView() {
@@ -1470,8 +1651,12 @@
             getHostDetail,
             getPersistence,
             getServer,
+            getSyncState,
             getView,
+            isCurrentJobLog,
+            isOpenJobLog,
             planAction,
+            planBatchRetry,
             planBulkAction
         });
     }

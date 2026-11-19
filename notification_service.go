@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"net/url"
 
 	notificationpkg "debian-updater/internal/notifications"
 
@@ -110,6 +111,72 @@ func handleNotificationDeliveryDiagnostics(c *gin.Context, service NotificationD
 	}
 	c.Header("Cache-Control", "no-store")
 	c.JSON(http.StatusOK, diagnostics)
+}
+
+func handleNotificationDeliveryHistory(c *gin.Context, deps AppDeps) {
+	setNoStoreHeaders(c)
+	reader, ok := deps.NotificationService.(notificationpkg.DeliveryHistoryReader)
+	if !ok {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "notification delivery history is unavailable"})
+		return
+	}
+	page, err := reader.DeliveryHistory(c.Request.Context(), notificationpkg.DeliveryHistoryQuery{
+		Destination: c.Query("destination"),
+		State:       c.Query("state"),
+		JobID:       c.Query("job_id"),
+		Before:      c.Query("before"),
+	})
+	if errors.Is(err, notificationpkg.ErrInvalidDeliveryHistoryQuery) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid destination, delivery state, job identifier or history cursor."})
+		return
+	}
+	if err != nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "notification delivery history is unavailable"})
+		return
+	}
+	attachDeliveryHistoryLinks(c, deps, page.Items)
+	c.JSON(http.StatusOK, page)
+}
+
+func attachDeliveryHistoryLinks(c *gin.Context, deps AppDeps, items []notificationpkg.DeliveryHistoryItem) {
+	canReadReport, canOpenPlan := contextAllows(c, "logs:read"), contextAllows(c, "operational:read")
+	if !canReadReport && !canOpenPlan {
+		return
+	}
+	jm := deps.CurrentJobManager()
+	if jm == nil {
+		return
+	}
+	type jobLinks struct {
+		report string
+		plan   approvalLink
+	}
+	linksByJob := make(map[string]jobLinks)
+	for i := range items {
+		item := &items[i]
+		if item.JobID == "" {
+			continue
+		}
+		links, checked := linksByJob[item.JobID]
+		if !checked {
+			if job, err := jm.GetJob(item.JobID); err == nil && job.ID == item.JobID {
+				if canReadReport {
+					links.report = "/api/reports/jobs/" + url.PathEscape(job.ID)
+				}
+				if canOpenPlan {
+					if link, valid := waitingJobApprovalLink(job); valid && approvalLinkProblem(deps.ServerState, link) == "" {
+						links.plan = link
+					}
+				}
+			}
+			linksByJob[item.JobID] = links
+		}
+		item.JobReportURL = links.report
+		if item.EventType == notificationpkg.EventApprovalPublished && links.plan.Generation > 0 &&
+			item.ApprovalGeneration == links.plan.Generation {
+			item.ApprovalPlanURL = links.plan.url(url.URL{})
+		}
+	}
 }
 
 func handleNotificationTest(c *gin.Context, service NotificationDeliveryLifecycle) {

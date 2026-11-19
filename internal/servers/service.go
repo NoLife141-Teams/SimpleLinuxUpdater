@@ -254,27 +254,50 @@ func (s *Service) SaveOrRollbackLocked(prevServers []Server, prevStatusMap map[s
 }
 
 func (s *Service) ListStatuses() []ServerStatus {
-	statuses := s.state().ListStatuses()
+	return s.ListStatusesFor(nil)
+}
+
+func (s *Service) ListStatusesFor(names map[string]struct{}) []ServerStatus {
+	statuses := s.state().ListStatusesFor(names)
 	if len(statuses) == 0 {
 		return statuses
 	}
-	checkKnownHostEntry, checkerErr := newKnownHostEntryChecker(s.deps.KnownHosts)
+	check := s.hostKeyStatusChecker()
 	for i := range statuses {
-		if checkerErr != nil {
-			statuses[i].HostKeyStatus = HostKeyStatusUnknown
-			continue
-		}
-		exists, err := checkKnownHostEntry(statuses[i].Host, statuses[i].Port)
-		switch {
-		case err != nil:
-			statuses[i].HostKeyStatus = HostKeyStatusUnknown
-		case exists:
-			statuses[i].HostKeyStatus = HostKeyStatusTrusted
-		default:
-			statuses[i].HostKeyStatus = HostKeyStatusMissing
-		}
+		statuses[i].HostKeyStatus = check(statuses[i].Host, statuses[i].Port)
 	}
 	return statuses
+}
+
+func (s *Service) HostKeyStatuses() map[string]HostKeyStatus {
+	endpoints := s.state().statusEndpoints()
+	statuses := make(map[string]HostKeyStatus, len(endpoints))
+	if len(endpoints) == 0 {
+		return statuses
+	}
+	check := s.hostKeyStatusChecker()
+	for name, endpoint := range endpoints {
+		statuses[name] = check(endpoint.Host, endpoint.Port)
+	}
+	return statuses
+}
+
+func (s *Service) hostKeyStatusChecker() func(string, int) HostKeyStatus {
+	checkKnownHostEntry, checkerErr := newKnownHostEntryChecker(s.deps.KnownHosts)
+	if checkerErr != nil {
+		return func(string, int) HostKeyStatus { return HostKeyStatusUnknown }
+	}
+	return func(host string, port int) HostKeyStatus {
+		exists, err := checkKnownHostEntry(host, port)
+		switch {
+		case err != nil:
+			return HostKeyStatusUnknown
+		case exists:
+			return HostKeyStatusTrusted
+		default:
+			return HostKeyStatusMissing
+		}
+	}
 }
 
 func (s *Service) Create(server Server) (Server, error) {
@@ -359,13 +382,16 @@ func (s *Service) Update(name string, server Server) (Server, error) {
 			return server, EndpointConflictError{Endpoint: NormalizeServerEndpoint(server.Host, server.Port)}
 		}
 		endpointChanged := NormalizeServerEndpoint(existing.Host, existing.Port) != NormalizeServerEndpoint(server.Host, server.Port)
+		if status := state.StatusMap()[name]; endpointChanged && status.RequiresAPTReconciliation() {
+			return server, ActionError{Status: runtimepkg.StatusNeedsReconciliation}
+		}
 		currentServers[i] = server
 		state.SetServers(currentServers)
 		renamedServer := server.Name != name
 		if renamedServer {
 			previousStatus := CloneServerStatus(state.StatusMap()[name])
 			delete(state.StatusMap(), name)
-			if previousStatus != nil && strings.EqualFold(strings.TrimSpace(previousStatus.Status), runtimepkg.StatusNeedsReconciliation) {
+			if previousStatus.RequiresAPTReconciliation() {
 				previousStatus.Name = server.Name
 				state.StatusMap()[server.Name] = previousStatus
 				UpdateStatusFromServer(state.StatusMap(), server.Name, server)
@@ -427,10 +453,6 @@ func (s *Service) Update(name string, server Server) (Server, error) {
 			replacement := NewIdleStatus(server)
 			if previous := prevStatusMap[name]; previous != nil {
 				replacement.ActionGeneration = previous.ActionGeneration + 1
-				if previous.Status == runtimepkg.StatusNeedsReconciliation {
-					replacement.Status = previous.Status
-					replacement.Logs = previous.Logs
-				}
 			}
 			state.StatusMap()[server.Name] = replacement
 		}
@@ -454,7 +476,7 @@ func (s *Service) Delete(name string) error {
 			continue
 		}
 		if status := state.StatusMap()[name]; status != nil &&
-			(status.ActionRunning || state.statusInProgress(status.Status) || strings.EqualFold(strings.TrimSpace(status.Status), runtimepkg.StatusNeedsReconciliation)) {
+			(status.ActionRunning || state.statusInProgress(status.Status) || status.RequiresAPTReconciliation()) {
 			return ActionError{Status: status.Status}
 		}
 		_ = server

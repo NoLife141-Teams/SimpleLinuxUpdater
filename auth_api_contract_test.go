@@ -174,6 +174,19 @@ func TestPersonalAPIConfirmationRequestContract(t *testing.T) {
 		t.Fatal(issued.Code, issued.Body.String())
 	}
 	secret := decodeContractJSON(t, issued)["secret"].(string)
+	repairTarget := Server{Identity: "removed-inventory-id", Host: "removed-host.invalid", Port: 22}
+	job, err := app.Deps.CurrentJobManager().CreateJob(JobCreateParams{
+		Kind:       jobKindUpdate,
+		ServerName: "missing",
+		Status:     jobStatusFailed,
+		ErrorClass: "reconciliation_required",
+		APTTarget:  repairTarget.APTTarget(),
+
+		APTMutationHostKey: testAPTMutationHostKey,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, action := range []string{"repair", "reboot"} {
 		t.Run(action, func(t *testing.T) {
 			body := spec.Paths["/api/"+action+"/{name}"]["post"].RequestBody
@@ -183,13 +196,29 @@ func TestPersonalAPIConfirmationRequestContract(t *testing.T) {
 			ref := body.Content["application/json"].Schema.Ref
 			schema := spec.Components.Schemas[strings.TrimPrefix(ref, "#/components/schemas/")]
 			confirm := schema.Properties["confirm"]
-			if confirm.Type != "boolean" || !confirm.Const || !reflect.DeepEqual(schema.Required, []string{"confirm"}) {
+			if confirm.Type != "boolean" || !confirm.Const {
 				t.Error("OpenAPI must describe the required confirm:true field")
 			}
-			for _, input := range []struct {
+			required := []string{"confirm"}
+			type requestCase struct {
 				body any
 				want int
-			}{{nil, 400}, {gin.H{}, 400}, {gin.H{"confirm": false}, 400}, {gin.H{"confirm": true}, 404}} {
+			}
+			inputs := []requestCase{{nil, 400}, {gin.H{}, 400}, {gin.H{"confirm": false}, 400}}
+			confirmed := gin.H{"confirm": true}
+			if action == "repair" {
+				required = append(required, "job_id")
+				if schema.Properties["job_id"].Type != "string" {
+					t.Error("OpenAPI must describe the exact reconciliation job ID")
+				}
+				inputs = append(inputs, requestCase{gin.H{"confirm": true}, http.StatusBadRequest})
+				confirmed["job_id"] = job.ID
+			}
+			if !reflect.DeepEqual(schema.Required, required) {
+				t.Errorf("required fields = %v, want %v", schema.Required, required)
+			}
+			inputs = append(inputs, requestCase{confirmed, http.StatusNotFound})
+			for _, input := range inputs {
 				rec := identityRequest(app, "POST", "/api/"+action+"/missing", nil, secret, input.body)
 				if rec.Code != input.want {
 					t.Errorf("body %v: HTTP %d want %d; %s", input.body, rec.Code, input.want, rec.Body.String())

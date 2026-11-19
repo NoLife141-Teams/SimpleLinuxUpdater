@@ -97,10 +97,10 @@ func newJobManagerWithRuntime(db *sql.DB, notify func(string), state *serverpkg.
 }
 
 func newJobManagerWithRuntimeConfig(db *sql.DB, notify func(string), state *serverpkg.State, config internaljobs.LogConfig, now func() time.Time) *JobManager {
-	return newJobManagerWithRuntimeLogConfig(db, notify, notifyDashboardLogEvent, state, config, now)
+	return newJobManagerWithRuntimeLogConfig(db, notify, notifyDashboardLogEvent, nil, state, config, now)
 }
 
-func newJobManagerWithRuntimeLogConfig(db *sql.DB, notify func(string), notifyLog func(internaljobs.LogEvent), state *serverpkg.State, config internaljobs.LogConfig, now func() time.Time) *JobManager {
+func newJobManagerWithRuntimeLogConfig(db *sql.DB, notify func(string), notifyLog func(internaljobs.LogEvent), notifyJob func(string, JobRecord), state *serverpkg.State, config internaljobs.LogConfig, now func() time.Time) *JobManager {
 	if notify == nil {
 		notify = notifyDashboardEvent
 	}
@@ -113,6 +113,7 @@ func newJobManagerWithRuntimeLogConfig(db *sql.DB, notify func(string), notifyLo
 	return internaljobs.NewManager(internaljobs.NewSQLiteRepositoryWithLogConfig(db, config), internaljobs.ManagerOptions{
 		Notify:    notify,
 		NotifyLog: notifyLog,
+		NotifyJob: notifyJob,
 		SyncRuntime: func(record JobRecord) {
 			syncServerStateFromJobRecord(state, record)
 		},
@@ -221,6 +222,16 @@ func syncServerStateFromJobRecord(state *serverpkg.State, record JobRecord) {
 	if status == nil {
 		return
 	}
+	if record.APTTarget != "" {
+		server, found := state.FindByNameLocked(record.ServerName)
+		if !found || server.APTTarget() != record.APTTarget {
+			return
+		}
+	} else if statusValue == runtimepkg.StatusNeedsReconciliation && status.JobID != record.ID {
+		// A legacy record can keep its live owner, but its historical name is
+		// insufficient evidence to attach a reconciliation after restart.
+		return
+	}
 	if status.JobID != record.ID && (status.JobID != "" || status.ActionGeneration != 0) {
 		return
 	}
@@ -228,7 +239,20 @@ func syncServerStateFromJobRecord(state *serverpkg.State, record JobRecord) {
 		return
 	}
 	status.JobRevision = record.Revision
-	status.Status = statusValue
+	if statusValue == runtimepkg.StatusNeedsReconciliation {
+		status.APTReconciliationPending = true
+		status.APTReconciliationJobID = record.ID
+	} else if record.Kind == jobKindAptRepair && record.Status == jobStatusSucceeded {
+		status.APTReconciliationPending = false
+		status.APTReconciliationJobID = ""
+	}
+	switch status.Status {
+	case runtimepkg.StatusFactsRefresh, runtimepkg.StatusApplicationCheck, runtimepkg.StatusVulnerabilityScan:
+		// The read-only reservation owns the activity until its collector
+		// releases it. Job transitions still update the package blocker.
+	default:
+		status.Status = statusValue
+	}
 	status.JobID = record.ID
 	if record.LogsText != "" {
 		status.Logs = record.LogsText

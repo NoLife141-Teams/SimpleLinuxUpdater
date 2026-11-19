@@ -67,6 +67,15 @@ func (c *runtimeComposition) PreparePersistenceReplacement(ctx context.Context) 
 	return nil
 }
 
+func (c *runtimeComposition) StagePersistenceReplacement(ctx context.Context, staged *sql.DB) error {
+	if stager, ok := c.deps.NotificationService.(interface {
+		StageAPTDeliveryEvidence(context.Context, *sql.DB) error
+	}); ok {
+		return stager.StageAPTDeliveryEvidence(ctx, staged)
+	}
+	return nil
+}
+
 func (c *runtimeComposition) ReloadRestoredState(ctx context.Context) (resultErr error) {
 	if c != nil && c.deps.InstallationHealth != nil {
 		c.deps.InstallationHealth.setPhase("reloading")
@@ -130,8 +139,7 @@ func (c *runtimeComposition) ReloadRestoredState(ctx context.Context) (resultErr
 	}
 	deps.SetCurrentJobManager(jm)
 	if deps.VulnerabilityScans != nil {
-		// Recover Job State Transition before generic interruption. Audit hooks
-		// must wait until Notification Delivery Lifecycle persistence resumes.
+		// Recover Job State Transition before generic interruption.
 		if err := deps.VulnerabilityScans.reconcile(ctx, false); err != nil {
 			return fmt.Errorf("restore vulnerability scans: %w", err)
 		}
@@ -170,15 +178,15 @@ func (c *runtimeComposition) ReloadRestoredState(ctx context.Context) (resultErr
 		return fmt.Errorf("rebuild restored auth session manager: %w", err)
 	}
 	deps.SetSessionManager(sm)
-	// Resume notification persistence only after the other restored runtime owners are ready.
-	if reloader, ok := deps.NotificationService.(notificationpkg.PersistenceReloader); ok {
-		if err := reloader.ReloadPersistence(ctx); err != nil {
-			return fmt.Errorf("reload restored Notification Delivery Lifecycle: %w", err)
-		}
-	}
 	if deps.VulnerabilityScans != nil {
 		if err := deps.VulnerabilityScans.Reconcile(ctx); err != nil {
 			return fmt.Errorf("audit restored vulnerability scans: %w", err)
+		}
+	}
+	// Keep deliveries paused until the last fallible recovery step has completed.
+	if reloader, ok := deps.NotificationService.(notificationpkg.PersistenceReloader); ok {
+		if err := reloader.ReloadPersistence(ctx); err != nil {
+			return fmt.Errorf("reload restored Notification Delivery Lifecycle: %w", err)
 		}
 	}
 	return nil
@@ -210,11 +218,26 @@ func (c *runtimeComposition) Compose() AppDeps {
 	if deps.DashboardEventBroker == nil {
 		deps.DashboardEventBroker = events.NewBroker()
 	}
+	notifyAudit := deps.NotifyDashboardEvent
 	if deps.NotifyDashboardEvent == nil {
 		broker := deps.DashboardEventBroker
 		deps.NotifyDashboardEvent = func(reason string) {
 			if broker != nil {
 				broker.Publish(reason)
+			}
+		}
+		notifyAudit = func(reason string) {
+			broker.PublishEvent(events.Event{Reason: reason, Audit: true})
+		}
+		if deps.NotifyDashboardJob == nil {
+			deps.NotifyDashboardJob = func(reason string, job JobRecord) {
+				// A scheduled transition can also release or stop another rollout
+				// stage. Only standalone, operator-initiated updates are local.
+				if job.Kind != jobKindUpdate || job.Actor == "system" || job.ParentJobID != "" || job.ServerName == "" {
+					broker.Publish(reason)
+					return
+				}
+				broker.PublishEvent(events.Event{Reason: reason, ServerName: job.ServerName})
 			}
 		}
 	}
@@ -237,7 +260,7 @@ func (c *runtimeComposition) Compose() AppDeps {
 	if deps.NotificationService == nil {
 		deps.NotificationService = NewNotificationService(NotificationServiceDeps{
 			Now:            deps.Now,
-			ReadConditions: newNotificationConditionSource(deps.DB, deps.Now),
+			ReadConditions: newNotificationConditionSource(deps.DB, deps.Now, deps.PublicOrigin),
 			DB:             deps.DB,
 		})
 	}
@@ -251,7 +274,7 @@ func (c *runtimeComposition) Compose() AppDeps {
 		})
 	}
 	if deps.AuditService == nil {
-		deps.AuditService = newAuditServiceWithHealthObservation(deps.DB, deps.NotifyDashboardEvent, func() (*time.Location, string) {
+		deps.AuditService = newAuditServiceWithHealthObservation(deps.DB, notifyAudit, func() (*time.Location, string) {
 			value := deps.ApplicationTime.Current()
 			return value.Location, value.DisplayName
 		}, deps.NotificationService, deps.Now, deps.HostHealthObservation, deps.MaintenanceCoordinator)
@@ -294,8 +317,9 @@ func (c *runtimeComposition) Compose() AppDeps {
 	if deps.NewJobManager == nil {
 		notify := deps.NotifyDashboardEvent
 		notifyLog := deps.NotifyDashboardLogEvent
+		notifyJob := deps.NotifyDashboardJob
 		deps.NewJobManager = func(db *sql.DB) *JobManager {
-			return newJobManagerWithRuntimeLogConfig(db, notify, notifyLog, deps.ServerState, loadJobLogConfigFromEnv(), deps.Now)
+			return newJobManagerWithRuntimeLogConfig(db, notify, notifyLog, notifyJob, deps.ServerState, loadJobLogConfigFromEnv(), deps.Now)
 		}
 	}
 	if deps.CurrentJobManager == nil {

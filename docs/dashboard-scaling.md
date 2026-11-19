@@ -113,6 +113,39 @@ the compact JSON at 760 bytes per inventory row and 4,300 bytes per dashboard ro
 each with 1 KiB for fixed overhead. The legacy API budget and redaction assertions
 continue to run alongside the compact assertions.
 
+## Targeted SSE refresh and bounded log recovery (#577)
+
+The browser fixture emits 12 `job.update` events at 8 ms intervals after
+changing one visible host. Status groups invalidations within a 125 ms window.
+Job changes invalidate inventory and Dashboard Projection. Policy changes can
+also invalidate the policy summary and recent audit. Initial page reads wait
+briefly for the subscription so a fast connection needs no extra startup refresh.
+If the initial reads start before the stream opens, another set reconciles
+changes missed during startup. A reconnect or an unknown event also refreshes
+the full snapshot set. Structured job log events continue to bypass snapshot
+refreshes.
+
+Reference `941f880` and candidate were measured on Chromium 159.0.8154.6 with
+five measured trials per size. Counts and transferred body bytes are medians.
+The aggregate median is calculated per trial. The audit path includes command
+history requested for the inspected host after Dashboard Projection changes.
+
+| Endpoint | 100 hosts requests before → after | 100 hosts bytes before → after | 1,000 hosts requests before → after | 1,000 hosts bytes before → after |
+| --- | ---: | ---: | ---: | ---: |
+| `/api/servers` | 3 → 1 | 198,165 → 66,055 | 2 → 1 | 1,320,830 → 660,415 |
+| `/api/dashboard/summary` | 3 → 1 | 83,397 → 27,910 | 2 → 1 | 541,874 → 270,937 |
+| `/api/keys/global` | 3 → 0 | 51 → 0 | 2 → 0 | 34 → 0 |
+| `/api/audit-events` | 5 → 1 | 12,520 → 2,369 | 4 → 2 | 9,944 → 4,738 |
+| `/api/observability/summary` | 3 → 0 | 6,588 → 0 | 2 → 0 | 35,008 → 0 |
+| `/api/update-policies` | 2 → 0 | 5,802 → 0 | 2 → 0 | 24,164 → 0 |
+| **Total** | **18 → 3** | **304,435 → 96,334** | **15 → 4** | **1,932,925 → 936,090** |
+
+The changed row rendered in 446 → 306 ms p50 at 100 hosts and 2,435 → 966 ms
+at 1,000. Three forced reconnects per size each requested 30 and 300 distinct log
+jobs respectively, as before. Peak concurrent log reads fell from 30 to 8 and
+from 300 to 8. Status puts the open log ahead of queued background jobs and
+continues recovery by sequence for jobs followed before the outage.
+
 Regular CI runs `TestDashboardScalingBudgets` at all three sizes. It bounds JSON
 bytes, actual executed SQL statements and allocations, checks global counts and
 action eligibility, validates role redaction, and rejects detailed log chunks in
@@ -124,3 +157,212 @@ The recorded browser comparison is pinned to its measured source revisions.
 Later reconnect race corrections are qualified with separate unit/browser
 regressions in that report; the historical latency samples are not measurements
 of those subsequent changes.
+
+## Per-host Status refresh (#587)
+
+Standalone manual update transitions include a host name and a dashboard
+revision. Status groups up to 16 distinct names per burst and requests their
+compact inventory and dashboard rows together. The same response carries the
+authoritative global counters. The server still computes those counters from the
+full Dashboard Projection. A fingerprint of the compact rows lets the browser
+reject a partial update if other rows changed, including when host facts or CVE
+evidence expire independently. The measured gain is in browser transfer and fewer
+requests. Scheduled transitions, inventory changes, unrecognized events and
+reconnects retain full snapshots. A missed revision, missing host, changed
+inventory identity, overlapping read or rejected patch also triggers a fleet read.
+Job logs keep their independent sequence and bounded recovery. Contiguous
+persisted audit events refresh snapshots without requesting all active logs again.
+
+Run the standalone scenario with the same fixture on the reference
+`4088ea51e776d65477141101e867dd843609d6a7` and the measured candidate
+`ec83f6219111ec5b6786215d5942404bcc897141`. To instrument the reference, apply
+only the candidate diff for `dashboard_scaling_test.go` and
+`tools/performance/dashboard-browser.cjs` to a separate reference checkout.
+With the Go and Playwright dependencies installed, run in each checkout:
+
+```sh
+out=$(mktemp -d)
+go test -c -o "$out/scaling.test" .
+SLU_SCALING_TARGETED=1 node tools/performance/dashboard-browser.cjs "$out/scaling.test" "$out"
+```
+
+The two `host-refresh-*.json` files record five trials after one warmup at each
+size and tab count. A trial changes one host, then three hosts within one burst.
+Each tab records when the changed row or rows reach their expected status.
+Requests and encoded response body bytes are medians of each trial's total
+across the tabs, including the selected host's command-history read. Latencies
+use nearest-rank percentiles across the five or fifteen tab observations. The
+last trial forces a disconnect and checks that all tabs reopen SSE and request
+both fleet snapshots. The original scenario above separately exercises bounded
+log recovery.
+
+| Hosts | Tabs | Change | Requests before → after | Encoded bytes before → after | Render p50 before → after | Render p95 before → after |
+| ---: | ---: | --- | ---: | ---: | ---: | ---: |
+| 100 | 1 | One host | 3 → 2 | 96,420 → 3,989 | 161 → 172 ms | 167 → 182 ms |
+| 100 | 1 | Three hosts | 3 → 2 | 96,326 → 4,733 | 154 → 164 ms | 158 → 172 ms |
+| 100 | 3 | One host | 9 → 6 | 289,260 → 11,967 | 208 → 213 ms | 251 → 252 ms |
+| 100 | 3 | Three hosts | 9 → 6 | 288,978 → 14,199 | 171 → 193 ms | 215 → 217 ms |
+| 1,000 | 1 | One host | 3 → 2 | 932,989 → 3,984 | 351 → 471 ms | 388 → 523 ms |
+| 1,000 | 1 | Three hosts | 3 → 2 | 933,713 → 4,733 | 318 → 427 ms | 393 → 505 ms |
+| 1,000 | 3 | One host | 9 → 6 | 2,798,967 → 11,952 | 617 → 726 ms | 843 → 861 ms |
+| 1,000 | 3 | Three hosts | 9 → 6 | 2,801,139 → 14,199 | 553 → 578 ms | 609 → 770 ms |
+
+Chromium 159.0.8154.6 used the same fixture manifest before and after on one
+machine with the scenarios run sequentially. All targeted trials avoided both
+fleet reads. In this loopback run, render p50 and p95 increased in every
+scenario. The targeted update is retained for the transfer reduction, which
+exceeds 99% at 1,000 hosts. CI compares the partial rows and fleet counters
+to full reads for admin and reader. It caps the uncompressed response for
+three hosts at 16 KiB and 5% of the two full responses, and checks one request
+for a scoped update in Chromium. Latency has no CI threshold.
+
+## Status refresh latency (#593)
+
+The targeted scenario now captures five server phases through `Server-Timing`.
+**Wait** covers admission to the serialized projection. **Collect** includes
+reading SQLite and preparing the inputs from runtime, readiness and policy
+facts. **Project** constructs the Dashboard Projection from those inputs.
+**Compact** prepares and fingerprints its compact rows. **Encode** serializes
+the selected rows and compresses them when negotiated. In Chromium the fixture
+also records elapsed time between decoding the scoped JSON and detecting the
+updated rows. The full render time starts just before the fixture publishes the
+change, so it includes notification, transport, server and browser time.
+
+The browser change reads a small defensive synchronization snapshot for the
+sync indicator and interaction-depth checks. These frequent reads previously
+rebuilt the fleet view. The accepted dashboard keeps one owned set of compact
+rows, copies only new rows on a targeted refresh, and copies the dashboard once
+in each defensive view. Revision and row-version checks continue to take the
+full-resynchronization path when required.
+
+An experimental variant shared the next Dashboard Projection among same-revision
+callers already queued behind an active calculation. It closed the group before
+sampling the clock and calculated a fresh projection for later arrivals. The
+three-tab browser requests were staggered. None of the measured bursts shared a
+projection, so the shipped change keeps the existing server calculation path.
+
+The runs used Chromium 159.0.8154.6 on the same installation and fixture
+manifest. Each cell uses five trials after a warmup, with the 5 or 15 tab
+observations ranked together for latency. Reference is `4bd324b` with the
+instrumentation applied in `ceea02846772aa8fb060084f90c1cfedc81219f3`. Copy
+the candidate's `tools/performance/dashboard-browser.cjs` into that reference
+checkout and run the standalone commands above in both checkouts. The JSON
+reports include `server_ms` and `after_response_ms` for each tab. “Sync only”
+applies the small synchronization
+snapshot. “Server experiment” adds the pending-group change to sync only.
+“Accepted” applies both browser changes with the reference server.
+
+The table shows render p50/p95 in milliseconds. Request and encoded response
+body byte medians were identical across variants. All runs verified one
+scoped fleet request per tab and recovered both full snapshots on reconnect.
+
+| Hosts | Tabs | Change | Requests / bytes | Reference | Sync only | Server experiment | Accepted |
+| ---: | ---: | --- | ---: | ---: | ---: | ---: | ---: |
+| 100 | 1 | One host | 2 / 3,989 | 225 / 235 | 198 / 237 | 198 / 255 | 161 / 174 |
+| 100 | 1 | Three hosts | 2 / 4,714 | 197 / 214 | 184 / 230 | 170 / 198 | 164 / 168 |
+| 100 | 3 | One host | 6 / 11,967 | 303 / 480 | 270 / 345 | 270 / 357 | 202 / 235 |
+| 100 | 3 | Three hosts | 6 / 14,142 | 349 / 433 | 231 / 347 | 240 / 384 | 184 / 226 |
+| 1,000 | 1 | One host | 2 / 3,984 | 685 / 866 | 620 / 785 | 548 / 637 | 408 / 521 |
+| 1,000 | 1 | Three hosts | 2 / 4,714 | 664 / 874 | 567 / 661 | 559 / 658 | 337 / 373 |
+| 1,000 | 3 | One host | 6 / 11,952 | 1,207 / 1,967 | 1,100 / 2,017 | 1,105 / 1,877 | 663 / 911 |
+| 1,000 | 3 | Three hosts | 6 / 14,142 | 941 / 1,312 | 750 / 1,371 | 753 / 1,147 | 475 / 584 |
+
+Phase medians for reference → accepted are in milliseconds. The browser
+column covers JSON decode completion through the observed row change. The
+phase medians summarize different observations and need not sum to the
+median end-to-end time. The server calculation is unchanged between these
+two variants, so its duration differences describe run-to-run variation.
+
+| Hosts | Tabs | Change | Wait | Collect | Project | Compact | Encode | Browser |
+| ---: | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 100 | 1 | One host | 0.0 → 0.0 | 10.2 → 5.5 | 0.8 → 0.4 | 2.5 → 1.0 | 0.2 → 0.3 | 68 → 34 |
+| 100 | 1 | Three hosts | 0.0 → 0.0 | 10.4 → 5.3 | 0.8 → 0.3 | 2.6 → 1.1 | 0.4 → 0.3 | 53 → 31 |
+| 100 | 3 | One host | 0.0 → 0.0 | 12.7 → 6.5 | 1.0 → 0.4 | 2.6 → 1.4 | 0.4 → 0.8 | 123 → 62 |
+| 100 | 3 | Three hosts | 0.0 → 0.0 | 24.0 → 6.0 | 2.1 → 0.4 | 5.7 → 2.0 | 1.3 → 0.4 | 103 → 49 |
+| 1,000 | 1 | One host | 0.0 → 0.0 | 134.4 → 65.7 | 9.8 → 4.6 | 30.7 → 16.9 | 0.2 → 0.2 | 303 → 123 |
+| 1,000 | 1 | Three hosts | 0.0 → 0.0 | 103.4 → 54.3 | 9.4 → 4.8 | 29.3 → 13.5 | 0.5 → 0.3 | 327 → 133 |
+| 1,000 | 3 | One host | 0.0 → 0.0 | 149.5 → 74.8 | 15.1 → 7.4 | 33.9 → 19.8 | 0.3 → 0.2 | 466 → 236 |
+| 1,000 | 3 | Three hosts | 0.0 → 0.0 | 123.1 → 56.7 | 12.3 → 6.6 | 20.9 → 15.2 | 0.3 → 0.3 | 366 → 162 |
+
+At 1,000 hosts and three tabs, the accepted browser change reduced the p95
+from 1,967 to 911 ms for one host and from 1,312 to 584 ms for a burst
+on this machine. CI checks that sync reads skip fleet projection and that
+adapter and consumer inputs stay isolated. Existing browser and API budgets
+still cover row consistency, permissions, reconnect behavior and transferred
+volume. Timings describe this local fixture and have no CI threshold.
+
+## Server cost of targeted Status refresh (#603)
+
+The collector needs fleet-wide health, readiness, scheduling and update facts to
+produce the current totals and detect changes to rows outside the request. It
+now reads inventory endpoints for SSH readiness without cloning full status and
+package lists a second time. A fresh index handles plain single-host trust
+entries. Files with hashed entries, patterns, aliases, markers or other complex
+syntax use the existing matcher. SSH connection verification uses its existing
+host-key callback.
+
+The compact response retains only the requested rows, uses one scratch buffer
+for row encoding and still fingerprints every compact row. The aggregate row
+version can therefore trigger a full read if an unrequested host's facts or
+schedule change. The full and targeted endpoints reproduce the same row versions,
+and the handler checks the broker revision again after projection.
+
+The reference is `df2f81f`. Run from the candidate source tree so both binaries
+serve the same browser assets. Match the manifest and browser version for each
+pair.
+
+```sh
+export GOMAXPROCS=2
+work=$(mktemp -d)
+mkdir "$work/reference"
+git archive df2f81f | tar -x -C "$work/reference"
+# The test-only benchmark and browser fixture can be shared between revisions.
+cp dashboard_scaling_test.go "$work/reference/"
+(cd "$work/reference" && go test -c -o "$work/reference.bin" .)
+go test -c -o "$work/candidate.bin" .
+for name in 1-reference 1-candidate 2-candidate 2-reference 3-reference 3-candidate; do
+  SLU_SCALING_TARGETED=1 node tools/performance/dashboard-browser.cjs \
+    "$work/${name#*-}.bin" "$work/$name"
+done
+for build in reference candidate; do
+  "$work/$build.bin" -test.run '^$' \
+    -test.bench '^BenchmarkDashboardScaling/1000/TargetedHTTP$' -test.benchtime=3s \
+    -test.cpuprofile "$work/$build.pprof" -test.memprofile "$work/$build.heap"
+  go tool pprof -top -cum "$work/$build.bin" "$work/$build.pprof"
+done
+```
+
+Each pair measures five trials after a warmup at 100 and 1,000 Servers, with one
+and three tabs, a single changed host and a burst of three. The server p95 ranks
+the sum of the five `Server-Timing` phases for each tab response. Render latency
+also includes the event, network and browser. The reference ran first in pairs
+1 and 3. All six runs on Chromium 159.0.8154.6 met the scoped request budget and
+verified full recovery after forced reconnects. Scoped samples did not request
+full fleet snapshots.
+
+The table reports the median of three run-level p95s in milliseconds. The
+request and encoded-byte medians were identical within all three pairs.
+
+| Servers | Tabs | Change | Server p95 | Collect p95 | Compact p95 | Render p95 | Requests / encoded bytes |
+| ---: | ---: | --- | ---: | ---: | ---: | ---: | ---: |
+| 100 | 1 | Single | 8.6 → 7.4 | 6.6 → 4.6 | 1.7 → 1.7 | 164.8 → 168.6 | 2 / 3,989 |
+| 100 | 1 | Burst | 8.9 → 9.2 | 6.8 → 5.9 | 2.2 → 2.1 | 176.2 → 174.8 | 2 / 4,714 |
+| 100 | 3 | Single | 16.0 → 13.1 | 10.5 → 8.2 | 5.3 → 3.6 | 229.7 → 228.3 | 6 / 11,967 |
+| 100 | 3 | Burst | 11.3 → 14.5 | 7.8 → 8.1 | 2.6 → 2.2 | 220.9 → 229.5 | 6 / 14,142 |
+| 1,000 | 1 | Single | 113.0 → 83.0 | 77.7 → 55.1 | 30.6 → 18.3 | 442.3 → 430.7 | 2 / 3,984 |
+| 1,000 | 1 | Burst | 102.9 → 73.9 | 72.0 → 49.8 | 20.4 → 18.5 | 463.9 → 412.5 | 2 / 4,714 |
+| 1,000 | 3 | Single | 160.1 → 110.0 | 108.3 → 62.5 | 37.8 → 21.8 | 943.9 → 835.0 | 6 / 11,952 |
+| 1,000 | 3 | Burst | 136.7 → 97.4 | 95.7 → 59.2 | 29.8 → 24.8 | 757.6 → 704.3 | 6 / 14,142 |
+
+At 1,000 Servers with three tabs, the server p95 fell in all three pairs for
+each scenario. For a single host, the pairs were 160.1 → 97.0, 161.0 → 114.4,
+and 141.0 → 110.0 ms. For a burst, they were 114.3 → 81.6, 136.7 → 97.4,
+and 137.9 → 102.7 ms. Smaller-fleet timings varied by scenario.
+
+The separate 1,000-Server HTTP benchmark measured 78.6 → 49.2 ms/op and
+41.4 → 28.2 MB allocated per operation. Maintenance readiness fell from
+21.6% to 1.4% of CPU samples, and the general known-host matcher disappeared
+from the candidate's profile for the literal-entry fixture. A repeat after
+matching the general parser's line-length limit measured 51.0 ms/op and
+28.0 MB/op. CI checks behavior deterministically through full/targeted parity,
+current role visibility, byte bounds and revision/reconnect coverage.

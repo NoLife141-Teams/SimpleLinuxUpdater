@@ -3,10 +3,12 @@ package main
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -81,7 +83,7 @@ func readDashboardEventLine(t *testing.T, reader *bufio.Reader) string {
 	return ""
 }
 
-func readDashboardEventUntil(t *testing.T, reader *bufio.Reader, want string) {
+func readDashboardEventUntil(t *testing.T, reader *bufio.Reader, want string) string {
 	t.Helper()
 	deadline := time.After(time.Second)
 	for {
@@ -91,9 +93,20 @@ func readDashboardEventUntil(t *testing.T, reader *bufio.Reader, want string) {
 		default:
 		}
 		if line := readDashboardEventLine(t, reader); strings.Contains(line, want) {
-			return
+			return line
 		}
 	}
+}
+
+func readDashboardPayload(t *testing.T, reader *bufio.Reader, reason string) events.Event {
+	t.Helper()
+	expected := `"reason":` + strconv.Quote(reason)
+	line := readDashboardEventUntil(t, reader, expected)
+	var event events.Event
+	if err := json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &event); err != nil {
+		t.Fatalf("decode dashboard event: %v", err)
+	}
+	return event
 }
 
 func TestDashboardEventsRouteUsesInjectedBroker(t *testing.T) {
@@ -127,7 +140,10 @@ func TestDashboardEventsRouteUsesInjectedBroker(t *testing.T) {
 
 	broker.Publish("injected")
 	readDashboardEventUntil(t, reader, "event: dashboard")
-	readDashboardEventUntil(t, reader, `data: {"reason":"injected"}`)
+	event := readDashboardPayload(t, reader, "injected")
+	if event.Revision == 0 {
+		t.Fatal("dashboard invalidation must carry a revision")
+	}
 
 	broker.PublishEvent(events.Event{
 		Reason:     "job.log",
@@ -138,7 +154,15 @@ func TestDashboardEventsRouteUsesInjectedBroker(t *testing.T) {
 		Data:       "Reading 40%\r",
 	})
 	readDashboardEventUntil(t, reader, "event: dashboard")
-	readDashboardEventUntil(t, reader, `"reason":"job.log","server_name":"demo-host","job_id":"job-1","sequence":4,"stream":"stdout","data":"Reading 40%\r"`)
+	jobLog := readDashboardPayload(t, reader, "job.log")
+	if jobLog.ServerName != "demo-host" || jobLog.JobID != "job-1" || jobLog.Sequence != 4 || jobLog.Stream != "stdout" || jobLog.Data != "Reading 40%\r" {
+		t.Fatalf("unexpected log event: %+v", jobLog)
+	}
+	broker.PublishEvent(events.Event{Reason: "job.update", ServerName: "demo-host"})
+	scoped := readDashboardPayload(t, reader, "job.update")
+	if scoped.Revision != event.Revision+1 || scoped.ServerName != "demo-host" {
+		t.Fatalf("scoped invalidation must carry the next dashboard revision across log fragments: %+v", scoped)
+	}
 }
 
 func TestDashboardEventsSurvivesServerWriteTimeout(t *testing.T) {
@@ -162,7 +186,7 @@ func TestDashboardEventsSurvivesServerWriteTimeout(t *testing.T) {
 	<-timeoutWindow.C
 
 	broker.Publish("after-write-timeout")
-	readDashboardEventUntil(t, reader, `data: {"reason":"after-write-timeout"}`)
+	readDashboardPayload(t, reader, "after-write-timeout")
 }
 
 func TestDashboardEventsHeartbeatsRenewStreamWriteDeadline(t *testing.T) {
@@ -188,7 +212,7 @@ func TestDashboardEventsHeartbeatsRenewStreamWriteDeadline(t *testing.T) {
 	}
 
 	broker.Publish("after-heartbeats")
-	readDashboardEventUntil(t, reader, `data: {"reason":"after-heartbeats"}`)
+	readDashboardPayload(t, reader, "after-heartbeats")
 }
 
 func TestDashboardEventsClientDisconnectStopsHandler(t *testing.T) {

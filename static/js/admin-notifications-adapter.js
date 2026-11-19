@@ -671,6 +671,167 @@
             }
         }
 
+        function initNotificationHistory() {
+            const panel = document.getElementById("notification-history");
+            if (!panel) return;
+            const filters = document.getElementById("notification-history-filters");
+            const status = document.getElementById("notification-history-status");
+            const results = document.getElementById("notification-history-items");
+            const retention = document.getElementById("notification-history-retention");
+            const pages = document.getElementById("notification-history-pages");
+            const newer = document.getElementById("notification-history-newer");
+            const older = document.getElementById("notification-history-older");
+            const retry = document.getElementById("notification-history-retry");
+            const destinations = { webhook: "Webhook", discord: "Discord", telegram: "Telegram" };
+            const states = {
+                pending: "Pending", claimed: "Sending", retrying: "Retry scheduled",
+                succeeded: "Delivered", failed: "Failed", skipped: "Skipped",
+            };
+            const events = {
+                "approval.published": "Published update approval",
+                "approval.expired": "Expired update approval",
+                "apt.reconciliation.required": "APT reconciliation required",
+                "update.complete": "Completed update",
+                "schedule.run.failed": "Failed scheduled run",
+                "schedule.run.skipped": "Skipped scheduled run",
+                "notification.reminder": "Grouped reminder",
+            };
+            let navigation = { filters: {}, cursors: [""] };
+            let retryQuery = null;
+
+            function addText(parent, tag, text, className = "") {
+                const element = document.createElement(tag);
+                if (className) element.className = className;
+                element.textContent = text;
+                parent.append(element);
+                return element;
+            }
+
+            function deliveryRow(item) {
+                const row = document.createElement("li");
+                row.className = "notification-history-item";
+                const event = document.createElement("div");
+                const delivery = document.createElement("div");
+                const times = document.createElement("div");
+                addText(event, "strong", destinations[item.destination] || "Notification");
+                addText(event, "span", events[item.event_type] || item.event_type);
+                if (item.job_id) addText(event, "code", item.job_id, "muted");
+                if (item.approval_generation) addText(event, "small", `Plan generation ${item.approval_generation}`, "muted");
+                if (item.job_id && !item.job_report_url) addText(event, "small", "Job report unavailable", "muted");
+                if (item.job_report_url || item.approval_plan_url) {
+                    const links = document.createElement("div");
+                    links.className = "notification-history-links";
+                    if (item.job_report_url) addText(links, "a", "Job report", "btn-ghost inline-btn").href = item.job_report_url;
+                    if (item.approval_plan_url) addText(links, "a", "Review approval plan", "btn-ghost inline-btn").href = item.approval_plan_url;
+                    event.append(links);
+                }
+
+                addText(delivery, "strong", states[item.state] || "Unknown").dataset.state = item.state;
+                addText(delivery, "small", `${item.attempts} ${item.attempts === 1 ? "attempt" : "attempts"}`, "muted");
+                if (item.reason) addText(delivery, "small", item.reason);
+                for (const [label, timestamp] of [
+                    ["Queued", item.created_at], ["Last attempt", item.attempted_at],
+                    ["Completed", item.completed_at], ["Next retry", item.next_attempt_at],
+                ]) {
+                    const display = timestamp && formatAdminRefreshTime(timestamp);
+                    if (display) addText(times, "time", `${label} · ${display}`, "muted").dateTime = timestamp;
+                }
+                row.append(event, delivery, times);
+                return row;
+            }
+
+            function render() {
+                const { notificationHistory: history, streams } = adminPageView();
+                const stream = streams.notificationHistory;
+                const loading = stream.status === "loading";
+                const current = stream.status === "current";
+                status.textContent = loading ? "Loading delivery history…"
+                    : stream.error || (current && history.items.length === 0 ? "No matching deliveries." : "");
+                retry.hidden = !stream.error;
+                retention.hidden = !history.retentionSeconds;
+                if (history.retentionSeconds) {
+                    const inDays = history.retentionSeconds >= 86400;
+                    const duration = inDays ? history.retentionSeconds / 86400 : history.retentionSeconds / 3600;
+                    const unit = inDays ? "day" : "hour";
+                    const count = new Intl.NumberFormat("en", { maximumFractionDigits: 1 }).format(duration);
+                    retention.textContent = `Completed deliveries are kept for ${count} ${unit}${duration === 1 ? "" : "s"}.`;
+                }
+                results.hidden = !current || history.items.length === 0;
+                results.replaceChildren(...(current ? history.items.map(deliveryRow) : []));
+                newer.disabled = !current || navigation.cursors.length < 2;
+                older.disabled = !current || !history.nextCursor;
+                pages.hidden = newer.disabled && older.disabled;
+            }
+
+            async function load(query, focus = false) {
+                const lifetime = lifecycle.capture();
+                const requestID = beginAdminSnapshot("notificationHistory");
+                render();
+                const params = new URLSearchParams(query.filters);
+                const before = query.cursors.at(-1);
+                if (before) params.set("before", before);
+                const fail = message => {
+                    const effects = adminPageInteraction.dispatch({
+                        type: "snapshotFailed", stream: "notificationHistory", requestID, error: message,
+                    });
+                    if (effects.length === 0) return;
+                    retryQuery = query;
+                    render();
+                    if (focus) status.focus();
+                };
+                try {
+                    const res = await fetch(`/api/notifications/delivery-history?${params}`, { cache: "no-store" });
+                    if (!lifecycle.isCurrent(lifetime)) return;
+                    if (!res.ok) {
+                        const message = await parseErrorResponse(res, "Delivery history is temporarily unavailable.");
+                        if (lifecycle.isCurrent(lifetime)) fail(message);
+                        return;
+                    }
+                    const data = await res.json();
+                    if (!lifecycle.isCurrent(lifetime)) return;
+                    if (!Array.isArray(data?.items) || data.items.some(item => !item || typeof item !== "object")) {
+                        fail("Delivery history is temporarily unavailable.");
+                        return;
+                    }
+                    const effects = adminPageInteraction.dispatch({
+                        type: "notificationHistoryReceived", requestID, receivedAt: new Date().toISOString(), data,
+                    });
+                    if (effects.length === 0) return;
+                    navigation = query;
+                    retryQuery = null;
+                    render();
+                    if (focus) (data.items.length ? results : status).focus();
+                } catch (error) {
+                    if (lifecycle.isCurrent(lifetime) && error?.name !== "AbortError") {
+                        fail("Delivery history is temporarily unavailable.");
+                    }
+                }
+            }
+
+            const loadOnOpen = () => {
+                const stream = adminPageView().streams.notificationHistory;
+                if (panel.open && stream.status !== "loading") void load(retryQuery || navigation);
+            };
+            lifecycle.listen(panel, "toggle", loadOnOpen);
+            lifecycle.listen(filters, "submit", event => {
+                event.preventDefault();
+                const applied = Object.fromEntries(Array.from(new FormData(filters), ([key, value]) => [key, value.trim()]).filter(([, value]) => value));
+                void load({ filters: applied, cursors: [""] });
+            });
+            lifecycle.listen(newer, "click", () => void load({ ...navigation, cursors: navigation.cursors.slice(0, -1) }, true));
+            lifecycle.listen(older, "click", () => void load({
+                ...navigation, cursors: [...navigation.cursors, adminPageView().notificationHistory.nextCursor],
+            }, true));
+            lifecycle.listen(retry, "click", () => { if (retryQuery) void load(retryQuery, true); });
+            loadOnOpen();
+        }
+
+        function init() {
+            if (lifecycle.active) return;
+            lifecycle.init();
+            initNotificationHistory();
+        }
+
         async function saveNotificationSettings() {
             const lifetime = lifecycle.capture();
 
@@ -826,7 +987,7 @@
             }
         }
         return Object.freeze({
-            init: lifecycle.init,
+            init,
             destroy: lifecycle.destroy,
             renderNotificationDraftState: (...args) =>
                 lifecycle.active

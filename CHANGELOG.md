@@ -6,6 +6,34 @@ The format is inspired by Keep a Changelog, and this project uses Semantic Versi
 
 ## [Unreleased]
 
+### Added
+
+- Record Maintenance batches with per-Server outcomes, retry links and account-scoped history in Status. After sign-in, direct links open the recorded batch or the exact approval plan.
+- Show retained notification deliveries by destination, delivery state and job in Admin.
+- Explain skipped notification deliveries with the recorded destination or eligibility reason.
+- Open the source job report and still-pending exact approval plan from Admin delivery history.
+- Warn about automatic backup overlaps in scheduled policy previews. Qualify Docker volume upgrades, encrypted archive restoration and rollback, batch recovery after interruption and controlled VM reboot in CI.
+- Show the observed backup export, restore, or recovery cause for skipped Scheduled Runs, with the blocking job when available.
+- Offer opt-in APT reconciliation alerts with the original job report in delivery history.
+- Preview APT reconciliation conflicts with the current installation before confirming an archive restore.
+
+### Fixed
+
+- Require individual removal confirmation for kept-back security plans and reserve each eligible batch retry once.
+- Preserve admitted batch jobs and decisions through an interruption and retain exact historical reconciliations through audit pruning.
+- Show when a batch job requires APT reconciliation and link to the original host's diagnostics when it is still in the inventory.
+- Bind APT repair to the original job and SSH endpoint, including after restart or restore.
+- Check the SSH host key used by the interrupted package mutation before repair and audit independently verified key rotations.
+- Keep open APT reconciliation and its job report when restoring an older archive on the same installation.
+- Keep APT reconciliation visible during host facts refresh and explain scheduled skips caused by it.
+- Keep the verified cause of a scheduler refusal across a restart before Scheduled Runs records the skip.
+- Deduplicate approval alerts by exact plan and destination. Preserve scheduled-run Server links across inventory renames.
+
+### Changed
+
+- Send compact Status snapshots, fetch host details on demand and group event-driven refreshes. Use scoped rows for eligible changes, bound job log recovery and reduce browser work when rendering updates.
+- Reduce server work for targeted Status refreshes while keeping the fleet totals and row consistency check.
+
 ## [v0.5.8] - 2026-11-11
 
 ### Changed

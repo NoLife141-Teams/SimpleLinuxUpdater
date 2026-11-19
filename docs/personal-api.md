@@ -213,9 +213,22 @@ Host facts refresh and application-check tests run synchronously and return
 `502` if the remote operation cannot complete, including an SSH transport failure.
 
 Controlled reboot (`POST /api/reboot/{name}`) and APT repair
-(`POST /api/repair/{name}`) require a JSON body containing `{"confirm":true}`
-and `Content-Type: application/json`. Both use `maintenance:write`; omitted or
-false confirmation returns `400` before any host operation is admitted.
+(`POST /api/repair/{name}`) require `Content-Type: application/json` and
+`maintenance:write`. Reboot accepts `{"confirm":true}`. For APT repair, read
+the current server and confirm its reconciliation job with
+`{"confirm":true,"job_id":"<job_id>"}`. Omitted confirmation or job ID returns
+`400` for repair. A stale job or unverifiable target returns `409` before any
+host operation is admitted. Before sending a repair command, the SSH connection
+must negotiate the host key recorded for the interrupted package mutation.
+
+After independently verifying the original machine through a trusted console or
+equivalent source, an administrator can supply `verified_host_key` with the
+verified OpenSSH SHA256 fingerprint. This requires inventory permission as well
+as maintenance permission and is recorded in the audit trail with the exact
+reconciliation job. If the verification cannot be audited, the API returns
+`503` and the reconciliation requirement stays active. Normal SSH trust
+verification remains required. Use this confirmation for a verified key
+rotation or a known target whose old job lacks a recorded key.
 
 ## CVE information for available updates
 

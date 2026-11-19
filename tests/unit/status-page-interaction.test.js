@@ -5,6 +5,30 @@ const path = require("node:path");
 
 const { createStore } = require("../../static/js/status-page-interaction.js");
 
+test("reading Status synchronization state skips fleet projections", () => {
+    const facts = require("../../static/js/dashboard-projection-consumption.js").presentationFacts;
+    let approvalReads = 0;
+    const store = createStore({
+        presentationFacts: {
+            ...facts,
+            approvalCounts(server) {
+                approvalReads++;
+                return facts.approvalCounts(server);
+            },
+        },
+    });
+    store.dispatch({ type: "serversSnapshotReceived", servers: [{ name: "alpha", status: "pending_approval" }] });
+    store.dispatch({ type: "refreshRequested", streams: ["servers"] });
+    approvalReads = 0;
+    const sync = store.getSyncState();
+    assert.equal(approvalReads, 0);
+    assert.equal(sync.streams.servers.inFlight.requestId, 1);
+    sync.streams.servers.inFlight.requestId = 99;
+    assert.equal(store.getSyncState().streams.servers.inFlight.requestId, 1);
+    assert.deepEqual(store.getView().sync, store.getSyncState());
+    assert.ok(approvalReads > 0);
+});
+
 test("a skipped run link follows live renames and cannot select a replacement", () => {
     const store = createStore({ linkedServerIdentity: "original" });
     const snapshot = (...servers) => store.dispatch({ type: "serversSnapshotReceived", servers });
@@ -86,6 +110,10 @@ test("snapshot intake clones adapter-owned data", () => {
 
     assert.deepEqual(store.getServer("alpha"), { name: "alpha", status: "idle", tags: ["prod"] });
     assert.deepEqual(store.getDashboardServer("alpha"), { name: "alpha", timeline: { state: "idle" } });
+    const view = store.getView();
+    view.dashboardSnapshot.servers[0].timeline.state = "mutated by a consumer";
+    assert.equal(store.getView().dashboardServers[0].timeline.state, "idle");
+    assert.equal(store.getDashboardServer("alpha").timeline.state, "idle");
 });
 
 test("maintenance rows keep their positions across activity and recommendation changes", () => {
@@ -820,6 +848,35 @@ test("refresh requests coalesce per stream and retain the highest queued priorit
     assert.equal(queuedFetch.priority, "immediate");
 });
 
+test("one fleet refresh supersedes an overlapping host read", () => {
+    const store = createStore();
+    const fetches = effects => effects.filter(effect => effect.type === "fetchSnapshot" && effect.stream !== "commandHistory");
+    const fleet = () => fetches(store.dispatch({ type: "refreshRequested", streams: ["servers", "dashboard"] }));
+    const server = { name: "alpha", server_identity: "inventory-alpha", status: "idle" };
+    const snapshot = { rows_version: "1", fleet: {}, servers: [{ name: "alpha", version: "1" }] };
+    const receive = ([serverRequest, dashboardRequest]) => [
+        ...store.dispatch({ type: "serversSnapshotReceived", requestId: serverRequest.requestId, servers: [server] }),
+        ...store.dispatch({ type: "dashboardSnapshotReceived", requestId: dashboardRequest.requestId, snapshot })
+    ];
+    receive(fleet());
+    const [pending] = fetches(store.dispatch({ type: "targetedRefreshRequested", names: ["alpha"], revision: 1 }));
+    assert.equal(pending.stream, "hosts");
+    const resync = fleet();
+    assert.deepEqual(resync.map(request => request.stream), ["servers", "dashboard"]);
+    assert.deepEqual(fetches(receive(resync)), [], "the resync must not queue another full response");
+
+    store.dispatch({
+        type: "hostsSnapshotReceived", requestId: pending.requestId,
+        snapshot: { dashboard: snapshot, servers: [{ ...server, status: "updating" }] }
+    });
+    assert.equal(store.getServer("alpha").status, "idle");
+
+    const [failedInventory] = fetches(store.dispatch({ type: "refreshRequested", stream: "servers" }));
+    store.dispatch({ type: "snapshotFailed", stream: "servers", requestId: failedInventory.requestId });
+    const afterError = fetches(store.dispatch({ type: "targetedRefreshRequested", names: ["alpha"], revision: 2 }));
+    assert.deepEqual(afterError.map(request => request.stream), ["servers", "dashboard"], "a host patch cannot repair a failed inventory refresh");
+});
+
 test("out-of-order responses are discarded independently per stream", () => {
     const store = createStore();
     store.dispatch({ type: "refreshRequested", stream: "servers" });
@@ -1023,7 +1080,7 @@ test("bulk plans classify visible eligible, visible ineligible, and hidden selec
         servers: [
             { name: "alpha", status: "idle", has_key: true },
             { name: "beta", status: "updating", has_password: true },
-            { name: "hidden", status: "idle" }
+            { name: "hidden", server_identity: "stable-hidden-host", status: "idle" }
         ]
     });
     ["alpha", "beta", "hidden"].forEach(name => store.dispatch({ type: "selectionChanged", name, selected: true }));
@@ -1034,6 +1091,9 @@ test("bulk plans classify visible eligible, visible ineligible, and hidden selec
     assert.deepEqual(plan.ineligible.map(item => item.name), ["beta"]);
     assert.deepEqual(plan.hiddenNames, ["hidden"]);
     assert.equal(plan.skippedHosts.find(item => item.name === "hidden").reason, "Hidden by current filter or page");
+    assert.equal(store.planBatchRetry("update", "hidden", "stable-hidden-host"), null);
+    store.dispatch({ type: "filtersChanged", patch: { search: "hidden" } });
+    assert.equal(store.planBatchRetry("update", "hidden", "stable-hidden-host")?.serverIdentity, "stable-hidden-host");
 });
 
 test("action completion clears in-flight state and emits refresh and announcement effects", () => {

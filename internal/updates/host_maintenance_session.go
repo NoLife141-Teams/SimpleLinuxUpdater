@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"sync"
 	"time"
 
@@ -52,12 +53,14 @@ type HostRetryEvent struct {
 }
 
 type HostMaintenanceSessionRequest struct {
-	Server         servers.Server
-	RetryPolicy    RetryPolicy
-	DialReplay     HostDialReplayPolicy
-	DialOperation  string
-	CommandTimeout time.Duration
-	OnRetry        func(HostRetryEvent)
+	Server             servers.Server
+	RetryPolicy        RetryPolicy
+	DialReplay         HostDialReplayPolicy
+	DialOperation      string
+	CommandTimeout     time.Duration
+	OnRetry            func(HostRetryEvent)
+	VerifyHostKey      func(fingerprint string) error
+	OnConnectedHostKey func(fingerprint string)
 }
 
 type HostDialReplayPolicy string
@@ -323,7 +326,7 @@ func (f *productionHostMaintenanceSessionFactory) Open(ctx context.Context, req 
 			return err
 		}
 		session.stats.DialAttempts++
-		conn, dialErr := f.deps.DialSSH(ctx, req.Server, config)
+		conn, dialErr := session.dialSSH(ctx)
 		if dialErr == nil {
 			session.conn = conn
 		}
@@ -370,12 +373,57 @@ func normalizedMaxAttempts(policy RetryPolicy) int {
 	return policy.MaxAttempts
 }
 
+func (s *productionHostMaintenanceSession) dialSSH(ctx context.Context) (SSHConnection, error) {
+	if s.request.VerifyHostKey == nil {
+		return s.deps.DialSSH(ctx, s.request.Server, s.config)
+	}
+	config := *s.config
+	var keyMu sync.Mutex
+	var fingerprint string
+	var verificationErr error
+	config.HostKeyCallback = func(host string, addr net.Addr, key ssh.PublicKey) error {
+		if err := s.config.HostKeyCallback(host, addr, key); err != nil {
+			return err
+		}
+		observed := ssh.FingerprintSHA256(key)
+		keyMu.Lock()
+		defer keyMu.Unlock()
+		if fingerprint == "" {
+			fingerprint = observed
+			verificationErr = s.request.VerifyHostKey(observed)
+		} else if fingerprint != observed {
+			return errors.New("SSH host key changed during key exchange")
+		}
+		return verificationErr
+	}
+	conn, err := s.deps.DialSSH(ctx, s.request.Server, &config)
+	if err != nil {
+		return nil, err
+	}
+	// A connection can still call the SSH callback during rekey after Close.
+	// Publish identity only after the initial handshake and authentication succeed.
+	keyMu.Lock()
+	connectedKey, verifyErr := fingerprint, verificationErr
+	keyMu.Unlock()
+	if connectedKey == "" {
+		verifyErr = s.request.VerifyHostKey("")
+	}
+	if verifyErr != nil {
+		_ = conn.Close()
+		return nil, verifyErr
+	}
+	if s.request.OnConnectedHostKey != nil {
+		s.request.OnConnectedHostKey(connectedKey)
+	}
+	return conn, nil
+}
+
 func (s *productionHostMaintenanceSession) reconnect(ctx context.Context) error {
 	if s.conn != nil {
 		_ = s.conn.Close()
 		s.conn = nil
 	}
-	conn, err := s.deps.DialSSH(ctx, s.request.Server, s.config)
+	conn, err := s.dialSSH(ctx)
 	if err != nil {
 		return err
 	}

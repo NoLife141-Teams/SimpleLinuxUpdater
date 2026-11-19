@@ -104,7 +104,7 @@ func TestScheduledRunLifecycleHandleScheduledRunDuplicateNoops(t *testing.T) {
 	}
 }
 
-func TestScheduledRunLifecycleSkipsUnreadyConnectionBeforeRuntimeMutationOrJobCreation(t *testing.T) {
+func TestScheduledRunLifecycleSkipsUnreadyConnectionWithoutRetainingReservationOrCreatingJob(t *testing.T) {
 	server := Server{Name: "srv-scheduled-unready", Host: "example.org", Port: 22, User: "root", Pass: "server-secret"}
 	deps, policy, run, _ := newScheduledRunLifecycleTestDeps(t, "scheduled-run-unready.db", server, "idle")
 	deps.MaintenanceReadiness = func(Server) serverpkg.MaintenanceReadiness {
@@ -135,6 +135,26 @@ func TestScheduledRunLifecycleSkipsUnreadyConnectionBeforeRuntimeMutationOrJobCr
 	}
 	if audits.Total != 1 || audits.Items[0].Status != "ignored" || strings.Contains(audits.Items[0].Message, server.Pass) {
 		t.Fatalf("audit events = %+v, want one safe ignored result", audits.Items)
+	}
+}
+
+func TestScheduledRunChecksConnectionReadinessIfAPTBlockClearsBeforeAdmission(t *testing.T) {
+	server := Server{Name: "srv-scheduled-repaired", Host: "example.org", Port: 22, User: "root"}
+	deps, policy, run, _ := newScheduledRunLifecycleTestDeps(t, "scheduled-run-repaired.db", server, "needs_reconciliation")
+	deps.AcquireScheduledAction = func(string) func() {
+		// The repair finishes while the scheduler is waiting to reserve the server.
+		deps.ServerState.RestoreStatusSnapshot(server.Name, &ServerStatus{Name: server.Name, Status: "done"})
+		return func() {}
+	}
+	deps.MaintenanceReadiness = func(Server) serverpkg.MaintenanceReadiness {
+		return serverpkg.MaintenanceReadiness{Code: serverpkg.MaintenanceReadinessHostKeyNotTrusted}
+	}
+	deps.StartJobRunner = func(string, func(), ...func()) { t.Error("unready connection dispatched an update") }
+
+	scheduledrunspkg.New(deps).ExecuteRun(run, policy, server)
+	current := getScheduledLifecycleRun(t, deps, run.ID)
+	if current.Status != updatePolicyRunSkipped || current.Reason != policypkg.RunReasonReadiness || current.JobID != "" {
+		t.Fatalf("scheduled run = %+v, want skipped connection readiness without a job", current)
 	}
 }
 
@@ -187,21 +207,48 @@ func TestScheduledRunLifecycleHandleScheduledRunRecordsSkippedCandidate(t *testi
 
 func TestScheduledRunLifecycleExclusiveMaintenanceSkip(t *testing.T) {
 	server := Server{Name: "srv-maintenance-barrier", Host: "example.org", Port: 22, User: "root", Pass: "pw", Tags: []string{"prod"}}
-	deps, policy, run, _ := newScheduledRunLifecycleTestDeps(t, "scheduled-run-maintenance.db", server, "idle")
-	exclusive, decision := deps.MaintenanceCoordinator.TryExclusive(maintenancepkg.OperationBackupRestore)
-	if !decision.Allowed {
-		t.Fatalf("TryExclusive() decision = %+v", decision)
+	tests := []struct {
+		name     string
+		activate bool
+		recover  bool
+		blocker  maintenancepkg.Blocker
+	}{
+		{name: "unpublished lease has no proof"},
+		{
+			name: "active restore with job", activate: true,
+			blocker: maintenancepkg.Blocker{Cause: maintenancepkg.BlockBackupRestore, JobID: "restore-job"},
+		},
+		{
+			name: "recovery without job", activate: true, recover: true,
+			blocker: maintenancepkg.Blocker{Cause: maintenancepkg.BlockRecoveryRequired},
+		},
 	}
-	defer exclusive.Close()
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			deps, policy, run, _ := newScheduledRunLifecycleTestDeps(t, "scheduled-run-maintenance.db", server, "idle")
+			exclusive, decision := deps.MaintenanceCoordinator.TryExclusive(maintenancepkg.OperationBackupRestore)
+			if !decision.Allowed {
+				t.Fatalf("TryExclusive() decision = %+v", decision)
+			}
+			defer exclusive.Close()
+			if tt.activate {
+				if err := exclusive.Activate(context.Background(), maintenancepkg.OperationFacts{JobID: tt.blocker.JobID}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tt.recover {
+				if err := exclusive.RetainForRecovery(context.Background()); err != nil {
+					t.Fatal(err)
+				}
+			}
 
-	scheduledrunspkg.New(deps).ExecuteRun(run, policy, server)
-
-	current := getScheduledLifecycleRun(t, deps, run.ID)
-	if current.Status != updatePolicyRunSkipped || current.Reason != updatePolicyRunReasonMaintenance {
-		t.Fatalf("run = status %q reason %q, want skipped/maintenance", current.Status, current.Reason)
-	}
-	if current.Summary != "Maintenance mode active; scheduled run skipped" {
-		t.Fatalf("summary = %q, want maintenance run skip", current.Summary)
+			scheduledrunspkg.New(deps).ExecuteRun(run, policy, server)
+			current := getScheduledLifecycleRun(t, deps, run.ID)
+			if current.Status != updatePolicyRunSkipped || current.Reason != updatePolicyRunReasonMaintenance || current.JobID != "" ||
+				current.MaintenanceCause != tt.blocker.Cause || current.BlockingJobID != tt.blocker.JobID {
+				t.Fatalf("run = %+v, want skipped/maintenance with blocker %+v and no scheduled job", current, tt.blocker)
+			}
+		})
 	}
 }
 
@@ -236,6 +283,20 @@ func TestScheduledRunLifecycleMissingAndBusyServer(t *testing.T) {
 		}
 		if current.Summary != "Server busy; scheduled update skipped" {
 			t.Fatalf("summary = %q, want busy update skip", current.Summary)
+		}
+	})
+
+	t.Run("APT reconciliation takes precedence over busy", func(t *testing.T) {
+		deps, policy, run, _ := newScheduledRunLifecycleTestDeps(t, "scheduled-run-apt-blocker.db", server, "facts_refresh")
+		status := deps.ServerState.CurrentStatusSnapshot(server.Name)
+		status.APTReconciliationPending = true
+		status.APTReconciliationJobID = testAPTReconciliationJobID
+		deps.ServerState.RestoreStatusSnapshot(server.Name, status)
+		scheduledrunspkg.New(deps).ExecuteRun(run, policy, server)
+		current := getScheduledLifecycleRun(t, deps, run.ID)
+		if current.Status != updatePolicyRunSkipped || current.Reason != "apt_reconciliation_required" ||
+			current.BlockingJobID != testAPTReconciliationJobID || current.JobID != "" {
+			t.Fatalf("run does not retain the specific APT blocker: %+v", current)
 		}
 	})
 }

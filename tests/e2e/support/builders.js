@@ -357,6 +357,7 @@ function makeHealthTrends(servers) {
 }
 
 async function stubDashboardApi(page, getServers) {
+    await stubStatusBatches(page);
     await page.route("**/api/servers", (route) =>
         fulfillJson(route, getServers()),
     );
@@ -406,6 +407,36 @@ async function stubDashboardApi(page, getServers) {
             }));
         }
         return fulfillJson(route, summary);
+    });
+}
+
+async function stubStatusBatches(page) {
+    const batches = new Map();
+    await page.route("**/api/status/batches/*", (route) => {
+        const id = new URL(route.request().url()).pathname.split("/").at(-1);
+        const batch = id === "latest" ? Array.from(batches.values()).at(-1) : batches.get(id);
+        return fulfillJson(route, { batch: batch || null }, id === "latest" || batch ? 200 : 404);
+    });
+    await page.route("**/api/status/batches", async (route) => {
+        const request = route.request().postDataJSON();
+        const targets = request.targets;
+        const paths = {
+            update: "update", approve_all: "approve", approve_security: "approve-security",
+            approve_security_kept_back: "approve-security-kept-back", cancel: "cancel", autoremove: "autoremove",
+        };
+        const hosts = await page.evaluate(async ({ targets, action, path }) => Promise.all(targets.map(async target => {
+            const name = encodeURIComponent(target.name);
+            const headers = { "Content-Type": "application/json" };
+            if (target.server_identity) headers["X-SLU-Server-Identity"] = target.server_identity;
+            const url = action === "refresh_facts" ? `/api/servers/${name}/facts/refresh` : `/api/${path}/${name}`;
+            const response = await fetch(url, { method: "POST", headers, body: JSON.stringify(target.approval || {}) });
+            const data = await response.json();
+            return { name: target.name, server_identity: target.server_identity,
+                state: response.ok ? "completed" : "refused",
+                message: data.error, retryable: !response.ok, job_id: data.job_id };
+        })), { targets, action: request.action, path: paths[request.action] });
+        batches.set(request.id, { id: request.id, action: request.action, skipped_count: request.skipped_count || 0, hosts });
+        return fulfillJson(route, { id: request.id }, 202);
     });
 }
 

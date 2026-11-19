@@ -9,8 +9,10 @@
             pluralize,
             updateRefreshAllFactsState,
             scheduleSelectPageStateUpdate,
-            pendingApprovalRequestOptions,
             dispatchStatusInteraction,
+            escapeHtml,
+            renderHTML,
+            reviewKeptBackApproval,
         } = options;
         function bulkDashboardActionKey(actionPath) {
             if (actionPath === "update") return "update";
@@ -60,6 +62,7 @@
                 approveSecurityPlan.eligibleNames.length;
             const approveKeptSecurityCount =
                 approveKeptSecurityPlan.eligibleNames.length;
+            const removalReviews = approveKeptSecurityPlan.removalReviews;
             const cancelCount = cancelPlan.eligibleNames.length;
             const autoremoveCount = autoremovePlan.eligibleNames.length;
             const bulk = view.actions.bulk;
@@ -154,8 +157,20 @@
                 bulkDisabledTitle ||
                     (selectedCount === 0
                         ? "Select visible hosts first"
-                        : "No selected host has kept-back security updates eligible for approval"),
+                        : removalReviews.length > 0
+                          ? "Review package removals for each affected host"
+                          : "No selected host has kept-back security updates eligible for approval"),
             );
+            const review = document.getElementById("bulk-removal-review");
+            review.hidden = removalReviews.length === 0;
+            renderHTML(review, removalReviews.length ? `
+                <p class="bulk-hint warning" id="bulk-removal-review-hint">Package removals require individual confirmation.</p>
+                <ul>${removalReviews.map(({ name, serverIdentity }) => `
+                    <li data-render-key="${escapeHtml(serverIdentity || name)}">
+                        <button type="button" class="inline-btn btn-ghost" data-action="review-kept-back-removals"
+                            data-name="${escapeHtml(name)}" data-server-identity="${escapeHtml(serverIdentity)}"
+                            aria-describedby="bulk-removal-review-hint">Review ${escapeHtml(name)}</button>
+                    </li>`).join("")}</ul>` : "");
             setBulkButtonState(
                 "bulk-cancel",
                 "Cancel",
@@ -191,268 +206,393 @@
                 actionPath,
             };
         }
-        function bulkActionRequestOptions(actionPath, facts) {
-            if (actionPath === "update" && facts?.serverIdentity)
-                return { headers: { "X-SLU-Server-Identity": facts.serverIdentity } };
-            if (!actionPath.startsWith("approve") && actionPath !== "cancel")
-                return {};
-            const confirmRemovals =
-                actionPath === "approve-security-kept-back" &&
-                facts.keptBackSecurityHasRemovals;
-            return pendingApprovalRequestOptions(
-                facts.approvalIdentity,
-                confirmRemovals,
-            );
+        const batchLabels = {
+            update: "Update checks",
+            approve_all: "Approve standard updates",
+            approve_security: "Approve security updates",
+            approve_security_kept_back: "Approve kept-back security updates",
+            cancel: "Cancel approval",
+            autoremove: "Autoremove",
+            refresh_facts: "Refresh host facts",
+        };
+        let batch = null;
+        let batchUnavailable = false;
+        let batchID = "";
+        let batchTimer = null;
+        let batchRead = 0;
+        let pendingPlan = null;
+        let unconfirmedSubmission = null;
+        let submitting = false;
+
+        function newBatchKey() {
+            return Array.from(window.crypto.getRandomValues(new Uint8Array(16)),
+                byte => byte.toString(16).padStart(2, "0")).join("");
         }
-        async function runBulkAction(actionPath, actionLabel) {
-            const lifetime = lifecycle.capture();
 
-            if (getStatusView().actions.bulk) return;
-            const plan = buildBulkActionPlan(actionPath, actionLabel);
-            if (plan.visibleNames.length === 0) {
-                if (plan.selectedNames.length > 0) {
-                    window.notifyApp(
-                        `No visible selected hosts for bulk ${actionLabel}.`,
-                    );
-                }
-                return;
-            }
-            if (plan.eligibleNames.length === 0) {
-                window.notifyApp(
-                    `No visible selected hosts can run bulk ${actionLabel}.`,
-                );
-                return;
-            }
-            await dispatchStatusInteraction({ type: "actionStarted", plan });
-            if (!lifecycle.isCurrent(lifetime)) return;
-            if (
-                !getStatusView().actions.inFlight.some(
-                    (action) => action.operationId === plan.id,
-                )
-            )
-                return;
-            try {
-                const jobs = plan.eligibleNames.map(async (name) => {
-                    const lifetime = lifecycle.capture();
-
-                    const response = await fetch(
-                        `/api/${actionPath}/${encodeURIComponent(name)}`,
-                        {
-                            method: "POST",
-                            ...bulkActionRequestOptions(
-                                actionPath,
-                                plan.payloadFacts[name],
-                            ),
-                        },
-                    );
-                    if (!lifecycle.isCurrent(lifetime)) return;
-                    if (!response.ok) {
-                        const payload = await response.json().catch(() => ({}));
-                        if (!lifecycle.isCurrent(lifetime)) return;
-                        const detail =
-                            typeof payload.error === "string" &&
-                            payload.error.trim()
-                                ? payload.error.trim()
-                                : `${response.status} ${response.statusText}`.trim();
-                        throw new Error(detail || "Request failed");
-                    }
-                    lifecycle.discardResponse(response);
-                });
-
-                const results = await Promise.allSettled(jobs);
-                if (!lifecycle.isCurrent(lifetime)) return;
-                const failures = [];
-                results.forEach((result, index) => {
-                    if (result.status === "rejected") {
-                        failures.push(
-                            `${plan.eligibleNames[index]}: ${result.reason?.message || "Request failed"}`,
-                        );
-                    }
-                });
-
-                let message = "";
-                if (failures.length > 0) {
-                    console.error(`Bulk ${actionLabel} failures:`, failures);
-                    message = `Bulk ${actionLabel} completed with ${failures.length} failure(s): ${failures.join(", ")}`;
-                } else if (
-                    plan.hiddenNames.length > 0 ||
-                    plan.ineligible.length > 0
-                ) {
-                    const skipped = [];
-                    if (plan.hiddenNames.length > 0)
-                        skipped.push(
-                            `${plan.hiddenNames.length} hidden selected host(s)`,
-                        );
-                    if (plan.ineligible.length > 0)
-                        skipped.push(
-                            `${plan.ineligible.length} ineligible visible host(s)`,
-                        );
-                    message = `Bulk ${actionLabel} completed; ${skipped.join(" and ")} were skipped.`;
-                }
-                await dispatchStatusInteraction({
-                    type:
-                        failures.length > 0
-                            ? "actionFailed"
-                            : "actionCompleted",
-                    operationId: plan.id,
-                    refreshStreams: ["servers"],
-                    message,
-                    bulkResult: {
-                        selectedCount: plan.selectedNames.length,
-                        executedCount: plan.eligibleNames.length,
-                        skippedCount: plan.skippedHosts.length,
-                        failedCount: failures.length,
-                    },
-                });
-                if (!lifecycle.isCurrent(lifetime)) return;
-            } catch (error) {
-                if (
-                    !lifecycle.isCurrent(lifetime) ||
-                    error?.name === "AbortError"
-                )
-                    return;
-                await dispatchStatusInteraction({
-                    type: "actionFailed",
-                    operationId: plan.id,
-                    refreshStreams: ["servers"],
-                    message: `Bulk ${actionLabel} failed: ${error?.message || "Request failed"}`,
-                    bulkResult: {
-                        selectedCount: plan.selectedNames.length,
-                        executedCount: plan.eligibleNames.length,
-                        skippedCount: plan.skippedHosts.length,
-                        failedCount: plan.eligibleNames.length,
-                    },
-                });
-                if (!lifecycle.isCurrent(lifetime)) return;
-            }
+        function batchTarget(name, facts) {
+            return { name, server_identity: facts.serverIdentity, approval: facts.approvalIdentity };
         }
-        async function refreshSelectedHostFacts() {
-            const lifetime = lifecycle.capture();
 
-            if (getStatusView().actions.bulk) return;
-            const plan = buildBulkActionPlan("facts-refresh", "refresh facts");
-            if (plan.visibleNames.length === 0) {
-                if (plan.selectedNames.length > 0) {
-                    window.notifyApp(
-                        "No visible selected hosts for facts refresh.",
-                    );
-                }
-                return;
-            }
-            if (plan.eligibleNames.length === 0) {
-                window.notifyApp(
-                    "No visible selected hosts can refresh facts right now.",
-                );
-                return;
-            }
-            await dispatchStatusInteraction({ type: "actionStarted", plan });
-            if (!lifecycle.isCurrent(lifetime)) return;
-            if (
-                !getStatusView().actions.inFlight.some(
-                    (action) => action.operationId === plan.id,
-                )
-            )
-                return;
-            const failures = [];
-            let cursor = 0;
-            const workerCount = Math.min(4, plan.eligibleNames.length);
-            const runWorker = async () => {
-                const lifetime = lifecycle.capture();
+        const admissionPending = host => host.state === "queued" || host.state === "admitting";
 
-                while (cursor < plan.eligibleNames.length) {
-                    const name = plan.eligibleNames[cursor];
-                    cursor += 1;
-                    try {
-                        const response = await fetch(
-                            `/api/servers/${encodeURIComponent(name)}/facts/refresh`,
-                            { method: "POST" },
-                        );
-                        if (!lifecycle.isCurrent(lifetime)) return;
-                        if (!response.ok) {
-                            const payload = await response
-                                .json()
-                                .catch(() => ({}));
-                            if (!lifecycle.isCurrent(lifetime)) return;
-                            failures.push(
-                                `${name}: ${payload.error || response.statusText || response.status}`,
-                            );
-                        }
-                        lifecycle.discardResponse(response);
-                    } catch (err) {
-                        if (
-                            !lifecycle.isCurrent(lifetime) ||
-                            err?.name === "AbortError"
-                        )
-                            return;
-                        failures.push(
-                            `${name}: ${err?.message || "Failed to refresh host facts"}`,
-                        );
-                    }
-                }
+        function batchLink(id) {
+            return `?maintenance_batch=${encodeURIComponent(id)}`;
+        }
+
+        function renderBatch(admissionsPending = false) {
+            const panel = document.getElementById("status-batch-panel");
+            if (!panel) return;
+            panel.hidden = !batch && !batchUnavailable;
+            document.getElementById("status-batch-unavailable").hidden = !batchUnavailable;
+            const link = document.getElementById("status-batch-link");
+            const rows = document.getElementById("status-batch-rows");
+            link.hidden = rows.hidden = !batch;
+            document.getElementById("status-batch-label").textContent = batch ? batchLabels[batch.action] : "";
+            if (!batch) return;
+            link.href = batchLink(batch.id);
+            const labels = {
+                queued: "Queued", admitting: "Checking eligibility", accepted: "Accepted",
+                running: "In progress", waiting_approval: "Waiting for approval",
+                completed: "Completed", refused: "Refused", interrupted: "Interrupted", uncertain: "Needs verification",
+                succeeded: "Succeeded", failed: "Failed", cancelled: "Cancelled",
+                reconciliation_required: "APT reconciliation required",
             };
-            try {
-                await Promise.all(
-                    Array.from({ length: workerCount }, runWorker),
-                );
-                if (!lifecycle.isCurrent(lifetime)) return;
-                let message = "";
-                if (failures.length > 0) {
-                    message = `Facts refresh completed with ${failures.length} failure(s): ${failures.join(", ")}`;
-                } else if (
-                    plan.hiddenNames.length > 0 ||
-                    plan.ineligible.length > 0
-                ) {
-                    const skipped = [];
-                    if (plan.hiddenNames.length > 0)
-                        skipped.push(
-                            `${plan.hiddenNames.length} hidden selected host(s)`,
-                        );
-                    if (plan.ineligible.length > 0)
-                        skipped.push(
-                            `${plan.ineligible.length} active or unavailable visible host(s)`,
-                        );
-                    message = `Facts refresh completed; ${skipped.join(" and ")} were skipped.`;
-                }
-                await dispatchStatusInteraction({
-                    type:
-                        failures.length > 0
-                            ? "actionFailed"
-                            : "actionCompleted",
-                    operationId: plan.id,
-                    refreshStreams: ["servers", "dashboard"],
-                    message,
-                    bulkResult: {
-                        selectedCount: plan.selectedNames.length,
-                        executedCount: plan.eligibleNames.length,
-                        skippedCount: plan.skippedHosts.length,
-                        failedCount: failures.length,
-                    },
-                });
-                if (!lifecycle.isCurrent(lifetime)) return;
-            } catch (error) {
-                if (
-                    !lifecycle.isCurrent(lifetime) ||
-                    error?.name === "AbortError"
-                )
-                    return;
-                await dispatchStatusInteraction({
-                    type: "actionFailed",
-                    operationId: plan.id,
-                    refreshStreams: ["servers", "dashboard"],
-                    message: `Facts refresh failed: ${error?.message || "Request failed"}`,
-                    bulkResult: {
-                        selectedCount: plan.selectedNames.length,
-                        executedCount: plan.eligibleNames.length,
-                        skippedCount: plan.skippedHosts.length,
-                        failedCount: plan.eligibleNames.length,
-                    },
-                });
-                if (!lifecycle.isCurrent(lifetime)) return;
+            const statusClass = {
+                queued: "idle", admitting: "updating", accepted: "updating", running: "upgrading",
+                waiting_approval: "pending_approval", completed: "done", refused: "error",
+                interrupted: "error", uncertain: "error", succeeded: "done", failed: "error", cancelled: "idle",
+                reconciliation_required: "error",
+            };
+            const badge = state => `<span class="status-pill status-${statusClass[state] || "idle"}">${escapeHtml(labels[state] || state)}</span>`;
+            renderHTML(rows, batch.hosts.map(host => {
+                const admitted = host.job_id || ["accepted", "running", "waiting_approval", "completed", "failed"].includes(host.state);
+                const admission = admitted ? "accepted" : host.state;
+                const outcome = host.reconciliation_required ? "reconciliation_required"
+                    : host.job_status || (admitted && host.state !== admission ? host.state : "");
+                return `
+                <li data-render-key="${escapeHtml(host.name)}">
+                    <strong>${escapeHtml(host.name)}</strong>
+                    ${badge(admission)}
+                    ${outcome ? badge(outcome) : ""}
+                    ${host.message ? `<p>${escapeHtml(host.message)}</p>` : ""}
+                    ${host.reconciliation_required ? (host.diagnostic_available
+                        ? `<p>Check the host’s APT status before starting other maintenance.</p>
+                           <a href="/?server_identity=${encodeURIComponent(host.server_identity)}">Open host diagnostics</a>`
+                        : "<p>The original host or SSH endpoint could not be verified. Review its job report.</p>") : ""}
+                    ${host.job_id ? `<a href="/api/reports/jobs/${encodeURIComponent(host.job_id)}">Job report</a>` : ""}
+                    ${host.retry_batch_id ? `<a href="${batchLink(host.retry_batch_id)}" aria-label="Open retry attempt for ${escapeHtml(host.name)}">Open retry attempt</a>` : ""}
+                    ${host.retry_needs_verification ? "<p>Review the earlier retry attempts before taking another action.</p>" : ""}
+                    ${host.retryable ? `<button type="button" class="inline-btn btn-ghost" data-action="retry-batch-host"
+                        ${admissionsPending ? 'disabled title="Wait for the remaining hosts to be admitted"' : ""}
+                        data-name="${escapeHtml(host.name)}">Retry ${escapeHtml(host.name)}</button>` : ""}
+                </li>`;
+            }).join(""));
+        }
+
+        function showUnavailableBatch() {
+            batch = null;
+            batchUnavailable = true;
+            renderBatch();
+            document.getElementById("status-batch-panel").open = true;
+        }
+
+        function mountBatchHistory() {
+            const history = document.getElementById("status-batch-history");
+            if (!history) return;
+            const list = document.getElementById("status-batch-history-list");
+            const state = document.getElementById("status-batch-history-state");
+            const newer = document.getElementById("status-batch-history-newer");
+            const older = document.getElementById("status-batch-history-older");
+            const retry = document.getElementById("status-batch-history-retry");
+            let cursors = [""];
+            let nextCursor = "";
+            let retryCursors = null;
+            let loading = false;
+
+            function setHistoryState(message) {
+                state.textContent = message;
+                state.hidden = !message;
             }
+
+            async function loadHistory(pageCursors, focus = false) {
+                if (loading) return;
+                loading = true;
+                const lifetime = lifecycle.capture();
+                newer.disabled = older.disabled = true;
+                retry.hidden = true;
+                setHistoryState("Loading maintenance batches…");
+                const before = pageCursors.at(-1);
+                try {
+                    const url = before ? `/api/status/batches?before=${encodeURIComponent(before)}` : "/api/status/batches";
+                    const response = await fetch(url);
+                    if (!response.ok) {
+                        lifecycle.discardResponse(response);
+                        retryCursors = response.status === 404 ? [""] : pageCursors;
+                        throw new Error("Could not read maintenance batches");
+                    }
+                    const data = await response.json();
+                    if (!lifecycle.isCurrent(lifetime)) return;
+                    if (!Array.isArray(data.batches)) throw new Error("Invalid maintenance batch history");
+                    cursors = pageCursors;
+                    nextCursor = data.next_cursor || "";
+                    retryCursors = null;
+                    renderHTML(list, data.batches.map(entry => {
+                        const action = batchLabels[entry.action] || "Maintenance batch";
+                        const date = entry.created_at_display || entry.created_at;
+                        const outcomes = [
+                            entry.pending ? `${entry.pending} pending` : "",
+                            entry.terminal ? `${entry.terminal} finished` : "",
+                            entry.needs_verification ? `${entry.needs_verification} need verification` : "",
+                        ].filter(Boolean).join(" · ");
+                        return `<li data-render-key="${escapeHtml(entry.id)}">
+                            <a href="${batchLink(entry.id)}">${escapeHtml(action)}</a>
+                            <time datetime="${escapeHtml(entry.created_at)}">${escapeHtml(date)}</time>
+                            <span class="status-batch-history-summary">${escapeHtml(outcomes || "No hosts")}</span>
+                        </li>`;
+                    }).join(""));
+                    setHistoryState(data.batches.length ? "" : "No maintenance batches for this account.");
+                    if (focus) list.querySelector("a")?.focus();
+                } catch (error) {
+                    if (!lifecycle.isCurrent(lifetime) || error?.name === "AbortError") return;
+                    retryCursors ||= pageCursors;
+                    retry.hidden = false;
+                    setHistoryState("Could not load maintenance batch history.");
+                } finally {
+                    if (lifecycle.isCurrent(lifetime)) {
+                        loading = false;
+                        newer.disabled = cursors.length < 2;
+                        older.disabled = !nextCursor;
+                    }
+                }
+            }
+
+            history.hidden = false;
+            lifecycle.listen(history, "toggle", () => {
+                if (history.open) void loadHistory(cursors);
+            });
+            lifecycle.listen(newer, "click", () => {
+                if (cursors.length > 1) void loadHistory(cursors.slice(0, -1), true);
+            });
+            lifecycle.listen(older, "click", () => {
+                if (nextCursor) void loadHistory([...cursors, nextCursor], true);
+            });
+            lifecycle.listen(retry, "click", () => {
+                if (retryCursors) void loadHistory(retryCursors, true);
+            });
+            if (history.open) void loadHistory(cursors);
+        }
+
+        function clearBatchRead() {
+            if (batchTimer !== null) lifecycle.clearTimeout(batchTimer);
+            batchTimer = null;
+        }
+
+        function scheduleBatchRead() {
+            clearBatchRead();
+            batchTimer = lifecycle.setTimeout(() => {
+                batchTimer = null;
+                readBatch();
+            }, 1000);
+        }
+
+        function refreshWaitingBatch() {
+            if (lifecycle.active && batchTimer === null && batch?.hosts.some(host => host.state === "waiting_approval")) {
+                scheduleBatchRead();
+            }
+        }
+
+        async function readBatch() {
+            const lifetime = lifecycle.capture();
+            const sequence = ++batchRead;
+            const url = `/api/status/batches/${batchID ? encodeURIComponent(batchID) : "latest"}`;
+            try {
+                const response = await fetch(url);
+                if (!lifecycle.isCurrent(lifetime) || sequence !== batchRead) {
+                    lifecycle.discardResponse(response);
+                    return;
+                }
+                if (!response.ok) {
+                    lifecycle.discardResponse(response);
+                    if ([401, 403, 404].includes(response.status)) {
+                        const missingSubmission = response.status === 404 ? unconfirmedSubmission : null;
+                        unconfirmedSubmission = null;
+                        const message = missingSubmission?.error || "This maintenance batch is unavailable.";
+                        const plan = pendingPlan;
+                        pendingPlan = null;
+                        void dispatchStatusInteraction({ type: "bulkAdmissionsObserved", pendingHosts: [] });
+                        if (plan) await dispatchStatusInteraction({
+                            type: "actionFailed", operationId: plan.id, refreshStreams: [], message,
+                            bulkResult: { executedCount: 0 },
+                        });
+                        else if (batchID && !missingSubmission?.retryOf) showUnavailableBatch();
+                        else if (batchID) window.notifyApp(message);
+                        if (missingSubmission?.retryOf) {
+                            batchID = missingSubmission.retryOf;
+                            await readBatch();
+                        }
+                    } else scheduleBatchRead();
+                    return;
+                }
+                const data = await response.json();
+                if (!lifecycle.isCurrent(lifetime) || sequence !== batchRead) return;
+                unconfirmedSubmission = null;
+                batch = data.batch;
+                batchUnavailable = false;
+                const pendingHosts = (batch?.hosts || []).filter(admissionPending);
+                const admissionsPending = pendingHosts.length > 0;
+                renderBatch(admissionsPending);
+                void dispatchStatusInteraction({
+                    type: "bulkAdmissionsObserved",
+                    batch,
+                    actionLabel: batchLabels[batch?.action],
+                    pendingHosts,
+                });
+                if (!batch) return;
+                const resolvedHosts = batch.hosts.filter(host => !admissionPending(host));
+                if (pendingPlan && admissionsPending && resolvedHosts.length) {
+                    void dispatchStatusInteraction({
+                        type: "bulkHostAdmissionsResolved",
+                        operationId: pendingPlan.id,
+                        serverNames: resolvedHosts.map(host => host.name),
+                    });
+                }
+                if (pendingPlan && !admissionsPending) {
+                    const plan = pendingPlan;
+                    pendingPlan = null;
+                    const failures = batch.hosts.filter(host => ["refused", "uncertain", "interrupted", "failed"].includes(host.state));
+                    await dispatchStatusInteraction({
+                        type: failures.length ? "actionFailed" : "actionCompleted",
+                        operationId: plan.id,
+                        refreshStreams: plan.actionKey === "refresh_facts" ? ["servers", "dashboard"] : ["servers"],
+                        message: failures.length ? `Bulk ${plan.actionLabel}: ${failures.map(host => `${host.name}: ${host.message || host.state}`).join(", ")}` : "",
+                        bulkResult: {
+                            selectedCount: plan.selectedNames.length,
+                            executedCount: batch.hosts.length,
+                            skippedCount: batch.skipped_count,
+                            failedCount: failures.length,
+                        },
+                    });
+                    if (!lifecycle.isCurrent(lifetime) || sequence !== batchRead) return;
+                }
+                if (admissionsPending || batch.hosts.some(host => ["accepted", "running"].includes(host.state))) scheduleBatchRead();
+            } catch (error) {
+                if (lifecycle.isCurrent(lifetime) && sequence === batchRead && error?.name !== "AbortError") {
+                    scheduleBatchRead();
+                }
+            }
+        }
+
+        async function submitBatch(request, plan) {
+            const lifetime = lifecycle.capture();
+            submitting = true;
+            try {
+                const send = async () => {
+                    const response = await fetch("/api/status/batches", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify(request),
+                    });
+                    if (response.status >= 500) {
+                        lifecycle.discardResponse(response);
+                        throw new Error("The server did not confirm the submitted batch");
+                    }
+                    if (!response.ok) {
+                        const result = await response.json().catch(() => ({}));
+                        return result?.error || "Could not submit maintenance batch";
+                    }
+                    const result = await response.json();
+                    if (result.id !== request.id) throw new Error("The server did not confirm the submitted batch");
+                    return "";
+                };
+                let errorMessage;
+                let lostResponse = false;
+                try {
+                    errorMessage = await send();
+                } catch (error) {
+                    if (!lifecycle.isCurrent(lifetime) || error?.name === "AbortError") return;
+                    lostResponse = true;
+                    // A server or gateway error can hide a durable submission.
+                    // Repeat the same key and check the exact batch below.
+                    errorMessage = await send().catch(() => "");
+                }
+                if (!lifecycle.isCurrent(lifetime)) return;
+                if (errorMessage && !lostResponse) {
+                    if (plan) await dispatchStatusInteraction({
+                        type: "actionFailed", operationId: plan.id, refreshStreams: [],
+                        message: errorMessage, bulkResult: { executedCount: 0, failedCount: plan.eligibleNames.length },
+                    });
+                    else {
+                        window.notifyApp(errorMessage);
+                        if (request.retry_of) {
+                            batchID = request.retry_of;
+                            await readBatch();
+                        }
+                    }
+                    return;
+                }
+                batchID = request.id;
+                batch = null;
+                batchUnavailable = false;
+                pendingPlan = plan;
+                unconfirmedSubmission = lostResponse ? { error: errorMessage, retryOf: request.retry_of } : null;
+                clearBatchRead();
+                renderBatch();
+                document.getElementById("status-batch-panel").open = true;
+                await readBatch();
+            } finally {
+                submitting = false;
+            }
+        }
+
+        async function runBulkAction(actionPath, actionLabel) {
+            if (submitting || getStatusView().actions.bulk) return;
+            const lifetime = lifecycle.capture();
+            const plan = buildBulkActionPlan(actionPath, actionLabel);
+            if (!plan.eligibleNames.length) return;
+            await dispatchStatusInteraction({ type: "actionStarted", plan });
+            if (!lifecycle.isCurrent(lifetime) || !getStatusView().actions.inFlight.some(action => action.operationId === plan.id)) return;
+            await submitBatch({
+                id: newBatchKey(), action: plan.actionKey,
+                targets: plan.eligibleNames.map(name => batchTarget(name, plan.payloadFacts[name])),
+                skipped_count: plan.skippedHosts.length,
+            }, plan);
+        }
+
+        async function retryBatchHost(name) {
+            if (submitting || !batch || getStatusView().actions.bulk) return;
+            const host = batch.hosts.find(item => item.name === name && item.retryable);
+            if (!host) return;
+            const facts = statusInteraction.planBatchRetry(batch.action, host.name, host.server_identity);
+            if (!facts) {
+                window.notifyApp("Show the host on the current Status page and check that the action is available before retrying.");
+                return;
+            }
+            await submitBatch({ id: newBatchKey(), action: batch.action, retry_of: batch.id, targets: [batchTarget(name, facts)] }, null);
         }
         function init() {
             if (lifecycle.active) return;
             lifecycle.init();
+            unconfirmedSubmission = null;
+            const linkedBatch = new URLSearchParams(window.location.search).has("maintenance_batch");
+            const returnTo = document.body?.dataset.statusReturnTo || "";
+            batchID = new URLSearchParams(returnTo.slice(1)).get("maintenance_batch") || "";
+            if (window.canUseScope("logs:read")) {
+                mountBatchHistory();
+                if (linkedBatch && !batchID) {
+                    showUnavailableBatch();
+                } else {
+                    document.getElementById("status-batch-panel").open = Boolean(batchID);
+                    void readBatch();
+                }
+                lifecycle.listen(document.getElementById("status-batch-rows"), "click", (event) => {
+                    const button = event.target.closest("button[data-action='retry-batch-host']");
+                    if (button) retryBatchHost(button.dataset.name);
+                });
+            } else if (linkedBatch) showUnavailableBatch();
+            lifecycle.listen(document.getElementById("bulk-removal-review"), "click", (event) => {
+                const button = event.target.closest("button[data-action='review-kept-back-removals']");
+                if (button) reviewKeptBackApproval(button.dataset.name, button.dataset.serverIdentity);
+            });
             lifecycle.listen(
                 document.getElementById("bulk-update"),
                 "click",
@@ -525,7 +665,7 @@
                 async () => {
                     const lifetime = lifecycle.capture();
 
-                    await refreshSelectedHostFacts();
+                    await runBulkAction("facts-refresh", "refresh facts");
                     if (!lifecycle.isCurrent(lifetime)) return;
                 },
             );
@@ -533,6 +673,7 @@
         return Object.freeze({
             init,
             destroy: lifecycle.destroy,
+            refreshWaitingBatch,
             updateBulkActionState: (...args) =>
                 lifecycle.active ? updateBulkActionState(...args) : undefined,
         });

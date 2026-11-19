@@ -407,7 +407,7 @@ Notes:
 
 The Status page shows current state and allows you to inspect logs. Logs are updated automatically as the updater runs.
 
-Each selected server also shows one **Recommended action**: **Monitor APT**, **Repair package state**, **Review approval**, **Reboot and verify**, or **Healthy**. An uncertain mutating APT timeout is persisted as `needs_reconciliation`; normal update and cleanup actions remain blocked until an operator reviews the live logs and confirms **Repair APT**. The repair checks package-manager locks, runs `dpkg --configure -a`, repairs dependencies, and verifies `dpkg --audit` plus `apt-get check` before returning the server to `done`.
+Each selected server shows a **Recommended action**. After an uncertain APT mutation, Status shows **APT reconciliation required** alongside any active refresh. Readers with report access can open **APT incident report**. Manual and scheduled updates and cleanup remain blocked until a confirmed repair succeeds. Scheduled Runs identifies an APT skip and links the blocking report when available. If a refresh is active, wait for it to finish before starting **Repair APT**. The repair checks package-manager locks, completes pending configuration, repairs dependencies and checks package health.
 
 When current host facts report that a reboot is required, **Recommended action → Reboot and verify** offers a deliberately confirmed controlled reboot. The reboot command is sent once and is never automatically replayed. SimpleLinuxUpdater then waits for SSH to return and only reports success after proving that uptime reset and the reboot-required marker cleared. A missing uptime baseline or an unverified restart leaves the job in `error` for operator review.
 
@@ -419,7 +419,28 @@ shows whether an automatic refresh succeeded, was deferred, returned incomplete
 health data, or failed. The manual refresh action remains available for immediate
 recovery and verification.
 
-Status bulk update, standard approval, security approval, kept-back security approval, cancel, autoremove, and facts-refresh actions execute immediately for eligible selected hosts; there is no application review modal. Ineligible hosts are skipped, and completion feedback separates successful, skipped, and failed hosts. Verify the selection before clicking a destructive bulk action.
+Status records bulk update, standard approval, security approval, kept-back
+security approval, cancel, autoremove and facts-refresh commands in a
+**Maintenance batch** before admitting eligible hosts on the current page.
+The batch survives reloading or closing the page. The panel shows the latest
+batch for your account. Open **Maintenance batch history** to find earlier
+batches and view their pending, finished and verification counts. Each batch has a link
+that opens it after signing in, including when multifactor authentication is
+enabled. Each host has an admission status and, when available, a job outcome
+and report. For kept-back security plans with package removals, use the individual review button
+to see and confirm the displayed plan. Ineligible selections are skipped.
+Retrying a command refused or interrupted before admission requires an eligible
+host and plan on the current Status page. Each target links to its recorded retry
+attempt. Open that attempt to track its result or retry it after a refusal before
+admission. For an approval or cancellation, the original plan must still match.
+If the application cannot determine whether a command started, or an older
+batch already has competing retry attempts, check the job and audit history
+before taking another action.
+Job admission, approval decisions, and successful facts refreshes record their
+batch result in the same transaction. A restart preserves the recorded result
+and its link to the job when one exists.
+For earlier batches, an exact match found in the audit is recorded in the batch
+history and remains visible after audit retention removes the original event.
 
 ### Passwordless apt toggle
 
@@ -536,8 +557,19 @@ No cron expression, external calendar, or automatic fleet reboot is involved.
 The policy preview warns when an eligible occurrence falls in the same minute
 as the next active automatic backup or its scheduled retry. The warning shows
 the application timezone and UTC offset. Use it to adjust either schedule
-before saving. Maintenance admission at execution time decides which work can
-start.
+before saving. Scheduled Runs records the observed cause when a backup export,
+restore, or required recovery blocks an eligible run. When policies compete for
+the same server, the operation is attributed to the policy that takes priority.
+**Blocking job details** opens the associated backup job when it is still
+available and you can read job history. Historical entries with no observed
+cause keep their existing reason. Observed skips remain terminal.
+Before Scheduled Runs is written, a denial can survive restart when the
+application could record the observation against stable local persistence.
+The cause is used only for the observed minute, with matching scheduling
+configuration and inventory identities and SSH endpoints. If only a missed
+slot can be verified, history keeps a generic reason. Pending observations
+expire after seven days and are discarded when an archive replaces the
+database. Existing Scheduled Runs remain part of the archive's history.
 
 ## Scheduled canary and wave rollouts
 
@@ -595,9 +627,33 @@ Supported operational events are:
 
 Notification delivery is best-effort and never changes the maintenance result. Admin shows masked destination state and delivery diagnostics without returning stored secrets. Use HTTPS for public webhook endpoints, and treat test delivery as a real outbound message.
 
+Open **Delivery history** in **Admin → Notifications** to inspect retained
+results by destination, delivery state or exact job ID. Approval alerts show
+the generation when recorded, and scheduled retries show their next attempt.
+The panel shows the active retention for completed results and exposes only
+diagnostic fields and safe failure reasons.
+Use **Job report** to download the report for a retained job. If the report is
+unavailable, the delivery result remains in the history. A published approval
+also shows **Review approval plan** while the exact pending job and generation
+still match the original Server. Status checks the link again when you open it.
+Skipped results distinguish disabled, unconfigured or changed destinations
+from notification conditions that were no longer eligible. Older results
+without a recorded cause show a general eligibility message.
+
 The new condition events are opt-in: existing selections remain unchanged. Initial alerts are admitted promptly from persisted server facts, independently of open browser tabs. Automatic approvals do not request an operator decision. Approval acceptance, cancellation, expiration, interruption, or a newer plan stops delivery of the old actionable alert. Expiration is a separate historical event, sent only if selected when it is observed; enabling it later does not replay consumed expirations.
 
-A persistent episode identifies each condition, Server or application backup, and approval generation. Repeated observations and application restarts do not repeat the initial alert. A confirmed healthy observation ends an episode; a later recurrence starts another. Missing or failed observations preserve the previous condition. Manual and automatic backups share the export/verification failure conditions, including automatic scheduling/publication failures. Coverage requires both a successful export and restore-ready verification within the existing seven-day recovery threshold. These are recorded recovery facts, not a fresh scan of operator-managed archive files.
+The initial approval alert is recorded per exact plan and destination configuration. The active plan comes from the persisted waiting job. Older approval audit records cannot reopen its alert. Other conditions use persistent episodes. A confirmed healthy observation ends an episode, and a later recurrence starts another. Missing or failed observations preserve the previous condition. Manual and automatic backups share the export/verification failure conditions, including automatic scheduling/publication failures. Coverage requires both a successful export and restore-ready verification within the existing seven-day recovery threshold. These are recorded recovery facts, not a fresh scan of operator-managed archive files.
+
+Select **APT reconciliation required** under **Admin → Notifications → Events**
+to alert the enabled destinations. The alert is admitted once per unresolved
+incident and destination configuration. It identifies the original job even
+if a repair attempt fails. The **Job report** link in delivery history opens
+that report for authorized readers. Before every attempt, the app verifies
+that the original inventory identity and SSH endpoint still require
+reconciliation. A successful repair or a target replacement skips queued
+attempts. A later incident can send a new alert. In-place restore preserves
+admissions and retained delivery results before the database is replaced. The alert is excluded from grouped
+reminders, and its payload contains no raw SSH output or destination URL.
 
 **Grouped reminders** are off by default. When enabled, choose 5–43200 minutes (default 1440). At most one summary is admitted per destination and interval, containing selected unresolved conditions. Expirations are not repeated. Conditions and selection are revalidated before each delivery, including retries; resolved entries disappear from queued summaries. Delivery diagnostics and the existing outbox/retry policy apply to all alerts.
 
@@ -605,7 +661,9 @@ Changing a destination skips deliveries still bound to its previous credentials 
 
 A controlled database restore preserves the live admission ledger and existing outbox replacement protections, skips historical audit replay, and revalidates restored job, Server, and backup facts before delivery. Restored pending jobs interrupted by runtime recovery cannot produce actionable approval reminders. Previously resolved conditions may become new episodes if restored evidence explicitly reports them again. A cold start from an older standalone database backup has only that backup's ledger: external deliveries made after the archive was created cannot be inferred or undone.
 
-Messages contain readable Server/backup and job identifiers, with allowlisted condition metadata. This application has no configured public notification base URL, so these alerts do not invent links. Operators open the authenticated Status or Administration page to review the current facts; notifications do not execute approvals or maintenance actions.
+Messages contain readable Server/backup and job identifiers with allowlisted condition metadata. When [the public application URL](configuration.md#notification-destinations) is configured, published approval alerts and their reminder entries link to the exact plan in Status. Webhooks also include `meta.approval_url` on the approval alert. The link uses the stable inventory identity, job ID, and plan generation. After signing in, readers and operators can inspect the plan. Operators approve through the usual Status controls.
+
+If the approval expired, the plan was replaced, or the host was removed or recreated, Status shows the reason. To review a newer plan, select the host and open its packages in Status. Without a configured URL, approval notifications give text directions to the Status page.
 
 
 ## Audit trail
@@ -669,6 +727,8 @@ Notes:
 
 - Restore immediately replaces `servers.db` and, if present in the backup, `known_hosts`. The backup `config.json` is validated and its encryption key is used to re-encrypt restored secrets with the local `config.json` key.
 - No restart is required after restore.
+- An in-place restore keeps open APT reconciliation and the exact job report when the archived inventory contains the same identity and SSH endpoint. The restore review shows archive compatibility and any APT conflicts with this installation separately. Resolve an open incident or choose a compatible archive when the review identifies a conflict. Restore checks again before replacing files.
+- An explicitly successful repair with recorded SSH host-key proof can resolve an older archived incident for the same target. Restore never runs remote package commands. A separate installation can recover only the reconciliation evidence available in the archive. Check remote package state before resuming maintenance when the archive may predate an interruption.
 - If your deployment depends on external TLS/reverse-proxy config, back that up separately.
 
 ## How SimpleLinuxUpdater compares to scripts and Ansible

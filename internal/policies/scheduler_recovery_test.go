@@ -94,57 +94,80 @@ func TestProcessDueWithRecoveryInitializesWatermarkWithoutRetroactiveReplay(t *t
 }
 
 func TestProcessDueWithRecoveryPreservesMaintenanceSkipReason(t *testing.T) {
-	watermark := time.Date(2026, 1, 5, 2, 59, 0, 0, time.UTC)
-	var handled []ScheduledRunRequest
-	coordinator := maintenancepkg.NewCoordinator(maintenancepkg.Deps{Store: maintenancepkg.NewMemoryStore()})
-	if err := coordinator.Initialize(context.Background()); err != nil {
-		t.Fatalf("Initialize() error = %v", err)
-	}
-	deps := testServiceDeps()
-	deps.Maintenance = coordinator
-	deps.ListPolicies = func() ([]Policy, error) {
-		return []Policy{{
-			ID: 3, Name: "maintenance", Enabled: true, TargetServers: []string{"srv"},
-			PackageScope: PackageScopeSecurity, ExecutionMode: ExecutionScanOnly,
-			CadenceKind: CadenceDaily, TimeLocal: "03:00",
-		}}, nil
-	}
-	deps.SnapshotServers = func() []servers.Server { return []servers.Server{{Name: "srv"}} }
-	deps.HandleScheduledRun = func(req ScheduledRunRequest) ScheduledRunResult {
-		handled = append(handled, req)
-		return ScheduledRunResult{Handled: true, Inserted: true}
-	}
-	service := NewService(deps)
-	store := SchedulerWatermarkStore{
-		Load: func() (time.Time, bool, error) { return watermark, true, nil },
-		Save: func(value time.Time) error {
-			watermark = value
-			return nil
+	for _, tc := range []struct {
+		name        string
+		delay       time.Duration
+		wantBlocker maintenancepkg.Blocker
+	}{
+		{
+			name: "observed in the scheduled minute", delay: 20 * time.Second,
+			wantBlocker: maintenancepkg.Blocker{Cause: maintenancepkg.BlockBackupRestore, JobID: "restore-observed"},
 		},
-	}
+		{name: "buffered tick arrives in a later minute", delay: time.Minute + 20*time.Second},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			blockedSlot := time.Date(2026, 1, 5, 3, 0, 0, 0, time.UTC)
+			watermark := blockedSlot.Add(-time.Minute)
+			now := blockedSlot.Add(tc.delay)
+			var handled []ScheduledRunRequest
+			coordinator := maintenancepkg.NewCoordinator(maintenancepkg.Deps{Store: maintenancepkg.NewMemoryStore(), Now: func() time.Time { return now }})
+			if err := coordinator.Initialize(context.Background()); err != nil {
+				t.Fatalf("Initialize() error = %v", err)
+			}
+			deps := testServiceDeps()
+			deps.Maintenance = coordinator
+			deps.Now = func() time.Time { return now }
+			deps.ListPolicies = func() ([]Policy, error) {
+				return []Policy{{
+					ID: 3, Name: "maintenance", Enabled: true, TargetServers: []string{"srv"},
+					PackageScope: PackageScopeSecurity, ExecutionMode: ExecutionScanOnly,
+					CadenceKind: CadenceDaily, TimeLocal: "03:00",
+				}}, nil
+			}
+			deps.SnapshotServers = func() []servers.Server { return []servers.Server{{Name: "srv"}} }
+			deps.HandleScheduledRun = func(req ScheduledRunRequest) ScheduledRunResult {
+				handled = append(handled, req)
+				return ScheduledRunResult{Handled: true, Inserted: true}
+			}
+			service := NewService(deps)
+			store := SchedulerWatermarkStore{
+				Load: func() (time.Time, bool, error) { return watermark, true, nil },
+				Save: func(value time.Time) error {
+					watermark = value
+					return nil
+				},
+			}
 
-	exclusive, decision := coordinator.TryExclusive(maintenancepkg.OperationBackupRestore)
-	if !decision.Allowed {
-		t.Fatalf("TryExclusive() decision = %+v", decision)
-	}
-	blockedSlot := time.Date(2026, 1, 5, 3, 0, 0, 0, time.UTC)
-	if err := service.ProcessDueWithRecovery(blockedSlot, store); err != nil {
-		t.Fatalf("blocked ProcessDueWithRecovery() error = %v", err)
-	}
-	if len(service.PendingMissedTicks()) != 1 {
-		t.Fatalf("pending missed ticks = %v, want blocked maintenance tick", service.PendingMissedTicks())
-	}
-	if err := exclusive.Close(); err != nil {
-		t.Fatalf("Close() error = %v", err)
-	}
-	if err := service.ProcessDueWithRecovery(blockedSlot.Add(time.Minute), store); err != nil {
-		t.Fatalf("recovery ProcessDueWithRecovery() error = %v", err)
-	}
-	if len(handled) != 1 || handled[0].Outcome != RunReasonMaintenance {
-		t.Fatalf("handled = %+v, want one maintenance skip", handled)
-	}
-	if got := service.PendingMissedTicks(); len(got) != 0 {
-		t.Fatalf("pending missed ticks after recovery = %v, want none", got)
+			exclusive, decision := coordinator.TryExclusive(maintenancepkg.OperationBackupRestore)
+			if !decision.Allowed {
+				t.Fatalf("TryExclusive() decision = %+v", decision)
+			}
+			if err := exclusive.Activate(context.Background(), maintenancepkg.OperationFacts{JobID: "restore-observed"}); err != nil {
+				t.Fatal(err)
+			}
+			if err := service.ProcessDueWithRecovery(blockedSlot, store); err != nil {
+				t.Fatalf("blocked ProcessDueWithRecovery() error = %v", err)
+			}
+			if len(service.PendingMissedTicks()) != 1 {
+				t.Fatalf("pending missed ticks = %v, want blocked maintenance tick", service.PendingMissedTicks())
+			}
+			if err := exclusive.Close(); err != nil {
+				t.Fatalf("Close() error = %v", err)
+			}
+			now = blockedSlot.Add(2 * time.Minute)
+			if err := service.ProcessDueWithRecovery(now, store); err != nil {
+				t.Fatalf("recovery ProcessDueWithRecovery() error = %v", err)
+			}
+			if len(handled) != 1 || handled[0].Outcome != RunReasonMaintenance || handled[0].ScheduledForUTC != blockedSlot.Format(DefaultTimestampLayout) {
+				t.Fatalf("handled = %+v, want one maintenance skip", handled)
+			}
+			if handled[0].MaintenanceBlocker != tc.wantBlocker {
+				t.Fatalf("maintenance blocker = %+v, want %+v", handled[0].MaintenanceBlocker, tc.wantBlocker)
+			}
+			if got := service.PendingMissedTicks(); len(got) != 0 {
+				t.Fatalf("pending missed ticks after recovery = %v, want none", got)
+			}
+		})
 	}
 }
 

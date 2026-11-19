@@ -6,8 +6,15 @@ const username = "admin",
 const test = base.extend({
     scanTransportPhase: ["", {option: true}],
     backupCatalogFixture: [false, { option: true }],
-    installation: async ({scanTransportPhase, backupCatalogFixture}, use) => {
-        const installation = await startInstallation(undefined, {SLU_E2E_VULNERABILITY_PHASE: scanTransportPhase, SLU_E2E_BACKUP_CATALOG: backupCatalogFixture ? "1" : ""});
+    approvalLinkFixture: [false, { option: true }],
+    batchHistoryFixture: [false, { option: true }],
+    installation: async ({scanTransportPhase, backupCatalogFixture, approvalLinkFixture, batchHistoryFixture}, use) => {
+        const installation = await startInstallation(undefined, {
+            SLU_E2E_VULNERABILITY_PHASE: scanTransportPhase,
+            SLU_E2E_BACKUP_CATALOG: backupCatalogFixture ? "1" : "",
+            SLU_E2E_APPROVAL_LINK: approvalLinkFixture ? "1" : "",
+            SLU_E2E_BATCH_HISTORY: batchHistoryFixture ? "1" : "",
+        });
         try {
             await use(installation);
         } finally {

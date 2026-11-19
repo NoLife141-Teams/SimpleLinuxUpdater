@@ -1,7 +1,5 @@
 package policies
 
-import "time"
-
 // ClearMissedTicks drops in-memory maintenance-blocked scheduler ticks when the
 // backing persistence epoch changes (for example after restoring a backup).
 // Those ticks describe the pre-replacement policy/inventory state and must not
@@ -11,6 +9,6 @@ func (s *Service) ClearMissedTicks() {
 		return
 	}
 	s.missedTickMu.Lock()
-	s.missedTicks = map[string]time.Time{}
+	clear(s.missedTicks)
 	s.missedTickMu.Unlock()
 }

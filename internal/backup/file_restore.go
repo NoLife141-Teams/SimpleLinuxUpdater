@@ -398,6 +398,11 @@ func (s *Service) applyArchiveFiles(ctx context.Context, files map[string]string
 		// been replaced. Preserve typed recovery errors if a preparer cannot unwind.
 		return fmt.Errorf("prepare restored persistence replacement: %w", err)
 	}
+	if stager, ok := s.deps.RestoredRuntime.(ReplacementStager); ok {
+		if err := stageRuntimePersistence(ctx, preparedDB.Path, stager); err != nil {
+			return s.reloadOriginalPersistence(ctx, fmt.Errorf("stage restored runtime persistence: %w", err), restoreHandoff)
+		}
+	}
 	snapshotDir, snapshots, err := snapshotFilesToDirectory(filepath.Dir(dbTarget), targets)
 	if err != nil {
 		return s.reloadOriginalPersistence(ctx, err, restoreHandoff)
@@ -481,6 +486,15 @@ func prepareRestoredDatabase(ctx context.Context, path string, prepareReplacemen
 	return errors.Join(err, db.Close())
 }
 
+func stageRuntimePersistence(ctx context.Context, path string, stager ReplacementStager) error {
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		return err
+	}
+	db.SetMaxOpenConns(1)
+	return errors.Join(stager.StagePersistenceReplacement(ctx, db), db.Close())
+}
+
 func (s *Service) reloadOriginalPersistence(ctx context.Context, cause error, restoreHandoff func(context.Context) error) error {
 	recoveryCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), rollbackTimeout)
 	defer cancel()
@@ -508,6 +522,12 @@ func restoreResourceReviewsFromPaths(manifest Manifest, files map[string]string)
 }
 
 func (s *Service) VerifyArchiveFile(ctx context.Context, encrypted TemporaryFile, passphrase string) (VerifyResult, error) {
+	return s.VerifyArchiveFileWithReview(ctx, encrypted, passphrase, nil)
+}
+
+// VerifyArchiveFileWithReview allows an installation-specific compatibility
+// check on the isolated, schema-validated archive database.
+func (s *Service) VerifyArchiveFileWithReview(ctx context.Context, encrypted TemporaryFile, passphrase string, review func(context.Context, *sql.DB)) (VerifyResult, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -589,6 +609,14 @@ func (s *Service) VerifyArchiveFile(ctx context.Context, encrypted TemporaryFile
 		result.Warnings = append(result.Warnings, ReadinessIssue{Code: "known_hosts_not_included", Message: "known_hosts is not included; the current host-key trust file will remain unchanged."})
 	}
 	result.RestoreReady = true
+	if review != nil {
+		db, err := sql.Open("sqlite", inspection.Files["servers.db"])
+		if err == nil {
+			defer db.Close()
+			db.SetMaxOpenConns(1)
+			review(ctx, db)
+		}
+	}
 	return result, nil
 }
 

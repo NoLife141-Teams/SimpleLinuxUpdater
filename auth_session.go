@@ -598,6 +598,9 @@ func authGateMiddleware() gin.HandlerFunc {
 		if required {
 			target = "/setup"
 		}
+		if c.Request.Method == http.MethodGet && c.FullPath() == "/" {
+			target = authPageDestination(target, statusReturnDestination(c.Request.URL.RequestURI()))
+		}
 		c.Redirect(http.StatusFound, target)
 		c.Abort()
 	}
@@ -605,6 +608,7 @@ func authGateMiddleware() gin.HandlerFunc {
 
 func handleSetupPage(c *gin.Context) {
 	setNoStoreHeaders(c)
+	view := newStatusAuthView(c.Query("return_to"), "/api/auth/setup")
 	required, err := setupRequiredForContext(c)
 	if err != nil {
 		c.String(http.StatusInternalServerError, "failed to evaluate setup state")
@@ -612,31 +616,32 @@ func handleSetupPage(c *gin.Context) {
 	}
 	if !required {
 		if sessionUsername(c) != "" {
-			c.Redirect(http.StatusFound, "/")
+			c.Redirect(http.StatusFound, view.ReturnTo)
 		} else {
-			c.Redirect(http.StatusFound, "/login")
+			c.Redirect(http.StatusFound, view.LoginURL)
 		}
 		return
 	}
-	c.HTML(http.StatusOK, "setup.html", nil)
+	c.HTML(http.StatusOK, "setup.html", view)
 }
 
 func handleLoginPage(c *gin.Context) {
 	setNoStoreHeaders(c)
+	view := newStatusAuthView(c.Query("return_to"), "/api/auth/login")
 	required, err := setupRequiredForContext(c)
 	if err != nil {
 		c.String(http.StatusInternalServerError, "failed to evaluate setup state")
 		return
 	}
 	if required {
-		c.Redirect(http.StatusFound, "/setup")
+		c.Redirect(http.StatusFound, view.SetupURL)
 		return
 	}
 	if sessionUsername(c) != "" {
-		c.Redirect(http.StatusFound, "/")
+		c.Redirect(http.StatusFound, view.ReturnTo)
 		return
 	}
-	c.HTML(http.StatusOK, "login.html", nil)
+	c.HTML(http.StatusOK, "login.html", view)
 }
 
 func handleAuthStatus(c *gin.Context) {
@@ -924,7 +929,7 @@ func handleAuthSetup(c *gin.Context) {
 		return
 	}
 	if formPost {
-		c.Redirect(http.StatusSeeOther, "/")
+		c.Redirect(http.StatusSeeOther, statusReturnDestination(c.Query("return_to")))
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"message": "setup complete"})
@@ -1003,7 +1008,7 @@ func handleAuthLogin(c *gin.Context) {
 		return
 	}
 	if formPost {
-		c.Redirect(http.StatusSeeOther, "/")
+		c.Redirect(http.StatusSeeOther, statusReturnDestination(c.Query("return_to")))
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"message": "login successful"})

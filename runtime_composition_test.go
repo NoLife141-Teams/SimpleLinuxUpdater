@@ -13,6 +13,7 @@ import (
 	internaljobs "debian-updater/internal/jobs"
 	notificationpkg "debian-updater/internal/notifications"
 	serverpkg "debian-updater/internal/servers"
+	"debian-updater/internal/vulnerabilities"
 
 	"github.com/alexedwards/scs/v2"
 	_ "modernc.org/sqlite"
@@ -151,6 +152,37 @@ func TestRuntimeCompositionReloadRestoredStateRehydratesNotificationPersistence(
 	}
 }
 
+func TestRejectedRestoreKeepsNotificationDeliveryPaused(t *testing.T) {
+	notifications := &reloadTrackingNotificationLifecycle{}
+	app := newTestAppWithDeps(t, filepath.Join(t.TempDir(), "restore-audit-failure.db"), AppDeps{NotificationService: notifications})
+	const host = "restored"
+	job, err := app.Deps.CurrentJobManager().CreateJob(JobCreateParams{
+		Kind: internaljobs.KindVulnerabilityScan, ServerName: host, Actor: "operator", Status: jobStatusRunning,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := (vulnerabilities.Repository{DB: app.Deps.DB}).Save(t.Context(), host, vulnerabilities.Scan{
+		ID: job.ID, State: "complete", Scope: "installed_packages", FinishedAt: time.Now().UTC().Format(time.RFC3339),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.Deps.DB().Exec(`CREATE TRIGGER reject_restored_audit
+		BEFORE INSERT ON audit_events WHEN NEW.action = 'server.vulnerabilities.scan'
+		BEGIN SELECT RAISE(ABORT, 'reject restored audit'); END`); err != nil {
+		t.Fatal(err)
+	}
+	composition := newRuntimeComposition(app.Deps)
+	composition.resetCaches = func() {}
+	err = composition.ReloadRestoredState(t.Context())
+	if err == nil || !strings.Contains(err.Error(), "reject restored audit") {
+		t.Fatalf("reload result = %v, want restored audit failure", err)
+	}
+	if notifications.reloads != 0 {
+		t.Fatal("notification deliveries were released before restored audit completed")
+	}
+}
+
 func TestRuntimeCompositionReloadRestoredStateLabelsSessionFailureWithoutPublishing(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "reload-session-failure.db")
 	db, err := sql.Open("sqlite", dbPath)
@@ -224,7 +256,7 @@ func TestRuntimeCompositionReloadRestoredStateRestoresReconciliationAfterInvento
 		t.Fatalf("ensure schema: %v", err)
 	}
 
-	server := Server{Name: "restored-reconciliation", Host: "example.org", Port: 22, User: "root"}
+	server := Server{Name: "restored-reconciliation", Identity: "fixture-apt-target", Host: "example.org", Port: 22, User: "root"}
 	state := newServerState()
 	inventory := serverpkg.NewService(serverpkg.ServiceDeps{
 		State:      state,
@@ -241,6 +273,7 @@ func TestRuntimeCompositionReloadRestoredStateRestoresReconciliationAfterInvento
 	if _, err := deps.NewJobManager(db).CreateJob(JobCreateParams{
 		Kind:       jobKindUpdate,
 		ServerName: server.Name,
+		APTTarget:  server.APTTarget(),
 		Actor:      "admin",
 		Status:     jobStatusFailed,
 		ErrorClass: "reconciliation_required",
@@ -343,6 +376,53 @@ func TestRuntimeCompositionMapsJobLogResetToBroker(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatalf("dashboard log reset was not published through composed notify callback")
+	}
+}
+
+func TestRuntimeCompositionScopesOnlyStandaloneUpdateTransitions(t *testing.T) {
+	app := newIsolatedTestApp(t)
+	broker := app.Deps.DashboardEventBroker
+	manager := app.Deps.CurrentJobManager()
+	ch := broker.Subscribe()
+	defer broker.Unsubscribe(ch)
+
+	nextEvent := func() events.Event {
+		t.Helper()
+		select {
+		case got := <-ch:
+			return got
+		case <-time.After(time.Second):
+			t.Fatal("job didn't publish a dashboard invalidation")
+			return events.Event{}
+		}
+	}
+	for _, tc := range []struct {
+		job  internaljobs.CreateParams
+		host string
+	}{
+		{internaljobs.CreateParams{ServerName: "manual", Kind: jobKindUpdate, Actor: "operator"}, "manual"},
+		{internaljobs.CreateParams{ServerName: "scheduled", Kind: jobKindUpdate, Actor: "system"}, ""},
+		{internaljobs.CreateParams{ServerName: "dependent", Kind: jobKindUpdate, Actor: "operator", ParentJobID: "scheduled"}, ""},
+		{internaljobs.CreateParams{ServerName: "scan", Kind: jobKindScheduledScan, Actor: "operator"}, ""},
+	} {
+		job, err := manager.CreateJob(tc.job)
+		if err != nil {
+			t.Fatal(err)
+		}
+		created := nextEvent()
+		if err := manager.Transition(job.ID, internaljobs.Intent{Kind: internaljobs.IntentStart}); err != nil {
+			t.Fatal(err)
+		}
+		got := nextEvent()
+		if got.Reason != "job.update" || got.Revision != created.Revision+1 || got.ServerName != tc.host {
+			t.Fatalf("transition for %+v produced event %+v", tc.job, got)
+		}
+	}
+	if err := app.Deps.AuditService.Record("operator", "", "server.update", "server", "manual", "success", "Inventory edited", nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := nextEvent(); got.Reason != "server.update" || !got.Audit || got.ServerName != "" {
+		t.Fatalf("persisted inventory audit produced event %+v", got)
 	}
 }
 

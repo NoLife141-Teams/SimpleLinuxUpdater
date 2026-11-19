@@ -5,7 +5,7 @@
 }(typeof globalThis !== "undefined" ? globalThis : this, function adminPageInteractionFactory(navigation) {
     "use strict";
 
-    const streamNames = ["timezone", "notifications", "notificationDiagnostics", "account", "activity", "metrics", "backup", "postchecks", "installation"];
+    const streamNames = ["timezone", "notifications", "notificationDiagnostics", "notificationHistory", "account", "activity", "metrics", "backup", "postchecks", "installation"];
     const sectionDefinitions = [
  { id: "app-time", label: "App Time" },
         { id: "notifications", label: "Notifications" },
@@ -249,10 +249,16 @@
         const archive = data.archive && typeof data.archive === "object" ? data.archive : {};
         const counts = data.safe_counts && typeof data.safe_counts === "object" ? data.safe_counts : {};
         const impact = data.impact && typeof data.impact === "object" ? data.impact : {};
+        const installation = data.installation_review;
         return {
             valid: Boolean(data.valid),
             compatible: Boolean(data.compatible),
             restoreReady: Boolean(data.restore_ready),
+            installationReview: installation ? {
+                state: String(installation.state || "unavailable"),
+                message: String(installation.message || ""),
+                conflicts: clone(Array.isArray(installation.conflicts) ? installation.conflicts : []),
+            } : null,
             archive: {
                 format: String(archive.format || data.format || "").trim(),
                 version: Number(archive.version ?? data.version) || 0,
@@ -328,6 +334,7 @@
         let acceptedNotifications = normalizeNotifications();
         let notificationDraft = clone(acceptedNotifications);
         let notificationDiagnostics = normalizeDeliveryDiagnostics();
+        let notificationHistory = { items: [], nextCursor: "", retentionSeconds: 0 };
         let account = {
             sessionCount: 0,
             sessions: [],
@@ -760,6 +767,9 @@
                     if (!backup.review || !backup.review.restoreReady || !backupBindingMatches(backup.reviewBinding)) {
                         return { enabled: false, command, key, reason: "Verify this exact backup and passphrase before restoring; the restore review is not ready." };
                     }
+                    if (backup.review.installationReview && backup.review.installationReview.state !== "ready") {
+                        return { enabled: false, command, key, reason: backup.review.installationReview.message || "Review APT compatibility on this installation before restoring." };
+                    }
                     return { enabled: true, command, key, binding: currentBackupBinding(), payload: { file: clone(backup.selectedFile) } };
                 default: return { enabled: true, command, key, payload: clone(payload) };
             }
@@ -865,6 +875,16 @@
                     if (accept("notificationDiagnostics", event.requestID, event.receivedAt)) {
                         applyDeliveryDiagnostics(event.data);
                         return [effect("render", { area: "notificationDiagnostics" })];
+                    }
+                    return [];
+                case "notificationHistoryReceived":
+                    if (accept("notificationHistory", event.requestID, event.receivedAt)) {
+                        notificationHistory = {
+                            items: clone(event.data.items),
+                            nextCursor: String(event.data.next_cursor || ""),
+                            retentionSeconds: Number(event.data.retention_seconds) || 0
+                        };
+                        return [effect("render", { area: "notificationHistory" })];
                     }
                     return [];
                 case "notificationDraftChanged":
@@ -1040,6 +1060,7 @@
                 postchecks: {...postchecks,dirty:!sameValue(postchecks.accepted,postchecks.draft)},
  notifications: { ...notificationDraft, dirty: notificationDirty, ...notificationValidation() },
                 notificationDiagnostics,
+                notificationHistory,
  installation,
                 account: projectAccount(),
                 activity,

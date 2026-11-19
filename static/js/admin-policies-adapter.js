@@ -1719,6 +1719,13 @@
                 const auditURL = run.audit_url || "";
                 const checkURL = run.update_check_url || "";
                 const checkMessage = run.update_check_message || "";
+                const blockingJobID = run.maintenance_job_id || "";
+                const skipReason = {
+                    backup_export: "Backup export in progress",
+                    backup_restore: "Backup restore in progress",
+                    recovery_required: "Backup recovery required",
+                }[run.maintenance_cause] || (run.exact_skip_reason === "apt_reconciliation_required"
+                    ? "APT reconciliation required" : run.exact_skip_reason);
                 row.innerHTML = `
             <td data-label="Scheduled" title="${escapeHtml(scheduled.title || "")}">
                 <div>${escapeHtml(scheduled.primary || "")}</div>
@@ -1738,17 +1745,18 @@
             </td>
             <td data-label="Outcome">
                 <span class="status-chip status-${statusToken}">${escapeHtml(outcome)}</span>
-                ${run.exact_skip_reason ? `<div class="run-skip-reason">Reason: ${escapeHtml(run.exact_skip_reason)}</div>` : ""}
+                ${skipReason ? `<div class="run-skip-reason">Reason: ${escapeHtml(skipReason)}</div>` : ""}
             </td>
             <td data-label="Summary">${escapeHtml(run.summary || run.reason || "-")}</td>
             <td data-label="Investigate">
                 <div class="run-investigation-links">
                     ${jobDetailURL ? `<button class="inline-btn btn-ghost" type="button" data-action="job-detail" data-job-id="${escapeHtml(String(run.job_id))}">Job details</button>` : ""}
+                    ${blockingJobID ? `<button class="inline-btn btn-ghost" type="button" data-action="job-detail" data-job-id="${escapeHtml(blockingJobID)}">Blocking job details</button>` : ""}
                     ${reportURL ? `<a class="inline-btn btn-ghost" href="${escapeHtml(reportURL)}">Report</a>` : ""}
                     ${auditURL ? `<a class="inline-btn btn-ghost" href="${escapeHtml(auditURL)}">Audit trail</a>` : ""}
                     ${checkURL ? `<a class="inline-btn btn-ghost" href="${escapeHtml(checkURL)}">Prepare a new update check</a>` : ""}
                     ${checkMessage ? `<span class="subtle">${escapeHtml(checkMessage)}</span>` : ""}
-                    ${!jobDetailURL && !reportURL && !auditURL && !checkURL && !checkMessage ? '<span class="subtle">No linked details</span>' : ""}
+                    ${!jobDetailURL && !blockingJobID && !reportURL && !auditURL && !checkURL && !checkMessage ? '<span class="subtle">No linked details</span>' : ""}
                 </div>
             </td>
         `;

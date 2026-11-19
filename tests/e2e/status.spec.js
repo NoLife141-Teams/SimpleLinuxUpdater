@@ -458,6 +458,24 @@ test("maintenance queue starts by name and lets the operator reverse the order",
         ]);
 });
 
+test("Status keeps the APT incident report visible during a host facts refresh", async ({ page }) => {
+    const incident = "0".repeat(32);
+    const server = {
+        ...makeServer("repair-host", "facts_refresh"),
+        apt_reconciliation_required: true,
+        apt_reconciliation_job_id: incident,
+    };
+    await stubDashboardApi(page, () => [server]);
+    await ensureAuthenticatedSession(page);
+    await page.locator("#status-filter").selectOption("needs_reconciliation");
+    const row = page.locator('tr[data-name="repair-host"]');
+    await expect(row).toContainText("APT reconciliation required");
+    await expect(row.getByRole("button", { name: "Update", exact: true })).toHaveCount(0);
+    await row.getByRole("button", { name: "repair-host", exact: true }).click();
+    const panel = page.locator("#selected-host-panel");
+    await expect(panel.getByRole("link", { name: "APT incident report" })).toHaveAttribute("href", `/api/reports/jobs/${incident}`);
+});
+
 test("degraded Status synchronization stays visible beside the timeline until recovery succeeds", async ({
     baseURL,
     page,
@@ -637,6 +655,119 @@ test("APT upgrade log drawer renders carriage-return progress during refresh", a
             ),
         )
         .toBeLessThanOrEqual(1);
+});
+
+test("scoped SSE refreshes only changed rows and resynchronizes a gap or stale snapshot", async ({ page }) => {
+    await page.addInitScript(() => {
+        window.EventSource = class extends EventTarget {
+            constructor() {
+                super();
+                window.statusFixtureEvents = this;
+                setTimeout(() => this.dispatchEvent(new Event("open")), 0);
+            }
+            close() {}
+        };
+    });
+    let servers = [
+        makeServer("scoped-host", "idle", [], { has_key: true }),
+        makeServer("other-host", "done", [], { tags: ["stable"] }),
+    ];
+    await stubCompactStatus(page, () => servers);
+    const dashboardSnapshot = () => {
+        const summary = makeDashboardSummary(servers);
+        let version = 0;
+        summary.servers.forEach(row => {
+            const stamp = row.name === "scoped-host"
+                ? (summary.fleet.in_progress ? 3 : 1)
+                : (row.approval_triage.facts_state === "stale" ? 5 : 2);
+            row.version = stamp.toString(16);
+            version ^= stamp;
+        });
+        return { ...summary, rows_version: version.toString(16) };
+    };
+    await page.route("**/api/dashboard/summary?*", route => fulfillJson(route, dashboardSnapshot()));
+    const waitForFleet = () => Promise.all(["/api/servers", "/api/dashboard/summary"].map(path =>
+        page.waitForResponse(response => new URL(response.url()).pathname === path),
+    ));
+    const initialFleet = waitForFleet();
+    await ensureAuthenticatedSession(page);
+    const [inventoryResponse] = await initialFleet;
+    const [scopedRow] = await inventoryResponse.json();
+    await expect(page.locator("#metric-done-hosts")).toHaveText("1");
+    await page.locator("#search").fill("-host");
+    await page.locator('#servers-table button[data-select-host="scoped-host"]').click();
+    const update = page.locator('#selected-host-panel button[data-action="update-server"]');
+    await expect(update).toBeVisible();
+    const logs = page.locator('#selected-host-panel button[data-tab="logs"]');
+    await logs.focus();
+
+    const reads = [];
+    page.on("request", request => {
+        const path = new URL(request.url()).pathname;
+        if (["/api/servers", "/api/dashboard/summary", "/api/status/changed-hosts"].includes(path)) reads.push(path);
+    });
+    await page.route("**/api/status/changed-hosts?*", route => {
+        const query = new URL(route.request().url()).searchParams;
+        expect(query.getAll("server")).toEqual(["scoped-host"]);
+        if (query.get("revision") === "5") return fulfillJson(route, { error: "stale" }, 409);
+        const summary = dashboardSnapshot();
+        return fulfillJson(route, {
+            servers: [{ ...scopedRow, status: servers[0].status }],
+            dashboard: { ...summary, servers: summary.servers.filter(row => row.name === "scoped-host") },
+        });
+    });
+    const send = (revision, reason = "job.update") => page.evaluate(payload => {
+        window.statusFixtureEvents.dispatchEvent(new MessageEvent("dashboard", {
+            data: JSON.stringify(payload),
+        }));
+    }, { reason, server_name: "scoped-host", revision });
+    const status = name => page.locator(`#servers-table tr[data-name="${name}"] .status-pill`);
+
+    servers[0] = { ...servers[0], status: "updating" };
+    await send(1);
+    await expect(status("scoped-host")).toHaveText("updating");
+    await expect(status("other-host")).toHaveText("done");
+    expect(reads.splice(0)).toEqual(["/api/status/changed-hosts"]);
+    await expect(page.locator("#metric-active-runs")).toHaveText("1");
+    await expect(page.locator("#search")).toHaveValue("-host");
+    await expect(update).toHaveCount(0);
+    await expect(logs).toBeFocused();
+
+    // Facts on a different host can expire without a dashboard event.
+    servers[0] = { ...servers[0], status: "idle" };
+    servers[1] = { ...servers[1], facts_state: "stale" };
+    const driftRecovery = waitForFleet();
+    await send(2);
+    await driftRecovery;
+    await expect(status("scoped-host")).toHaveText("idle");
+    await expect(page.locator("#metric-active-runs")).toHaveText("0");
+    await expect(page.locator("#metric-stale-facts")).toHaveText("1");
+    expect(reads.splice(0).sort()).toEqual(["/api/dashboard/summary", "/api/servers", "/api/status/changed-hosts"]);
+
+    // A skipped revision may have renamed a different host.
+    servers[1] = makeServer("renamed-host", "idle");
+    const recovery = waitForFleet();
+    await send(4);
+    await recovery;
+    await expect(status("other-host")).toHaveCount(0);
+    await expect(status("renamed-host")).toHaveText("idle");
+    expect(reads.splice(0).sort()).toEqual(["/api/dashboard/summary", "/api/servers"]);
+
+    servers[0] = { ...servers[0], status: "updating" };
+    const staleRecovery = waitForFleet();
+    await send(5);
+    await staleRecovery;
+    await expect(status("scoped-host")).toHaveText("updating");
+    expect(reads.splice(0).sort()).toEqual(["/api/dashboard/summary", "/api/servers", "/api/status/changed-hosts"]);
+    await expect(update).toHaveCount(0);
+    await expect(page.locator("#metric-active-runs")).toHaveText("1");
+
+    servers.pop();
+    const removal = waitForFleet();
+    await send(6, "future.inventory.event");
+    await removal;
+    await expect(status("renamed-host")).toHaveCount(0);
+    expect(reads.sort()).toEqual(["/api/dashboard/summary", "/api/servers"]);
 });
 
 test("structured SSE job logs preserve drawer scroll and avoid server refetches", async ({
@@ -870,6 +1001,35 @@ test("structured SSE job logs preserve drawer scroll and avoid server refetches"
     expect(serverRequests).toBe(requestsBeforeLogs);
 });
 
+test("a late first SSE subscription reconciles changes missed by the initial fallback", async ({ page }) => {
+    let servers = [makeServer("initial-host", "idle")];
+    await stubDashboardApi(page, () => servers);
+    await page.addInitScript(() => {
+        window.EventSource = class extends EventTarget {
+            constructor() {
+                super();
+                window.__initialStatusStream = this;
+            }
+            close() {}
+        };
+    });
+    await ensureAuthenticatedSession(page);
+    const initial = page.locator('#servers-table tbody tr[data-name="initial-host"]');
+    await expect(initial).toBeVisible();
+
+    // The first snapshots returned before the server could subscribe this tab.
+    servers = [makeServer("updated-host", "idle")];
+    await page.evaluate(() => {
+        window.__initialStatusStream.dispatchEvent(new Event("open"));
+        window.__initialStatusStream.dispatchEvent(new MessageEvent("dashboard", {
+            data: '{"reason":"connected"}',
+        }));
+    });
+    await expect(page.locator('#servers-table tbody tr[data-name="updated-host"]'))
+        .toBeVisible({ timeout: 2000 });
+    await expect(initial).toHaveCount(0);
+});
+
 for (const responseTiming of ["offline", "reconnected"]) {
     test(`SSE reconnect recovers a completed unselected job after an ${responseTiming} log response`, async ({
         baseURL,
@@ -1028,7 +1188,7 @@ test("bulk actions execute immediately, skip ineligible hosts, and report partia
         }),
     ];
     const state = {};
-    const detailRequests = await stubCompactStatus(page, () => servers);
+    await stubCompactStatus(page, () => servers);
     await page.route("**/api/update/idle-host", (route) => {
         state.updateIdle = (state.updateIdle || 0) + 1;
         state.updateIdentity = route.request().headers()["x-slu-server-identity"];
@@ -1038,14 +1198,6 @@ test("bulk actions execute immediately, skip ineligible hosts, and report partia
         state.approveStandard = (state.approveStandard || 0) + 1;
         return fulfillJson(route, { ok: true });
     });
-    await page.route(
-        "**/api/approve-security-kept-back/ok-sec-host",
-        (route) => {
-            state.approveKept = (state.approveKept || 0) + 1;
-            state.keptDecision = route.request().postDataJSON();
-            return fulfillJson(route, { ok: true });
-        },
-    );
     await page.route("**/api/approve-security/ok-sec-host", (route) => {
         state.approveSecurityOk = (state.approveSecurityOk || 0) + 1;
         return fulfillJson(route, { ok: true });
@@ -1113,11 +1265,6 @@ test("bulk actions execute immediately, skip ineligible hosts, and report partia
     await page.locator("#bulk-approve").click();
     await expect.poll(() => state.approveStandard || 0).toBe(1);
 
-    await page.locator("#bulk-approve-kept-security").click();
-    await expect.poll(() => state.approveKept || 0).toBe(1);
-    expect(state.keptDecision).toEqual({ job_id: "job-ok-sec-host", approval_generation: 1, confirm_removals: true });
-    expect(detailRequests).toEqual([]);
-
     await page
         .locator(
             '#servers-table tbody tr[data-name="fail-sec-host"] .row-select',
@@ -1133,6 +1280,9 @@ test("bulk actions execute immediately, skip ineligible hosts, and report partia
     const failureNotice = page.locator('#app-feedback-region[role="alert"]');
     await expect(failureNotice).toContainText("fail-sec-host: backend down");
     await expect(failureNotice).not.toContainText("no-sec-host: backend down");
+    const batchPanel = page.locator("#status-batch-panel");
+    await expect(batchPanel).toContainText("backend down");
+    const savedBatchURL = await batchPanel.getByRole("link", { name: "Link to this batch" }).getAttribute("href");
 
     await page
         .locator(
@@ -1160,6 +1310,261 @@ test("bulk actions execute immediately, skip ineligible hosts, and report partia
 
     await page.locator("#refresh-all-facts").click();
     await expect.poll(() => state.refreshIdle || 0).toBe(1);
+
+    await page.goto(savedBatchURL);
+    await expect(batchPanel).toContainText("Approve security updates");
+    await expect(batchPanel.locator("li").filter({ hasText: "fail-sec-host" })).toContainText("Refused");
+    await expect(batchPanel.locator("li").filter({ hasText: "ok-sec-host" })).toContainText("Completed");
+    await expect(batchPanel.getByRole("button", { name: "Retry fail-sec-host", exact: true })).toBeVisible();
+    await expect(batchPanel).not.toContainText("no-sec-host");
+});
+
+test("a stale batch links to the recorded retry after another tab claims the host", async ({ page }) => {
+    const server = makeServer("retry-host", "idle", [], { has_key: true, server_identity: "stable-retry-host" });
+    const originalID = "a".repeat(32);
+    const retryID = "b".repeat(32);
+    let conflict = false;
+    const submittedIDs = [];
+    await stubCompactStatus(page, () => [server]);
+    await page.route(`**/api/status/batches/${originalID}`, route => fulfillJson(route, {
+        batch: {
+            id: originalID, action: "update", hosts: [{
+                name: server.name, server_identity: server.server_identity, state: "refused", message: "Host was busy",
+                ...(conflict ? { retry_batch_id: retryID } : { retryable: true }),
+            }],
+        },
+    }));
+    await page.route(`**/api/status/batches/${retryID}`, route => fulfillJson(route, {
+        batch: {
+            id: retryID, retry_of: originalID, action: "update",
+            hosts: [{ name: server.name, server_identity: server.server_identity, state: "completed", job_id: "retry-job", job_status: "succeeded" }],
+        },
+    }));
+    await page.route("**/api/status/batches", route => {
+        const request = route.request().postDataJSON();
+        expect(request.retry_of).toBe(originalID);
+        submittedIDs.push(request.id);
+        conflict = true;
+        if (submittedIDs.length === 1) return fulfillJson(route, { error: "Gateway timeout" }, 504);
+        return fulfillJson(route, { error: "This host already has a retry attempt.", retry_batch_id: retryID }, 409);
+    });
+    await ensureAuthenticatedSession(page);
+    await page.goto(`/?maintenance_batch=${originalID}`);
+    const panel = page.locator("#status-batch-panel");
+    const retry = panel.getByRole("button", { name: "Retry retry-host" });
+    await expect(retry).toBeVisible();
+    await expect(page.locator('#servers-table tr[data-name="retry-host"]').getByRole("button", { name: "Update", exact: true })).toBeEnabled();
+    await retry.click();
+    const attempt = panel.getByRole("link", { name: "Open retry attempt for retry-host" });
+    await expect(attempt).toBeVisible();
+    expect(submittedIDs).toHaveLength(2);
+    expect(submittedIDs[0]).toBe(submittedIDs[1]);
+    await expect(retry).toHaveCount(0);
+    await attempt.click();
+    await expect(page).toHaveURL(url => url.searchParams.get("maintenance_batch") === retryID);
+    await expect(panel).toContainText("Succeeded");
+    await expect(panel.getByRole("link", { name: "Job report" })).toHaveAttribute("href", "/api/reports/jobs/retry-job");
+});
+
+test("a host awaiting approval can be handled while a maintenance batch is still queued", async ({ page }) => {
+    const first = makeServer("ready-host", "idle", [], { has_key: true });
+    const second = makeServer("queued-host", "idle", [], { has_key: true });
+    let batch;
+    let servers = [first, second];
+    await stubCompactStatus(page, () => servers);
+    await page.addInitScript(() => {
+        window.EventSource = class extends EventTarget {
+            constructor() {
+                super();
+                window.__batchStatusStream = this;
+            }
+            close() {}
+        };
+    });
+    await page.route("**/api/status/batches/*", (route) => fulfillJson(route, { batch: batch || null }));
+    await page.route("**/api/status/batches", (route) => {
+        const { id, targets } = route.request().postDataJSON();
+        servers = [{ ...first, status: "pending_approval", pending_updates: makePendingUpdates(1) }, second];
+        batch = {
+            id, action: "update", skipped_count: 0,
+            hosts: targets.map(target => target.name === first.name
+                ? { name: target.name, server_identity: target.server_identity, state: "waiting_approval", job_id: "job-ready-host", job_status: "waiting_approval" }
+                : { name: target.name, server_identity: target.server_identity, state: "queued" }),
+        };
+        return fulfillJson(route, { id }, 202);
+    });
+
+    await ensureAuthenticatedSession(page);
+    const readyRow = page.locator('#servers-table tr[data-name="ready-host"]');
+    const queuedRow = page.locator('#servers-table tr[data-name="queued-host"]');
+    const queuedUpdate = queuedRow.locator('button[data-action="update-server"]:enabled');
+    await expect(queuedUpdate).toHaveCount(1);
+    await readyRow.locator(".row-select").check();
+    await queuedRow.locator(".row-select").check();
+    await page.locator("#bulk-update").click();
+    await expect(page.locator("#status-batch-rows li").filter({ hasText: "queued-host" })).toContainText("Queued");
+    await page.evaluate(() => window.__batchStatusStream.dispatchEvent(new MessageEvent("dashboard", {
+        data: '{"reason":"job.update"}',
+    })));
+    await expect(readyRow.locator('button[data-action="cancel-upgrade"]')).toBeEnabled();
+    await expect(queuedUpdate).toHaveCount(0);
+    await expect(page.locator("#bulk-update")).toBeDisabled();
+
+    await page.reload();
+    await expect(page.locator("#status-batch-label")).toHaveText("Update checks");
+    await expect(readyRow.locator('button[data-action="cancel-upgrade"]')).toBeEnabled();
+    await expect(queuedUpdate).toHaveCount(0);
+
+    batch.hosts.find(host => host.name === second.name).state = "refused";
+    await expect(queuedUpdate).toHaveCount(1);
+});
+
+test("bulk kept-back approval requires individual consent for packages that will be removed", async ({ page }) => {
+    const revision = "a".repeat(64);
+    const removalHost = `removal-${"x".repeat(48)}`;
+    const plan = {
+        standard_package_count: 2,
+        kept_back_package_count: 1,
+        standard_security_count: 1,
+        total_security_count: 2,
+        kept_back_security_package_count: 1,
+        kept_back_security_plan_available: true,
+    };
+    const servers = [
+        makeServer("safe-host", "pending_approval", makePendingUpdates(3), {
+            has_password: true,
+            upgrade_plan: plan,
+        }),
+        makeServer(removalHost, "pending_approval", makePendingUpdates(3), {
+            has_password: true,
+            upgrade_plan: {
+                ...plan,
+                kept_back_security_removed_packages: ["old-sec-lib"],
+                package_deferrals: { revision, rules: [] },
+            },
+        }),
+    ];
+    const detailRequests = await stubCompactStatus(page, () => servers);
+    const requests = [];
+    await page.route("**/api/approve-security-kept-back/*", (route) => {
+        const name = new URL(route.request().url()).pathname.split("/").at(-1);
+        const body = route.request().postDataJSON();
+        requests.push({ name, body });
+        if (name === removalHost && body.approval_generation !== servers[1].approval_generation) {
+            return fulfillJson(route, { error: "The pending update changed. Refresh the package plan and confirm again." }, 409);
+        }
+        return fulfillJson(route, { ok: true });
+    });
+
+    await ensureAuthenticatedSession(page);
+    const row = (name) => page.locator(`#servers-table tr[data-name="${name}"] .row-select`);
+    const bulk = page.locator("#bulk-approve-kept-security");
+    const review = page.getByRole("button", { name: `Review ${removalHost}`, exact: true });
+    await row(removalHost).check();
+    await expect(bulk).toBeDisabled();
+    await expect(review).toBeVisible();
+    expect(await review.evaluate((button) => {
+        const rail = button.closest(".fleet-rail");
+        return button.scrollWidth <= button.clientWidth && button.getBoundingClientRect().right <= rail.getBoundingClientRect().right;
+    })).toBe(true);
+    // A press that was released outside its button still has a short grace period.
+    const removalCheckbox = await row(removalHost).elementHandle();
+    const reviewCleared = await review.evaluate((button, checkbox) => {
+        button.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+        checkbox.dispatchEvent(new PointerEvent("pointerup", { bubbles: true }));
+        checkbox.click();
+        return !button.checkVisibility();
+    }, removalCheckbox);
+    expect(reviewCleared).toBe(true);
+    await row(removalHost).check();
+    await row("safe-host").check();
+    await expect(bulk).toHaveText("Approve kept-back security (1)");
+    await bulk.click();
+    await expect(page.locator("#bulk-action-hint")).toHaveText("2 selected · 1 executed · 1 skipped");
+    expect(requests).toEqual([{ name: "safe-host", body: { job_id: "job-safe-host", approval_generation: 1 } }]);
+    expect(detailRequests).toEqual([]);
+
+    await review.click();
+    const dialog = page.locator("#action-confirm-message");
+    await expect(dialog).toContainText("old-sec-lib");
+    expect(requests).toHaveLength(1);
+    servers[1] = { ...servers[1], approval_generation: 2 };
+    await page.evaluate(() => fetchServers(true, "removal-approval-changed"));
+    await page.locator("#action-confirm-submit").click();
+    await expect(page.locator(".app-feedback")).toContainText("pending update changed");
+    expect(requests[1]).toEqual({
+        name: removalHost,
+        body: { job_id: `job-${removalHost}`, approval_generation: 1, deferral_revision: revision, confirm_removals: true },
+    });
+    await review.click();
+    await expect(dialog).toContainText("old-sec-lib");
+    await page.locator("#action-confirm-submit").click();
+    await expect.poll(() => requests[2]?.body).toEqual({
+        job_id: `job-${removalHost}`, approval_generation: 2, deferral_revision: revision, confirm_removals: true,
+    });
+
+    // An immediate network update can replace a host while a review control is pressed.
+    await review.dispatchEvent("pointerdown");
+    servers[1] = { ...servers[1], server_identity: "replacement" };
+    await page.evaluate(() => fetchServers(true, "removal-host-replacement"));
+    await expect(row(removalHost)).not.toBeChecked();
+    await page.locator("body").dispatchEvent("pointerup");
+    await expect(review).toBeHidden({ timeout: 3000 });
+});
+
+test("a late removal review cannot replace the confirmation for another host", async ({ page }) => {
+    const hosts = ["slow-host", "fast-host"];
+    const servers = hosts.map((name) => makeServer(name, "pending_approval", [
+        { package: "security-package", security: true, kept_back: true },
+    ], {
+        has_password: true,
+        upgrade_plan: {
+            standard_package_count: 0,
+            kept_back_package_count: 1,
+            standard_security_count: 0,
+            total_security_count: 1,
+            kept_back_security_plan_available: true,
+            kept_back_security_removed_packages: [`old-${name}`],
+        },
+    }));
+    await stubCompactStatus(page, () => servers);
+    let releaseSlowDetail;
+    const slowDetail = new Promise((resolve) => { releaseSlowDetail = resolve; });
+    const isSlowDetail = (url) => url.pathname === "/api/servers/status-detail" && url.searchParams.get("server_name") === "slow-host";
+    let slowDetailRequested = false;
+    await page.route("**/api/servers/status-detail?*", async (route) => {
+        if (isSlowDetail(new URL(route.request().url()))) {
+            slowDetailRequested = true;
+            await slowDetail;
+        }
+        await route.fallback();
+    });
+    const approvedHosts = [];
+    await page.route("**/api/approve-security-kept-back/*", (route) => {
+        approvedHosts.push(new URL(route.request().url()).pathname.split("/").at(-1));
+        return fulfillJson(route, { ok: true });
+    });
+
+    await ensureAuthenticatedSession(page);
+    for (const name of hosts) {
+        await page.getByRole("checkbox", { name: `Select ${name}`, exact: true }).check();
+    }
+    try {
+        await page.getByRole("button", { name: "Review slow-host", exact: true }).click();
+        await expect.poll(() => slowDetailRequested).toBe(true);
+        await page.getByRole("button", { name: "Review fast-host", exact: true }).click();
+        const message = page.locator("#action-confirm-message");
+        await expect(message).toContainText("old-fast-host");
+        const lateResponse = page.waitForResponse((response) => isSlowDetail(new URL(response.url())));
+        releaseSlowDetail();
+        await (await lateResponse).finished();
+        await expect(page.locator('#servers-table tr[data-name="slow-host"] [data-action="approve-security-kept-back"]')).toBeVisible();
+        await expect(message).toContainText("old-fast-host");
+        await page.locator("#action-confirm-submit").click();
+        await expect.poll(() => approvedHosts).toEqual(["fast-host"]);
+    } finally {
+        releaseSlowDetail();
+    }
 });
 
 test("auto refresh defers table replacement while an update action is being clicked", async ({

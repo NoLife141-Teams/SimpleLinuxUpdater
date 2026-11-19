@@ -1967,7 +1967,8 @@ body.status-page .head-meta {
 }
 
 .rail-bulk .select-page,
-.rail-bulk .bulk-hint {
+.rail-bulk .bulk-hint,
+#bulk-removal-review {
     grid-column: 1 / -1;
 }
 
@@ -2003,6 +2004,74 @@ body.status-page .head-meta {
 
 .bulk-hint.warning {
     color: var(--warning-text);
+}
+
+#bulk-removal-review .bulk-hint {
+    min-height: 0;
+}
+
+#bulk-removal-review ul {
+    display: grid;
+    gap: 4px;
+    list-style: none;
+    margin: 4px 0 0;
+    padding: 0;
+}
+
+#status-batch-panel:not([hidden]) summary {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+}
+
+#status-batch-panel .supporting-details-body,
+#status-batch-history .supporting-details-body {
+    padding: 0 10px 10px;
+}
+
+#status-batch-rows,
+#status-batch-history-list {
+    list-style: none;
+    display: grid;
+    gap: 6px;
+    margin: 0;
+    padding: 0;
+}
+
+#status-batch-rows li,
+#status-batch-history-list li {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    padding: 8px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    overflow-wrap: anywhere;
+}
+
+.status-batch-history-summary {
+    flex-basis: 100%;
+    color: var(--muted);
+}
+
+.status-batch-history-nav {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+#status-batch-rows li p {
+    flex-basis: 100%;
+    color: var(--muted);
+    margin: 0;
+}
+
+#bulk-removal-review .inline-btn {
+    height: auto;
+    overflow-wrap: anywhere;
+    white-space: normal;
 }
 
 .fleet-rail .bulk-actions .inline-btn:disabled {
@@ -2931,6 +3000,10 @@ body.status-page .triage-wrap table {
 @media (max-width: 1280px) {
     .variant-c-layout {
         grid-template-columns: minmax(186px, 208px) minmax(0, 1fr);
+    }
+
+    .fleet-rail {
+        position: static;
     }
 
     .context-panel {

@@ -788,19 +788,21 @@ func buildDashboardActions(serverName string, status *servers.ServerStatus, time
 	if fullUpgradeCount > fullUpgradeCandidates {
 		fullUpgradeCandidates = fullUpgradeCount
 	}
+	reconciliation := status.RequiresAPTReconciliation()
+	active := status != nil && status.ActionRunning
 	actions := map[string]DashboardActionInfo{
-		dashboardActionUpdate:                  dashboardPackageMutationAction(serverName, statusValue, timeline, "Ready to start update checks.", "update checks"),
+		dashboardActionUpdate:                  dashboardPackageMutationAction(serverName, statusValue, timeline, reconciliation, "Ready to start update checks.", "update checks"),
 		dashboardActionApproveAll:              dashboardApprovalAction(statusValue, triage.CanApproveAll, triage.StandardPackages, map[string]int{"updates": triage.StandardPackages}, "standard updates", "No standard updates eligible"),
 		dashboardActionApproveSecurity:         dashboardApprovalAction(statusValue, triage.CanApproveSecurity, triage.StandardSecurityUpdates, map[string]int{"security_updates": triage.StandardSecurityUpdates}, "standard security updates", "No standard security updates eligible"),
 		dashboardActionApproveSecurityKeptBack: dashboardKeptBackSecurityApprovalAction(statusValue, triage.CanApproveKeptBackSecurity, triage.KeptBackSecurityUpdates, plan),
 		dashboardActionApproveFull:             dashboardFullApprovalAction(statusValue, triage.CanApproveFull, fullUpgradeCandidates, fullUpgradeCount, triage.KeptBackPackages, plan),
 		dashboardActionCancel:                  dashboardCancelAction(statusValue),
-		dashboardActionAutoremove:              dashboardPackageMutationAction(serverName, statusValue, timeline, "Ready to run apt autoremove.", "autoremove"),
+		dashboardActionAutoremove:              dashboardPackageMutationAction(serverName, statusValue, timeline, reconciliation, "Ready to run apt autoremove.", "autoremove"),
 		dashboardActionRefreshFacts:            dashboardTransientAction(serverName, statusValue, timeline, "Ready to refresh host facts.", "facts refresh"),
 		dashboardActionEnableApt:               dashboardTransientAction(serverName, statusValue, timeline, "Ready to enable passwordless apt.", "passwordless apt change"),
 		dashboardActionDisableApt:              dashboardTransientAction(serverName, statusValue, timeline, "Ready to disable passwordless apt.", "passwordless apt change"),
-		dashboardActionRepairApt:               dashboardAptRepairAction(serverName, statusValue),
-		dashboardActionReboot:                  dashboardRebootAction(serverName, statusValue, timeline, health),
+		dashboardActionRepairApt:               dashboardAptRepairAction(serverName, statusValue, active, reconciliation),
+		dashboardActionReboot:                  dashboardRebootAction(serverName, statusValue, timeline, health, reconciliation),
 	}
 	if readiness.Code == servers.MaintenanceReadinessDisabled {
 		for key := range actions {
@@ -827,35 +829,35 @@ func buildDashboardActions(serverName string, status *servers.ServerStatus, time
 	return actions
 }
 
-func dashboardRebootAction(serverName, statusValue string, timeline DashboardTimelineInfo, health DashboardHealthInfo) DashboardActionInfo {
+func dashboardRebootAction(serverName, statusValue string, timeline DashboardTimelineInfo, health DashboardHealthInfo, reconciliation bool) DashboardActionInfo {
 	if strings.TrimSpace(serverName) == "" {
 		return dashboardUnavailableAction("Server identity is unavailable", "")
 	}
 	if health.RebootRequired == nil || !*health.RebootRequired {
 		return dashboardUnavailableAction("Host facts do not report a required reboot", statusValue)
 	}
-	if statusValue == runtimepkg.StatusNeedsReconciliation {
-		return dashboardBlockedAction(dashboardActionReadinessBlocked, "Repair APT/DPKG state before rebooting", statusValue)
+	if reconciliation {
+		return dashboardBlockedAction(dashboardActionReadinessBlocked, "Repair APT/DPKG state before rebooting", runtimepkg.StatusNeedsReconciliation)
 	}
 	return dashboardTransientAction(serverName, statusValue, timeline, "Ready for a controlled reboot and verification.", "controlled reboot")
 }
 
-func dashboardAptRepairAction(serverName, statusValue string) DashboardActionInfo {
+func dashboardAptRepairAction(serverName, statusValue string, active, reconciliation bool) DashboardActionInfo {
 	if strings.TrimSpace(serverName) == "" {
 		return dashboardUnavailableAction("Server identity is unavailable", "")
 	}
-	if statusValue == runtimepkg.StatusNeedsReconciliation {
-		return dashboardReadyAction("Ready to inspect and repair APT/DPKG state.", nil)
-	}
-	if runtimepkg.StatusInProgress(statusValue) {
+	if active || runtimepkg.StatusInProgress(statusValue) {
 		return dashboardBlockedAction(dashboardActionReadinessInProgress, "Another maintenance action is active", statusValue)
+	}
+	if reconciliation {
+		return dashboardReadyAction("Ready to inspect and repair APT/DPKG state.", nil)
 	}
 	return dashboardUnavailableAction("APT repair is only available after an uncertain or failed package operation", statusValue)
 }
 
-func dashboardPackageMutationAction(serverName, statusValue string, timeline DashboardTimelineInfo, readyReason, actionLabel string) DashboardActionInfo {
-	if statusValue == runtimepkg.StatusNeedsReconciliation {
-		return dashboardBlockedAction(dashboardActionReadinessBlocked, "APT reconciliation is required before another package mutation", statusValue)
+func dashboardPackageMutationAction(serverName, statusValue string, timeline DashboardTimelineInfo, reconciliation bool, readyReason, actionLabel string) DashboardActionInfo {
+	if reconciliation {
+		return dashboardBlockedAction(dashboardActionReadinessBlocked, servers.ErrAPTReconciliation.Error(), runtimepkg.StatusNeedsReconciliation)
 	}
 	return dashboardTransientAction(serverName, statusValue, timeline, readyReason, actionLabel)
 }
@@ -864,6 +866,10 @@ func buildDashboardRecommendedAction(status *servers.ServerStatus, timeline Dash
 	statusValue := ""
 	if status != nil {
 		statusValue = strings.ToLower(strings.TrimSpace(status.Status))
+	}
+	if status.RequiresAPTReconciliation() && statusValue != runtimepkg.StatusNeedsReconciliation {
+		action := actions[dashboardActionRepairApt]
+		return DashboardRecommendedActionInfo{Key: "repair_package_state", Label: "APT reconciliation required", Detail: action.Reason, Action: dashboardActionRepairApt}
 	}
 	if statusValue == runtimepkg.StatusApplicationCheck {
 		return DashboardRecommendedActionInfo{Key: "monitor_apt", Label: "Monitor application checks", Detail: "A read-only application test is active. Review its results in Admin before taking another action."}
@@ -1150,6 +1156,7 @@ func (s *Service) BuildDashboardSummaryContextWithOptions(ctx context.Context, r
 	if err := ctx.Err(); err != nil {
 		return DashboardSummaryResponse{}, err
 	}
+	started := time.Now()
 	if s != nil {
 		if err := s.acquireDashboardProjection(ctx); err != nil {
 			return DashboardSummaryResponse{}, err
@@ -1158,6 +1165,7 @@ func (s *Service) BuildDashboardSummaryContextWithOptions(ctx context.Context, r
 	}
 	deps := s.EnsureDeps()
 	collector := newDashboardProjectionCollector(deps)
+	collectStarted := time.Now()
 	projectionInput, err := collector.CollectContextWithOptions(ctx, rawWindow, now, options)
 	if err != nil {
 		return DashboardSummaryResponse{}, err
@@ -1165,6 +1173,7 @@ func (s *Service) BuildDashboardSummaryContextWithOptions(ctx context.Context, r
 	if err := ctx.Err(); err != nil {
 		return DashboardSummaryResponse{}, err
 	}
+	projectStarted := time.Now()
 	projection := newDashboardProjection()
 	result := projection.Project(projectionInput)
 	if options.OmitVulnerabilityFindings {
@@ -1172,6 +1181,11 @@ func (s *Service) BuildDashboardSummaryContextWithOptions(ctx context.Context, r
 			result.Servers[i].Risk.Vulnerability.Findings = nil
 			result.Servers[i].Risk.Vulnerability.ResolvedFindings = nil
 		}
+	}
+	if timings := options.Timings; timings != nil {
+		timings.Wait = collectStarted.Sub(started)
+		timings.Collection = projectStarted.Sub(collectStarted)
+		timings.Projection = time.Since(projectStarted)
 	}
 	return result, nil
 }

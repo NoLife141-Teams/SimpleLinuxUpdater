@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"debian-updater/internal/maintenance"
 	"debian-updater/internal/servers"
 )
 
@@ -145,7 +146,7 @@ func TestProcessDueWithRecoveryPreservesOlderPendingMaintenanceOccurrence(t *tes
 	}
 	service := NewService(deps)
 	monday := time.Date(2026, 1, 5, 3, 0, 0, 0, time.UTC)
-	service.RememberMissedTick(monday)
+	service.RememberMissedTick(monday, maintenance.Blocker{})
 	store := SchedulerWatermarkStore{
 		Load: func() (time.Time, bool, error) { return watermark, true, nil },
 		Save: func(value time.Time) error { watermark = value; return nil },

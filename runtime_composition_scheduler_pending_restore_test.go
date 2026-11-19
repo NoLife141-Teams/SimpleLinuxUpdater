@@ -4,12 +4,14 @@ import (
 	"context"
 	"testing"
 	"time"
+
+	maintenancepkg "debian-updater/internal/maintenance"
 )
 
 func TestPreparePersistenceReplacementClearsPendingPolicySchedulerTicks(t *testing.T) {
 	service := NewPolicyService(PolicyServiceDeps{})
 	missed := time.Date(2026, 9, 6, 15, 0, 0, 0, time.UTC)
-	service.RememberMissedTick(missed)
+	service.RememberMissedTick(missed, maintenancepkg.Blocker{Cause: maintenancepkg.BlockBackupRestore, JobID: "restore-before-replacement"})
 	if got := service.PendingMissedTicks(); len(got) != 1 {
 		t.Fatalf("pending missed ticks before replacement = %v, want one", got)
 	}

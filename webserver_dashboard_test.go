@@ -8,12 +8,18 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"path/filepath"
+	"reflect"
+	"slices"
+	"strconv"
 	"testing"
 	"time"
 
+	"debian-updater/internal/events"
 	healthpkg "debian-updater/internal/health"
 	observabilitypkg "debian-updater/internal/observability"
+	"debian-updater/internal/postchecks"
 
 	"github.com/gin-gonic/gin"
 	_ "modernc.org/sqlite"
@@ -740,4 +746,133 @@ func TestBuildDashboardSummaryProjectsFuturePolicyRun(t *testing.T) {
 			t.Fatalf("NextRun.State = %q, want none", got)
 		}
 	})
+}
+
+func TestStatusChangedHostsMatchesFleetProjectionWithinByteBudget(t *testing.T) {
+	a := newScalingApp(t, 1000)
+	broker := a.deps.DashboardEventBroker
+	names := []string{"synthetic-0000", "synthetic-0001", "synthetic-0003"}
+	const profileHost = "synthetic-0003"
+	status := a.deps.ServerState.CurrentStatusSnapshot(profileHost)
+	status.ApplicationPostcheckProfile = &postchecks.Snapshot{Name: "Scoped permission fixture"}
+	a.deps.ServerState.RestoreStatusSnapshot(profileHost, status)
+	for _, name := range names {
+		broker.PublishEvent(events.Event{Reason: "job.update", ServerName: name})
+	}
+	query := url.Values{"server": names, "revision": {strconv.FormatUint(broker.Revision(), 10)}}
+	decode := func(rec *httptest.ResponseRecorder, destination any) {
+		t.Helper()
+		if rec.Code != http.StatusOK {
+			t.Fatalf("HTTP %d: %.200s", rec.Code, rec.Body.String())
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), destination); err != nil {
+			t.Fatal(err)
+		}
+	}
+	path := "/api/status/changed-hosts?"
+	for _, credential := range []string{"admin", "viewer"} {
+		t.Run(credential, func(t *testing.T) {
+			inventory := a.request("/api/servers", credential, true)
+			dashboard := a.request("/api/dashboard/summary?window=7d", credential, true)
+			changed := a.request(path+query.Encode(), credential, false)
+			var fullRows []statusServerRow
+			var fullDashboard statusDashboardSummary
+			var patch statusChangedHosts
+			decode(inventory, &fullRows)
+			decode(dashboard, &fullDashboard)
+			decode(changed, &patch)
+			if changed.Header().Get("Cache-Control") != "no-store" || changed.Body.Len() > 16384 ||
+				changed.Body.Len()*20 >= inventory.Body.Len()+dashboard.Body.Len() {
+				t.Fatalf("targeted body %d bytes, fleet bodies %d and %d bytes", changed.Body.Len(), inventory.Body.Len(), dashboard.Body.Len())
+			}
+			if len(patch.Servers) != len(names) || len(patch.Dashboard.Servers) != len(names) ||
+				!reflect.DeepEqual(patch.Dashboard.Fleet, fullDashboard.Fleet) || patch.Dashboard.RowsVersion != fullDashboard.RowsVersion {
+				t.Fatal("patch must contain exactly the requested rows and the global fleet projection metadata")
+			}
+			for _, name := range names {
+				matchServer := func(row statusServerRow) bool { return row.Name == name }
+				matchDashboard := func(row statusDashboardRow) bool { return row.Name == name }
+				serverIndex := slices.IndexFunc(patch.Servers, matchServer)
+				fullServerIndex := slices.IndexFunc(fullRows, matchServer)
+				dashboardIndex := slices.IndexFunc(patch.Dashboard.Servers, matchDashboard)
+				fullDashboardIndex := slices.IndexFunc(fullDashboard.Servers, matchDashboard)
+				if serverIndex < 0 || fullServerIndex < 0 || dashboardIndex < 0 || fullDashboardIndex < 0 {
+					t.Fatalf("projection for %s omitted %s", credential, name)
+				}
+				if !reflect.DeepEqual(patch.Servers[serverIndex], fullRows[fullServerIndex]) ||
+					!reflect.DeepEqual(patch.Dashboard.Servers[dashboardIndex], fullDashboard.Servers[fullDashboardIndex]) {
+					t.Fatalf("targeted %s for %s differs from its fleet projections", name, credential)
+				}
+				if name == profileHost && patch.Servers[serverIndex].HasApplicationPostchecks != (credential == "admin") {
+					t.Fatalf("wrong profile visibility for %s", credential)
+				}
+			}
+		})
+	}
+	viewer, err := a.deps.AuthService.AccountByName("scaling-viewer")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, role := range []string{"operator", "reader"} {
+		if err := a.deps.AuthService.UpdateAccount(viewer.ID, role, false); err != nil {
+			t.Fatal(err)
+		}
+		if rec := a.request(path+query.Encode(), "viewer", false); rec.Code != http.StatusUnauthorized {
+			t.Fatalf("targeted projection reused the old %s session: HTTP %d", role, rec.Code)
+		}
+		a.viewer = a.login(t, "/api/auth/login", viewer.Username)
+		query.Set("revision", strconv.FormatUint(broker.Revision(), 10))
+		var patch statusChangedHosts
+		decode(a.request(path+query.Encode(), "viewer", false), &patch)
+		index := slices.IndexFunc(patch.Servers, func(row statusServerRow) bool { return row.Name == profileHost })
+		if index < 0 || patch.Servers[index].HasApplicationPostchecks != (role == "operator") {
+			t.Fatalf("targeted projection ignored current role %s", role)
+		}
+	}
+	if rec := a.request(path+query.Encode(), "pat", false); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("browser-only patch accepted PAT: HTTP %d", rec.Code)
+	}
+	if rec := a.request(path+"revision="+query.Get("revision")+"&server=unknown", "admin", false); rec.Code != http.StatusConflict {
+		t.Fatalf("patch for a missing host: HTTP %d", rec.Code)
+	}
+	broker.Publish("servers-bulk-updated")
+	if rec := a.request(path+query.Encode(), "admin", false); rec.Code != http.StatusConflict {
+		t.Fatalf("patch with stale revision: HTTP %d", rec.Code)
+	}
+}
+
+func TestStatusChangedHostsRejectsGlobalAndInventoryChangesDuringProjection(t *testing.T) {
+	for _, change := range []string{"global-settings", "inventory-removal"} {
+		t.Run(change, func(t *testing.T) {
+			a := newScalingApp(t, 10)
+			const name = "synthetic-0003"
+			broker := a.deps.DashboardEventBroker
+			broker.PublishEvent(events.Event{Reason: "job.update", ServerName: name})
+			query := url.Values{"server": {name}, "revision": {strconv.FormatUint(broker.Revision(), 10)}}
+			deps := a.deps.ObservabilityService.EnsureDeps()
+			snapshot := deps.ServerSnapshot
+			projecting := false
+			deps.ServerSnapshot = func() ([]Server, map[string]*ServerStatus) {
+				inventory, status := snapshot()
+				projecting = true
+				if change == "inventory-removal" {
+					if err := a.deps.ServerInventoryService.Delete(name); err != nil {
+						t.Fatal(err)
+					}
+					broker.Publish("server-deleted")
+				} else {
+					broker.Publish("timezone-updated")
+				}
+				return inventory, status
+			}
+			a.deps.ObservabilityService = observabilitypkg.NewService(deps)
+			rec := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(rec)
+			c.Request = httptest.NewRequest(http.MethodGet, "/api/status/changed-hosts?"+query.Encode(), nil)
+			handleStatusChangedHosts(c, a.deps)
+			if !projecting || rec.Code != http.StatusConflict {
+				t.Fatalf("changed snapshot returned HTTP %d (projection entered %v): %s", rec.Code, projecting, rec.Body.String())
+			}
+		})
+	}
 }

@@ -9,11 +9,9 @@ import (
 
 func maintenanceReadinessForServers(deps AppDeps, serverList []Server) map[string]serverpkg.MaintenanceReadiness {
 	globalKeyConfigured, globalKeyKnown := globalSSHCredentialReadiness(deps.GlobalSSHCredential)
-	hostKeyStatuses := map[string]serverpkg.HostKeyStatus{}
+	var hostKeyStatuses map[string]serverpkg.HostKeyStatus
 	if deps.ServerInventoryService != nil {
-		for _, status := range deps.ServerInventoryService.ListStatuses() {
-			hostKeyStatuses[status.Name] = status.HostKeyStatus
-		}
+		hostKeyStatuses = deps.ServerInventoryService.HostKeyStatuses()
 	}
 	result := make(map[string]serverpkg.MaintenanceReadiness, len(serverList))
 	for _, server := range serverList {

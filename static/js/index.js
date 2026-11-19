@@ -13,7 +13,7 @@
             ? lifecycle.observer(root.ResizeObserver)
             : undefined;
         const LOG_BOTTOM_THRESHOLD = 20;
-        const canManageMaintenance = ["admin", "operator"].includes(document.body.dataset.accountRole);
+        const canApprove = window.canUseScope("approvals:write");
         const dashboardConsumption = window.DashboardProjectionConsumption;
         const statusFormatting = window.StatusFormatting;
         const statusRendering = window.StatusRendering.create(document);
@@ -30,6 +30,10 @@
         const statusInteraction = window.StatusPageInteraction.createStore({
             presentationFacts: dashboardConsumption.presentationFacts,
             linkedServerIdentity: document.body.dataset.linkedServerIdentity,
+            linkedApproval: {
+                jobId: document.body.dataset.linkedApprovalJob,
+                generation: document.body.dataset.linkedApprovalGeneration,
+            },
             canReadLogs: window.canUseScope("logs:read"),
         });
         window.statusPageInteraction = statusInteraction;
@@ -102,6 +106,8 @@
             dispatchStatusInteraction: (...args) =>
                 dispatchStatusInteraction(...args),
             encodeURIComponent: (...args) => encodeURIComponent(...args),
+            isCurrentJobLog: statusInteraction.isCurrentJobLog,
+            isOpenJobLog: statusInteraction.isOpenJobLog,
         });
         const { executeStatusSnapshotFetch, executeJobLogFetch, executeHostDetailFetch, fetchHostDetail } =
             statusSnapshots;
@@ -115,10 +121,11 @@
                 updateRefreshAllFactsState(...args),
             scheduleSelectPageStateUpdate: (...args) =>
                 scheduleSelectPageStateUpdate(...args),
-            pendingApprovalRequestOptions: (...args) =>
-                pendingApprovalRequestOptions(...args),
             dispatchStatusInteraction: (...args) =>
                 dispatchStatusInteraction(...args),
+            escapeHtml: (...args) => escapeHtml(...args),
+            renderHTML: statusRendering.html,
+            reviewKeptBackApproval: (...args) => approveKeptBackSecurityUpdates(...args),
         });
         const { updateBulkActionState } = statusBulk;
         statusBulk.init();
@@ -174,6 +181,11 @@
                     renderServerState();
                 } else if (effect.type === "revealLinkedServer") {
                     revealLinkedServer(effect);
+                } else if (effect.type === "openLinkedApproval") {
+                    syncDashboardFilterInputs();
+                    openDrawer(effect.name, "pending", true);
+                } else if (effect.type === "linkedApprovalUnavailable") {
+                    showLinkedApprovalUnavailable(effect);
                 } else if (effect.type === "dismissLinkedServer") {
                     document.getElementById("linked-server-message").hidden = true;
                     syncDashboardFilterInputs();
@@ -259,6 +271,18 @@
 
         function statusLabel(value) {
             return statusFormatting.statusLabel(value);
+        }
+
+        function aptReconciliationStatusHtml(server) {
+            if (!server.apt_reconciliation_required && server.status !== "needs_reconciliation") return "";
+            const jobID = server.apt_reconciliation_job_id;
+            const badge = server.status !== "needs_reconciliation"
+                ? '<span class="status-pill status-needs_reconciliation">APT reconciliation required</span>'
+                : "";
+            const report = window.canUseScope("logs:read") && jobID
+                ? `<a class="inline-btn btn-ghost" href="/api/reports/jobs/${encodeURIComponent(jobID)}">APT incident report</a>`
+                : "";
+            return badge + report;
         }
 
         function formatRelativeTime(date) {
@@ -586,7 +610,7 @@
                 policies: "policies",
                 globalKey: "global key",
             };
-            const streams = getStatusView().sync.streams;
+            const streams = statusInteraction.getSyncState().streams;
             const syncErrors = Object.entries(streams)
                 .filter(([, stream]) => stream.lastError)
                 .map(
@@ -1195,6 +1219,7 @@
             statusRendering.html(panel, `
                 <div class="selected-status-row">
                     <span class="status-pill status-${safeStatus}">${escapeHtml(server.disabled ? "Disabled" : statusLabel(server.status))}</span>
+                    ${aptReconciliationStatusHtml(server)}
                     ${repeatsRuntimeStatus ? "" : `<span class="stage-chip phase-${escapeHtml(timeline.state || "idle")}">${escapeHtml(phaseLabel)}</span>`}
                 </div>
                 ${updateSecuritySummaryHtml(selected, safeDataName)}
@@ -1327,18 +1352,25 @@
 
         const statusTransport = window.StatusTransport.createController({
             EventSourceType: window.EventSource,
-            onServersPoll: () => fetchServers(false, "poll"),
+            onServersPoll: () => {
+                statusBulk.refreshWaitingBatch();
+                return fetchServers(false, "poll");
+            },
             onExtrasPoll: () => fetchDashboardExtras("poll"),
             onJobLogEvent: (event) => {
                 dispatchStatusInteraction({ type: "jobLogReceived", event });
             },
-            onDashboardEvent: () => {
+            onHostsRefresh: (names, revision) => {
+                statusBulk.refreshWaitingBatch();
+                dispatchStatusInteraction({ type: "targetedRefreshRequested", names, revision });
+            },
+            onDashboardRefresh: (streams) => {
+                if (streams.includes("servers")) statusBulk.refreshWaitingBatch();
                 requestStatusRefresh(
-                    ["servers", "dashboard"],
+                    streams,
                     "immediate",
                     "sse",
                 );
-                fetchDashboardExtras("sse", false);
             },
             onReconnect: () =>
                 dispatchStatusInteraction({ type: "jobLogReconnect" }),
@@ -1741,6 +1773,19 @@
             lifecycle.requestAnimationFrame(() => (found ? heading : message).focus());
         }
 
+        function showLinkedApprovalUnavailable({ reason, closeDrawer: shouldCloseDrawer }) {
+            if (shouldCloseDrawer) closeDrawer();
+            const message = document.getElementById("linked-server-message");
+            message.textContent = {
+                removed: "The linked host was removed or replaced in the inventory.",
+                expired: "This approval has expired or is no longer pending.",
+                replaced: "This approval plan was replaced. Select the host in Status to review the current plan.",
+            }[reason];
+            message.hidden = false;
+            syncDashboardFilterInputs();
+            lifecycle.requestAnimationFrame(() => message.focus());
+        }
+
         function persistDashboardFilters(value) {
             try {
                 localStorage.setItem(
@@ -1896,14 +1941,14 @@
             lifecycle.setTimeout(updateSelectPageState, 0);
         }
 
-        function openDrawer(name, tab = "logs") {
+        function openDrawer(name, tab = "logs", fromApprovalLink = false) {
             if (!window.canUseScope("logs:read")) tab = "pending";
             const previousDrawer = getStatusView().drawer;
             if (previousDrawer.serverName !== name) {
                 drawerLogScrollTop = 0;
                 drawerPendingScrollTop = 0;
             }
-            dispatchStatusInteraction({ type: "drawerOpened", name, tab });
+            dispatchStatusInteraction({ type: "drawerOpened", name, tab, fromApprovalLink });
             renderDrawer();
             statusDrawerAdapter.open(
                 document.getElementById("status-drawer"),
@@ -2031,6 +2076,7 @@
             const safeStatus = safeStatusClass(server.status);
             const safeStatusText = escapeHtml(statusLabel(server.status));
             const isPendingApproval = server.status === "pending_approval";
+            const linkedPlanLoaded = !drawerState.fromApprovalLink || !!detail?.snapshot?.upgrade_plan;
             const hasPending = hasPendingUpdates(server);
             const driftReason = pendingApprovalDriftReason(server);
             const triage = getServerApprovalTriage(server);
@@ -2053,29 +2099,31 @@
             title.textContent = server.name || "Server details";
             statusContainer.innerHTML = `
 	                <span class="status-pill status-${safeStatus}">${safeStatusText}</span>
+                    ${aptReconciliationStatusHtml(server)}
+	                ${drawerState.fromApprovalLink ? `<span class="drawer-status-note">Linked plan · Generation ${escapeHtml(String(server.approval_generation))}</span>` : ""}
 	                ${applicationPostchecksHtml(server, detail?.snapshot)}
  ${driftReason ? `<span class="drawer-status-note pending-drift-note" title="${escapeHtml(driftReason)}">${escapeHtml(driftReason)}</span>` : ""}
 	            `;
-            approvalActions.classList.toggle("hidden", !isPendingApproval);
+            approvalActions.classList.toggle("hidden", !isPendingApproval || !canApprove);
             drawerApproveAllBtn.textContent = `Approve (${approvalCounts.standard})`;
-            drawerApproveAllBtn.disabled = !triage.can_approve_all;
+            drawerApproveAllBtn.disabled = !canApprove || !linkedPlanLoaded || !triage.can_approve_all;
             drawerApproveSecurityBtn.textContent = securityApprovalLabel;
-            drawerApproveSecurityBtn.disabled = !triage.can_approve_security;
+            drawerApproveSecurityBtn.disabled = !canApprove || !linkedPlanLoaded || !triage.can_approve_security;
             drawerApproveKeptBackSecurityBtn.textContent = `Kept-back security (${keptBackSecurityCount})`;
             drawerApproveKeptBackSecurityBtn.disabled =
-                !canApproveKeptBackSecurity;
+                !canApprove || !linkedPlanLoaded || !canApproveKeptBackSecurity;
             drawerApproveKeptBackSecurityBtn.classList.toggle(
                 "hidden",
                 !canApproveKeptBackSecurity,
             );
             drawerApproveFullBtn.textContent = `Full upgrade (${approvalCounts.full})`;
-            drawerApproveFullBtn.disabled = !triage.can_approve_full;
+            drawerApproveFullBtn.disabled = !canApprove || !linkedPlanLoaded || !triage.can_approve_full;
             drawerApproveFullBtn.classList.toggle(
                 "hidden",
                 !triage.can_approve_full,
             );
 
-            pendingTabBtn.disabled = !hasPending;
+            pendingTabBtn.disabled = !hasPending && !drawerState.fromApprovalLink;
             pendingTabBtn.classList.toggle(
                 "active",
                 drawerState.tab === "pending",
@@ -2412,6 +2460,7 @@
                         </td>
                         <td class="status-col">
                             <span class="status-pill status-${safeStatus}">${safeStatusText}</span>
+                            ${server.apt_reconciliation_required && server.status !== "needs_reconciliation" ? '<span class="status-pill status-needs_reconciliation">APT reconciliation required</span>' : ""}
                         </td>
                         <td class="timeline-progress-col">
                             <div class="timeline-progress-content">
@@ -2920,15 +2969,20 @@
 
         async function repairApt(name) {
             const lifetime = lifecycle.capture();
-
-            if (!canRepairAptAction(getServerByName(name))) {
+            const server = getServerByName(name);
+            const jobID = server?.apt_reconciliation_job_id || server?.job_id;
+            if (!jobID || !canRepairAptAction(server)) {
                 statusActionAdapter.notify(
                     "APT repair is not available for the current server state.",
                 );
                 return;
             }
+            let verifiedHostKey = "";
             const confirmed = await statusActionAdapter.confirm(
-                `Repair APT/DPKG state on ${name}?\n\nThis checks active package-manager locks, completes pending dpkg configuration, repairs dependencies, and verifies APT health. Do not continue if another maintenance session is running on the host.`,
+                `Repair APT/DPKG state on ${name} (SSH ${server.host}, port ${server.port})?\n\nThe connection must match the SSH host key confirmed for this job before any repair command runs. Repair checks package-manager locks, completes pending dpkg configuration, repairs dependencies, and verifies APT health.`,
+                document.body.dataset.accountRole === "admin"
+                    ? { onVerifiedHostKey: value => { verifiedHostKey = value; } }
+                    : {},
             );
             if (!lifecycle.isCurrent(lifetime)) return;
             if (!confirmed) return;
@@ -2938,7 +2992,11 @@
                     "Failed to start APT repair.",
                     {
                         headers: { "Content-Type": "application/json" },
-                        body: JSON.stringify({ confirm: true }),
+                        body: JSON.stringify({
+                            confirm: true,
+                            job_id: jobID,
+                            ...(verifiedHostKey ? { verified_host_key: verifiedHostKey } : {}),
+                        }),
                     },
                 ),
             );
@@ -3406,7 +3464,7 @@
             document,
             "pointerup",
             () => {
-                if (getStatusView().sync.interactionDepth > 0) {
+                if (statusInteraction.getSyncState().interactionDepth > 0) {
                     endActionInteraction();
                 }
             },
@@ -3416,7 +3474,7 @@
             document,
             "pointercancel",
             () => {
-                if (getStatusView().sync.interactionDepth > 0) {
+                if (statusInteraction.getSyncState().interactionDepth > 0) {
                     endActionInteraction();
                 }
             },
@@ -3445,7 +3503,7 @@
             "keyup",
             (event) => {
                 if (event.key !== "Enter" && event.key !== " ") return;
-                if (getStatusView().sync.interactionDepth > 0) {
+                if (statusInteraction.getSyncState().interactionDepth > 0) {
                     endActionInteraction();
                 }
             },
@@ -3520,9 +3578,13 @@
             if (!lifecycle.isCurrent(lifetime)) return;
         }
 
-        async function approveKeptBackSecurityUpdates(name) {
+        async function approveKeptBackSecurityUpdates(name, expectedServerIdentity) {
             const lifetime = lifecycle.capture();
 
+            if (expectedServerIdentity && getServerByName(name)?.server_identity !== expectedServerIdentity) {
+                statusActionAdapter.notify("This host changed. Review the current selection before approving.");
+                return;
+            }
             await runSingleHostAction(
                 name,
                 "approve_security_kept_back",
@@ -3530,6 +3592,10 @@
                 async (plan) => {
                     const lifetime = lifecycle.capture();
 
+                    if (expectedServerIdentity && plan.payloadFacts.serverIdentity !== expectedServerIdentity) {
+                        statusActionAdapter.notify("This host changed. Review the current selection before approving.");
+                        return false;
+                    }
                     const server = getServerByName(name);
                     const counts = plan.payloadFacts.counts;
                     const triage = getServerApprovalTriage(server, {
@@ -3855,8 +3921,6 @@
         initColumnResizing();
         lifecycle.setInterval(renderSyncState, 5000);
         statusTransport.start();
-        fetchDashboardExtras();
-        fetchServers();
 
         lifecycle.own(statusTransport.destroy);
         lifecycle.own(() => {

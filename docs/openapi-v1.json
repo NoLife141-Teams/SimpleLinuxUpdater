@@ -1835,6 +1835,7 @@
       "post": {
         "operationId": "post_api_repair_name",
         "summary": "POST /api/repair/:name",
+        "description": "Confirm the current reconciliation job. The server identity and SSH endpoint must still match the job's original target.",
         "x-slu-scope": "maintenance:write",
         "security": [
           {
@@ -1958,7 +1959,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/Confirmation"
+                "$ref": "#/components/schemas/AptRepairConfirmation"
               }
             }
           }
@@ -4756,7 +4757,30 @@
           "confirm": {
             "type": "boolean",
             "const": true,
-            "description": "Explicit confirmation is required before a controlled reboot or APT repair is admitted."
+            "description": "Explicit confirmation is required before a controlled reboot is admitted."
+          }
+        }
+      },
+      "AptRepairConfirmation": {
+        "type": "object",
+        "required": [
+          "confirm",
+          "job_id"
+        ],
+        "properties": {
+          "confirm": {
+            "type": "boolean",
+            "const": true
+          },
+          "job_id": {
+            "type": "string",
+            "minLength": 1,
+            "description": "The exact job ID currently requiring APT reconciliation."
+          },
+          "verified_host_key": {
+            "type": "string",
+            "pattern": "^SHA256:[A-Za-z0-9+/]{43}$",
+            "description": "Independently verified SSH host key fingerprint for this job. Requires inventory permission in addition to maintenance permission."
           }
         }
       },

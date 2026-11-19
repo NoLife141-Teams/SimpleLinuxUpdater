@@ -3,6 +3,7 @@ package policies
 import (
 	"time"
 
+	"debian-updater/internal/maintenance"
 	"debian-updater/internal/servers"
 )
 
@@ -39,16 +40,17 @@ const (
 	RunCancelled       = "cancelled"
 	RunInterrupted     = "interrupted"
 
-	RunReasonBlackout    = "blackout"
-	RunReasonBusy        = "busy"
-	RunReasonSuperseded  = "superseded"
-	RunReasonRestart     = "restart"
-	RunReasonNoMatch     = "no_match"
-	RunReasonMissing     = "missing"
-	RunReasonMaintenance = "maintenance"
-	RunReasonPersistence = "persistence"
-	RunReasonRolloutGate = "rollout_gate"
-	RunReasonReadiness   = "connection_readiness"
+	RunReasonBlackout          = "blackout"
+	RunReasonBusy              = "busy"
+	RunReasonAPTReconciliation = "apt_reconciliation_required"
+	RunReasonSuperseded        = "superseded"
+	RunReasonRestart           = "restart"
+	RunReasonNoMatch           = "no_match"
+	RunReasonMissing           = "missing"
+	RunReasonMaintenance       = "maintenance"
+	RunReasonPersistence       = "persistence"
+	RunReasonRolloutGate       = "rollout_gate"
+	RunReasonReadiness         = "connection_readiness"
 
 	GlobalBlackoutsSetting        = "update_policy_global_blackouts"
 	DefaultApprovalTimeoutMinutes = 720
@@ -227,6 +229,11 @@ type Run struct {
 	JobDetailURL         string `json:"job_detail_url,omitempty"`
 	ReportURL            string `json:"report_url,omitempty"`
 	AuditURL             string `json:"audit_url,omitempty"`
+
+	MaintenanceCause   maintenance.BlockCause `json:"maintenance_cause,omitempty"`
+	BlockingJobID      string                 `json:"-"`
+	MaintenanceJobID   string                 `json:"maintenance_job_id,omitempty"`
+	MaintenanceTickUTC string                 `json:"-"`
 }
 
 type RunQuery struct {
@@ -364,6 +371,8 @@ type RunUpdate struct {
 	ResultJSON *string
 	StartedAt  *string
 	FinishedAt *string
+
+	MaintenanceBlocker *maintenance.Blocker
 }
 
 // RolloutOriginRange bounds prior occurrences by an inclusive lower bound and

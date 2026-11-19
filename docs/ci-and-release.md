@@ -40,9 +40,14 @@ No production behavior is patched for that control.
 The 15-minute CI job uses Contents read permission. The pinned Python runtime
 runs the archive migration in a networkless container. The operational
 qualification upgrades a disposable copy of the pinned published image's volume
-and restores its archive into a fresh candidate volume. A networkless QEMU runner
-uses the candidate image's binary and assets to verify a controlled reboot and
-the return of SSH and systemd.
+and restores its pre-upgrade archive into fresh volumes on the candidate and on
+the published image. The rollback result is recorded separately and verifies the
+restored login, inventory, policies and SSH host-key trust after restart. A
+separate candidate archive is exported and restored after a real batch and its
+retry have reached terminal states. The report records restored account
+isolation, retry idempotency and notification continuity against per-container
+loopback receivers. A networkless QEMU runner uses the candidate image's binary
+and assets to verify a controlled reboot and the return of SSH and systemd.
 
 The negative and positive archive reports, the operational report and the VM
 report are uploaded for one day from explicit paths. These redacted JSON files

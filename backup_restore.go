@@ -2,11 +2,13 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"log"
 	"mime/multipart"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -351,10 +353,44 @@ func handleBackupRestoreWithDeps(c *gin.Context, deps AppDeps) {
 
 func handleBackupVerifyWithDeps(c *gin.Context, deps AppDeps) {
 	deps = deps.withDefaults()
-	handleBackupVerifyWithService(c, deps.BackupService)
+	var installation *backupInstallationReview = &backupInstallationReview{
+		State: "unavailable", Message: "APT compatibility could not be checked. Wait for local maintenance to finish, then review the archive again.",
+	}
+	canReadReports := contextAllows(c, "logs:read")
+	review := func(ctx context.Context, archive *sql.DB) {
+		err := previewAPTRestore(ctx, deps, archive, jobTimestampNow())
+		if err == nil {
+			installation.State = "ready"
+			installation.Message = "No APT reconciliation conflict found. The restore checks again before replacing data."
+			return
+		}
+		var conflicts aptRestoreConflicts
+		if !errors.As(err, &conflicts) {
+			return
+		}
+		if canReadReports {
+			for i := range conflicts {
+				conflicts[i].ReportURL = "/api/reports/jobs/" + url.PathEscape(conflicts[i].jobID)
+			}
+		}
+		installation.State = "blocked"
+		installation.Message = "Resolve APT reconciliation on this installation or choose another archive, then review it again."
+		installation.Conflicts = conflicts
+	}
+	handleBackupVerifyWithReview(c, deps.BackupService, installation, review)
 }
 
 func handleBackupVerifyWithService(c *gin.Context, service *BackupService) {
+	handleBackupVerifyWithReview(c, service, nil, nil)
+}
+
+type backupInstallationReview struct {
+	State     string              `json:"state"`
+	Message   string              `json:"message"`
+	Conflicts aptRestoreConflicts `json:"conflicts,omitempty"`
+}
+
+func handleBackupVerifyWithReview(c *gin.Context, service *BackupService, installation *backupInstallationReview, review func(context.Context, *sql.DB)) {
 	if service == nil {
 		service = defaultBackupService()
 	}
@@ -393,7 +429,7 @@ func handleBackupVerifyWithService(c *gin.Context, service *BackupService) {
 	if c.Request != nil {
 		verifyCtx = c.Request.Context()
 	}
-	result, err := service.VerifyArchiveFile(verifyCtx, upload, passphrase)
+	result, err := service.VerifyArchiveFileWithReview(verifyCtx, upload, passphrase, review)
 	if err != nil {
 		var restoreErr *internalbackup.RestoreError
 		stage := internalbackup.RestoreStageArchive
@@ -409,6 +445,9 @@ func handleBackupVerifyWithService(c *gin.Context, service *BackupService) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid backup payload"})
 		}
 		return
+	}
+	if !result.RestoreReady {
+		installation = nil
 	}
 	audit(c, "backup.verify", "backup", "state", "success", "Backup restore readiness reviewed", map[string]any{
 		"manifest_files":       result.ManifestFileCount,
@@ -451,6 +490,7 @@ func handleBackupVerifyWithService(c *gin.Context, service *BackupService) {
 		"impact":               result.Impact,
 		"blockers":             result.Blockers,
 		"warnings":             result.Warnings,
+		"installation_review":  installation,
 	})
 }
 
@@ -539,6 +579,9 @@ func handleBackupRestoreWithLifecycle(c *gin.Context, lifecycle *backupOperation
 	case backupOperationRestoreArchiveFailed:
 		c.Header("X-Job-ID", outcome.JobID)
 		c.JSON(http.StatusBadRequest, gin.H{"error": outcome.PublicError})
+	case backupOperationRestoreAPTConflict:
+		c.Header("X-Job-ID", outcome.JobID)
+		c.JSON(http.StatusConflict, gin.H{"error": outcome.PublicError})
 	case backupOperationRestoreApplyFailed:
 		c.Header("X-Job-ID", outcome.JobID)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": outcome.PublicError})

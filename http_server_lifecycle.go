@@ -149,6 +149,10 @@ func main() {
 	if _, err := loadBackupAutomationDeployment(); err != nil {
 		log.Fatalf("Invalid automated backup configuration: %v", err)
 	}
+	publicOrigin, err := parseApplicationOrigin(os.Getenv(applicationURLEnv))
+	if err != nil {
+		log.Fatalf("Invalid %s: %v", applicationURLEnv, err)
+	}
 	listenAddr, err := resolveListenAddr(os.Getenv)
 	if err != nil {
 		log.Fatalf("Invalid HTTP listen configuration: %v", err)
@@ -164,7 +168,7 @@ func main() {
 	defer cancelMaintenance()
 	restoreMaintenanceContext := setApplicationMaintenanceContext(maintenanceCtx)
 	defer restoreMaintenanceContext()
-	deps := (AppDeps{ScheduledRunReconciliationContext: shutdownCtx}).withDefaults()
+	deps := (AppDeps{ScheduledRunReconciliationContext: shutdownCtx, PublicOrigin: publicOrigin}).withDefaults()
 	r, err := setupRouterWithDeps(deps)
 	if err != nil {
 		log.Fatalf("Failed to setup router: %v", err)

@@ -5,11 +5,13 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
 
 	backuppkg "debian-updater/internal/backup"
+	"debian-updater/internal/jobs"
 	notificationpkg "debian-updater/internal/notifications"
 )
 
@@ -24,7 +26,7 @@ type notificationFactQuerier interface {
 
 // The adapter reads accepted server facts, never browser projections. Audit and
 // health cursors belong to Notification Delivery Lifecycle and commit with admission.
-func newNotificationConditionSource(dbProvider func() *sql.DB, now func() time.Time) notificationpkg.ConditionSource {
+func newNotificationConditionSource(dbProvider func() *sql.DB, now func() time.Time, origin *url.URL) notificationpkg.ConditionSource {
 	recovery := backuppkg.NewService(backuppkg.ServiceDeps{DB: dbProvider, Now: now})
 	return func(ctx context.Context, cursorText string, previous []notificationpkg.Condition) (notificationpkg.ConditionBatch, error) {
 		batch := notificationpkg.ConditionBatch{}
@@ -93,22 +95,27 @@ func newNotificationConditionSource(dbProvider func() *sql.DB, now func() time.T
 		if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO notification_server_identities(server_name,identity) SELECT name,lower(hex(randomblob(16))) FROM servers WHERE name NOT IN (SELECT server_name FROM notification_server_identities)`); err != nil {
 			return batch, err
 		}
-		identities, err := tx.QueryContext(ctx, `SELECT n.server_name,n.identity,COALESCE(e.changed_at,'') FROM notification_server_identities n JOIN servers s ON s.name=n.server_name LEFT JOIN server_health_endpoints e ON e.server_name=n.server_name`)
+		identities, err := tx.QueryContext(ctx, `SELECT n.server_name,n.identity,COALESCE(e.changed_at,''),s.identity,s.host,s.port FROM notification_server_identities n JOIN servers s ON s.name=n.server_name LEFT JOIN server_health_endpoints e ON e.server_name=n.server_name`)
 		if err != nil {
 			return batch, err
 		}
 		rebootIDs := map[string]string{}
 		names := map[string]string{}
 		endpointChanges := map[string]string{}
+		aptInventory := map[string]Server{}
 		for identities.Next() {
-			var name, id, changedAt string
-			if err := identities.Scan(&name, &id, &changedAt); err != nil {
+			var server Server
+			var id, changedAt string
+			if err := identities.Scan(&server.Name, &id, &changedAt, &server.Identity, &server.Host, &server.Port); err != nil {
 				_ = identities.Close()
 				return batch, err
 			}
-			rebootIDs[name] = "reboot/" + id
-			names["reboot/"+id] = name
-			endpointChanges[name] = changedAt
+			rebootIDs[server.Name] = "reboot/" + id
+			names["reboot/"+id] = server.Name
+			endpointChanges[server.Name] = changedAt
+			if target := server.APTTarget(); target != "" {
+				aptInventory[target] = server
+			}
 		}
 		if err := identities.Err(); err != nil {
 			_ = identities.Close()
@@ -148,34 +155,46 @@ func newNotificationConditionSource(dbProvider func() *sql.DB, now func() time.T
 		approvals := map[string]notificationpkg.ConditionFact{}
 		for _, condition := range previous {
 			if condition.Fact.EventType == notificationpkg.EventApprovalPublished {
-				approvals[condition.Fact.ID] = condition.Fact
-			}
-		}
-		for _, fact := range batch.Facts {
-			if fact.EventType == notificationpkg.EventApprovalPublished {
+				fact := condition.Fact
+				fact.Active = false
 				approvals[fact.ID] = fact
 			}
 		}
-		waiting, err := tx.QueryContext(ctx, `SELECT id,server_name,meta_json,updated_at FROM jobs WHERE status='waiting_approval'`)
+		waiting, err := tx.QueryContext(ctx, `SELECT j.id,j.server_name,j.meta_json,j.updated_at,s.identity
+			FROM jobs j JOIN servers s ON s.name=j.server_name WHERE j.status='waiting_approval'`)
 		if err != nil {
 			return batch, err
 		}
 		for waiting.Next() {
-			var id, name, raw, created string
-			if err := waiting.Scan(&id, &name, &raw, &created); err != nil {
+			var id, name, raw, created, inventoryIdentity string
+			if err := waiting.Scan(&id, &name, &raw, &created, &inventoryIdentity); err != nil {
 				_ = waiting.Close()
 				return batch, err
 			}
 			var meta struct {
-				Generation uint64 `json:"approval_generation"`
+				Generation     uint64 `json:"approval_generation"`
+				ServerIdentity string `json:"server_identity"`
 			}
 			_ = json.Unmarshal([]byte(raw), &meta)
 			if meta.Generation == 0 {
 				continue
 			}
 			generation := strconv.FormatUint(meta.Generation, 10)
-			safeMeta, _ := json.Marshal(map[string]any{"job_id": id, "approval_generation": meta.Generation})
-			approvals["approval/"+id] = notificationpkg.ConditionFact{ID: "approval/" + id, EventType: notificationpkg.EventApprovalPublished, TargetType: "server", TargetName: name, Generation: generation, Active: true, CreatedAt: created, MetaJSON: string(safeMeta), Message: fmt.Sprintf("Approval pending for job %s, plan generation %s. Review the current plan in the authenticated Status page.", id, generation)}
+			link := approvalLink{ServerIdentity: meta.ServerIdentity, JobID: id, Generation: meta.Generation}
+			conditionID := "approval/" + id
+			active := meta.ServerIdentity == "" || meta.ServerIdentity == inventoryIdentity
+			fact := notificationpkg.ConditionFact{ID: conditionID, EventType: notificationpkg.EventApprovalPublished, TargetType: "server", TargetName: name,
+				ServerIdentity: meta.ServerIdentity, Generation: generation, Active: active, CreatedAt: created}
+			safeMeta := map[string]any{"job_id": id, "approval_generation": meta.Generation}
+			fact.Message = fmt.Sprintf("Approval pending for job %s, plan generation %s. Review the current plan in the authenticated Status page.", id, generation)
+			if fact.Active && origin != nil && link.valid() {
+				approvalURL := link.url(*origin)
+				safeMeta["approval_url"] = approvalURL
+				fact.Message = fmt.Sprintf("Approval pending for job %s, plan generation %s. Review the exact plan in Status: %s", id, generation, approvalURL)
+			}
+			encoded, _ := json.Marshal(safeMeta)
+			fact.MetaJSON = string(encoded)
+			approvals[conditionID] = fact
 		}
 		if err := waiting.Err(); err != nil {
 			_ = waiting.Close()
@@ -183,29 +202,13 @@ func newNotificationConditionSource(dbProvider func() *sql.DB, now func() time.T
 		}
 		_ = waiting.Close()
 		for _, fact := range approvals {
-			if !fact.Active {
-				continue
-			}
-			var meta struct {
-				JobID string `json:"job_id"`
-			}
-			_ = json.Unmarshal([]byte(fact.MetaJSON), &meta)
-			var status, name string
-			err := tx.QueryRowContext(ctx, `SELECT status,server_name FROM jobs WHERE id=?`, meta.JobID).Scan(&status, &name)
-			if err != nil && err != sql.ErrNoRows {
-				return batch, err
-			}
-			var exists int
-			if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM servers WHERE name=?`, name).Scan(&exists); err != nil {
-				return batch, err
-			}
-			if status != "waiting_approval" || exists == 0 {
-				fact.Active = false
-			} else {
-				fact.TargetName = name
-			}
 			batch.Facts = append(batch.Facts, fact)
 		}
+		aptFacts, err := notificationAPTReconciliationFacts(ctx, tx, aptInventory, previous)
+		if err != nil {
+			return batch, err
+		}
+		batch.Facts = append(batch.Facts, aptFacts...)
 		if err := tx.Commit(); err != nil {
 			return batch, err
 		}
@@ -233,6 +236,38 @@ func newNotificationConditionSource(dbProvider func() *sql.DB, now func() time.T
 	}
 }
 
+func notificationAPTReconciliationFacts(ctx context.Context, tx *sql.Tx, inventory map[string]Server, previous []notificationpkg.Condition) ([]notificationpkg.ConditionFact, error) {
+	incidents, err := jobs.ListAPTReconciliationIncidents(ctx, tx)
+	if err != nil {
+		return nil, err
+	}
+	facts := make([]notificationpkg.ConditionFact, 0, len(incidents))
+	activeIDs := make(map[string]bool, len(incidents))
+	for _, incident := range incidents {
+		server, matches := inventory[incident.Target]
+		if !matches {
+			continue
+		}
+		id := notificationpkg.APTReconciliationConditionID(incident.Target, incident.JobID)
+		activeIDs[id] = true
+		meta, _ := json.Marshal(map[string]string{"job_id": incident.JobID})
+		facts = append(facts, notificationpkg.ConditionFact{
+			ID: id, EventType: notificationpkg.EventAPTReconciliationRequired,
+			TargetType: "server", TargetName: server.Name, ServerIdentity: server.Identity,
+			Active: true, CreatedAt: incident.CreatedAt, MetaJSON: string(meta),
+			Message: "APT reconciliation is required before the next package operation. Review the incident in authenticated job history.",
+		})
+	}
+	for _, condition := range previous {
+		fact := condition.Fact
+		if fact.EventType == notificationpkg.EventAPTReconciliationRequired && fact.Active && !activeIDs[fact.ID] {
+			fact.Active = false
+			facts = append(facts, fact)
+		}
+	}
+	return facts, nil
+}
+
 func notificationAuditFacts(ctx context.Context, db notificationFactQuerier, after int64) ([]notificationpkg.ConditionFact, int64, error) {
 	rows, err := db.QueryContext(ctx, `SELECT id,created_at,action,target_name,status,meta_json FROM audit_events WHERE id>? ORDER BY id`, after)
 	if err != nil {
@@ -257,22 +292,17 @@ func notificationAuditFacts(ctx context.Context, db notificationFactQuerier, aft
 		}
 		_ = json.Unmarshal([]byte(raw), &meta)
 		switch action {
-		case notificationpkg.EventApprovalPublished, notificationpkg.EventApprovalExpired:
+		case notificationpkg.EventApprovalExpired:
 			if status != "success" || meta.JobID == "" || meta.Generation == 0 {
 				continue
 			}
 			generation := strconv.FormatUint(meta.Generation, 10)
 			safeMeta, _ := json.Marshal(map[string]any{"job_id": meta.JobID, "approval_generation": meta.Generation})
-			fact := notificationpkg.ConditionFact{ID: "approval/" + meta.JobID, EventType: notificationpkg.EventApprovalPublished, TargetType: "server", TargetName: name, Generation: generation, Active: action == notificationpkg.EventApprovalPublished, CreatedAt: created, MetaJSON: string(safeMeta), Message: fmt.Sprintf("Approval pending for job %s, plan generation %s. Review the current plan in the authenticated Status page.", meta.JobID, generation)}
-			facts = append(facts, fact)
-			if action == notificationpkg.EventApprovalExpired {
-				fact.ID += "/expired/" + generation
-				fact.EventType = action
-				fact.Active = true
-				fact.OneShot = true
-				fact.Message = fmt.Sprintf("Approval expired for job %s, plan generation %s.", meta.JobID, generation)
-				facts = append(facts, fact)
-			}
+			facts = append(facts, notificationpkg.ConditionFact{
+				ID: "approval/" + meta.JobID + "/expired/" + generation, EventType: action, TargetType: "server", TargetName: name,
+				Generation: generation, Active: true, OneShot: true, CreatedAt: created, MetaJSON: string(safeMeta),
+				Message: fmt.Sprintf("Approval expired for job %s, plan generation %s.", meta.JobID, generation),
+			})
 		case "backup.export", "backup.verify", "backup.automatic.failed", "backup.automatic.succeeded":
 			verify := action == "backup.verify"
 			event, key, label := notificationpkg.EventBackupExportFailed, "backup/export", "Backup export failed. Review backup recovery health in the authenticated Administration page."

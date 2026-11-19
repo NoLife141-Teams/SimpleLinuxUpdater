@@ -297,13 +297,9 @@ func (fs restoreFiles) snapshotFilesToDirectory(tempRoot string, targets []strin
 		}
 		snapshot.Exists = true
 		snapshot.BackupPath = filepath.Join(dir, fmt.Sprintf("snapshot-%d", index))
-		if err := copyPathBounded(target, snapshot.BackupPath, MaxExtractedBytes); err != nil {
+		if err := fs.copySnapshot(snapshot.BackupPath, target); err != nil {
 			_ = os.RemoveAll(dir)
-			return "", nil, err
-		}
-		if err := fs.syncPath(snapshot.BackupPath); err != nil {
-			_ = os.RemoveAll(dir)
-			return "", nil, fmt.Errorf("sync rollback snapshot: %w", err)
+			return "", nil, fmt.Errorf("persist rollback snapshot: %w", err)
 		}
 		snapshots = append(snapshots, snapshot)
 	}
@@ -414,6 +410,16 @@ func (s *Service) applyArchiveFiles(ctx context.Context, files map[string]string
 	dbTarget := s.deps.DBPath()
 	fs := restoreFiles{sync: s.syncRestoreFile}
 	markerPath := RestoreRecoveryMarkerPath(dbTarget)
+	pending, err := RestoreRecoveryPending(dbTarget)
+	if err != nil {
+		return fmt.Errorf("inspect restore recovery marker: %w", err)
+	}
+	if pending {
+		return &IncompleteRecoveryError{
+			Cause:    errors.New("restore could not start"),
+			Recovery: errors.New("restore recovery is already pending"),
+		}
+	}
 	knownHostsTarget := filepath.Join(filepath.Dir(dbTarget), "known_hosts")
 	if path, err := s.deps.KnownHostsWritePath(); err == nil && strings.TrimSpace(path) != "" {
 		knownHostsTarget = path
@@ -421,6 +427,13 @@ func (s *Service) applyArchiveFiles(ctx context.Context, files map[string]string
 	targets := []string{dbTarget}
 	targets = append(targets, SQLiteSidecarPaths(dbTarget)...)
 	if _, ok := files["known_hosts"]; ok {
+		conflict, err := sameRestoreEntry(markerPath, knownHostsTarget)
+		if err != nil {
+			return fmt.Errorf("inspect known_hosts restore target: %w", err)
+		}
+		if conflict {
+			return errors.New("known_hosts restore target conflicts with the restore recovery marker")
+		}
 		targets = append(targets, knownHostsTarget)
 	}
 	if err := ctx.Err(); err != nil {
@@ -450,10 +463,7 @@ func (s *Service) applyArchiveFiles(ctx context.Context, files map[string]string
 	manifestPath := filepath.Join(snapshotDir, "recovery.json")
 	manifest, err := json.MarshalIndent(snapshots, "", "  ")
 	if err == nil {
-		err = os.WriteFile(manifestPath, manifest, 0600)
-	}
-	if err == nil {
-		err = fs.syncPath(manifestPath)
+		err = fs.writeSnapshot(manifestPath, bytes.NewReader(manifest))
 	}
 	if err == nil {
 		err = fs.syncPath(snapshotDir)
@@ -466,9 +476,12 @@ func (s *Service) applyArchiveFiles(ctx context.Context, files map[string]string
 	created, err := fs.publishRecoveryMarker(markerPath, snapshotDir)
 	if err != nil {
 		cause := fmt.Errorf("persist restore recovery marker: %w", err)
-		if created || errors.Is(err, os.ErrExist) {
+		if created {
 			keepSnapshots = true
 			return &IncompleteRecoveryError{Cause: cause, Recovery: err, SnapshotDir: snapshotDir}
+		}
+		if errors.Is(err, os.ErrExist) {
+			return &IncompleteRecoveryError{Cause: cause, Recovery: err}
 		}
 		return s.reloadOriginalPersistence(ctx, cause, restoreHandoff)
 	}

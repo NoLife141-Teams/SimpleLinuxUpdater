@@ -22,7 +22,6 @@ from pathlib import Path
 from scenario import API, require
 
 HERE = Path(__file__).resolve().parent
-VM_TOOLS = HERE.parent / "ssh-apt"
 DOCKER = ("docker", "--host=unix:///var/run/docker.sock")
 LABEL = "io.simplelinuxupdater.operational-qualification"
 PIN = json.loads((HERE / "operational-release.json").read_text())
@@ -647,10 +646,14 @@ HTTPServer(("127.0.0.1", int(port)), Receiver).serve_forever()
         evidence["obsolete_approval"] = "passed"
 
     def controlled_reboot(self):
+        source = self.work / "vm-source"
+        source.mkdir()
+        with tarfile.open(self.work / "source.tar") as archive:
+            archive.extractall(source, filter="data")
         build = self.work / "vm-runner"
         build.mkdir()
         for name in ("vm-runner.Dockerfile", "vm-reboot.py", "run.py", "images.json"):
-            shutil.copyfile(VM_TOOLS / name, build / name)
+            shutil.copyfile(source / "tools" / "ci" / "ssh-apt" / name, build / name)
         docker("build", "--platform", PLATFORM, "--label", self.label, "--tag", self.vm_runner,
                "--file", build / "vm-runner.Dockerfile", build, timeout=240)
 
@@ -664,7 +667,7 @@ HTTPServer(("127.0.0.1", int(port)), Receiver).serve_forever()
         app.mkdir(mode=0o755)
         with container_archive(f"{asset_container}:/app/.") as archive:
             archive.extractall(app, filter="data")
-        command("env", "CGO_ENABLED=0", "GOOS=linux", "GOARCH=amd64", "go", "-C", self.source,
+        command("env", "CGO_ENABLED=0", "GOOS=linux", "GOARCH=amd64", "go", "-C", source,
                 "test", "-c", "-o", app / "restore-power-loss.test", "./internal/backup", timeout=240)
         name = self.prefix + "-reboot"
         docker("run", "--pull", "never", "--detach", "--label", self.label, "--name", name,

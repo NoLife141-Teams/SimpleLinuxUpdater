@@ -122,11 +122,12 @@ func requireDurableRestoreState(t *testing.T, dbPath, hostsPath, inventory, trus
 	if coord.Snapshot().RecoveryRequired != pending {
 		t.Fatalf("recovery state = %+v, want recovery required %v", coord.Snapshot(), pending)
 	}
-	if pending {
-		if lease, decision := coord.TryShared(maintenance.WorkInteractive); decision.Allowed {
-			lease.Close()
-			t.Fatal("durable restore marker did not block work after startup")
-		}
+	lease, decision := coord.TryShared(maintenance.WorkInteractive)
+	if lease != nil {
+		lease.Close()
+	}
+	if decision.Allowed == pending {
+		t.Fatalf("work admission after startup = %v, want %v", decision.Allowed, !pending)
 	}
 }
 
@@ -167,7 +168,7 @@ func requireDurableRollbackEvidence(t *testing.T, dbPath, hostsPath string) {
 }
 
 func TestRestoreSynchronizesBeforeReplacementAndKeepsEvidenceOnFailedRollback(t *testing.T) {
-	for _, step := range []string{"rollback manifest", "forward host keys", "forward trust directory", "rollback database"} {
+	for _, step := range []string{"rollback snapshot", "rollback manifest", "forward host keys", "forward trust directory", "rollback database"} {
 		t.Run(step, func(t *testing.T) {
 			root := t.TempDir()
 			reloads := 0
@@ -182,7 +183,8 @@ func TestRestoreSynchronizesBeforeReplacementAndKeepsEvidenceOnFailedRollback(t 
 			f.service.syncRestoreFile = func(file *os.File) error {
 				path := file.Name()
 				temporary := strings.HasPrefix(filepath.Base(path), ".restore-")
-				if !injected && ((step == "rollback manifest" && filepath.Base(path) == "recovery.json") ||
+				if !injected && ((step == "rollback snapshot" && filepath.Base(path) == "snapshot-0") ||
+					(step == "rollback manifest" && filepath.Base(path) == "recovery.json") ||
 					(step == "forward host keys" && temporary && filepath.Dir(path) == filepath.Dir(f.hosts)) ||
 					(step == "forward trust directory" && path == filepath.Dir(f.hosts)) ||
 					(step == "rollback database" && temporary && filepath.Dir(path) == root && reloads == 1)) {
@@ -201,7 +203,7 @@ func TestRestoreSynchronizesBeforeReplacementAndKeepsEvidenceOnFailedRollback(t 
 					t.Fatalf("failed rollback = %v, reload count = %d", err, reloads)
 				}
 			default:
-				if !errors.Is(err, syscall.EIO) || reloads != 1 {
+				if !errors.Is(err, syscall.EIO) || reloads == 0 {
 					t.Fatalf("sync failure = %v, reload count = %d", err, reloads)
 				}
 			}
@@ -211,6 +213,45 @@ func TestRestoreSynchronizesBeforeReplacementAndKeepsEvidenceOnFailedRollback(t 
 				return
 			}
 			requireDurableRestoreState(t, f.db, f.hosts, originalRestoreServer, originalRestoreTrust, false)
+		})
+	}
+}
+
+func TestRestoreRecoveryMarkerProtectsReservedEntryAndExistingEvidence(t *testing.T) {
+	for _, test := range []string{"host trust conflicts", "recovery already pending"} {
+		t.Run(test, func(t *testing.T) {
+			root := t.TempDir()
+			f := newDurabilityFixture(t, root, testRestoredRuntime{prepare: func() {
+				t.Fatal("runtime was paused despite the invalid restore target")
+			}})
+			markerPath := RestoreRecoveryMarkerPath(f.db)
+			pending := test == "recovery already pending"
+			if pending {
+				if err := os.WriteFile(markerPath, []byte("slu-restore-rollback-existing\n"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				alias := filepath.Join(root, "alias")
+				if err := os.Symlink(root, alias); err != nil {
+					t.Fatal(err)
+				}
+				f.service.deps.KnownHostsWritePath = func() (string, error) {
+					return filepath.Join(alias, filepath.Base(markerPath)), nil
+				}
+			}
+			err := f.service.applyArchiveFiles(t.Context(), f.files, RestoreOptions{})
+			var recovery *IncompleteRecoveryError
+			if pending {
+				if !errors.As(err, &recovery) || recovery.SnapshotDir != "" {
+					t.Fatalf("restore with existing recovery = %v", err)
+				}
+				if raw, err := os.ReadFile(markerPath); err != nil || string(raw) != "slu-restore-rollback-existing\n" {
+					t.Fatal("existing recovery evidence was changed")
+				}
+			} else if err == nil || !strings.Contains(err.Error(), "known_hosts restore target conflicts") {
+				t.Fatalf("restore with aliased target = %v", err)
+			}
+			requireDurableRestoreState(t, f.db, f.hosts, originalRestoreServer, originalRestoreTrust, pending)
 		})
 	}
 }

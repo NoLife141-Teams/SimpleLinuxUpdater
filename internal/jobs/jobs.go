@@ -1,6 +1,7 @@
 package jobs
 
 import (
+	"context"
 	"crypto/rand"
 	"database/sql"
 	"encoding/hex"
@@ -837,10 +838,6 @@ func (r *SQLiteRepository) createWithAdmission(record Record, receipt AdmissionR
 }
 
 func (r *SQLiteRepository) Upsert(record Record) error {
-	return r.upsert(record, false)
-}
-
-func (r *SQLiteRepository) upsert(record Record, restoreAPTEvidence bool) error {
 	if r == nil || r.db == nil {
 		return errors.New("job repository is not initialized")
 	}
@@ -849,6 +846,16 @@ func (r *SQLiteRepository) upsert(record Record, restoreAPTEvidence bool) error 
 		return err
 	}
 	defer tx.Rollback()
+	if err := upsertJobRow(context.Background(), tx, record, false); err != nil {
+		return err
+	}
+	if _, err := r.replaceLogSnapshotTx(tx, record.ID, record.LogsText, LogStreamCombined, record.UpdatedAt); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func upsertJobRow(ctx context.Context, tx *sql.Tx, record Record, restoreAPTEvidence bool) error {
 	statement := `
 		INSERT INTO jobs (
 			id, kind, parent_job_id, server_name, actor, client_ip, status, phase, summary, logs_text,
@@ -874,7 +881,7 @@ func (r *SQLiteRepository) upsert(record Record, restoreAPTEvidence bool) error 
 	if restoreAPTEvidence {
 		statement += ", apt_mutation_host_key = excluded.apt_mutation_host_key"
 	}
-	_, err = tx.Exec(statement,
+	_, err := tx.ExecContext(ctx, statement,
 		record.ID,
 		record.Kind,
 		record.ParentJobID,
@@ -895,19 +902,7 @@ func (r *SQLiteRepository) upsert(record Record, restoreAPTEvidence bool) error 
 		record.APTTarget,
 		record.APTMutationHostKey,
 	)
-	if err != nil {
-		return err
-	}
-	if _, err := r.replaceLogSnapshotTx(tx, record.ID, record.LogsText, LogStreamCombined, record.UpdatedAt); err != nil {
-		return err
-	}
-	if restoreAPTEvidence {
-		if _, err := tx.Exec(`UPDATE jobs SET logs_expired = ?, logs_truncated = MAX(logs_truncated, ?) WHERE id = ?`,
-			record.LogsExpired, record.LogsTruncated, record.ID); err != nil {
-			return err
-		}
-	}
-	return tx.Commit()
+	return err
 }
 
 func (r *SQLiteRepository) ApplyTransition(record Record, expectedRevision int64, activeOnly bool) (bool, error) {
@@ -983,8 +978,14 @@ func (r *SQLiteRepository) Get(id string) (Record, error) {
 	if r == nil || r.db == nil {
 		return Record{}, errors.New("job repository is not initialized")
 	}
+	return getJobRow(context.Background(), r.db, id)
+}
+
+func getJobRow(ctx context.Context, db interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}, id string) (Record, error) {
 	var record Record
-	err := r.db.QueryRow(`
+	err := db.QueryRowContext(ctx, `
 		SELECT id, kind, parent_job_id, server_name, actor, client_ip, status, phase, summary, logs_text,
 		       error_class, retry_policy_json, meta_json, created_at, updated_at, started_at, finished_at,
 		       logs_expired, logs_truncated, revision, apt_target, apt_mutation_host_key

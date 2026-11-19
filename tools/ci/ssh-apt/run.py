@@ -443,6 +443,11 @@ class Harness:
                     host.get("diagnostic_available") and not host.get("retryable"),
                     "restart did not preserve the batch job and its reconciliation requirement")
             require(self.api.server(name)["status"] == "needs_reconciliation", "restart did not block the host")
+            logs_path = f"/api/jobs/{job_id}/logs"
+            log_head = self.api.request("GET", logs_path + "?limit=1")
+            require(log_head["has_more"], "interrupted job must have multiple retained log fragments")
+            log_tail_path = f"{logs_path}?after_seq={log_head['next_sequence']}&limit=500"
+            log_tail = self.api.request("GET", log_tail_path)
             conflict = self.api.restore_archive(conflicting_archive, archive_passphrase, allowed=(409,))
             require("conflicts with APT reconciliation evidence" in conflict["error"]
                     and self.api.server(name)["server_identity"] == server_identity
@@ -459,6 +464,8 @@ class Harness:
             self.api.request("POST", "/api/auth/login", {"username": "fixture-admin", "password": self.password})
             require(self.api.server(name).get("job_id") == job_id and self.api.job(job_id)["status"] == "failed",
                     "restart after restore lost the live APT reconciliation job")
+            require(self.api.request("GET", log_tail_path) == log_tail,
+                    "restart after restore changed the interrupted job's log fragments or cursor")
             self.api.request("PUT", "/api/servers/" + name, {
                 "name": name, "host": self.ssh_host, "port": self.ssh_port + 1, "user": "root",
             }, allowed=(409,))

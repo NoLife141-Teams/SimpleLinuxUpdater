@@ -1,6 +1,7 @@
 package jobs
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 )
@@ -55,10 +56,26 @@ func (r *SQLiteRepository) LatestVerifiedAPTRepairs() ([]Record, error) {
 	return repairs, rows.Err()
 }
 
-// ImportAPTRecoveryEvidence carries an exact job into an isolated restore
-// database. A conflicting ID must never overwrite a different job or target.
-func (r *SQLiteRepository) ImportAPTRecoveryEvidence(record Record) error {
-	existing, err := r.Get(record.ID)
+// ImportAPTRecoveryEvidence carries a terminal job and its retained log stream
+// from the live database into an isolated restore database.
+func (r *SQLiteRepository) ImportAPTRecoveryEvidence(ctx context.Context, live *SQLiteRepository, id, serverName string) error {
+	read, err := live.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return err
+	}
+	defer read.Rollback()
+	record, err := getJobRow(ctx, read, id)
+	if err != nil {
+		return err
+	}
+	record.ServerName = serverName
+
+	write, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer write.Rollback()
+	existing, err := getJobRow(ctx, write, id)
 	if err == nil && (existing.APTTarget != record.APTTarget || existing.Kind != record.Kind ||
 		existing.CreatedAt != record.CreatedAt) {
 		return ErrAPTRecoveryEvidenceConflict
@@ -66,5 +83,54 @@ func (r *SQLiteRepository) ImportAPTRecoveryEvidence(record Record) error {
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return err
 	}
-	return r.upsert(record, true)
+	if err := upsertJobRow(ctx, write, record, true); err != nil {
+		return err
+	}
+	if err := copyAPTRecoveryLogs(ctx, read, write, record); err != nil {
+		return err
+	}
+	return write.Commit()
+}
+
+func copyAPTRecoveryLogs(ctx context.Context, read, write *sql.Tx, record Record) error {
+	var nextSequence, sourceBytes int64
+	err := read.QueryRowContext(ctx, `SELECT log_next_sequence, log_source_bytes FROM jobs WHERE id = ?`, record.ID).
+		Scan(&nextSequence, &sourceBytes)
+	if err != nil {
+		return err
+	}
+	if _, err := write.ExecContext(ctx, `UPDATE jobs
+		SET logs_text = ?, logs_expired = ?, logs_truncated = ?, log_next_sequence = ?, log_source_bytes = ?
+		WHERE id = ?`, record.LogsText, record.LogsExpired, record.LogsTruncated, nextSequence, sourceBytes, record.ID); err != nil {
+		return err
+	}
+	if _, err := write.ExecContext(ctx, `DELETE FROM job_log_chunks WHERE job_id = ?`, record.ID); err != nil {
+		return err
+	}
+	rows, err := read.QueryContext(ctx, `
+		SELECT sequence, stream, data, created_at FROM job_log_chunks WHERE job_id = ? ORDER BY sequence
+	`, record.ID)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	insert, err := write.PrepareContext(ctx, `
+		INSERT INTO job_log_chunks (job_id, sequence, stream, data, created_at) VALUES (?, ?, ?, ?, ?)
+	`)
+	if err != nil {
+		return err
+	}
+	defer insert.Close()
+	for rows.Next() {
+		var sequence int64
+		var stream, createdAt string
+		var data []byte
+		if err := rows.Scan(&sequence, &stream, &data, &createdAt); err != nil {
+			return err
+		}
+		if _, err := insert.ExecContext(ctx, record.ID, sequence, stream, data, createdAt); err != nil {
+			return err
+		}
+	}
+	return rows.Err()
 }

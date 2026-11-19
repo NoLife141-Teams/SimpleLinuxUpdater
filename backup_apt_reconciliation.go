@@ -9,9 +9,9 @@ import (
 
 // Preserve live APT evidence in the isolated replacement database before the
 // restore can change the running installation.
-func prepareAPTRestore(ctx context.Context, liveDB, stagedDB *sql.DB, manager *JobManager, now string) error {
+func prepareAPTRestore(ctx context.Context, liveDB, stagedDB *sql.DB, now string) error {
 	live := jobs.NewSQLiteRepository(liveDB)
-	staged := jobs.NewSQLiteRepositoryWithLogConfig(stagedDB, loadJobLogConfigFromEnv())
+	staged := jobs.NewSQLiteRepository(stagedDB)
 	open, err := live.ListReconciliationRequired()
 	if err != nil {
 		return err
@@ -32,17 +32,6 @@ func prepareAPTRestore(ctx context.Context, liveDB, stagedDB *sql.DB, manager *J
 		return err
 	}
 
-	importJob := func(id, name string) error {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		record, err := manager.GetJobWithLogs(id)
-		if err != nil {
-			return err
-		}
-		record.ServerName = name
-		return staged.ImportAPTRecoveryEvidence(record)
-	}
 	importedOpen := make(map[string]bool)
 	for _, incident := range open {
 		name, matches := stagedTargets[incident.APTTarget]
@@ -52,7 +41,7 @@ func prepareAPTRestore(ctx context.Context, liveDB, stagedDB *sql.DB, manager *J
 			}
 			continue
 		}
-		if err := importJob(incident.ID, name); err != nil {
+		if err := staged.ImportAPTRecoveryEvidence(ctx, live, incident.ID, name); err != nil {
 			return err
 		}
 		importedOpen[incident.ID] = true
@@ -62,7 +51,7 @@ func prepareAPTRestore(ctx context.Context, liveDB, stagedDB *sql.DB, manager *J
 		if !matches {
 			continue
 		}
-		if err := importJob(repair.ID, name); err != nil {
+		if err := staged.ImportAPTRecoveryEvidence(ctx, live, repair.ID, name); err != nil {
 			return err
 		}
 	}

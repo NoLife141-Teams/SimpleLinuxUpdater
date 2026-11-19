@@ -110,7 +110,7 @@ func newBackupOperationLifecycle(deps AppDeps) *backupOperationLifecycle {
 		Archive:           deps.BackupService,
 		CurrentJobManager: deps.CurrentJobManager,
 		PrepareAPTReconciliation: func(ctx context.Context, staged *sql.DB) error {
-			return prepareAPTRestore(ctx, deps.DB(), staged, deps.CurrentJobManager(), jobTimestampNow())
+			return prepareAPTRestore(ctx, deps.DB(), staged, jobTimestampNow())
 		},
 		ActiveServerActionNames: func() []string {
 			if deps.ServerState != nil {

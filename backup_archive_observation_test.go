@@ -318,6 +318,46 @@ func TestBackupArchiveLossRemainsObservableAcrossPublication(t *testing.T) {
 	}
 }
 
+func TestBackupArchiveReverificationCannotRestoreCoverageAfterConcurrentRemoval(t *testing.T) {
+	app, a, cookie, archive := publishedCatalogFixture(t)
+	path := filepath.Join(a.deployment.Directory, archive.Name)
+	saved := path + ".saved"
+	if err := os.Rename(path, saved); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.observeArchiveAvailability(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(saved, path); err != nil {
+		t.Fatal(err)
+	}
+	verify := a.verify
+	a.verify = func(ctx context.Context, file internalbackup.TemporaryFile, pass string) (internalbackup.VerifyResult, error) {
+		result, err := verify(ctx, file, pass)
+		if err != nil || !result.RestoreReady {
+			t.Fatalf("expected restore-ready snapshot: %+v, %v", result, err)
+		}
+		if err := os.Rename(path, saved); err != nil {
+			t.Fatal(err)
+		}
+		return result, nil
+	}
+	if rec := catalogRequest(app, cookie, archive.ID, "verify"); rec.Code != http.StatusConflict {
+		t.Fatalf("reverification = %d %s", rec.Code, rec.Body.String())
+	}
+	if facts := installationSnapshot(t.Context(), app.Deps).BackupArchives; facts.State != "missing" || facts.Lost != 1 {
+		t.Fatalf("pinned snapshot restored coverage for a missing archive: %+v", facts)
+	}
+	if err := a.observeArchiveAvailability(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	var audits int
+	err := app.Deps.DB().QueryRow("SELECT count(*) FROM audit_events WHERE action='backup.verify' AND status='failure'").Scan(&audits)
+	if err != nil || audits != 1 {
+		t.Fatalf("an unresolved loss produced %d failure audits: %v", audits, err)
+	}
+}
+
 func TestBackupArchiveObserverDoesNotWaitOnPublication(t *testing.T) {
 	_, a, _ := newBackupAutomationTest(t)
 	verify := a.verify

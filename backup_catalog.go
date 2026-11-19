@@ -368,18 +368,48 @@ func handleBackupCatalogOperation(c *gin.Context, a *backupAutomation, verify bo
 			return
 		}
 		ready := verifyErr == nil && result.RestoreReady
-		archive.Verification = "failed"
+		if ready {
+			verified := *archive
+			verified.SizeBytes = &snapshot.file.Size
+			verified.FileIdentity = backupCatalogFileIdentity(snapshot.info)
+			verified.FileModifiedAt = backupStamp(snapshot.info.ModTime())
+			verified.DirectoryIdentity = directory
+
+			// The readiness pipeline verified pinned bytes. Confirm that their
+			// registered file is still present before restoring local coverage.
+			storage, availability := "unavailable", "unavailable"
+			if info, err := os.Lstat(root.Name()); err == nil && backupArchiveDirectoryAccessible(info) && backupCatalogFileIdentity(info) == directory {
+				storage = "available"
+				availability, _ = backupArchiveAvailabilityAt(root, verified, owner, directory)
+			}
+			if availability != "present" {
+				observedAt := backupStamp(a.now())
+				if archiveAvailabilityLost(availability) {
+					archive.DirectoryIdentity = directory
+				}
+				var events []AuditEvent
+				if event := a.observeArchive(archive, availability, observedAt, actorFromContext(c), clientIPFromContext(c)); event != nil {
+					events = append(events, *event)
+				}
+				s.Observation = backupArchiveObservation{CheckedAt: observedAt, Storage: storage, Owner: owner, DirectoryIdentity: directory}
+				if err := a.save(ctx, s, events...); err != nil {
+					c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Backup verification evidence could not be saved."})
+					return
+				}
+				c.JSON(http.StatusConflict, gin.H{"error": errBackupCatalogUnavailable.Error()})
+				return
+			}
+			verified.Verification = "verified"
+			verified.LossActive = false
+			verified.KnownHostsIncluded = &result.KnownHostsIncluded
+			*archive = verified
+		} else {
+			archive.Verification = "failed"
+		}
 		archive.Availability = "present"
 		archive.ObservedAt = backupStamp(a.now())
 		if ready {
-			archive.Verification = "verified"
 			archive.LastVerifiedAt = archive.ObservedAt
-			archive.LossActive = false
-			archive.SizeBytes = &snapshot.file.Size
-			archive.FileIdentity = backupCatalogFileIdentity(snapshot.info)
-			archive.FileModifiedAt = backupStamp(snapshot.info.ModTime())
-			archive.DirectoryIdentity = directory
-			archive.KnownHostsIncluded = &result.KnownHostsIncluded
 		}
 		s.Observation = backupArchiveObservation{CheckedAt: archive.ObservedAt, Storage: "available", Owner: owner, DirectoryIdentity: directory}
 		// Recovery health and notifications consume the audit, so never report

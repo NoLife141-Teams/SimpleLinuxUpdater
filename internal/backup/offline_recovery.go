@@ -289,6 +289,9 @@ func validateRecoverySnapshots(root string, paths []string, snapshots []fileRest
 
 func (s *Service) applyOfflineRecovery(ctx context.Context, fs restoreFiles, staged string, stagedHosts *fileRestoreSnapshot, database, hosts, marker, snapshotDir string) error {
 	fail := errors.New("could not apply verified recovery files; recovery remains locked")
+	if err := fs.checkpointRecoveryWAL(ctx, database); err != nil {
+		return fail
+	}
 	if err := fs.removeSQLiteSidecars(database); err != nil {
 		return fail
 	}
@@ -326,6 +329,36 @@ func (s *Service) applyOfflineRecovery(ctx context.Context, fs restoreFiles, sta
 		return fail
 	}
 	return nil
+}
+
+func (fs restoreFiles) checkpointRecoveryWAL(ctx context.Context, database string) error {
+	if _, err := os.Lstat(database + "-wal"); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	// The installation is offline. Rebuild the transient WAL index and
+	// preserve any committed frames in the live database until replacement.
+	if err := fs.removeFile(database + "-shm"); err != nil {
+		return err
+	}
+	db, err := openRecoveryCopy(ctx, database)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	if _, err := db.ExecContext(ctx, "PRAGMA synchronous=FULL"); err != nil {
+		return err
+	}
+	var busy, frames, checkpointed int
+	if err := db.QueryRowContext(ctx, "PRAGMA wal_checkpoint(TRUNCATE)").Scan(&busy, &frames, &checkpointed); err != nil {
+		return err
+	}
+	if busy != 0 || frames != checkpointed {
+		return errors.New("could not checkpoint the live SQLite WAL")
+	}
+	return db.Close()
 }
 
 func cloneRecoveryDatabase(ctx context.Context, fs restoreFiles, dest, source string) (*sql.DB, error) {

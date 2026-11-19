@@ -80,3 +80,48 @@ func TestOfflineDeliveryEvidencePreventsApprovalAndConditionReplay(t *testing.T)
 		})
 	}
 }
+
+func TestOfflineDeliveryEvidenceKeepsLatestEpisodeAndPreservesNewRecurrence(t *testing.T) {
+	live, staged := newConditionHarness(t), newConditionHarness(t)
+	staged.facts = []ConditionFact{rebootFact(true)}
+	staged.reconcile(t)
+	staged.drain(t)
+	staged.facts = []ConditionFact{rebootFact(false)}
+	staged.reconcile(t)
+	staged.facts = []ConditionFact{rebootFact(true)}
+	staged.reconcile(t)
+	staged.drain(t)
+	if staged.client.calls != 2 {
+		t.Fatalf("selected set sent %d deliveries before recovery, want 2", staged.client.calls)
+	}
+	// The interrupted installation made a later observation after resuming
+	// from an older archive. Its active episode has a lower counter.
+	live.now = live.now.Add(time.Minute)
+	live.facts = []ConditionFact{rebootFact(true)}
+	live.reconcile(t)
+	live.drain(t)
+	staged.now = live.now
+	if err := MergeOfflineDeliveryEvidence(t.Context(), live.db, staged.db, staged.now); err != nil {
+		t.Fatal(err)
+	}
+	state, err := loadConditionState(t.Context(), staged.db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if latest := state.Conditions[rebootFact(true).ID]; !latest.Fact.Active || latest.Episode != 1 {
+		t.Fatalf("recovery changed the active episode's identity: %+v", latest)
+	}
+	staged.reconcile(t)
+	staged.drain(t)
+	if staged.client.calls != 2 {
+		t.Fatalf("recovery repeated the active episode: %d deliveries", staged.client.calls)
+	}
+	staged.facts = []ConditionFact{rebootFact(false)}
+	staged.reconcile(t)
+	staged.facts = []ConditionFact{rebootFact(true)}
+	staged.reconcile(t)
+	staged.drain(t)
+	if staged.client.calls != 3 {
+		t.Fatalf("recurrence after recovery produced %d total deliveries, want 3", staged.client.calls)
+	}
+}

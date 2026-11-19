@@ -148,3 +148,54 @@ func TestOfflineRecoveryMarkerRemovalSyncFailureKeepsSQLiteLatch(t *testing.T) {
 	}
 	requireDurableRestoreState(t, f.db, f.hosts, originalRestoreServer, originalRestoreTrust, true)
 }
+
+func TestOfflineRecoveryWriteFailureKeepsCommittedWALState(t *testing.T) {
+	f, root, id := interruptedRecoveryFixture(t)
+	// Copy a crash image while its writer is still open so the committed
+	// change is in the WAL and no connection to the installation stays open.
+	crashDB := filepath.Join(t.TempDir(), "crash.db")
+	fs := restoreFiles{}
+	if err := fs.copySnapshot(crashDB, f.db); err != nil {
+		t.Fatal(err)
+	}
+	db, err := openRecoveryCopy(t.Context(), crashDB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	for _, query := range []string{
+		"PRAGMA journal_mode=WAL",
+		"PRAGMA wal_autocheckpoint=0",
+		"CREATE TABLE committed_before_recovery (value INTEGER NOT NULL)",
+		"INSERT INTO committed_before_recovery VALUES (42)",
+	} {
+		if _, err := db.Exec(query); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := fs.writeAtomicFileFromPath(f.db, crashDB, 0600, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := fs.copySnapshot(f.db+"-wal", crashDB+"-wal"); err != nil {
+		t.Fatal(err)
+	}
+	f.service.syncRestoreFile = func(file *os.File) error {
+		if filepath.Dir(file.Name()) == root && strings.HasPrefix(filepath.Base(file.Name()), ".restore-") {
+			return syscall.EIO
+		}
+		return file.Sync()
+	}
+	report, err := f.service.OfflineRestoreRecovery(t.Context(), id, offlineRecoveryMergeFixtureJobs)
+	if err == nil || !report.RecoveryRequired || report.Diagnosis == "" || report.Applied != "" {
+		t.Fatalf("failed replacement = %+v, %v", report, err)
+	}
+	live, err := openRecoveryCopy(t.Context(), f.db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer live.Close()
+	var value int
+	if err := live.QueryRow("SELECT value FROM committed_before_recovery").Scan(&value); err != nil || value != 42 {
+		t.Fatalf("failed replacement lost committed WAL data: value = %d, err = %v", value, err)
+	}
+}

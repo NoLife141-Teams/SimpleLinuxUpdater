@@ -99,10 +99,16 @@ func offlineExpiredDeliveries(state conditionState, evidence outboxReplacement, 
 func (selected *conditionState) mergeOfflineObservations(observed conditionState) {
 	for id, condition := range observed.Conditions {
 		previous, exists := selected.Conditions[id]
+		highestEpisode := max(previous.Episode, previous.EpisodeFloor, condition.Episode, condition.EpisodeFloor)
+		latest := previous
 		if !exists || laterNotificationTime(condition.UpdatedAt, previous.UpdatedAt) ||
 			(condition.UpdatedAt == previous.UpdatedAt && condition.Episode > previous.Episode) {
-			selected.Conditions[id] = condition
+			latest = condition
 		}
+		if highestEpisode > latest.Episode {
+			latest.EpisodeFloor = highestEpisode
+		}
+		selected.Conditions[id] = latest
 	}
 	for id, admitted := range observed.Admissions {
 		if admitted {

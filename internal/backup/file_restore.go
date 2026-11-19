@@ -70,7 +70,13 @@ func (s *Service) ValidateDatabaseFile(ctx context.Context, path string, encrypt
 	if _, err := credential.Resolve(ctx, ""); err != nil {
 		return fmt.Errorf("validate restored Global SSH Credential: %w", err)
 	}
-	if err := notificationpkg.PrepareArchivedPersistence(ctx, db); err != nil {
+	err = notificationpkg.ValidateArchivedSettings(ctx, db, func(ciphertext string) (string, error) {
+		return s.deps.DecryptSecretWithKey(ciphertext, encryptionKey)
+	})
+	if err == nil {
+		err = notificationpkg.PrepareArchivedPersistence(ctx, db)
+	}
+	if err != nil {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}

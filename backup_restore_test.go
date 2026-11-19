@@ -26,6 +26,7 @@ import (
 	apptimepkg "debian-updater/internal/apptime"
 	internalbackup "debian-updater/internal/backup"
 	maintenancepkg "debian-updater/internal/maintenance"
+	notificationpkg "debian-updater/internal/notifications"
 	observabilitypkg "debian-updater/internal/observability"
 	policypkg "debian-updater/internal/policies"
 	"debian-updater/internal/vulnerabilities"
@@ -35,12 +36,41 @@ import (
 )
 
 func TestBackupVerificationRejectsUnreadableArchivedNotifications(t *testing.T) {
+	const canary = "private-notification-canary"
+	for _, tc := range []struct {
+		name, seed, value, clear string
+	}{
+		{
+			name:  "unreadable conditions",
+			seed:  `INSERT OR REPLACE INTO notification_conditions(id,state_json) VALUES(1,?)`,
+			value: `{"Admissions":"` + canary,
+			clear: `DELETE FROM notification_conditions WHERE id=1`,
+		},
+		{
+			name:  "unreadable settings",
+			seed:  `INSERT OR REPLACE INTO settings(key,value) VALUES('` + notificationpkg.SettingsKey + `',?)`,
+			value: `{"enabled":"` + canary,
+			clear: `DELETE FROM settings WHERE key='` + notificationpkg.SettingsKey + `'`,
+		},
+		{
+			name:  "undecryptable integration credential",
+			seed:  `INSERT OR REPLACE INTO settings(key,value) VALUES('` + notificationpkg.SettingsKey + `',?)`,
+			value: `{"discord_webhook_url_enc":"` + canary + `"}`,
+			clear: `DELETE FROM settings WHERE key='` + notificationpkg.SettingsKey + `'`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			assertUnreadableArchivedNotificationsRejected(t, tc.seed, tc.value, tc.clear, canary)
+		})
+	}
+}
+
+func assertUnreadableArchivedNotificationsRejected(t *testing.T, seed, value, clear, canary string) {
+	t.Helper()
 	app := newTestApp(t, testAppOptions{DBPath: filepath.Join(t.TempDir(), "backup-notification-review.db")})
 	cookie := app.authenticate(t)
 	live := app.Deps.DB()
-	const canary = "private-condition-canary"
-	if _, err := live.Exec(`INSERT OR REPLACE INTO notification_conditions(id,state_json) VALUES(1,?)`,
-		`{"Admissions":"`+canary); err != nil {
+	if _, err := live.Exec(seed, value); err != nil {
 		t.Fatal(err)
 	}
 	const passphrase = "fixture-notification-archive-passphrase"
@@ -49,10 +79,8 @@ func TestBackupVerificationRejectsUnreadableArchivedNotifications(t *testing.T) 
 	if export.Code != http.StatusOK {
 		t.Fatalf("export status = %d, want an encrypted archive", export.Code)
 	}
-	if _, err := live.Exec(`
-		DELETE FROM notification_conditions WHERE id=1;
-		INSERT INTO servers(name,host,port,user,pass_enc,key_enc,key_path,tags) VALUES('live-only','invalid.example',22,'root','','','','');
-	`); err != nil {
+	if _, err := live.Exec(clear + `;
+		INSERT INTO servers(name,host,port,user,pass_enc,key_enc,key_path,tags) VALUES('live-only','invalid.example',22,'root','','','','');`); err != nil {
 		t.Fatal(err)
 	}
 

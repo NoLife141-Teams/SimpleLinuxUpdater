@@ -539,6 +539,9 @@ func handleBackupRestoreWithLifecycle(c *gin.Context, lifecycle *backupOperation
 	case backupOperationRestoreArchiveFailed:
 		c.Header("X-Job-ID", outcome.JobID)
 		c.JSON(http.StatusBadRequest, gin.H{"error": outcome.PublicError})
+	case backupOperationRestoreAPTConflict:
+		c.Header("X-Job-ID", outcome.JobID)
+		c.JSON(http.StatusConflict, gin.H{"error": outcome.PublicError})
 	case backupOperationRestoreApplyFailed:
 		c.Header("X-Job-ID", outcome.JobID)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": outcome.PublicError})

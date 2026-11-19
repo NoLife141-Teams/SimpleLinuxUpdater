@@ -9,6 +9,7 @@ import (
 	"time"
 
 	internalbackup "debian-updater/internal/backup"
+	"debian-updater/internal/jobs"
 	maintenancepkg "debian-updater/internal/maintenance"
 )
 
@@ -26,6 +27,7 @@ const (
 	backupOperationRestoreDecryptFailed      backupOperationKind = "restore_decrypt_failed"
 	backupOperationRestoreArchiveFailed      backupOperationKind = "restore_archive_failed"
 	backupOperationRestoreApplyFailed        backupOperationKind = "restore_apply_failed"
+	backupOperationRestoreAPTConflict        backupOperationKind = "restore_apt_conflict"
 )
 
 type backupArchiveRunner interface {
@@ -52,16 +54,17 @@ type backupOperationAuditRecord struct {
 }
 
 type backupOperationLifecycleDeps struct {
-	Archive                 backupArchiveRunner
-	CurrentJobManager       func() *JobManager
-	ActiveServerActionNames func() []string
-	ActivateMaintenance     func(kind, jobID, actor, message string) error
-	DeactivateMaintenance   func() error
-	RecordAudit             func(backupOperationAuditRecord)
-	EnsureEncryptionKey     func() []byte
-	JobTimestampNow         func() string
-	MarshalJobJSON          func(any) string
-	Logf                    func(string, ...any)
+	Archive                  backupArchiveRunner
+	CurrentJobManager        func() *JobManager
+	ActiveServerActionNames  func() []string
+	ActivateMaintenance      func(kind, jobID, actor, message string) error
+	DeactivateMaintenance    func() error
+	PrepareAPTReconciliation func(context.Context, *sql.DB) error
+	RecordAudit              func(backupOperationAuditRecord)
+	EnsureEncryptionKey      func() []byte
+	JobTimestampNow          func() string
+	MarshalJobJSON           func(any) string
+	Logf                     func(string, ...any)
 }
 
 type backupOperationLifecycle struct {
@@ -106,6 +109,9 @@ func newBackupOperationLifecycle(deps AppDeps) *backupOperationLifecycle {
 	return newBackupOperationLifecycleWithDeps(backupOperationLifecycleDeps{
 		Archive:           deps.BackupService,
 		CurrentJobManager: deps.CurrentJobManager,
+		PrepareAPTReconciliation: func(ctx context.Context, staged *sql.DB) error {
+			return prepareAPTRestore(ctx, deps.DB(), staged, deps.CurrentJobManager(), jobTimestampNow())
+		},
 		ActiveServerActionNames: func() []string {
 			if deps.ServerState != nil {
 				return deps.ServerState.ActiveActionNames()
@@ -487,6 +493,11 @@ func (l *backupOperationLifecycle) Restore(ctx context.Context, cmd backupRestor
 			if cmd.Lease == nil {
 				return errors.New("maintenance lease is not configured")
 			}
+			if deps.PrepareAPTReconciliation != nil {
+				if err := deps.PrepareAPTReconciliation(ctx, db); err != nil {
+					return err
+				}
+			}
 			return cmd.Lease.PrepareReplacement(ctx, db)
 		},
 		RestoreHandoff: func(ctx context.Context) error {
@@ -634,7 +645,17 @@ func (l *backupOperationLifecycle) failRestoreArchive(job JobRecord, cmd backupR
 		jm := deps.CurrentJobManager()
 		status := jobStatusFailed
 		summary := "Failed to apply backup files"
+		auditMessage := "Failed to apply backup"
 		errorClass := "apply"
+		kind := backupOperationRestoreApplyFailed
+		publicError := "failed to apply backup"
+		if errors.Is(err, jobs.ErrAPTRecoveryEvidenceConflict) {
+			kind = backupOperationRestoreAPTConflict
+			publicError = "The backup conflicts with APT reconciliation evidence. Resolve APT reconciliation on this installation before retrying the restore."
+			summary = publicError
+			auditMessage = publicError
+			errorClass = "apt_reconciliation_conflict"
+		}
 		finishedAt := deps.JobTimestampNow()
 		if jm != nil {
 			job.Status = status
@@ -651,10 +672,10 @@ func (l *backupOperationLifecycle) failRestoreArchive(job JobRecord, cmd backupR
 			TargetType: "backup",
 			TargetName: "state",
 			Status:     "failure",
-			Message:    "Failed to apply backup",
+			Message:    auditMessage,
 			Meta:       map[string]any{"error": err.Error()},
 		})
-		return backupOperationOutcome{Kind: backupOperationRestoreApplyFailed, JobID: job.ID, PublicError: "failed to apply backup", Err: err}
+		return backupOperationOutcome{Kind: kind, JobID: job.ID, PublicError: publicError, Err: err}
 	}
 }
 

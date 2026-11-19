@@ -837,6 +837,10 @@ func (r *SQLiteRepository) createWithAdmission(record Record, receipt AdmissionR
 }
 
 func (r *SQLiteRepository) Upsert(record Record) error {
+	return r.upsert(record, false)
+}
+
+func (r *SQLiteRepository) upsert(record Record, restoreAPTEvidence bool) error {
 	if r == nil || r.db == nil {
 		return errors.New("job repository is not initialized")
 	}
@@ -845,7 +849,7 @@ func (r *SQLiteRepository) Upsert(record Record) error {
 		return err
 	}
 	defer tx.Rollback()
-	_, err = tx.Exec(`
+	statement := `
 		INSERT INTO jobs (
 			id, kind, parent_job_id, server_name, actor, client_ip, status, phase, summary, logs_text,
 			error_class, retry_policy_json, meta_json, created_at, updated_at, started_at, finished_at, revision, apt_target, apt_mutation_host_key
@@ -866,7 +870,11 @@ func (r *SQLiteRepository) Upsert(record Record) error {
 			started_at = excluded.started_at,
 			finished_at = excluded.finished_at,
 			revision = excluded.revision
-	`,
+	`
+	if restoreAPTEvidence {
+		statement += ", apt_mutation_host_key = excluded.apt_mutation_host_key"
+	}
+	_, err = tx.Exec(statement,
 		record.ID,
 		record.Kind,
 		record.ParentJobID,
@@ -892,6 +900,12 @@ func (r *SQLiteRepository) Upsert(record Record) error {
 	}
 	if _, err := r.replaceLogSnapshotTx(tx, record.ID, record.LogsText, LogStreamCombined, record.UpdatedAt); err != nil {
 		return err
+	}
+	if restoreAPTEvidence {
+		if _, err := tx.Exec(`UPDATE jobs SET logs_expired = ?, logs_truncated = MAX(logs_truncated, ?) WHERE id = ?`,
+			record.LogsExpired, record.LogsTruncated, record.ID); err != nil {
+			return err
+		}
 	}
 	return tx.Commit()
 }
@@ -1151,22 +1165,7 @@ func (r *SQLiteRepository) MarkUnfinishedInterrupted(now string) error {
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	if _, err := tx.Exec(`
-		UPDATE jobs
-		   SET status = ?, phase = ?, summary = ?, error_class = ?, finished_at = ?, updated_at = ?, revision = revision + 1
-		 WHERE status = ?
-		   AND (
-		       (kind = ? AND phase = ?)
-		       OR (kind = ? AND phase = ?)
-		       OR (kind = ? AND phase = ?)
-		   )
-	`,
-		StatusFailed, PhaseComplete, "APT reconciliation required after restart interruption", "reconciliation_required", now, now,
-		StatusRunning,
-		KindUpdate, PhaseAptUpgrade,
-		KindAutoremove, PhaseAutoremove,
-		KindAptRepair, PhaseReconcile,
-	); err != nil {
+	if err := markInterruptedAPTMutations(tx, now); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(`

@@ -123,7 +123,7 @@ class API:
         self.client = urllib.request.build_opener(urllib.request.ProxyHandler({}),
             urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
 
-    def request(self, method, path, data=None, *, allowed=(200,), raw=None, content_type=None, timeout=20):
+    def request(self, method, path, data=None, *, allowed=(200,), raw=None, content_type=None, timeout=20, binary=False):
         require(path.startswith("/api/") and not path.startswith("//"), "invalid fixture API path")
         body = raw if raw is not None else (json.dumps(data).encode() if data is not None else None)
         request = urllib.request.Request(self.base + path, data=body, method=method,
@@ -135,6 +135,9 @@ class API:
         if response.code not in allowed and not self.include_error_body:
             response.close()
             raise AssertionError(f"{method} {path}: HTTP {response.code}: response body omitted")
+        if binary and response.code in allowed:
+            with response:
+                return response.read(16 * 1024 * 1024 + 1)
         result = json.loads(response.read())
         require(response.code in allowed, f"{method} {path}: HTTP {response.code}: {result}")
         return result
@@ -148,6 +151,15 @@ class API:
 
     def server(self, name):
         return next(s for s in self.request("GET", "/api/servers") if s["name"] == name)
+
+    def restore_archive(self, archive, passphrase, *, allowed=(200,)):
+        boundary = "slu-" + uuid.uuid4().hex
+        body = (f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="fixture.slubkp"\r\n'
+                'Content-Type: application/octet-stream\r\n\r\n').encode() + archive
+        body += (f'\r\n--{boundary}\r\nContent-Disposition: form-data; name="passphrase"\r\n\r\n'
+                 f'{passphrase}\r\n--{boundary}--\r\n').encode()
+        return self.request("POST", "/api/backup/restore", raw=body,
+                            content_type=f"multipart/form-data; boundary={boundary}", allowed=allowed)
 
     def job(self, job_id):
         return self.request("GET", f"/api/jobs/{job_id}")["job"]
@@ -367,7 +379,24 @@ class Harness:
         name = "batch-interruption"
         self.fixture("reset")
         self.add_server(name)
+        archive_passphrase = secrets.token_urlsafe(24)
+
+        def export():
+            archive = self.api.request("POST", "/api/backup/export", {"passphrase": archive_passphrase}, binary=True)
+            require(100 < len(archive) <= 16 * 1024 * 1024, "expected a bounded encrypted fixture archive")
+            return archive
+
+        def restore(archive):
+            self.api.restore_archive(archive, archive_passphrase)
+            require(not self.api.request("GET", "/api/auth/status")["authenticated"], "restore retained the former session")
+            self.api.request("POST", "/api/auth/login", {"username": "fixture-admin", "password": self.password})
+
+        replaced_identity = self.api.server(name)["server_identity"]
+        conflicting_archive = export()
+        self.add_server(name)
+        pre_incident_archive = export()
         server_identity = self.api.server(name)["server_identity"]
+        require(server_identity != replaced_identity, "recreated fixture reused its inventory identity")
         batch_id = uuid.uuid4().hex
         batch_path = "/api/status/batches/" + batch_id
         self.api.request("POST", "/api/status/batches", {"id": batch_id, "action": "update",
@@ -414,6 +443,22 @@ class Harness:
                     host.get("diagnostic_available") and not host.get("retryable"),
                     "restart did not preserve the batch job and its reconciliation requirement")
             require(self.api.server(name)["status"] == "needs_reconciliation", "restart did not block the host")
+            conflict = self.api.restore_archive(conflicting_archive, archive_passphrase, allowed=(409,))
+            require("conflicts with APT reconciliation evidence" in conflict["error"]
+                    and self.api.server(name)["server_identity"] == server_identity
+                    and self.api.server(name).get("job_id") == job_id
+                    and self.api.job(job_id)["error_class"] == "reconciliation_required",
+                    "restore with a reused name did not preserve the live installation and incident")
+            restore(pre_incident_archive)
+            require(self.api.server(name)["status"] == "needs_reconciliation"
+                    and self.api.server(name).get("job_id") == job_id
+                    and self.api.job(job_id)["error_class"] == "reconciliation_required",
+                    "restore of a pre-incident archive lost the live APT reconciliation job")
+            self.docker("restart", "--timeout", "25", self.app_name)
+            self.connect_app()
+            self.api.request("POST", "/api/auth/login", {"username": "fixture-admin", "password": self.password})
+            require(self.api.server(name).get("job_id") == job_id and self.api.job(job_id)["status"] == "failed",
+                    "restart after restore lost the live APT reconciliation job")
             self.api.request("PUT", "/api/servers/" + name, {
                 "name": name, "host": self.ssh_host, "port": self.ssh_port + 1, "user": "root",
             }, allowed=(409,))
@@ -449,6 +494,7 @@ class Harness:
                 "newly trusted host key did not block repair before executing a command")
         self.api.request("POST", "/api/repair/" + name,
                          {"confirm": True, "job_id": locked_repair_id, "verified_host_key": verified_key}, allowed=(409,))
+        pending_repair_archive = export()
         repair_id = self.api.request("POST", "/api/repair/" + name,
                                     {"confirm": True, "job_id": rejected_id, "verified_host_key": verified_key})["job_id"]
         event, facts = self.audit(name, "apt_repair.start")
@@ -463,9 +509,16 @@ class Harness:
                 "explicit repair did not reconcile the restarted host")
         require(self.target("dpkg", "--audit").strip() == "" and self.version() == "2.0" and
                 upgrades() == baseline_upgrades + 1, "repair did not verify APT state without replaying the upgrade")
+        restore(pending_repair_archive)
+        require(self.api.server(name)["status"] != "needs_reconciliation" and self.api.job(repair_id)["status"] == "succeeded"
+                and upgrades() == baseline_upgrades + 1,
+                "restoring an older pending-repair archive reopened a resolved incident")
         record.update(batch_id=batch_id, job_id=job_id, error_class=job["error_class"],
                       mutation_attempts=1, locked_repair_job_id=locked_repair_id,
-                      repair_job_id=repair_id, changed_key_rejection_job_id=rejected_id, final_version=self.version())
+                      repair_job_id=repair_id, changed_key_rejection_job_id=rejected_id,
+                      live_reconciliation_after_restore="passed", repaired_reconciliation_after_restore="passed",
+                      conflicting_inventory_restore="passed",
+                      final_version=self.version())
 
     def qualify(self):
         for user in ("root", "operator"):

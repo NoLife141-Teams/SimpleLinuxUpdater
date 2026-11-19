@@ -284,6 +284,17 @@ Legacy v0.4.16 archives have no automated-backup configuration: automation stays
 disabled and unvalidated. Existing candidate restore tests cover suspension of
 archived enabled automation.
 
+When restoring on the running installation, the app keeps live APT
+reconciliation for inventory identities and SSH endpoints that also exist in
+the archive. The original job remains available after restart. An archive that
+would replace an affected identity, change its SSH endpoint, or contradict its
+open evidence is rejected before files are replaced. A later successful
+explicit repair with recorded SSH host-key proof can settle the corresponding
+archived incident. Restore does not contact the remote package manager.
+A separate recovery installation can only recover incidents recorded in the
+archive. Verify remote package state before resuming maintenance if the archive
+predates an interruption.
+
 Rollback means restoring the **pre-upgrade archive** into a separate installation
 of the recorded old version, with its matching assets, a new data directory or
 Docker volume, and a restricted listener. Initialize that installation, verify
@@ -295,6 +306,14 @@ explicit compatibility guarantee. Keep both recovery installations isolated
 from target hosts until policy and credential review is complete.
 
 ## Reproduce qualification
+
+The [SSH/APT qualification](../tools/ci/ssh-apt/) exports real encrypted archives
+on an isolated Docker installation. It interrupts a batch during package
+mutation, rejects an archive with a reused inventory name, restores an archive
+from before the incident, and checks the exact block and report after restart.
+It also restores a pre-repair archive after a verified repair and checks that
+the upgrade was attempted exactly once. The report omits archive credentials
+and checks that the temporary resources are removed.
 
 ### Qualify a Docker volume upgrade and VM reboot
 

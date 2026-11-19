@@ -22,6 +22,7 @@ The format is inspired by Keep a Changelog, and this project uses Semantic Versi
 - Show when a batch job requires APT reconciliation and link to the original host's diagnostics when it is still in the inventory.
 - Bind APT repair to the original job and SSH endpoint, including after restart or restore.
 - Check the SSH host key used by the interrupted package mutation before repair and audit independently verified key rotations.
+- Keep open APT reconciliation and its job report when restoring an older archive on the same installation.
 - Deduplicate approval alerts by exact plan and destination. Preserve scheduled-run Server links across inventory renames.
 
 ### Changed

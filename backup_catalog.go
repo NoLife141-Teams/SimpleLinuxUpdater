@@ -137,6 +137,22 @@ func backupArchiveAvailabilityAt(root *os.Root, archive ownedBackupArchive, owne
 		// A missing or changed legacy file cannot establish mount identity.
 		availability = "unavailable"
 	}
+	if reverifyPossible {
+		// Metadata alone cannot show whether the service can read the archive.
+		// Confirm access without reading bytes or following a replacement symlink.
+		if info.Mode().Perm()&0444 == 0 {
+			return "unavailable", false
+		}
+		file, err := openBackupCatalogFile(root, archive.Name)
+		if err != nil {
+			return "unavailable", false
+		}
+		defer file.Close()
+		opened, err := file.Stat()
+		if err != nil || !os.SameFile(info, opened) || opened.Size() != info.Size() || !opened.ModTime().Equal(info.ModTime()) {
+			return "unavailable", false
+		}
+	}
 	return availability, reverifyPossible
 }
 

@@ -40,6 +40,28 @@ func TestBackupArchiveObservationsDistinguishLossFromUnavailableStorage(t *testi
 	older, latest := archives[0], archives[1]
 	directory := a.deployment.Directory
 	latestPath := filepath.Join(directory, latest.Name)
+	cookie := app.authenticate(t)
+	if err := os.Chmod(latestPath, 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.observeArchiveAvailability(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if got := installationSnapshot(t.Context(), app.Deps).BackupArchives; got.State != "covered" || got.Verified != 1 || got.Lost != 0 || got.Unknown != 1 {
+		t.Fatalf("unreadable archive counted toward local coverage: %+v", got)
+	}
+	if item := catalogFacts(t, app, cookie).Archives[0]; item.Availability != "unavailable" || item.ReverifyPossible {
+		t.Fatalf("catalog reported unreadable archive as accessible: %+v", item)
+	}
+	if err := os.Chmod(latestPath, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.observeArchiveAvailability(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if got := installationSnapshot(t.Context(), app.Deps).BackupArchives; got.Verified != 2 || got.LastVerifiedAt != latest.LastVerifiedAt {
+		t.Fatalf("permission recovery did not preserve verification evidence: %+v", got)
+	}
 	body, err := os.ReadFile(latestPath)
 	if err != nil {
 		t.Fatal(err)
@@ -78,7 +100,6 @@ func TestBackupArchiveObservationsDistinguishLossFromUnavailableStorage(t *testi
 	}
 	t.Cleanup(func() { _ = os.Chmod(directory, 0700) })
 	check("unknown", "unavailable", 0, 0)
-	cookie := app.authenticate(t)
 	for _, item := range catalogFacts(t, app, cookie).Archives {
 		if item.Availability != "unavailable" || item.ReverifyPossible {
 			t.Fatalf("catalog reported an archive as accessible on unavailable storage: %+v", item)

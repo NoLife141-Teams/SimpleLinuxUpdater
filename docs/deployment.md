@@ -221,9 +221,10 @@ exists or that it is stored off host. Unknown storage observations are nullable.
 automated archives. The worker checks at startup and every five minutes, up to
 200 registrations per pass. The backup catalog shows up to 200 registrations,
 including up to 100 unavailable archives preserved by retention alongside the
-configured number of healthy archives. The worker
-compares directory and file metadata without reading the passphrase or hashing
-archives. Each confirmed loss opens one delivery episode under the existing
+configured number of healthy archives. The worker compares directory and file
+metadata and confirms read access without reading the passphrase or hashing
+archives. An unreadable file yields an unknown availability observation. Each
+confirmed loss opens one delivery episode under the existing
 backup verification failure event. Successful full re-verification restores the
 archive's coverage and allows a future loss to open a new episode. An inaccessible
 or replaced mount yields an unavailable observation. A surviving verified archive

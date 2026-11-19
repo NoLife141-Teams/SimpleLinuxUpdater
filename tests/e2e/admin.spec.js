@@ -2873,6 +2873,21 @@ test("restore readiness distinguishes blockers and expires when the archive or p
     );
     await expect(page.locator("#backup-restore-btn")).toBeDisabled();
 
+    state.verifyResponse = {
+        ...state.verifyResponse,
+        compatible: true,
+        archive: { ...state.verifyResponse.archive, version: 1 },
+        blockers: [{
+            code: "invalid_notification_state",
+            message: "The archived notification state cannot be restored. Choose a different verified backup.",
+        }],
+    };
+    await page.locator("#backup-verify-btn").click();
+    await expect(page.locator("#backup-review-blockers")).toContainText(
+        "The archived notification state cannot be restored",
+    );
+    await expect(page.locator("#backup-restore-btn")).toBeDisabled();
+
     state.verifyResponse = undefined;
     await page
         .locator("#backup-restore-passphrase")

@@ -84,8 +84,9 @@ type Coordinator struct {
 	deps Deps
 	gate sync.RWMutex
 
-	stateMu sync.RWMutex
-	state   State
+	stateMu             sync.RWMutex
+	state               State
+	replacementPrepared bool
 
 	releaseMu      sync.Mutex
 	pendingRelease *State
@@ -147,6 +148,18 @@ func (c *Coordinator) TryShared(_ WorkClass) (*SharedLease, Decision) {
 		return nil, sharedDenial(state)
 	}
 	return &SharedLease{coordinator: c}, Decision{Allowed: true}
+}
+
+// WithDeniedPersistence keeps the observed operation stable while recording a
+// denial. A restore seals the original persistence before files can be replaced.
+func (c *Coordinator) WithDeniedPersistence(decision Decision, record func() error) error {
+	c.stateMu.RLock()
+	defer c.stateMu.RUnlock()
+	if decision.Allowed || !c.state.Active || c.state.RecoveryRequired ||
+		c.replacementPrepared || sharedDenial(c.state) != decision {
+		return nil
+	}
+	return record()
 }
 
 func sharedDenial(state State) Decision {
@@ -378,6 +391,7 @@ func (c *Coordinator) currentState() State {
 func (c *Coordinator) publish(state State) {
 	c.stateMu.Lock()
 	c.state = state
+	c.replacementPrepared = false
 	c.stateMu.Unlock()
 }
 

@@ -25,7 +25,9 @@ import (
 
 	apptimepkg "debian-updater/internal/apptime"
 	internalbackup "debian-updater/internal/backup"
+	maintenancepkg "debian-updater/internal/maintenance"
 	observabilitypkg "debian-updater/internal/observability"
+	policypkg "debian-updater/internal/policies"
 	"debian-updater/internal/vulnerabilities"
 
 	"github.com/alexedwards/scs/v2"
@@ -1026,6 +1028,14 @@ func TestBackupAPIExportRestoreLifecycle(t *testing.T) {
 	if _, err := repo.Save(context.Background(), "before-export", vulnerabilities.Scan{State: "unavailable", FinishedAt: "2026-10-03T00:00:00Z"}); err != nil {
 		t.Fatal(err)
 	}
+	slot := time.Now().UTC().Truncate(time.Minute)
+	policyRepo := policypkg.NewSQLiteRepository(policypkg.SQLiteRepositoryDeps{DB: getDB})
+	if err := policyRepo.SaveSchedulerDenial(policypkg.SchedulerDenial{
+		Tick: slot, ObservedAt: slot, Fingerprint: "archived scheduler fingerprint",
+		Blocker: maintenancepkg.Blocker{Cause: maintenancepkg.BlockBackupExport, JobID: "archived operation"},
+	}); err != nil {
+		t.Fatal(err)
+	}
 
 	rec = httptest.NewRecorder()
 	req = httptest.NewRequest(http.MethodPost, "/api/backup/export", bytes.NewBufferString(`{"passphrase":"very-strong-passphrase","include_known_hosts":false}`))
@@ -1214,6 +1224,9 @@ func TestBackupAPIExportRestoreLifecycle(t *testing.T) {
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("backup restore status = %d, want %d (body=%s)", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if denials, err := policyRepo.LoadSchedulerDenials(slot, slot); err != nil || len(denials) != 0 {
+		t.Fatalf("scheduler denials after restore = %+v, %v", denials, err)
 	}
 	var restoreResp struct {
 		JobID string `json:"job_id"`

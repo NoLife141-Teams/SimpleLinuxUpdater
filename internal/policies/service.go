@@ -65,6 +65,7 @@ type ScheduledRunRequest struct {
 	ScheduledForUTC    string
 	Outcome            string
 	MaintenanceBlocker maintenancepkg.Blocker
+	MaintenanceTickUTC string
 	Admitted           bool
 }
 
@@ -900,21 +901,20 @@ func MissedTickKey(t time.Time, layout string) string {
 	return t.UTC().Truncate(time.Minute).Format(layout)
 }
 
-func (s *Service) rememberMaintenanceDenial(tick time.Time, blocker maintenancepkg.Blocker) {
+func (s *Service) rememberMaintenanceDenial(tick time.Time, blocker maintenancepkg.Blocker) ScheduleRequest {
 	if blocker.Cause != "" {
 		deniedAt := s.EnsureDeps().Now()
 		// A buffered ticker event can arrive after its minute has passed.
 		// Preserve that skip without assigning it the operation observed later.
 		if deniedAt.UTC().Truncate(time.Minute).Equal(tick.UTC().Truncate(time.Minute)) {
-			s.RememberMissedTick(deniedAt, blocker)
-			return
+			return s.RememberMissedTick(deniedAt, blocker)
 		}
 		blocker = maintenancepkg.Blocker{}
 	}
-	s.RememberMissedTick(tick, blocker)
+	return s.RememberMissedTick(tick, blocker)
 }
 
-func (s *Service) RememberMissedTick(now time.Time, blocker maintenancepkg.Blocker) {
+func (s *Service) RememberMissedTick(now time.Time, blocker maintenancepkg.Blocker) ScheduleRequest {
 	deps := s.EnsureDeps()
 	slotUTC := now.UTC().Truncate(time.Minute)
 	key := MissedTickKey(slotUTC, deps.TimestampLayout)
@@ -923,10 +923,12 @@ func (s *Service) RememberMissedTick(now time.Time, blocker maintenancepkg.Block
 	if s.missedTicks == nil {
 		s.missedTicks = map[string]ScheduleRequest{}
 	}
-	if _, exists := s.missedTicks[key]; exists {
-		return
+	if existing, exists := s.missedTicks[key]; exists {
+		return existing
 	}
-	s.missedTicks[key] = ScheduleRequest{Now: now.UTC(), MaintenanceActive: true, MaintenanceBlocker: blocker, Admitted: true}
+	req := ScheduleRequest{Now: now.UTC(), MaintenanceActive: true, MaintenanceBlocker: blocker, Admitted: true}
+	s.missedTicks[key] = req
+	return req
 }
 
 func (s *Service) PendingMissedTicks() []ScheduleRequest {
@@ -940,6 +942,16 @@ func (s *Service) PendingMissedTicks() []ScheduleRequest {
 		return ticks[i].Now.Before(ticks[j].Now)
 	})
 	return ticks
+}
+
+func (s *Service) clearMissedTickBlocker(tick time.Time) {
+	key := MissedTickKey(tick, s.EnsureDeps().TimestampLayout)
+	s.missedTickMu.Lock()
+	defer s.missedTickMu.Unlock()
+	if req, exists := s.missedTicks[key]; exists {
+		req.MaintenanceBlocker = maintenancepkg.Blocker{}
+		s.missedTicks[key] = req
+	}
 }
 
 func (s *Service) ForgetMissedTick(tick time.Time) {
@@ -987,10 +999,15 @@ func (s *Service) ProcessDueSlot(req ScheduleRequest) error {
 	}
 
 	var queueErrs []error
+	maintenanceTick := MissedTickKey(req.Now, deps.TimestampLayout)
 	recordSkipped := func(policy Policy, server servers.Server, scheduledForUTC, reason string, blocker maintenancepkg.Blocker) {
+		tick := ""
+		if blocker.Cause != "" {
+			tick = maintenanceTick
+		}
 		result := s.handleScheduledRun(ScheduledRunRequest{
 			Policy: policy, Server: server, ScheduledForUTC: scheduledForUTC, Outcome: reason, Admitted: req.Admitted,
-			MaintenanceBlocker: blocker,
+			MaintenanceBlocker: blocker, MaintenanceTickUTC: tick,
 		})
 		if result.Err == nil {
 			return
@@ -1007,6 +1024,8 @@ func (s *Service) ProcessDueSlot(req ScheduleRequest) error {
 	}
 
 	candidatesByServer := make(map[string][]ScheduledCandidate)
+	attributedMaintenance := make(map[string]bool)
+	var completedOccurrences []*Occurrence
 	plans, err := s.schedulePlans(policies, serversSnapshot, overrides, slotLocal, runsByScope)
 	if err != nil {
 		return err
@@ -1056,6 +1075,12 @@ func (s *Service) ProcessDueSlot(req ScheduleRequest) error {
 				server := plan.servers[serverName]
 				key := rolloutRunKey(policy.ID, policyScheduledForUTC, serverName)
 				if run, exists := runByKey[key]; exists {
+					if req.MaintenanceActive && req.MaintenanceBlocker.Cause != "" && run.MaintenanceTickUTC == maintenanceTick &&
+						run.MaintenanceCause == req.MaintenanceBlocker.Cause && run.BlockingJobID == req.MaintenanceBlocker.JobID {
+						// A partially recorded denial already attributed this host's
+						// winning policy for this minute.
+						attributedMaintenance[server.Name] = true
+					}
 					if !isTerminalRunStatus(run.Status) {
 						complete = false
 					}
@@ -1088,9 +1113,7 @@ func (s *Service) ProcessDueSlot(req ScheduleRequest) error {
 			}
 		}
 		if complete && plan.occurrence != nil {
-			if err := deps.Occurrences.CloseOccurrence(policy.ID, plan.occurrence.Key); err != nil {
-				return err
-			}
+			completedOccurrences = append(completedOccurrences, plan.occurrence)
 		}
 	}
 
@@ -1116,7 +1139,11 @@ func (s *Service) ProcessDueSlot(req ScheduleRequest) error {
 		})
 		winner := candidates[0]
 		if req.MaintenanceActive {
-			recordSkipped(winner.Policy, winner.Server, winner.ScheduledForUTC, RunReasonMaintenance, req.MaintenanceBlocker)
+			blocker := req.MaintenanceBlocker
+			if attributedMaintenance[serverName] {
+				blocker = maintenancepkg.Blocker{}
+			}
+			recordSkipped(winner.Policy, winner.Server, winner.ScheduledForUTC, RunReasonMaintenance, blocker)
 			for _, skipped := range candidates[1:] {
 				recordSkipped(skipped.Policy, skipped.Server, skipped.ScheduledForUTC, RunReasonMaintenance, maintenancepkg.Blocker{})
 			}
@@ -1144,6 +1171,13 @@ func (s *Service) ProcessDueSlot(req ScheduleRequest) error {
 	}
 	if len(queueErrs) > 0 {
 		return fmt.Errorf("scheduled policy queue encountered %d error(s): %w", len(queueErrs), errors.Join(queueErrs...))
+	}
+	// Keep already-recorded winners visible to competing candidates on a
+	// retry until every result for the tick has been recorded.
+	for _, occurrence := range completedOccurrences {
+		if err := deps.Occurrences.CloseOccurrence(occurrence.Policy.ID, occurrence.Key); err != nil {
+			return err
+		}
 	}
 	return nil
 }

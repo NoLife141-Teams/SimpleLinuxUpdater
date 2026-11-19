@@ -229,9 +229,10 @@ type Run struct {
 	ReportURL            string `json:"report_url,omitempty"`
 	AuditURL             string `json:"audit_url,omitempty"`
 
-	MaintenanceCause maintenance.BlockCause `json:"maintenance_cause,omitempty"`
-	BlockingJobID    string                 `json:"-"`
-	MaintenanceJobID string                 `json:"maintenance_job_id,omitempty"`
+	MaintenanceCause   maintenance.BlockCause `json:"maintenance_cause,omitempty"`
+	BlockingJobID      string                 `json:"-"`
+	MaintenanceJobID   string                 `json:"maintenance_job_id,omitempty"`
+	MaintenanceTickUTC string                 `json:"-"`
 }
 
 type RunQuery struct {

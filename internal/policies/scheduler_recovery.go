@@ -28,6 +28,9 @@ type SchedulerWatermarkStore struct {
 	LoadStateRevision    func() (int64, error)
 	HasRecoveryScope     func(int64, string) (bool, error)
 	MarkRecoveryScope    func(int64, string) error
+	SaveDenial           func(SchedulerDenial) error
+	LoadDenials          func(time.Time, time.Time) ([]SchedulerDenial, error)
+	DeleteDenialsBefore  func(time.Time) error
 }
 
 type missedScheduledSlot struct {
@@ -113,8 +116,7 @@ func (s *Service) ProcessDueWithRecovery(now time.Time, store SchedulerWatermark
 	if deps.Maintenance != nil {
 		lease, decision := deps.Maintenance.TryShared(maintenancepkg.WorkScheduled)
 		if !decision.Allowed {
-			s.rememberMaintenanceDenial(now, decision.Blocker)
-			return nil
+			return s.recordSchedulerDenial(now, decision, store)
 		}
 		defer lease.Close()
 	}
@@ -130,42 +132,11 @@ func (s *Service) ProcessDueWithRecovery(now time.Time, store SchedulerWatermark
 	}
 	watermark = watermark.UTC().Truncate(time.Minute)
 
-	var recoverySnapshot schedulerRecoverySnapshot
-	stateRevision := int64(0)
-	stateRevisionEnabled := store.LoadStateRevision != nil
-	if stateRevisionEnabled {
-		captured := false
-		for attempt := 1; attempt <= 3; attempt++ {
-			before, loadErr := store.LoadStateRevision()
-			if loadErr != nil {
-				return fmt.Errorf("load policy scheduler state revision before snapshot: %w", loadErr)
-			}
-			snapshot, captureErr := s.captureSchedulerRecoverySnapshot()
-			if captureErr != nil {
-				return fmt.Errorf("capture policy scheduler recovery state: %w", captureErr)
-			}
-			after, loadErr := store.LoadStateRevision()
-			if loadErr != nil {
-				return fmt.Errorf("load policy scheduler state revision after snapshot: %w", loadErr)
-			}
-			if before != after {
-				deps.Logf("policy scheduler state changed while capturing recovery snapshot; retrying capture (attempt %d/3)", attempt)
-				continue
-			}
-			recoverySnapshot = snapshot
-			stateRevision = after
-			captured = true
-			break
-		}
-		if !captured {
-			return errors.New("policy scheduler state changed repeatedly while capturing recovery snapshot")
-		}
-	} else {
-		recoverySnapshot, err = s.captureSchedulerRecoverySnapshot()
-		if err != nil {
-			return fmt.Errorf("capture policy scheduler recovery state: %w", err)
-		}
+	recoverySnapshot, stateRevision, err := s.captureSchedulerState(store)
+	if err != nil {
+		return err
 	}
+	stateRevisionEnabled := store.LoadStateRevision != nil
 	recoveryService := recoverySnapshot.bind(s)
 
 	fingerprintEnabled := store.LoadStateFingerprint != nil && store.SaveStateFingerprint != nil
@@ -193,6 +164,26 @@ func (s *Service) ProcessDueWithRecovery(now time.Time, store SchedulerWatermark
 
 	pending := s.PendingMissedTicks()
 	processedPending := make(map[string]struct{}, len(pending))
+	durableMinutes := make(map[string]struct{})
+	requests := make([]ScheduleRequest, 0, len(pending))
+	currentDenied := false
+	if store.LoadDenials != nil {
+		denials, err := store.LoadDenials(currentUTC.Add(-DefaultSchedulerRecoveryHorizon), currentUTC)
+		if err != nil {
+			return fmt.Errorf("load scheduled maintenance denials: %w", err)
+		}
+		denialFingerprint, err := recoverySnapshot.denialFingerprint(currentFingerprint)
+		if err != nil {
+			return err
+		}
+		for _, denial := range denials {
+			durableMinutes[MissedTickKey(denial.Tick, deps.TimestampLayout)] = struct{}{}
+			if request, eligible := denial.recoveryRequest(currentUTC, denialFingerprint, currentFingerprint); eligible {
+				requests = append(requests, request)
+				currentDenied = currentDenied || denial.Tick.Equal(currentUTC)
+			}
+		}
+	}
 	if historicalStateKnown {
 		// In-process maintenance ticks are explicit history. Replay them only
 		// while the scheduling state still matches the durable checkpoint;
@@ -203,11 +194,21 @@ func (s *Service) ProcessDueWithRecovery(now time.Time, store SchedulerWatermark
 			if tickUTC.After(currentUTC) {
 				continue
 			}
-			if err := recoveryService.ProcessDueSlot(tick); err != nil {
-				return err
+			key := MissedTickKey(tickUTC, deps.TimestampLayout)
+			if _, recorded := durableMinutes[key]; recorded {
+				continue
 			}
-			processedPending[MissedTickKey(tickUTC, deps.TimestampLayout)] = struct{}{}
+			requests = append(requests, tick)
 		}
+	}
+	// An earlier generic denial can already consume a wave. Replay both
+	// sources in time order so a later operation cannot take its attribution.
+	sort.Slice(requests, func(i, j int) bool { return requests[i].Now.Before(requests[j].Now) })
+	for _, request := range requests {
+		if err := recoveryService.ProcessDueSlot(request); err != nil {
+			return err
+		}
+		processedPending[MissedTickKey(request.Now, deps.TimestampLayout)] = struct{}{}
 	}
 
 	if found && historicalStateKnown && watermark.Before(currentUTC) {
@@ -225,8 +226,10 @@ func (s *Service) ProcessDueWithRecovery(now time.Time, store SchedulerWatermark
 		}
 	}
 
-	if err := s.ProcessDueSlot(ScheduleRequest{Now: now, Admitted: true}); err != nil {
-		return err
+	if !currentDenied {
+		if err := s.ProcessDueSlot(ScheduleRequest{Now: now, Admitted: true}); err != nil {
+			return err
+		}
 	}
 
 	nextWatermark := currentUTC
@@ -241,14 +244,45 @@ func (s *Service) ProcessDueWithRecovery(now time.Time, store SchedulerWatermark
 			return fmt.Errorf("save policy scheduler state fingerprint: %w", err)
 		}
 	}
+	if store.DeleteDenialsBefore != nil {
+		if err := store.DeleteDenialsBefore(currentUTC); err != nil {
+			return fmt.Errorf("reap consumed scheduled maintenance denials: %w", err)
+		}
+	}
 	for _, tick := range pending {
 		key := MissedTickKey(tick.Now, deps.TimestampLayout)
 		_, processed := processedPending[key]
-		if processed || (!historicalStateKnown && !tick.Now.Truncate(time.Minute).After(currentUTC)) {
+		_, durable := durableMinutes[key]
+		if processed || durable || (!historicalStateKnown && !tick.Now.Truncate(time.Minute).After(currentUTC)) {
 			s.ForgetMissedTick(tick.Now)
 		}
 	}
 	return nil
+}
+
+func (s *Service) captureSchedulerState(store SchedulerWatermarkStore) (schedulerRecoverySnapshot, int64, error) {
+	if store.LoadStateRevision == nil {
+		snapshot, err := s.captureSchedulerRecoverySnapshot()
+		return snapshot, 0, err
+	}
+	for range 3 {
+		before, err := store.LoadStateRevision()
+		if err != nil {
+			return schedulerRecoverySnapshot{}, 0, fmt.Errorf("load policy scheduler state revision: %w", err)
+		}
+		snapshot, err := s.captureSchedulerRecoverySnapshot()
+		if err != nil {
+			return schedulerRecoverySnapshot{}, 0, fmt.Errorf("capture policy scheduler recovery state: %w", err)
+		}
+		after, err := store.LoadStateRevision()
+		if err != nil {
+			return schedulerRecoverySnapshot{}, 0, fmt.Errorf("verify policy scheduler state revision: %w", err)
+		}
+		if before == after {
+			return snapshot, after, nil
+		}
+	}
+	return schedulerRecoverySnapshot{}, 0, errors.New("policy scheduler state changed repeatedly while capturing recovery snapshot")
 }
 
 func (s *Service) schedulerRecoveryStateFingerprint() (string, error) {

@@ -11,6 +11,7 @@ import (
 	internalbackup "debian-updater/internal/backup"
 	"debian-updater/internal/jobs"
 	maintenancepkg "debian-updater/internal/maintenance"
+	policypkg "debian-updater/internal/policies"
 )
 
 type backupOperationKind string
@@ -54,17 +55,17 @@ type backupOperationAuditRecord struct {
 }
 
 type backupOperationLifecycleDeps struct {
-	Archive                  backupArchiveRunner
-	CurrentJobManager        func() *JobManager
-	ActiveServerActionNames  func() []string
-	ActivateMaintenance      func(kind, jobID, actor, message string) error
-	DeactivateMaintenance    func() error
-	PrepareAPTReconciliation func(context.Context, *sql.DB) error
-	RecordAudit              func(backupOperationAuditRecord)
-	EnsureEncryptionKey      func() []byte
-	JobTimestampNow          func() string
-	MarshalJobJSON           func(any) string
-	Logf                     func(string, ...any)
+	Archive                 backupArchiveRunner
+	CurrentJobManager       func() *JobManager
+	ActiveServerActionNames func() []string
+	ActivateMaintenance     func(kind, jobID, actor, message string) error
+	DeactivateMaintenance   func() error
+	PrepareRestoredState    func(context.Context, *sql.DB) error
+	RecordAudit             func(backupOperationAuditRecord)
+	EnsureEncryptionKey     func() []byte
+	JobTimestampNow         func() string
+	MarshalJobJSON          func(any) string
+	Logf                    func(string, ...any)
 }
 
 type backupOperationLifecycle struct {
@@ -109,7 +110,10 @@ func newBackupOperationLifecycle(deps AppDeps) *backupOperationLifecycle {
 	return newBackupOperationLifecycleWithDeps(backupOperationLifecycleDeps{
 		Archive:           deps.BackupService,
 		CurrentJobManager: deps.CurrentJobManager,
-		PrepareAPTReconciliation: func(ctx context.Context, staged *sql.DB) error {
+		PrepareRestoredState: func(ctx context.Context, staged *sql.DB) error {
+			if err := policypkg.ClearSchedulerDenials(staged); err != nil {
+				return err
+			}
 			return prepareAPTRestore(ctx, deps.DB(), staged, jobTimestampNow())
 		},
 		ActiveServerActionNames: func() []string {
@@ -493,8 +497,8 @@ func (l *backupOperationLifecycle) Restore(ctx context.Context, cmd backupRestor
 			if cmd.Lease == nil {
 				return errors.New("maintenance lease is not configured")
 			}
-			if deps.PrepareAPTReconciliation != nil {
-				if err := deps.PrepareAPTReconciliation(ctx, db); err != nil {
+			if deps.PrepareRestoredState != nil {
+				if err := deps.PrepareRestoredState(ctx, db); err != nil {
 					return err
 				}
 			}

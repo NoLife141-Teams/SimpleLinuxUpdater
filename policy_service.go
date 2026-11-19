@@ -39,6 +39,12 @@ type policySchedulerCheckpointRepository interface {
 	SaveSchedulerCheckpoint(policypkg.SchedulerCheckpoint) error
 }
 
+type policySchedulerDenialRepository interface {
+	SaveSchedulerDenial(policypkg.SchedulerDenial) error
+	LoadSchedulerDenials(time.Time, time.Time) ([]policypkg.SchedulerDenial, error)
+	DeleteSchedulerDenialsBefore(time.Time) error
+}
+
 var (
 	defaultPolicyServiceOnce sync.Once
 	defaultPolicyServiceInst *PolicyService
@@ -137,6 +143,11 @@ func startPolicyScheduler(service *PolicyService, repository policypkg.Repositor
 	}
 	if revisionRepository, supportsRevision := repository.(policySchedulerStateRevisionRepository); supportsRevision {
 		store.LoadStateRevision = revisionRepository.LoadSchedulerStateRevision
+	}
+	if denials, ok := repository.(policySchedulerDenialRepository); ok && store.LoadStateRevision != nil {
+		store.SaveDenial = denials.SaveSchedulerDenial
+		store.LoadDenials = denials.LoadSchedulerDenials
+		store.DeleteDenialsBefore = denials.DeleteSchedulerDenialsBefore
 	}
 	service.StartSchedulerWithRecovery(ctx, options, store)
 }

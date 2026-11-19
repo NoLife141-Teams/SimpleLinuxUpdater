@@ -65,6 +65,22 @@ type outboxReplacement struct {
 	APTAdmissions    []string
 }
 
+func loadPersistenceEvidence(ctx context.Context, db *sql.DB) (conditionState, outboxReplacement, error) {
+	conditions, err := loadAndMigrateConditionState(ctx, db)
+	if err != nil {
+		return conditionState{}, outboxReplacement{}, err
+	}
+	if err := migrateApprovalOutboxHistory(ctx, db, &conditions); err != nil {
+		return conditionState{}, outboxReplacement{}, err
+	}
+	rows, err := loadCurrentOutboxRows(ctx, db)
+	if err != nil {
+		return conditionState{}, outboxReplacement{}, err
+	}
+	rows.APTAdmissions, err = loadAPTAdmissions(ctx, db)
+	return conditions, rows, err
+}
+
 func loadCurrentOutboxRows(ctx context.Context, db *sql.DB) (outboxReplacement, error) {
 	replacement := outboxReplacement{
 		RetainedRows:     make(map[string]outboxSnapshot),

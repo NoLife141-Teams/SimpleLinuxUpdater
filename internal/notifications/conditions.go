@@ -35,6 +35,9 @@ type Condition struct {
 	Fact      ConditionFact
 	Episode   int64
 	UpdatedAt string
+	// Keep the current delivery identity when an offline recovery combines
+	// histories with different counters. Use the floor for the next episode.
+	EpisodeFloor int64 `json:",omitempty"`
 }
 
 type ConditionBatch struct {
@@ -209,8 +212,19 @@ func readConditionState(row *sql.Row) (conditionState, error) {
 	if err != nil {
 		return state, err
 	}
-	err = json.Unmarshal([]byte(raw), &state)
-	return state, err
+	if err := json.Unmarshal([]byte(raw), &state); err != nil {
+		return state, err
+	}
+	if state.Conditions == nil {
+		state.Conditions = map[string]Condition{}
+	}
+	if state.Admissions == nil {
+		state.Admissions = map[string]bool{}
+	}
+	if state.Reminders == nil {
+		state.Reminders = map[string]string{}
+	}
+	return state, nil
 }
 
 func conditionList(state conditionState) []Condition {
@@ -266,8 +280,10 @@ func (s *Service) reconcileConditions(ctx context.Context) error {
 			}
 		}
 		episode := previous.Episode
+		episodeFloor := previous.EpisodeFloor
 		if fact.Active && (!exists || !previous.Fact.Active || previous.Fact.Generation != fact.Generation || previous.Fact.EventType != fact.EventType) {
-			episode++
+			episode = max(episode, episodeFloor) + 1
+			episodeFloor = 0
 		}
 		if fact.CreatedAt == "" {
 			if exists && previous.Fact.Active == fact.Active {
@@ -286,7 +302,7 @@ func (s *Service) reconcileConditions(ctx context.Context) error {
 		if !exists || previous.Fact.Active != fact.Active || previous.Episode != episode {
 			updated = now.Format(time.RFC3339Nano)
 		}
-		state.Conditions[fact.ID] = Condition{Fact: fact, Episode: episode, UpdatedAt: updated}
+		state.Conditions[fact.ID] = Condition{Fact: fact, Episode: episode, UpdatedAt: updated, EpisodeFloor: episodeFloor}
 	}
 	state.Cursor = batch.Cursor
 	for _, condition := range conditionList(state) {

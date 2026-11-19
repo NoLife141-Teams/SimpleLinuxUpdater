@@ -99,17 +99,24 @@ func restoreEntryDirectory(path string) string {
 }
 
 func (fs restoreFiles) publishRecoveryMarker(path, snapshotDir string) (created bool, err error) {
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	dir := restoreEntryDirectory(path)
+	file, err := os.CreateTemp(dir, ".slu-restore-recovery-*")
 	if err != nil {
 		return false, err
 	}
+	defer os.Remove(file.Name())
 	if _, err := fmt.Fprintln(file, filepath.Base(snapshotDir)); err != nil {
-		return true, errors.Join(err, file.Close())
+		return false, errors.Join(err, file.Close())
 	}
 	if err := errors.Join(fs.syncFile(file), file.Close()); err != nil {
-		return true, err
+		return false, err
 	}
-	return true, fs.syncPath(restoreEntryDirectory(path))
+	// Make the complete marker visible atomically while preserving any marker
+	// from an earlier interruption.
+	if err := os.Link(file.Name(), path); err != nil {
+		return false, err
+	}
+	return true, errors.Join(os.Remove(file.Name()), fs.syncPath(dir))
 }
 
 func (fs restoreFiles) removeFile(path string) error {

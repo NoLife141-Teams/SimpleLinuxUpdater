@@ -138,4 +138,18 @@ func TestInstallationLockRejectsLinksAndResolvesParentAliases(t *testing.T) {
 			t.Fatal("parent alias bypassed lock", err)
 		}
 	}
+	child := filepath.Join(dir, "child")
+	if err := os.Mkdir(child, 0700); err != nil {
+		t.Fatal(err)
+	}
+	childAlias := filepath.Join(t.TempDir(), "child-alias")
+	if err := os.Symlink(child, childAlias); err == nil {
+		aliasPath := childAlias + string(filepath.Separator) + ".." + string(filepath.Separator) + "servers.db"
+		if other, err := Acquire(aliasPath, false); !errors.Is(err, ErrBusy) {
+			if other != nil {
+				_ = other.Close()
+			}
+			t.Fatal("traversing a parent after a symlink bypassed the installation lock", err)
+		}
+	}
 }

@@ -152,6 +152,75 @@ func TestDestinationHealthMigratesBoundEvidenceBeforeRetention(t *testing.T) {
 	}
 }
 
+func TestDestinationHealthRewrapsLegacyArchiveBindingsBeforeReadingHealth(t *testing.T) {
+	h := newConditionHarness(t)
+	h.facts = []ConditionFact{rebootFact(true)}
+	h.reconcile(t)
+	h.drain(t)
+	if _, err := h.db.Exec(`UPDATE settings SET value=json_remove(value, '$.destination_fingerprints') WHERE key=?`, SettingsKey); err != nil {
+		t.Fatal(err)
+	}
+	tx, err := h.db.BeginTx(t.Context(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	if err := ReencryptStoredWebhookURL(t.Context(), tx, h.service.deps.DecryptSecret, h.service.deps.EncryptSecret); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.service.ReloadPersistence(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	_, facts, err := h.service.InstallationHealth(t.Context())
+	webhook := facts.Destinations[DestinationWebhook]
+	if err != nil || webhook.LastSuccessfulDeliveryAt == nil || !webhook.LastSuccessfulDeliveryAt.Equal(h.now) {
+		t.Fatalf("Webhook success after rewrapping restored settings = %+v, %v", webhook, err)
+	}
+}
+
+func TestDestinationHealthKeepsLatestManualCompletionWhenWritesArriveOutOfOrder(t *testing.T) {
+	h := newConditionHarness(t)
+	settings, err := h.service.currentSettings()
+	if err != nil {
+		t.Fatal(err)
+	}
+	fingerprint := destinationConfigFingerprint(settings, DestinationWebhook)
+	latest := h.now.Add(110 * time.Millisecond)
+	for _, status := range []DeliveryStatus{
+		{Outcome: DeliveryOutcomeSucceeded, CompletedAt: latest.Format(time.RFC3339Nano)},
+		{Outcome: DeliveryOutcomeFailed, CompletedAt: h.now.Add(100 * time.Millisecond).Format(time.RFC3339Nano)},
+	} {
+		if err := h.service.storeLastDelivery(DestinationWebhook, status, fingerprint); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_, facts, err := h.service.InstallationHealth(t.Context())
+	webhook := facts.Destinations[DestinationWebhook]
+	if err != nil || webhook.LastManualTestAt == nil || !webhook.LastManualTestAt.Equal(latest) ||
+		webhook.LastManualTestState != DeliveryOutcomeSucceeded {
+		t.Fatalf("last Webhook test after out-of-order writes = %+v, %v", webhook, err)
+	}
+}
+
+func TestNotificationDeliveryDiagnosticsSelectsLatestFractionalAttempt(t *testing.T) {
+	h := newConditionHarness(t)
+	older := h.now.Add(100 * time.Millisecond).Format(time.RFC3339Nano)
+	newer := h.now.Add(110 * time.Millisecond).Format(time.RFC3339Nano)
+	if err := h.service.storeLastDelivery(DestinationWebhook, DeliveryStatus{Destination: DestinationWebhook, AttemptedAt: older}, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.service.storeLastDelivery(DestinationDiscord, DeliveryStatus{Destination: DestinationDiscord, AttemptedAt: newer}, ""); err != nil {
+		t.Fatal(err)
+	}
+	diagnostics, err := h.service.DeliveryDiagnostics()
+	if err != nil || diagnostics.LastAttempt == nil || diagnostics.LastAttempt.Destination != DestinationDiscord {
+		t.Fatalf("latest attempt = %+v, %v", diagnostics.LastAttempt, err)
+	}
+}
+
 func TestDestinationHealthPersistsAtomicallyWithCompletion(t *testing.T) {
 	h := newConditionHarness(t)
 	now := h.now.Format(time.RFC3339Nano)

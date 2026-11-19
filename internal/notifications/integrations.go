@@ -278,7 +278,7 @@ func latestDeliveryStatus(settings Settings) *DeliveryStatus {
 		if candidate == nil {
 			continue
 		}
-		if latest == nil || deliveryStatusTimestamp(candidate) > deliveryStatusTimestamp(latest) {
+		if latest == nil || laterNotificationTime(deliveryStatusTimestamp(candidate), deliveryStatusTimestamp(latest)) {
 			latest = candidate
 		}
 	}

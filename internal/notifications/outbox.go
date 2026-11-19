@@ -348,12 +348,13 @@ func ensureSchema(ctx context.Context, db *sql.DB) error {
 		ON notification_outbox (state, next_attempt_at, created_at, id)`); err != nil {
 		return fmt.Errorf("index notification outbox due rows: %w", err)
 	}
-	if _, err := db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_notification_outbox_terminal
-		ON notification_outbox (state, completed_at)`); err != nil {
-		return fmt.Errorf("index notification outbox terminal rows: %w", err)
-	}
 	// RFC3339Nano omits trailing fractional zeroes. Removing the final Z
 	// preserves chronological ordering for both whole and fractional seconds.
+	if _, err := db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_notification_outbox_terminal_time
+		ON notification_outbox (state, rtrim(completed_at, 'Z')) WHERE completed_at <> '';
+		DROP INDEX IF EXISTS idx_notification_outbox_terminal;`); err != nil {
+		return fmt.Errorf("index notification outbox terminal rows: %w", err)
+	}
 	if _, err := db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_notification_outbox_history
 		ON notification_outbox (rtrim(created_at, 'Z') DESC, id DESC)`); err != nil {
 		return fmt.Errorf("index notification outbox history: %w", err)
@@ -676,7 +677,7 @@ func pruneOutbox(ctx context.Context, db *sql.DB, now time.Time, retention time.
 	cutoff := now.Add(-retention).UTC().Format(time.RFC3339Nano)
 	result, err := db.ExecContext(ctx, `
 		DELETE FROM notification_outbox
-		 WHERE state IN (?, ?, ?) AND completed_at != '' AND completed_at < ?
+		 WHERE state IN (?, ?, ?) AND completed_at <> '' AND rtrim(completed_at, 'Z') < rtrim(?, 'Z')
 	`, outboxStateSucceeded, outboxStateFailed, outboxStateSkipped, cutoff)
 	if err != nil {
 		return 0, err

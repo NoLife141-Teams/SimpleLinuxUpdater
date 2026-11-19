@@ -27,7 +27,7 @@ func (s *Service) backfillDestinationFingerprints(ctx context.Context, db *sql.D
 	}
 	var needsBackfill bool
 	if err := db.QueryRowContext(ctx, `SELECT EXISTS (
-		SELECT 1 FROM settings WHERE key=? AND json_type(value, '$.destination_fingerprints') IS NULL
+		SELECT 1 FROM settings WHERE key=? AND json_type(value, '$.destination_fingerprints') IS NOT 'object'
 	)`, SettingsKey).Scan(&needsBackfill); err != nil || !needsBackfill {
 		return
 	}

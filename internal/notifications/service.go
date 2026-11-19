@@ -1332,7 +1332,7 @@ func (s *Service) deliverToDestination(ctx context.Context, settings Settings, e
 	for attempt := 1; attempt <= defaultAttempts; attempt++ {
 		attemptedAt := s.deps.Now().UTC()
 		status.Attempts = attempt
-		status.AttemptedAt = attemptedAt.Format(time.RFC3339)
+		status.AttemptedAt = attemptedAt.Format(time.RFC3339Nano)
 		status.CompletedAt = ""
 		status.DeliveredAt = ""
 		status.DurationMS = 0
@@ -1358,7 +1358,7 @@ func (s *Service) deliverToDestination(ctx context.Context, settings Settings, e
 				status.Success = true
 				status.Outcome = DeliveryOutcomeSucceeded
 				status.Error = ""
-				status.CompletedAt = completedAt.Format(time.RFC3339)
+				status.CompletedAt = completedAt.Format(time.RFC3339Nano)
 				status.DeliveredAt = status.CompletedAt
 				status.DurationMS = nonNegativeMilliseconds(completedAt.Sub(attemptedAt))
 				status.ConsecutiveFailures = 0
@@ -1372,7 +1372,7 @@ func (s *Service) deliverToDestination(ctx context.Context, settings Settings, e
 		}
 		completedAt := s.deps.Now().UTC()
 		status.Success = false
-		status.CompletedAt = completedAt.Format(time.RFC3339)
+		status.CompletedAt = completedAt.Format(time.RFC3339Nano)
 		status.DeliveredAt = status.CompletedAt
 		status.DurationMS = nonNegativeMilliseconds(completedAt.Sub(attemptedAt))
 		status.Error = safeDeliveryError(lastErr)
@@ -1400,9 +1400,9 @@ func (s *Service) deliverToDestination(ctx context.Context, settings Settings, e
 	status.Outcome = DeliveryOutcomeFailed
 	status.Error = safeDeliveryError(lastErr)
 	if status.AttemptedAt == "" {
-		status.AttemptedAt = completedAt.Format(time.RFC3339)
+		status.AttemptedAt = completedAt.Format(time.RFC3339Nano)
 	}
-	status.CompletedAt = completedAt.Format(time.RFC3339)
+	status.CompletedAt = completedAt.Format(time.RFC3339Nano)
 	status.DeliveredAt = status.CompletedAt
 	status.NextRetryAt = ""
 	if status.ConsecutiveFailures == 0 {
@@ -1594,11 +1594,14 @@ func (s *Service) storeLastDelivery(destination string, status DeliveryStatus, m
 		settings.LastDelivery = safeDeliveryStatus(&status)
 	}
 	if manualFingerprint != "" && manualFingerprint == destinationConfigFingerprint(settings, destination) {
-		if settings.lastManualTests == nil {
-			settings.lastManualTests = make(map[string]destinationManualTest)
-		}
-		settings.lastManualTests[destination] = destinationManualTest{
-			Fingerprint: manualFingerprint, CompletedAt: status.CompletedAt, Outcome: status.Outcome,
+		previous := settings.lastManualTests[destination]
+		if previous.Fingerprint != manualFingerprint || !laterNotificationTime(previous.CompletedAt, status.CompletedAt) {
+			if settings.lastManualTests == nil {
+				settings.lastManualTests = make(map[string]destinationManualTest)
+			}
+			settings.lastManualTests[destination] = destinationManualTest{
+				Fingerprint: manualFingerprint, CompletedAt: status.CompletedAt, Outcome: status.Outcome,
+			}
 		}
 	}
 	return s.saveSettings(settings)

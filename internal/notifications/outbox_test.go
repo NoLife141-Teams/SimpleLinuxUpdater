@@ -820,6 +820,29 @@ func openOutboxTestDB(t testing.TB, name string) *sql.DB {
 	return db
 }
 
+func TestOutboxRetentionOrdersFractionalCompletionTimes(t *testing.T) {
+	h := newConditionHarness(t)
+	cutoff := h.now.Add(110 * time.Millisecond)
+	older := h.now.Add(100 * time.Millisecond).Format(time.RFC3339Nano)
+	newer := h.now.Add(111 * time.Millisecond).Format(time.RFC3339Nano)
+	for _, at := range []string{older, newer} {
+		_, err := h.db.Exec(`INSERT INTO notification_outbox
+			(id, destination, event_type, action, state, completed_at, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			at, DestinationWebhook, EventUpdateComplete, EventUpdateComplete, outboxStateSucceeded, at, at, at)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n, err := pruneOutbox(t.Context(), h.db, cutoff.Add(time.Hour), time.Hour); err != nil || n != 1 {
+		t.Fatalf("pruned %d completed deliveries: %v", n, err)
+	}
+	history, err := h.service.DeliveryHistory(t.Context(), DeliveryHistoryQuery{Destination: DestinationWebhook})
+	if err != nil || len(history.Items) != 1 || history.Items[0].CompletedAt != newer {
+		t.Fatalf("retained delivery history = %+v, %v", history, err)
+	}
+}
+
 func prepareOutboxSettings(t testing.TB, db *sql.DB, endpoint string, enabled bool) {
 	t.Helper()
 	if _, err := db.Exec("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)"); err != nil {

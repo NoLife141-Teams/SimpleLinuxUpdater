@@ -217,6 +217,19 @@ does not read destination secrets or validate a backup archive. Last verified
 backup time is accepted audit evidence and does not prove that an archive still
 exists or that it is stored off host. Unknown storage observations are nullable.
 
+**Local backup archives** reports the last availability observation of registered
+automated archives. The worker checks at startup and every five minutes, up to
+200 registrations per pass. The backup catalog shows up to 200 registrations,
+including up to 100 unavailable archives preserved by retention alongside the
+configured number of healthy archives. The worker compares directory and file
+metadata and confirms read access without reading the passphrase or hashing
+archives. An unreadable file yields an unknown availability observation. Each
+confirmed loss opens one delivery episode under the existing
+backup verification failure event. Successful full re-verification restores the
+archive's coverage and allows a future loss to open a new episode. An inaccessible
+or replaced mount yields an unavailable observation. A surviving verified archive
+still contributes to local coverage. Manual off-host backups are outside this observation.
+
 The existing Metrics Access Credential also protects the added
 `slu_installation_*` Prometheus gauges. Existing `simplelinuxupdater_*` series are
 preserved during normal operation. During exclusive maintenance `/metrics` and the diagnostics API return a minimal
@@ -232,6 +245,12 @@ owners using their injected clocks. Missing timestamps, unavailable counts and
 unavailable storage are omitted; the `_available` gauges identify unknown backup
 and notification observations. The panel and metrics do not estimate queue depth
 from timer cadence or infer progress from goroutine existence.
+
+`slu_installation_backup_archives_observed_timestamp_seconds` tracks the
+last registered-archive observation. `slu_installation_backup_archive_storage_available`
+and `slu_installation_backup_local_archive_coverage` are omitted when
+their corresponding facts are unknown. Verified, lost and unknown archive
+counts are exported for observable storage without file identifiers or paths.
 
 `slu_installation_notifications_condition_evaluation_degraded` is 1 when
 the latest observed evaluation failed and 0 when it succeeded. This gauge and

@@ -663,7 +663,7 @@ func TestBackupAutomationArchiveRestoresOnDistinctInstance(t *testing.T) {
 }
 
 func TestBackupAutomationMidWriteAndCancellationFailures(t *testing.T) {
-	for _, failure := range []string{"full disk", "permission", "cancelled", "not restore ready", "unreadable archived notifications"} {
+	for _, failure := range []string{"full disk", "permission", "cancelled", "not restore ready", "staged archive replaced", "unreadable archived notifications"} {
 		t.Run(failure, func(t *testing.T) {
 			app, a, now := newBackupAutomationTest(t)
 			s := backupAutomationStateForTest(t, a)
@@ -707,6 +707,28 @@ func TestBackupAutomationMidWriteAndCancellationFailures(t *testing.T) {
 			if failure == "not restore ready" {
 				a.verify = func(context.Context, internalbackup.TemporaryFile, string) (internalbackup.VerifyResult, error) {
 					return internalbackup.VerifyResult{RestoreReady: false}, nil
+				}
+			}
+			if failure == "staged archive replaced" {
+				verify := a.verify
+				a.verify = func(ctx context.Context, file internalbackup.TemporaryFile, pass string) (internalbackup.VerifyResult, error) {
+					result, err := verify(ctx, file, pass)
+					if err != nil || !result.RestoreReady {
+						t.Fatalf("staged archive failed verification before the replacement: %+v %v", result, err)
+					}
+					body, err := os.ReadFile(file.Path)
+					if err != nil {
+						t.Fatal(err)
+					}
+					body[len(body)/2] ^= 1
+					replacement := file.Path + ".replacement"
+					if err = os.WriteFile(replacement, body, 0600); err != nil {
+						t.Fatal(err)
+					}
+					if err = os.Rename(replacement, file.Path); err != nil {
+						t.Fatal(err)
+					}
+					return result, nil
 				}
 			}
 			if failure == "unreadable archived notifications" {

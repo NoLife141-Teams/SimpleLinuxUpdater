@@ -160,6 +160,7 @@ type installationDiagnostics struct {
 	BackupState              string                                          `json:"backup_state"`
 	LastVerifiedBackupAt     *time.Time                                      `json:"last_verified_backup_at"`
 	VerifiedBackupAgeSeconds *float64                                        `json:"verified_backup_age_seconds"`
+	BackupArchives           backupArchiveCoverage                           `json:"backup_archives"`
 	Notifications            installationNotificationFacts                   `json:"notifications"`
 	Storage                  installationStorage                             `json:"storage"`
 }
@@ -167,6 +168,7 @@ type installationDiagnostics struct {
 func installationSnapshot(ctx context.Context, deps AppDeps) installationDiagnostics {
 	now := deps.Now().UTC()
 	out := installationDiagnostics{CheckedAt: now, State: deps.InstallationHealth.probe(ctx, deps), Maintenance: deps.MaintenanceCoordinator.Snapshot().Active, Workers: map[string]installationhealthpkg.WorkerSnapshot{}, BackupState: "unavailable", RestoreIsolation: "unavailable"}
+	out.BackupArchives = (backupAutomationState{}).archiveCoverage(now)
 	out.Workers["audit_pruner"] = deps.InstallationHealth.auditPruner.Snapshot(true)
 	out.Workers["job_log_pruner"] = deps.InstallationHealth.jobLogPruner.Snapshot(true)
 	out.Workers["scheduler"] = deps.PolicyService.WorkerHealth()
@@ -203,6 +205,7 @@ func installationSnapshot(ctx context.Context, deps AppDeps) installationDiagnos
 		facts, err := deps.BackupAutomation.installationFacts(ctx)
 		if err == nil {
 			out.Workers["backup"] = deps.BackupAutomation.health.Snapshot(facts.Config.Enabled)
+			out.BackupArchives = facts.archiveCoverage(now)
 		}
 	}
 	if service, ok := deps.NotificationService.(interface {
@@ -302,6 +305,21 @@ func installationMetrics(value installationDiagnostics) string {
 	}
 	if value.VerifiedBackupAgeSeconds != nil {
 		gauge("backup_verified_age_seconds", "Age of last accepted backup verification.", *value.VerifiedBackupAgeSeconds)
+	}
+	archives := value.BackupArchives
+	if checked := parseBackupStamp(archives.CheckedAt); !checked.IsZero() {
+		gauge("backup_archives_observed_timestamp_seconds", "Last registered backup storage observation.", float64(checked.UnixNano())/1e9)
+	}
+	if archives.Storage == "available" || archives.Storage == "unavailable" {
+		gauge("backup_archive_storage_available", "Registered backup storage could be monitored.", bit(archives.Storage == "available"))
+	}
+	if archives.Storage == "available" {
+		gauge("backup_archives_verified", "Present and restore-verified registered backups.", archives.Verified)
+		gauge("backup_archives_lost", "Registered backups with a confirmed loss awaiting re-verification.", archives.Lost)
+		gauge("backup_archives_unknown", "Registered backups without a current availability observation.", archives.Unknown)
+	}
+	if archives.State == "covered" || archives.State == "missing" || archives.State == "no_registered" {
+		gauge("backup_local_archive_coverage", "At least one present and restore-verified registered backup.", bit(archives.State == "covered"))
 	}
 	notifications := value.Notifications
 	gauge("notifications_available", "Outbox facts could be read.", bit(notifications.Available))

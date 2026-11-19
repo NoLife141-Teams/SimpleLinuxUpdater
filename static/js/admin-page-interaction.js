@@ -189,12 +189,13 @@
             lastAttemptAt: String(data.last_attempt_at || ""),
             lastSuccessAt: String(data.last_success_at || ""),
             catalog: {
-                archives: (Array.isArray(data.catalog?.archives) ? data.catalog.archives : []).slice(0, 100).map(item => ({
+                archives: (Array.isArray(data.catalog?.archives) ? data.catalog.archives : []).slice(0, 200).map(item => ({
                     id: String(item.id || ""), publishedAt: String(item.published_at || ""),
                     sizeBytes: item.size_bytes == null ? null : Math.max(0, Number(item.size_bytes) || 0),
                     knownHostsIncluded: item.known_hosts_included == null ? null : Boolean(item.known_hosts_included),
                     sha256: String(item.sha256 || ""), lastVerifiedAt: String(item.last_verified_at || ""),
-                    verification: String(item.verification || "unknown"), availability: String(item.availability || "unavailable"), jobID: String(item.job_id || "")
+                    verification: String(item.verification || "unknown"), availability: String(item.availability || "unavailable"),
+                    reverifyPossible: item.reverify_possible ?? item.availability === "present", jobID: String(item.job_id || "")
                 })),
                 truncated: Boolean(data.catalog?.truncated)
             },
@@ -324,8 +325,16 @@
                 lastTick: timestamp(value?.last_tick), lastProgress: timestamp(value?.last_progress), lastError: timestamp(value?.last_error), errors: count(value?.errors) };
         });
         const restoreIsolation = ["active", "inactive", "unavailable"].includes(data.restore_isolation) ? data.restore_isolation : "";
+        const archives = data.backup_archives || {};
         return { state: String(data.state || "unavailable"), checkedAt: timestamp(data.checked_at), maintenance: Boolean(data.maintenance), restoreIsolation, workers,
             backupAvailable: Boolean(data.backup_available), backupState: String(data.backup_state || "unavailable"), verifiedAt: timestamp(data.last_verified_backup_at), backupAgeSeconds: count(data.verified_backup_age_seconds),
+            backupArchives: {
+                state: ["covered", "missing", "no_registered"].includes(archives.state) ? archives.state : "unknown",
+                storage: ["available", "unavailable", "stale"].includes(archives.storage) ? archives.storage : "not_observed",
+                verified: count(archives.verified),
+                lost: count(archives.lost),
+                unknown: count(archives.unknown)
+            },
             notifications: {
                 available: Boolean(notifications.available),
                 enabled: Boolean(notifications.enabled),
@@ -765,7 +774,8 @@
                 case "downloadBackupArchive": case "reverifyBackupArchive": {
                     if (backup.blocked || inFlight.has("downloadBackupArchive") || inFlight.has("reverifyBackupArchive")) return { enabled: false, command, key, reason: "A backup operation is unavailable or already in progress." };
                     const archive = backup.automation.catalog.archives.find(item => item.id === payload.id);
-                    if (!archive || archive.availability !== "present") return { enabled: false, command, key, reason: "Choose an available registered archive." };
+                    const available = command === "reverifyBackupArchive" ? archive?.reverifyPossible : archive?.availability === "present";
+                    if (!available) return { enabled: false, command, key, reason: "Choose an available registered archive." };
                     return { enabled: true, command, key, payload: { id: archive.id } };
                 }
                 case "exportBackup":

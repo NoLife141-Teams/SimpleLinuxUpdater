@@ -1,6 +1,7 @@
 const { test, expect, password, ensureAuthenticatedSession, navigateSection } = require('./support/fixtures');
 const fs = require('node:fs/promises');
 const crypto = require('node:crypto');
+const path = require('node:path');
 test.use({ backupCatalogFixture: true, trace: 'off', screenshot: 'off', video: 'off' });
 
 test('Admin catalog publishes, downloads encrypted bytes and reverifies with explicit identity resumption on mobile and keyboard', async ({ page, installation }) => {
@@ -42,6 +43,14 @@ test('Admin catalog publishes, downloads encrypted bytes and reverifies with exp
     expect(crypto.createHash('sha256').update(bytes).digest('hex')).toBe(entry.sha256);
     await download.delete();
     await expect(page.locator('#backup-catalog-result')).toContainText('Encrypted backup downloaded.');
+    const archivePaths = (await fs.readdir(installation.directory, { recursive: true })).filter(name => name.endsWith('.slubkp'));
+    expect(archivePaths).toHaveLength(1);
+    const modified = new Date(Date.now() - 120000);
+    await fs.utimes(path.join(installation.directory, archivePaths[0]), modified, modified);
+    await page.reload();
+    await expect(catalog).toContainText('Local availability: changed');
+    await expect(catalog.getByRole('button', { name: 'Download encrypted' })).toBeDisabled();
+    await expect(catalog.getByRole('button', { name: 'Reverify', exact: true })).toBeEnabled();
     expect((await page.request.post('/__test/expire-reauthentication')).status()).toBe(204);
     let attempts = 0;
     page.on('request', request => { if (request.url().endsWith(`/archives/${entry.id}/verify`)) attempts++; });
@@ -57,6 +66,7 @@ test('Admin catalog publishes, downloads encrypted bytes and reverifies with exp
     await page.keyboard.press('Enter');
     await expect(page.locator('#backup-catalog-result')).toContainText('Reverification succeeded. Active data was not replaced.');
     expect(attempts).toBe(2);
+    await expect(catalog).toContainText('Local availability: present');
     await expect(catalog.getByRole('button', { name: 'Reverify', exact: true })).toBeEnabled();
     await catalog.locator('summary').focus();
     await page.keyboard.press('Enter');

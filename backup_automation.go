@@ -18,6 +18,7 @@ import (
 	"time"
 
 	apptimepkg "debian-updater/internal/apptime"
+	auditpkg "debian-updater/internal/audit"
 	internalbackup "debian-updater/internal/backup"
 	installationhealthpkg "debian-updater/internal/installationhealth"
 	maintenancepkg "debian-updater/internal/maintenance"
@@ -49,24 +50,30 @@ type ownedBackupArchive struct {
 	Verification       string `json:"verification,omitempty"`
 	Availability       string `json:"availability,omitempty"`
 	FileIdentity       string `json:"file_identity,omitempty"`
+	FileModifiedAt     string `json:"file_modified_at,omitempty"`
+	DirectoryIdentity  string `json:"directory_identity,omitempty"`
+	ObservedAt         string `json:"observed_at,omitempty"`
+	LossEpisode        uint64 `json:"loss_episode,omitempty"`
+	LossActive         bool   `json:"loss_active,omitempty"`
 	JobID              string `json:"job_id,omitempty"`
 }
 
 type backupAutomationState struct {
-	PendingManual bool                 `json:"pending_manual"`
-	Timezone      string               `json:"timezone"`
-	OccurrenceAt  string               `json:"occurrence_at"`
-	Config        backupScheduleConfig `json:"config"`
-	Approval      string               `json:"approval"`
-	NextAt        string               `json:"next_at"`
-	PendingAt     string               `json:"pending_at"`
-	RetryAt       string               `json:"retry_at"`
-	LastAttemptAt string               `json:"last_attempt_at"`
-	LastSuccessAt string               `json:"last_success_at"`
-	Outcome       string               `json:"outcome"`
-	Message       string               `json:"message"`
-	Temporary     string               `json:"temporary"`
-	Archives      []ownedBackupArchive `json:"archives"`
+	PendingManual bool                     `json:"pending_manual"`
+	Timezone      string                   `json:"timezone"`
+	OccurrenceAt  string                   `json:"occurrence_at"`
+	Config        backupScheduleConfig     `json:"config"`
+	Approval      string                   `json:"approval"`
+	NextAt        string                   `json:"next_at"`
+	PendingAt     string                   `json:"pending_at"`
+	RetryAt       string                   `json:"retry_at"`
+	LastAttemptAt string                   `json:"last_attempt_at"`
+	LastSuccessAt string                   `json:"last_success_at"`
+	Outcome       string                   `json:"outcome"`
+	Message       string                   `json:"message"`
+	Temporary     string                   `json:"temporary"`
+	Archives      []ownedBackupArchive     `json:"archives"`
+	Observation   backupArchiveObservation `json:"archive_observation,omitzero"`
 }
 
 type backupAutomationStatus struct {
@@ -88,6 +95,7 @@ type backupAutomation struct {
 	health      installationhealthpkg.Worker
 	copyArchive func(io.Writer, io.Reader) (int64, error)
 	mu          sync.Mutex
+	scanMu      sync.Mutex
 	wg          sync.WaitGroup
 	deps        AppDeps
 	deployment  backupAutomationDeployment
@@ -129,7 +137,7 @@ func (c backupScheduleConfig) validate() error {
 	if c.Weekday < 0 || c.Weekday > 6 {
 		return errors.New("weekday must be between 0 (Sunday) and 6")
 	}
-	if c.Retain < 1 || c.Retain > 100 {
+	if c.Retain < 1 || c.Retain > backupHealthyRetentionLimit {
 		return errors.New("retain must be between 1 and 100")
 	}
 	return nil
@@ -166,6 +174,15 @@ func (a *backupAutomation) load(ctx context.Context) (backupAutomationState, err
 	if err == nil {
 		var changed bool
 		changed, err = ensureBackupArchiveIDs(s.Archives)
+		for i := range s.Archives {
+			archive := &s.Archives[i]
+			if !archive.LossActive && archive.LossEpisode == 0 && archiveAvailabilityLost(archive.Availability) && archive.Verification == "failed" {
+				// Older releases recorded a generic loss audit. Preserve that
+				// episode before a new observation replaces its marker.
+				archive.LossActive = true
+				changed = true
+			}
+		}
 		if err == nil && changed {
 			err = a.save(ctx, s)
 		}
@@ -174,11 +191,18 @@ func (a *backupAutomation) load(ctx context.Context) (backupAutomationState, err
 }
 
 // readState also serves concurrent installation diagnostics. Keep it free of
-// migrations and writes; load callers hold mu before persisting catalog IDs.
+// migrations and writes; load callers hold mu before persisting catalog changes.
 func (a *backupAutomation) readState(ctx context.Context) (backupAutomationState, error) {
+	return readBackupAutomationState(ctx, a.deps.DB())
+}
+
+func readBackupAutomationState(ctx context.Context, db *sql.DB) (backupAutomationState, error) {
 	s := backupAutomationState{Config: defaultBackupSchedule(), Outcome: "disabled", Message: "Automated backups are disabled."}
+	if db == nil {
+		return s, errors.New("backup automation database is unavailable")
+	}
 	var raw string
-	err := a.deps.DB().QueryRowContext(ctx, "SELECT value FROM settings WHERE key = ?", backupAutomationSettingsKey).Scan(&raw)
+	err := db.QueryRowContext(ctx, "SELECT value FROM settings WHERE key = ?", backupAutomationSettingsKey).Scan(&raw)
 	if errors.Is(err, sql.ErrNoRows) {
 		return s, nil
 	}
@@ -191,13 +215,39 @@ func (a *backupAutomation) readState(ctx context.Context) (backupAutomationState
 	}
 	return s, err
 }
-func (a *backupAutomation) save(ctx context.Context, s backupAutomationState) error {
+func (a *backupAutomation) save(ctx context.Context, s backupAutomationState, events ...AuditEvent) error {
 	raw, err := json.Marshal(s)
 	if err != nil {
 		return err
 	}
-	_, err = a.deps.DB().ExecContext(ctx, "INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", backupAutomationSettingsKey, string(raw))
-	return err
+	const statement = "INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value"
+	db := a.deps.DB()
+	if len(events) == 0 {
+		_, err = db.ExecContext(ctx, statement, backupAutomationSettingsKey, string(raw))
+		return err
+	}
+	// Commit both sides of a loss episode before the notification worker can
+	// consume its audit cursor. A failed save must leave the episode retryable.
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err = tx.ExecContext(ctx, statement, backupAutomationSettingsKey, string(raw)); err != nil {
+		return err
+	}
+	for _, event := range events {
+		if err = auditpkg.WriteTx(tx, event); err != nil {
+			return err
+		}
+	}
+	if err = tx.Commit(); err != nil {
+		return err
+	}
+	for _, event := range events {
+		a.deps.AuditService.NotifyCommitted(event.Action, event)
+	}
+	return nil
 }
 func backupStamp(t time.Time) string        { return t.UTC().Format(time.RFC3339Nano) }
 func parseBackupStamp(raw string) time.Time { t, _ := time.Parse(time.RFC3339Nano, raw); return t }
@@ -352,8 +402,8 @@ func (a *backupAutomation) destination(createIdentity bool) (*os.Root, string, s
 		return fail("Backup secret must be outside the archive directory.")
 	}
 	info, err := os.Stat(dir)
-	if err != nil || !info.IsDir() || info.Mode().Perm()&0022 != 0 {
-		return fail("Backup destination must be a directory without group or world write access.")
+	if err != nil || !backupArchiveDirectoryAccessible(info) {
+		return fail("Backup destination must be an accessible directory without group or world write access.")
 	}
 	info, err = os.Stat(secretPath)
 	if err != nil || !info.Mode().IsRegular() || info.Size() > 4096 || info.Mode().Perm()&0077 != 0 {
@@ -502,6 +552,10 @@ func (a *backupAutomation) SuspendAfterRestore(ctx context.Context) error {
 	s.PendingManual = false
 	s.RetryAt = ""
 	s.Temporary = ""
+	s.Observation = backupArchiveObservation{}
+	for i := range s.Archives {
+		s.Archives[i].ObservedAt = ""
+	}
 	s.Outcome = "suspended"
 	s.Message = "Restored settings require local backup destination and secret revalidation."
 	return a.save(ctx, s)
@@ -865,8 +919,9 @@ func (a *backupAutomation) publish(ctx context.Context, root *os.Root, source in
 	if err == nil {
 		err = dst.Sync()
 	}
+	staged, statErr := dst.Stat()
 	closeErr := dst.Close()
-	if err != nil || closeErr != nil {
+	if err != nil || statErr != nil || closeErr != nil || staged.Size() != written {
 		return archive, errors.New("backup destination write or sync failed")
 	}
 	if err = ctx.Err(); err != nil {
@@ -878,6 +933,13 @@ func (a *backupAutomation) publish(ctx context.Context, root *os.Root, source in
 	}
 	if err = ctx.Err(); err != nil {
 		return archive, err
+	}
+	// Keep the file identity and mtime of the bytes we wrote and verified.
+	// A later replacement at the published name must not set their baseline.
+	current, err := root.Lstat(temp)
+	if err != nil || !current.Mode().IsRegular() || !os.SameFile(staged, current) ||
+		current.Size() != staged.Size() || !current.ModTime().Equal(staged.ModTime()) {
+		return archive, errors.New("automated archive changed during restore readiness verification")
 	}
 	// Link provides atomic no-replace publication on the same filesystem. Unlike
 	// Rename it cannot overwrite a foreign file that already has the target name.
@@ -899,12 +961,15 @@ func (a *backupAutomation) publish(ctx context.Context, root *os.Root, source in
 	archive.SHA256 = hex.EncodeToString(digest.Sum(nil))
 	archive.PublishedAt = backupStamp(a.now())
 	archive.LastVerifiedAt = archive.PublishedAt
+	archive.ObservedAt = archive.PublishedAt
 	archive.SizeBytes = &written
 	archive.KnownHostsIncluded = &result.KnownHostsIncluded
 	archive.Verification = "verified"
 	archive.Availability = "present"
-	if info, err := root.Lstat(name); err == nil {
-		archive.FileIdentity = backupCatalogFileIdentity(info)
+	archive.FileIdentity = backupCatalogFileIdentity(staged)
+	archive.FileModifiedAt = backupStamp(staged.ModTime())
+	if info, err := root.Lstat("."); err == nil {
+		archive.DirectoryIdentity = backupCatalogFileIdentity(info)
 	}
 	return archive, nil
 }
@@ -935,11 +1000,22 @@ func (a *backupAutomation) retain(root *os.Root, s *backupAutomationState) error
 	if keep < 1 {
 		keep = 1
 	}
-	valid := 0
+	directory := backupArchiveDirectoryIdentity(root)
+	valid, unavailable := 0, 0
 	retained := make([]ownedBackupArchive, 0, len(s.Archives))
 	for i := len(s.Archives) - 1; i >= 0; i-- {
 		archive := s.Archives[i]
-		if archive.Owner != owner || !backupArchiveMatches(root, archive) {
+		if !backupArchiveOwned(archive, owner) {
+			continue
+		}
+		availability, _ := backupArchiveAvailabilityAt(root, archive, owner, directory)
+		if archive.LossActive || availability != "present" || !backupArchiveMatches(root, archive) {
+			// Keep genuine registrations available for the observer and for full
+			// re-verification. A new publication is not evidence of an old loss.
+			if len(archive.SHA256) == 2*sha256.Size && unavailable < backupLossRetentionLimit {
+				retained = append(retained, archive)
+				unavailable++
+			}
 			continue
 		}
 		valid++
@@ -959,6 +1035,9 @@ func (a *backupAutomation) retain(root *os.Root, s *backupAutomationState) error
 }
 
 func (a *backupAutomation) Start(ctx context.Context) {
+	if a.deployment.Directory != "" {
+		a.wg.Go(func() { a.monitorArchiveAvailability(ctx) })
+	}
 	a.wg.Add(1)
 	go func() {
 		defer a.wg.Done()

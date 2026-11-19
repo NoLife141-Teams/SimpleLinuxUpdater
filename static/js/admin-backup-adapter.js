@@ -421,7 +421,7 @@
                     ${archive.jobID ? `<a href="/api/reports/jobs/${encodeURIComponent(archive.jobID)}">View publication job</a>` : ""}
                 </article>`;
             }).join("") : '<p class="muted">No registered automated archives.</p>';
-            if (catalog.truncated) container.insertAdjacentHTML("beforeend", '<p class="muted">Only the latest 100 entries are shown.</p>');
+            if (catalog.truncated) container.insertAdjacentHTML("beforeend", `<p class="muted">Only the latest ${catalog.archives.length} entries are shown.</p>`);
             if (focusedID) {
                 const target = [...container.querySelectorAll("button[data-backup-archive]")].find(button => button.dataset.backupArchive === focusedID && button.dataset.backupOperation === focusedOperation);
                 if (target && !target.disabled) target.focus({ preventScroll: true });

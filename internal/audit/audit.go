@@ -449,6 +449,25 @@ func (s *Service) RecordOnce(key, actor, clientIP, action, targetType, targetNam
 }
 
 func (s *Service) record(key, actor, clientIP, action, targetType, targetName, status, message string, meta map[string]any) error {
+	evt := s.PrepareEvent(key, actor, clientIP, action, targetType, targetName, status, message, meta)
+	if key != "" {
+		repo, ok := s.repo.(interface{ WriteOnce(Event) (bool, error) })
+		if !ok {
+			return errors.New("audit repository does not support durable deduplication")
+		}
+		inserted, err := repo.WriteOnce(evt)
+		if err != nil || !inserted {
+			return err
+		}
+	} else if err := s.Write(evt); err != nil {
+		return err
+	}
+	s.NotifyCommitted(action, evt)
+	return nil
+}
+
+// PrepareEvent applies the normal audit metadata rules before an atomic write.
+func (s *Service) PrepareEvent(key, actor, clientIP, action, targetType, targetName, status, message string, meta map[string]any) Event {
 	meta = withStableActorIdentity(actor, meta)
 	evt := Event{
 		CreatedAt:  s.now().UTC().Format(time.RFC3339),
@@ -468,25 +487,17 @@ func (s *Service) record(key, actor, clientIP, action, targetType, targetName, s
 	if evt.TargetName == "" {
 		evt.TargetName = "-"
 	}
-	if key != "" {
-		repo, ok := s.repo.(interface{ WriteOnce(Event) (bool, error) })
-		if !ok {
-			return errors.New("audit repository does not support durable deduplication")
-		}
-		inserted, err := repo.WriteOnce(evt)
-		if err != nil || !inserted {
-			return err
-		}
-	} else if err := s.Write(evt); err != nil {
-		return err
-	}
+	return evt
+}
+
+// NotifyCommitted publishes callbacks after an event's database transaction.
+func (s *Service) NotifyCommitted(action string, evt Event) {
 	if s.notify != nil {
 		s.notify(action)
 	}
 	if s.onRecord != nil {
 		s.onRecord(evt)
 	}
-	return nil
 }
 
 // Async runners carry the stable actor string after the HTTP context is gone.

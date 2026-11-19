@@ -47,8 +47,10 @@ test("production installation health is public, admin cookie diagnostics refresh
   await expect(section.locator("[data-admin-section-status]")).toHaveText("Current");
   const evaluatedAt = "2026-10-27T01:02:03Z";
   const deliveredAt = "2026-10-27T01:03:05Z";
+  let archiveFacts = {state: "covered", storage: "available", verified: 1, lost: 1, unknown: 0};
   await page.route(route, route => route.fulfill({json: {
    ...facts,
+   backup_archives: archiveFacts,
    notifications: {
     available: true, enabled: true, pending: 1, retrying: 1, failed: 0,
     condition_evaluation_state: "degraded",
@@ -62,6 +64,13 @@ test("production installation health is public, admin cookie diagnostics refresh
   await expect(page.locator("#installation-notification-evaluation")).toHaveText("Degraded · Last success " + evaluationDate);
   await expect(page.locator("#installation-notification-delivery")).toHaveText(deliveryDate);
   await expect(page.locator("#installation-notification-queue-age")).toHaveText("90 seconds");
+  await expect(page.locator("#installation-backup-archives")).toHaveText("1 verified and present · 1 lost");
+  archiveFacts = {state: "unknown", storage: "available", verified: 0, lost: 1, unknown: 1};
+  await section.getByRole("button",{name:"Refresh",exact:true}).click();
+  await expect(page.locator("#installation-backup-archives")).toHaveText("Coverage unknown · 1 lost");
+  archiveFacts = {state: "unknown", storage: "unavailable", verified: 0, lost: 0, unknown: 0};
+  await section.getByRole("button",{name:"Refresh",exact:true}).click();
+  await expect(page.locator("#installation-backup-archives")).toHaveText("Storage unavailable");
   await page.setViewportSize({width:390,height:844});await section.scrollIntoViewIfNeeded();await expect(page.locator("#installation-state")).toBeVisible();
   await page.screenshot({path:testInfo.outputPath("installation-health-mobile.png"),fullPage:false});
   const anonymous=await browser.newContext();try{const response=await anonymous.request.get(url+"/api/installation/health");expect(response.status()).toBe(401)}finally{await anonymous.close()}

@@ -928,16 +928,21 @@ test("registered backup commands use accepted manifest IDs and serialize downloa
     const store = createStore();
     store.dispatch({ type: "backupSnapshotReceived", data: { automation: { catalog: { archives: [
         { id: "owned", availability: "present", size_bytes: null, known_hosts_included: null },
-        { id: "foreign", availability: "foreign" }, { id: "missing", availability: "missing" }
+        { id: "foreign", availability: "foreign" }, { id: "missing", availability: "missing" },
+        { id: "replaced", availability: "changed", reverify_possible: false },
+        ...Array.from({length: 100}, (_, i) => ({ id: `recent-${i}`, availability: "present" })),
+        { id: "mtime", availability: "changed", reverify_possible: true }
     ] } } } });
     const catalog = store.getView().backup.automation.catalog;
     assert.equal(catalog.archives[0].sizeBytes, null);
     assert.equal(catalog.archives[0].knownHostsIncluded, null);
     assert.equal(catalog.archives[0].lastVerifiedAt, "");
-    for (const id of ["../config.json", "unknown", "foreign", "missing"]) {
+    for (const id of ["../config.json", "unknown", "foreign", "missing", "replaced"]) {
         assert.equal(store.planCommand("downloadBackupArchive", { id }).enabled, false);
         assert.equal(store.planCommand("reverifyBackupArchive", { id }).enabled, false);
     }
+    assert.equal(store.planCommand("downloadBackupArchive", { id: "mtime" }).enabled, false);
+    assert.equal(store.planCommand("reverifyBackupArchive", { id: "mtime" }).enabled, true);
     const requested = effect(store.dispatch({ type: "commandRequested", command: "downloadBackupArchive", payload: { id: "owned", path: "/ignored" } }), "executeCommand");
     assert.deepEqual(requested.plan.payload, { id: "owned" });
     assert.equal(store.planCommand("reverifyBackupArchive", { id: "owned" }).enabled, false);

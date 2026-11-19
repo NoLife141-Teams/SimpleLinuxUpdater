@@ -268,6 +268,7 @@ type fileRestoreSnapshot struct {
 	Target     string
 	BackupPath string
 	Exists     bool
+	SHA256     string `json:",omitempty"`
 }
 
 func (fs restoreFiles) snapshotFilesToDirectory(tempRoot string, targets []string, prefix string) (string, []fileRestoreSnapshot, error) {
@@ -291,13 +292,14 @@ func (fs restoreFiles) snapshotFilesToDirectory(tempRoot string, targets []strin
 			_ = os.RemoveAll(dir)
 			return "", nil, err
 		}
-		if info.IsDir() {
+		if !info.Mode().IsRegular() {
 			_ = os.RemoveAll(dir)
-			return "", nil, fmt.Errorf("restore target %q is a directory", target)
+			return "", nil, fmt.Errorf("restore target %q is not a regular file", target)
 		}
 		snapshot.Exists = true
 		snapshot.BackupPath = filepath.Join(dir, fmt.Sprintf("snapshot-%d", index))
-		if err := fs.copySnapshot(snapshot.BackupPath, target); err != nil {
+		snapshot.SHA256, err = fs.copyAndHashSnapshot(snapshot.BackupPath, target)
+		if err != nil {
 			_ = os.RemoveAll(dir)
 			return "", nil, fmt.Errorf("persist rollback snapshot: %w", err)
 		}
@@ -428,18 +430,21 @@ func (s *Service) applyArchiveFiles(ctx context.Context, files map[string]string
 	if path, err := s.deps.KnownHostsWritePath(); err == nil && strings.TrimSpace(path) != "" {
 		knownHostsTarget = path
 	}
-	targets := []string{dbTarget}
-	targets = append(targets, SQLiteSidecarPaths(dbTarget)...)
-	if _, ok := files["known_hosts"]; ok {
-		conflict, err := sameRestoreEntry(markerPath, knownHostsTarget)
+	targets := append([]string{dbTarget}, SQLiteSidecarPaths(dbTarget)...)
+	reservedPaths := append(append([]string{}, targets...), markerPath, dbTarget+".lock")
+	if s.deps.ConfigPath != nil {
+		reservedPaths = append(reservedPaths, s.deps.ConfigPath())
+	}
+	for _, reserved := range reservedPaths {
+		conflict, err := sameRestoreEntry(reserved, knownHostsTarget)
 		if err != nil {
 			return fmt.Errorf("inspect known_hosts restore target: %w", err)
 		}
 		if conflict {
-			return errors.New("known_hosts restore target conflicts with the restore recovery marker")
+			return errors.New("known_hosts restore target conflicts with installation files")
 		}
-		targets = append(targets, knownHostsTarget)
 	}
+	targets = append(targets, knownHostsTarget)
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -465,7 +470,8 @@ func (s *Service) applyArchiveFiles(ctx context.Context, files map[string]string
 		}
 	}()
 	manifestPath := filepath.Join(snapshotDir, "recovery.json")
-	manifest, err := json.MarshalIndent(snapshots, "", "  ")
+	seal := sealedRecoveryManifest{Version: restoreSealVersion, SetID: filepath.Base(snapshotDir), Snapshots: snapshots}
+	manifest, err := json.MarshalIndent(seal, "", "  ")
 	if err == nil {
 		err = fs.writeSnapshot(manifestPath, bytes.NewReader(manifest))
 	}
@@ -477,7 +483,8 @@ func (s *Service) applyArchiveFiles(ctx context.Context, files map[string]string
 	}
 	// Publishing the marker and syncing the database directory also makes
 	// the snapshot directory entry durable before any live file is changed.
-	created, err := fs.publishRecoveryMarker(markerPath, snapshotDir)
+	marker := restoreRecoveryMarker{ID: seal.SetID, ManifestSHA256: recoveryDigest(manifest)}
+	created, err := fs.publishRecoveryMarker(markerPath, marker)
 	if err != nil {
 		cause := fmt.Errorf("persist restore recovery marker: %w", err)
 		if created {
@@ -501,7 +508,11 @@ func (s *Service) applyArchiveFiles(ctx context.Context, files map[string]string
 		if err := s.deps.RestoredRuntime.PreparePersistenceReplacement(rollbackCtx); err != nil {
 			return incomplete(fmt.Errorf("rollback prepare persistence: %w", err))
 		}
-		if err := fs.restoreFileSnapshots(snapshots, s.deps.EnsurePrivateDirForFile); err != nil {
+		rollbackSnapshots := snapshots
+		if _, replacedTrust := files["known_hosts"]; !replacedTrust {
+			rollbackSnapshots = rollbackSnapshots[:len(rollbackSnapshots)-1]
+		}
+		if err := fs.restoreFileSnapshots(rollbackSnapshots, s.deps.EnsurePrivateDirForFile); err != nil {
 			return incomplete(fmt.Errorf("rollback restore snapshots: %w", err))
 		}
 		if restoreHandoff != nil {

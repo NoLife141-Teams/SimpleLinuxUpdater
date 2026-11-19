@@ -1,6 +1,9 @@
 package backup
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -8,6 +11,44 @@ import (
 	"path/filepath"
 	"strings"
 )
+
+const restoreSealVersion = 1
+
+type restoreRecoveryMarker struct {
+	ID             string `json:"id"`
+	ManifestSHA256 string `json:"manifest_sha256,omitempty"`
+}
+
+type sealedRecoveryManifest struct {
+	Version   int                   `json:"version"`
+	SetID     string                `json:"set_id"`
+	Snapshots []fileRestoreSnapshot `json:"snapshots"`
+}
+
+func recoveryDigest(data []byte) string {
+	digest := sha256.Sum256(data)
+	return hex.EncodeToString(digest[:])
+}
+
+func readRestoreRecoveryMarker(path string) (restoreRecoveryMarker, error) {
+	data, err := readRecoveryFile(path, 512)
+	if err != nil {
+		return restoreRecoveryMarker{}, err
+	}
+	if id := strings.TrimSpace(string(data)); validRecoverySetID(id) {
+		return restoreRecoveryMarker{ID: id}, nil
+	}
+	var marker restoreRecoveryMarker
+	if err := json.Unmarshal(data, &marker); err != nil || !validRecoverySetID(marker.ID) || !validRecoveryDigest(marker.ManifestSHA256) {
+		return restoreRecoveryMarker{}, errors.New("invalid restore recovery marker")
+	}
+	return marker, nil
+}
+
+func validRecoveryDigest(digest string) bool {
+	_, err := hex.DecodeString(digest)
+	return err == nil && len(digest) == 2*sha256.Size
+}
 
 // RestoreRecoveryMarkerPath is scoped to one installation's database. The
 // marker survives independently of the SQLite file being replaced.
@@ -67,6 +108,19 @@ func (fs restoreFiles) copySnapshot(path, sourcePath string) error {
 	return fs.writeSnapshot(path, source)
 }
 
+func (fs restoreFiles) copyAndHashSnapshot(path, sourcePath string) (string, error) {
+	source, err := os.Open(sourcePath)
+	if err != nil {
+		return "", err
+	}
+	defer source.Close()
+	hash := sha256.New()
+	if err := fs.writeSnapshot(path, io.TeeReader(source, hash)); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(hash.Sum(nil)), nil
+}
+
 func sameRestoreEntry(first, second string) (bool, error) {
 	if filepath.Base(first) != filepath.Base(second) {
 		return false, nil
@@ -98,14 +152,19 @@ func restoreEntryDirectory(path string) string {
 	return filepath.VolumeName(dir) + string(filepath.Separator)
 }
 
-func (fs restoreFiles) publishRecoveryMarker(path, snapshotDir string) (created bool, err error) {
+func (fs restoreFiles) publishRecoveryMarker(path string, marker restoreRecoveryMarker) (created bool, err error) {
 	dir := restoreEntryDirectory(path)
 	file, err := os.CreateTemp(dir, ".slu-restore-recovery-*")
 	if err != nil {
 		return false, err
 	}
 	defer os.Remove(file.Name())
-	if _, err := fmt.Fprintln(file, filepath.Base(snapshotDir)); err != nil {
+	if marker.ManifestSHA256 == "" {
+		_, err = fmt.Fprintln(file, marker.ID)
+	} else {
+		err = json.NewEncoder(file).Encode(marker)
+	}
+	if err != nil {
 		return false, errors.Join(err, file.Close())
 	}
 	if err := errors.Join(fs.syncFile(file), file.Close()); err != nil {

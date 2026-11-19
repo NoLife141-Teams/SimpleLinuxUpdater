@@ -8,6 +8,43 @@ import (
 	"time"
 )
 
+func TestRestoreDeliveryGateKeepsQueuedNotificationsUntilRelease(t *testing.T) {
+	db := openOutboxTestDB(t, "restore-delivery-gate.db")
+	db.SetMaxOpenConns(1)
+	server, receipts := newOutboxHTTPServer(t)
+	prepareOutboxSettings(t, db, server.URL, true)
+	insertPendingOutboxIntent(t, db, DeliveryIntent{ID: "held-for-restore", Action: EventUpdateComplete}, time.Now())
+	var blocked atomic.Bool
+	blocked.Store(true)
+	checked := make(chan struct{}, 1)
+	deps := outboxTestDeps(db, 5*time.Millisecond)
+	deps.RestoreDeliveryBlocked = func() bool {
+		select {
+		case checked <- struct{}{}:
+		default:
+		}
+		return blocked.Load()
+	}
+	service := NewService(deps)
+	t.Cleanup(func() { closeOutboxService(t, service) })
+	for range 2 {
+		select {
+		case <-checked:
+		case <-time.After(2 * time.Second):
+			t.Fatal("worker did not reach the restore gate")
+		}
+	}
+	waitForLatestOutboxState(t, db, outboxStatePending)
+	if got := atomic.LoadInt32(receipts); got != 0 {
+		t.Fatalf("webhook called during restore: %d", got)
+	}
+	blocked.Store(false)
+	waitForLatestOutboxState(t, db, outboxStateSucceeded)
+	if got := atomic.LoadInt32(receipts); got != 1 {
+		t.Fatalf("webhook calls after recovery: %d", got)
+	}
+}
+
 func TestNotificationWorkerReportsFailedEvaluationWithoutProgress(t *testing.T) {
 	for _, tc := range []struct {
 		name                string

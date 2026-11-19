@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -133,20 +132,15 @@ func requireDurableRestoreState(t *testing.T, dbPath, hostsPath, inventory, trus
 
 func requireDurableRollbackEvidence(t *testing.T, dbPath, hostsPath string) {
 	t.Helper()
-	line, err := os.ReadFile(RestoreRecoveryMarkerPath(dbPath))
+	marker, err := readRestoreRecoveryMarker(RestoreRecoveryMarkerPath(dbPath))
 	if err != nil {
 		t.Fatal("durable recovery marker unavailable")
 	}
-	snapshot := strings.TrimSpace(string(line))
-	if filepath.Base(snapshot) != snapshot || !strings.HasPrefix(snapshot, "slu-restore-rollback-") {
+	if !validRecoverySetID(marker.ID) || marker.ManifestSHA256 == "" {
 		t.Fatal("invalid rollback directory identity")
 	}
-	manifest, err := os.ReadFile(filepath.Join(filepath.Dir(dbPath), snapshot, "recovery.json"))
-	if err != nil {
-		t.Fatal("rollback manifest unavailable")
-	}
-	var entries []fileRestoreSnapshot
-	if err := json.Unmarshal(manifest, &entries); err != nil {
+	entries, sealed, err := loadRecoverySnapshots(filepath.Join(filepath.Dir(dbPath), marker.ID), marker)
+	if err != nil || !sealed {
 		t.Fatal(err)
 	}
 	var originalDB, originalHosts string

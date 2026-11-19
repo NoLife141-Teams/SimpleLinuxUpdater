@@ -238,7 +238,7 @@ Fix:
 
 ## Incomplete backup recovery
 
-If both backup application and recovery fail, the app keeps maintenance active and returns `backup recovery incomplete; maintenance remains active`. Requests and scheduled work stay blocked. An interrupted restore also stays blocked on startup. Before changing active files, the app synchronizes the rollback files and manifest and creates a durable marker beside SQLite. For `servers.db`, the marker is `servers.db.restore-recovery` and names the rollback directory. Reserve this path for recovery state. Startup recognizes the marker even when the SQLite maintenance state is missing. A restart alone does not clear it.
+If both backup application and recovery fail, the app keeps maintenance active and returns `backup recovery incomplete; maintenance remains active`. Requests, scheduled work and queued notifications stay blocked. An interrupted restore also stays blocked on startup. Before changing active files, the app synchronizes the rollback files and their versioned manifest and creates a durable marker beside SQLite. For `servers.db`, the marker is `servers.db.restore-recovery`. It binds the manifest to the rollback directory. Reserve this path for recovery state. Startup recognizes the marker even when the SQLite maintenance state is missing. A restart alone does not clear it.
 
 Stop the application before running either mode. Use the same working directory, environment and files as the service. For a binary installation, run as the service user.
 
@@ -258,6 +258,8 @@ docker compose start <service>
 
 Inspect the returned set IDs, inventory count and APT report count. Confirm the intended installation against your records and choose a set marked `ready`. Application keeps a private diagnosis copy beside SQLite, validates the installed files and releases recovery only after those checks pass. It invalidates restored sessions and suspends automated backups until local configuration is revalidated. Start the app after a successful application, sign in again, and review the inventory and any active APT incident from the original job report.
 
-If the report cannot validate a set, preserve the volume and the rollback directories for diagnosis. An unreadable current SQLite file also blocks application because the command cannot verify current APT and notification delivery evidence. In that case, use a verified independent backup with the retained recovery evidence. The process and container logs may also contain the original restore failure.
+The report identifies the source of the APT and notification delivery evidence for each ready set. `live_database` means the command could reconcile the rollback set with the installed SQLite database. `sealed_rollback` means the installed SQLite database could not be read and the command verified the complete pre-replacement files against the durable marker. The command preserves the damaged SQLite and its sidecars in the diagnosis copy before applying the set.
+
+An older rollback set requires a readable installed database. If the report cannot validate a set, preserve the volume and rollback directories for diagnosis. A verified independent backup and retained recovery evidence may be needed. The process and container logs may also contain the original restore failure.
 
 If the recovery latch cannot be persisted, the current process still blocks work and logs that persistence error. Diagnose the storage failure before restarting. Retained rollback files contain sensitive application data; protect them like backups and remove them after recovery has been verified. They are retained only on incomplete recovery, not after a successful restore or successful rollback.

@@ -146,17 +146,17 @@ type ServerStatus struct {
 }
 
 func (status *ServerStatus) RequiresAPTReconciliation() bool {
-	return status != nil && (status.APTReconciliationPending || status.Status == runtimepkg.StatusNeedsReconciliation)
+	return status != nil && (status.APTReconciliationPending || strings.EqualFold(strings.TrimSpace(status.Status), runtimepkg.StatusNeedsReconciliation))
 }
 
 func (status *ServerStatus) ReconciliationJobID() string {
+	if !status.RequiresAPTReconciliation() {
+		return ""
+	}
 	if status.APTReconciliationPending {
 		return status.APTReconciliationJobID
 	}
-	if status.Status == runtimepkg.StatusNeedsReconciliation {
-		return status.JobID
-	}
-	return ""
+	return status.JobID
 }
 
 func (status *ServerStatus) keepAPTReconciliation() {
@@ -519,6 +519,7 @@ func (s *State) BeginPackageMutation(name, newStatus string) (Server, error) {
 
 type ActionAdmissionOptions struct {
 	PackageMutation        bool
+	RequireResolvedAPT     bool
 	AllowedStatuses        map[string]bool
 	ExpectedServerIdentity string
 	ExpectedAPTTarget      string
@@ -557,17 +558,18 @@ func (s *State) BeginActionWithOptions(name, newStatus string, opts ActionAdmiss
 			return Server{}, nil, ErrIdentityChanged
 		}
 	}
-	if status.ActionRunning || s.statusInProgress(status.Status) {
+	if status.ActionRunning || s.statusInProgress(status.Status) || (opts.PackageMutation && runtimepkg.BlocksTransientAction(status.Status)) {
 		return Server{}, nil, ErrActionInProgress
 	}
-	if len(opts.AllowedStatuses) > 0 && !opts.AllowedStatuses[strings.ToLower(strings.TrimSpace(status.Status))] {
+	if (opts.RequireResolvedAPT && status.RequiresAPTReconciliation()) ||
+		(len(opts.AllowedStatuses) > 0 && !opts.AllowedStatuses[strings.ToLower(strings.TrimSpace(status.Status))]) {
 		return Server{}, nil, ErrActionNotAllowed
 	}
 	if server.Disabled {
 		return Server{}, nil, ErrDisabled
 	}
-	status.keepAPTReconciliation()
 	previous := CloneServerStatus(status)
+	status.keepAPTReconciliation()
 	status.ActionGeneration++
 	status.JobID = ""
 	status.JobRevision = -1
@@ -616,8 +618,8 @@ func (s *State) BeginTransientActionForIdentity(name, newStatus, expectedIdentit
 	if server.Disabled {
 		return Server{}, nil, ErrDisabled
 	}
-	status.keepAPTReconciliation()
 	snapshot := CloneServerStatus(status)
+	status.keepAPTReconciliation()
 	status.ActionGeneration++
 	status.Status = newStatus
 	return server, snapshot, nil

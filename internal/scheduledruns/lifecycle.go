@@ -149,20 +149,6 @@ func (l *Lifecycle) executeRun(run policies.Run, policy policies.Policy, server 
 }
 
 func (l *Lifecycle) executeAdmitted(run policies.Run, policy policies.Policy, server servers.Server) (string, string, error) {
-	if current := l.deps.ServerState.CurrentStatusSnapshot(server.Name); current != nil {
-		active, _ := l.deps.ServerState.ActionStatusInProgress(server.Name)
-		if active || (policy.ExecutionMode != policies.ExecutionScanOnly && current.RequiresAPTReconciliation()) {
-			return l.executeByMode(run, policy, server)
-		}
-		readiness := l.deps.MaintenanceReadiness(server)
-		if !readiness.Ready {
-			return l.markReadinessSkipped(run, policy, server, readiness)
-		}
-	}
-	return l.executeByMode(run, policy, server)
-}
-
-func (l *Lifecycle) executeByMode(run policies.Run, policy policies.Policy, server servers.Server) (string, string, error) {
 	releaseAdmission := l.deps.AcquireScheduledAction(server.Name)
 	defer releaseAdmission()
 	switch policy.ExecutionMode {
@@ -371,6 +357,11 @@ func (l *Lifecycle) runPackageMutation(run policies.Run, policy policies.Policy,
 		return status, "", updateErr
 	}
 
+	if readiness := l.deps.MaintenanceReadiness(serverForRun); !readiness.Ready {
+		l.deps.ServerState.RestoreAdmittedAction(server.Name, preStartStatus.ActionGeneration+1, preStartStatus)
+		return l.markReadinessSkipped(run, policy, serverForRun, readiness)
+	}
+
 	retryPolicy := l.deps.LoadRetryPolicy()
 	meta := l.buildScheduledJobMeta(policy, run.ScheduledForUTC)
 	meta.RunID = run.ID
@@ -483,6 +474,10 @@ func (l *Lifecycle) runScan(run policies.Run, policy policies.Policy, server ser
 		return status, "", updateErr
 	}
 
+	if readiness := l.deps.MaintenanceReadiness(serverForRun); !readiness.Ready {
+		l.deps.ServerState.RestoreAdmittedAction(server.Name, preStartStatus.ActionGeneration+1, preStartStatus)
+		return l.markReadinessSkipped(run, policy, serverForRun, readiness)
+	}
 	retryPolicy := l.deps.LoadRetryPolicy()
 	meta := l.buildScheduledJobMeta(policy, run.ScheduledForUTC)
 	jm := l.deps.CurrentJobManager()

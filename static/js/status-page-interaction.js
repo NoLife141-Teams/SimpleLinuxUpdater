@@ -538,7 +538,8 @@
             const status = String(server.status || "").toLowerCase();
             const search = filters.search.trim().toLowerCase();
             const dashboardServer = dashboardServerFor(server);
-            if (filters.status && status !== filters.status) return false;
+            if (filters.status && status !== filters.status
+                && !(filters.status === "needs_reconciliation" && server.apt_reconciliation_required)) return false;
             if (filters.tag) {
                 const tags = Array.isArray(server.tags) && server.tags.length ? server.tags : ["untagged"];
                 if (!tags.includes(filters.tag)) return false;

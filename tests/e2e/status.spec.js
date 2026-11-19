@@ -467,6 +467,7 @@ test("Status keeps the APT incident report visible during a host facts refresh",
     };
     await stubDashboardApi(page, () => [server]);
     await ensureAuthenticatedSession(page);
+    await page.locator("#status-filter").selectOption("needs_reconciliation");
     const row = page.locator('tr[data-name="repair-host"]');
     await expect(row).toContainText("APT reconciliation required");
     await expect(row.getByRole("button", { name: "Update", exact: true })).toHaveCount(0);

@@ -49,6 +49,7 @@ type serverActionStartSpec struct {
 	allowedStatuses        map[string]bool
 	invalidStatus          string
 	packageMutation        bool
+	requireResolvedAPT     bool
 	preserveReconciliation bool
 	runWithJob             func(*UpdateService, Server, string, string, RetryPolicy, string, string)
 }
@@ -208,7 +209,8 @@ func (l *serverActionLifecycle) StartReboot(name, actor, clientIP string, confir
 			runtimepkg.StatusError:     true,
 			runtimepkg.StatusCancelled: true,
 		},
-		invalidStatus: "Server is not ready for a controlled reboot",
+		invalidStatus:      "Server is not ready for a controlled reboot",
+		requireResolvedAPT: true,
 		runWithJob: func(service *UpdateService, server Server, actor, clientIP string, policy RetryPolicy, jobID, _ string) {
 			service.RunRebootJob(RebootRunRequest{
 				Server:   server,
@@ -288,7 +290,8 @@ func (l *serverActionLifecycle) startAction(name, actor, clientIP, sudoPassword 
 	if spec.packageMutation && preStartStatus.RequiresAPTReconciliation() {
 		return rejectReconciliation()
 	}
-	if preStartStatus != nil && len(spec.allowedStatuses) > 0 && !spec.allowedStatuses[strings.ToLower(strings.TrimSpace(preStartStatus.Status))] {
+	if (spec.requireResolvedAPT && preStartStatus.RequiresAPTReconciliation()) ||
+		(len(spec.allowedStatuses) > 0 && !spec.allowedStatuses[strings.ToLower(strings.TrimSpace(preStartStatus.Status))]) {
 		message := strings.TrimSpace(spec.invalidStatus)
 		if message == "" {
 			message = "Action is not available for the current server status"
@@ -317,6 +320,7 @@ func (l *serverActionLifecycle) startAction(name, actor, clientIP, sudoPassword 
 	}
 	server, admittedSnapshot, err := l.serverState.BeginActionWithOptions(name, spec.status, serverpkg.ActionAdmissionOptions{
 		PackageMutation: spec.packageMutation, AllowedStatuses: spec.allowedStatuses,
+		RequireResolvedAPT:     spec.requireResolvedAPT,
 		ExpectedServerIdentity: spec.expectedServerIdentity,
 		ExpectedAPTTarget:      spec.expectedAPTTarget, ExpectedJobID: spec.expectedJobID,
 	})

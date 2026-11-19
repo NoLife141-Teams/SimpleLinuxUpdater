@@ -104,7 +104,7 @@ func TestScheduledRunLifecycleHandleScheduledRunDuplicateNoops(t *testing.T) {
 	}
 }
 
-func TestScheduledRunLifecycleSkipsUnreadyConnectionBeforeRuntimeMutationOrJobCreation(t *testing.T) {
+func TestScheduledRunLifecycleSkipsUnreadyConnectionWithoutRetainingReservationOrCreatingJob(t *testing.T) {
 	server := Server{Name: "srv-scheduled-unready", Host: "example.org", Port: 22, User: "root", Pass: "server-secret"}
 	deps, policy, run, _ := newScheduledRunLifecycleTestDeps(t, "scheduled-run-unready.db", server, "idle")
 	deps.MaintenanceReadiness = func(Server) serverpkg.MaintenanceReadiness {
@@ -135,6 +135,26 @@ func TestScheduledRunLifecycleSkipsUnreadyConnectionBeforeRuntimeMutationOrJobCr
 	}
 	if audits.Total != 1 || audits.Items[0].Status != "ignored" || strings.Contains(audits.Items[0].Message, server.Pass) {
 		t.Fatalf("audit events = %+v, want one safe ignored result", audits.Items)
+	}
+}
+
+func TestScheduledRunChecksConnectionReadinessIfAPTBlockClearsBeforeAdmission(t *testing.T) {
+	server := Server{Name: "srv-scheduled-repaired", Host: "example.org", Port: 22, User: "root"}
+	deps, policy, run, _ := newScheduledRunLifecycleTestDeps(t, "scheduled-run-repaired.db", server, "needs_reconciliation")
+	deps.AcquireScheduledAction = func(string) func() {
+		// The repair finishes while the scheduler is waiting to reserve the server.
+		deps.ServerState.RestoreStatusSnapshot(server.Name, &ServerStatus{Name: server.Name, Status: "done"})
+		return func() {}
+	}
+	deps.MaintenanceReadiness = func(Server) serverpkg.MaintenanceReadiness {
+		return serverpkg.MaintenanceReadiness{Code: serverpkg.MaintenanceReadinessHostKeyNotTrusted}
+	}
+	deps.StartJobRunner = func(string, func(), ...func()) { t.Error("unready connection dispatched an update") }
+
+	scheduledrunspkg.New(deps).ExecuteRun(run, policy, server)
+	current := getScheduledLifecycleRun(t, deps, run.ID)
+	if current.Status != updatePolicyRunSkipped || current.Reason != policypkg.RunReasonReadiness || current.JobID != "" {
+		t.Fatalf("scheduled run = %+v, want skipped connection readiness without a job", current)
 	}
 }
 

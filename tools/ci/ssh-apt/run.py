@@ -987,6 +987,7 @@ class Harness:
         del record["checkpoint"]
 
     def qualify_cold_restore_apt_validation(self, record):
+        record["checkpoint"] = "prepare-targets"
         healthy = "recovery-healthy"
         incomplete = "recovery-incomplete"
         unreachable = "recovery-unreachable"
@@ -1068,6 +1069,7 @@ class Harness:
             return self.docker("exec", targets[name], "sha256sum", "/var/lib/dpkg/status")
 
         initial = {name: package_state(name) for name in (healthy, incomplete)}
+        record["checkpoint"] = "restore-and-probe"
         restored = api.backup_archive("restore", archive, passphrase)
         require(restored["restore_isolated"], "foreign archive did not activate the validation gate")
         api.request("POST", "/api/auth/login", credentials)
@@ -1081,6 +1083,7 @@ class Harness:
             fact = api.request("POST", route, {"name": name, "identity": identities[name]}, timeout=35)
             require(fact["state"] == expected, "unexpected restoration validation outcome for " + name)
         require(all(package_state(name) == digest for name, digest in initial.items()), "a validation probe changed package state")
+        record["checkpoint"] = "resume-and-run-batch"
         api.request("POST", "/api/backup/restore-isolation/resume", {"confirmation": "RESUME"})
         for name in (incomplete, unreachable):
             fail = api.request("POST", f"/api/autoremove/{name}", allowed=(409,))
@@ -1102,6 +1105,7 @@ class Harness:
                 "batch dispatched package work for the incomplete host")
         job, _ = api.wait_job(hosts[healthy]["job_id"], lambda job: job["status"] in TERMINAL)
         require(job["status"] == "succeeded", "the validated healthy host could not resume package work")
+        record["checkpoint"] = "restart-and-verify-gate"
         self.docker("restart", cold_name)
         api = connect_recovery()
         api.request("POST", "/api/auth/login", credentials)
@@ -1109,6 +1113,7 @@ class Harness:
         require(fail["reason_code"] == "restore_apt_validation_required", "restart released an unverified host")
         record.update(read_only_probes=True, healthy_host_resumed=True, incomplete_host_blocked=True,
                       unreachable_host_blocked=True, gated_after_restart=True, partial_batch_admission=True)
+        del record["checkpoint"]
 
     def offline_recovery_container_args(self):
         require(self.owned("container", self.app_name), "application ownership mismatch")
@@ -1286,7 +1291,10 @@ class Harness:
             except (RuntimeError, OSError, ValueError, sqlite3.Error, subprocess.SubprocessError) as error:
                 raise AssertionError(f"fixture operation failed ({type(error).__name__})") from None
         with self.scenario(RESTORE_APT_VALIDATION) as record:
-            self.qualify_cold_restore_apt_validation(record)
+            try:
+                self.qualify_cold_restore_apt_validation(record)
+            except (RuntimeError, OSError, ValueError, sqlite3.Error, subprocess.SubprocessError) as error:
+                raise AssertionError(f"fixture operation failed ({type(error).__name__})") from None
 
         self.records.extend([
             {"scenario": "systemd-active", "status": "not_executed", "reason": "Container has no systemd PID1; no fake systemctl is installed. Use the VM harness."},
@@ -1325,15 +1333,6 @@ class Harness:
                 if self.owned("container", self.app_name):
                     text = self.redact_text(self.docker("logs", self.app_name))[-200000:]
                     (self.output / "app.log").write_text(text)
-        except RuntimeError as error:
-            if "no such" not in str(error).lower(): self.cleanup_errors.append(str(error))
-        except Exception as error:
-            self.cleanup_errors.append(str(error))
-        try:
-            cold_name = self.app_name + "-cold"
-            if self.owned("container", cold_name):
-                text = self.redact_text(self.docker("logs", cold_name))[-200000:]
-                (self.output / "cold-app.log").write_text(text)
         except RuntimeError as error:
             if "no such" not in str(error).lower(): self.cleanup_errors.append(str(error))
         except Exception as error:

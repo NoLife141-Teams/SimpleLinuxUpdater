@@ -191,18 +191,21 @@ type withActorRunner struct {
 	remediationInventory   []servers.PendingUpdate
 	remediationDistro      string
 
-	service            *Service
-	server             servers.Server
-	actor              string
-	clientIP           string
-	policy             RetryPolicy
-	jobID              string
-	jobKind            string
-	jobPhase           string
+	service    *Service
+	server     servers.Server
+	actor      string
+	clientIP   string
+	policy     RetryPolicy
+	jobID      string
+	jobKind    string
+	jobPhase   string
+	startedAt  time.Time
+	approvedAt time.Time
+
+	// SSH calls the host-key verifier from its key exchange goroutine, including on rekey.
+	hostKeyMu          sync.Mutex
 	hostKeyFingerprint string
 	expectedHostKey    string
-	startedAt          time.Time
-	approvedAt         time.Time
 
 	automaticApproval        bool
 	approvalGeneration       uint64
@@ -563,10 +566,13 @@ func (r *withActorRunner) requireMutationPhase(phase string) bool {
 	if jm := r.currentJobManager(); jm != nil && strings.TrimSpace(r.jobID) != "" && phase != "" {
 		status := jobs.StatusRunning
 		intent := jobs.Intent{Status: &status, Phase: &phase}
-		if r.hostKeyFingerprint != "" {
-			intent.APTMutationHostKey = &r.hostKeyFingerprint
-			r.expectedHostKey = r.hostKeyFingerprint
+		r.hostKeyMu.Lock()
+		fingerprint := r.hostKeyFingerprint
+		if fingerprint != "" {
+			r.expectedHostKey = fingerprint
+			intent.APTMutationHostKey = &fingerprint
 		}
+		r.hostKeyMu.Unlock()
 		var committed bool
 		committed, err = jm.TransitionActive(r.jobID, intent)
 		if err == nil && !committed {
@@ -642,7 +648,12 @@ func (r *withActorRunner) setupSSH(dialOpName string) bool {
 	var verifyHostKey func(string) error
 	switch r.jobKind {
 	case jobs.KindUpdate, jobs.KindAutoremove, jobs.KindAptRepair:
+		r.hostKeyMu.Lock()
+		r.hostKeyFingerprint = ""
+		r.hostKeyMu.Unlock()
 		verifyHostKey = func(fingerprint string) error {
+			r.hostKeyMu.Lock()
+			defer r.hostKeyMu.Unlock()
 			if r.expectedHostKey != "" && r.expectedHostKey != fingerprint {
 				return errors.New("SSH host key differs from the key confirmed for APT maintenance. Verify the original host independently before confirming a key in the repair dialog.")
 			}
@@ -678,7 +689,10 @@ func (r *withActorRunner) setupSSH(dialOpName string) bool {
 		return false
 	}
 	r.session = session
-	if r.expectedHostKey != "" && r.hostKeyFingerprint != r.expectedHostKey {
+	r.hostKeyMu.Lock()
+	verified := r.expectedHostKey == "" || r.hostKeyFingerprint == r.expectedHostKey
+	r.hostKeyMu.Unlock()
+	if !verified {
 		r.setReconciliationRequired("The SSH host key could not be verified for this repair.")
 		r.closeSession()
 		return false

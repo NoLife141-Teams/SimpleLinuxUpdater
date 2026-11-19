@@ -23,6 +23,44 @@ import (
 
 const liveOutputTestTimeout = 5 * time.Second
 
+func TestAPTMutationPinsHostKeyAcrossSSHRekey(t *testing.T) {
+	jm := jobs.NewManager(newPendingApprovalTestRepository(t), jobs.ManagerOptions{})
+	job, err := jm.CreateJob(jobs.CreateParams{Kind: jobs.KindUpdate, Status: jobs.StatusRunning})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const original = "SHA256:original"
+	var verify func(string) error
+	runner := &withActorRunner{jobID: job.ID, jobKind: job.Kind, service: NewService(ServiceDeps{
+		CurrentJobManager: func() *jobs.Manager { return jm },
+		HostMaintenanceSessions: HostMaintenanceSessionFactoryFunc(func(_ context.Context, req HostMaintenanceSessionRequest) (HostMaintenanceSession, error) {
+			verify = req.VerifyHostKey
+			return &HostMaintenanceSessionFuncs{}, verify(original)
+		}),
+	})}
+	if !runner.setupSSH("update.ssh_dial") {
+		t.Fatal("SSH session was not opened")
+	}
+	defer runner.closeSession()
+
+	rekeyDone := make(chan error, 1)
+	go func() { rekeyDone <- verify(original) }()
+	persisted := runner.requireMutationPhase(jobs.PhaseAptUpgrade)
+	if err := <-rekeyDone; err != nil {
+		t.Fatalf("rekey with the original host key was refused: %v", err)
+	}
+	if !persisted {
+		t.Fatal("APT mutation proof was not persisted")
+	}
+	if err := verify("SHA256:different"); err == nil {
+		t.Fatal("rekey changed the pinned host key")
+	}
+	saved, err := jm.GetJob(job.ID)
+	if err != nil || saved.Phase != jobs.PhaseAptUpgrade || saved.APTMutationHostKey != original {
+		t.Fatalf("persisted APT mutation proof = %+v, err = %v", saved, err)
+	}
+}
+
 func testHostMaintenanceSessionFactory(session *HostMaintenanceSessionFuncs) HostMaintenanceSessionFactory {
 	return HostMaintenanceSessionFactoryFunc(func(context.Context, HostMaintenanceSessionRequest) (HostMaintenanceSession, error) {
 		return session, nil

@@ -133,6 +133,30 @@ func TestAPTAdmissionCommitsWithOutbox(t *testing.T) {
 	}
 }
 
+func TestAPTNotificationPreservesConditionBatchDeliveryOrder(t *testing.T) {
+	h := newConditionHarness(t)
+	client := &capturingNotificationClient{requests: make(chan capturedNotificationRequest, 30)}
+	h.service.deps.HTTPClient = client
+	h.facts = []ConditionFact{rebootFact(true), {
+		ID: APTReconciliationConditionID("target", "job"), EventType: EventAPTReconciliationRequired,
+		TargetType: "server", TargetName: "node", Active: true,
+	}}
+	h.reconcile(t)
+	h.drain(t)
+	close(client.requests)
+	var deliveries []string
+	for request := range client.requests {
+		var payload WebhookPayload
+		if err := json.Unmarshal(request.Body, &payload); err != nil {
+			t.Fatal(err)
+		}
+		deliveries = append(deliveries, payload.EventType)
+	}
+	if want := []string{EventAPTReconciliationRequired, EventRebootRequired}; !slices.Equal(deliveries, want) {
+		t.Fatalf("delivery order = %v, want %v", deliveries, want)
+	}
+}
+
 func TestAPTRestoreStagesUnionWithLegacyArchive(t *testing.T) {
 	live := newConditionHarness(t)
 	archived := newConditionHarness(t)

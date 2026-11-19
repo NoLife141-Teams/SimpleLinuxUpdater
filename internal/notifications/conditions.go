@@ -249,7 +249,6 @@ func (s *Service) reconcileConditions(ctx context.Context) error {
 	}
 	migrateEpisodeApprovalAdmissions(&state, fingerprints)
 	rows := []outboxRow{}
-	var aptRows []outboxRow
 	freshOneShots := map[string]bool{}
 	for _, fact := range batch.Facts {
 		if fact.ID == "" {
@@ -331,11 +330,10 @@ func (s *Service) reconcileConditions(ctx context.Context) error {
 				return err
 			}
 			admitted[0].DestinationFingerprint = fingerprint
+			rows = append(rows, admitted...)
 			if exactAPT {
-				aptRows = append(aptRows, admitted[0])
 				continue
 			}
-			rows = append(rows, admitted...)
 			if exactApproval {
 				admission.OutboxID = admitted[0].ID
 				state.recordApprovalAdmission(fact.ID, admission)
@@ -380,7 +378,7 @@ func (s *Service) reconcileConditions(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if string(original) == string(raw) && len(rows) == 0 && len(aptRows) == 0 {
+	if string(original) == string(raw) && len(rows) == 0 {
 		return nil
 	}
 	tx, err := db.BeginTx(ctx, nil)
@@ -388,7 +386,12 @@ func (s *Service) reconcileConditions(ctx context.Context) error {
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	for _, row := range aptRows {
+	admittedRows := rows[:0]
+	for _, row := range rows {
+		if row.EventType != EventAPTReconciliationRequired {
+			admittedRows = append(admittedRows, row)
+			continue
+		}
 		result, err := tx.ExecContext(ctx, insertAPTAdmissionSQL, row.Intent.ID)
 		if err != nil {
 			return err
@@ -398,10 +401,10 @@ func (s *Service) reconcileConditions(ctx context.Context) error {
 			return err
 		}
 		if n == 1 {
-			rows = append(rows, row)
+			admittedRows = append(admittedRows, row)
 		}
 	}
-	if err := insertOutboxRowsTx(ctx, tx, rows, now.Format(time.RFC3339Nano)); err != nil {
+	if err := insertOutboxRowsTx(ctx, tx, admittedRows, now.Format(time.RFC3339Nano)); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO notification_conditions(id,state_json) VALUES(1,?) ON CONFLICT(id) DO UPDATE SET state_json=excluded.state_json`, string(raw)); err != nil {

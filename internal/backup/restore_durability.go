@@ -1,6 +1,7 @@
 package backup
 
 import (
+	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -15,8 +16,9 @@ import (
 const restoreSealVersion = 1
 
 type restoreRecoveryMarker struct {
-	ID             string `json:"id"`
-	ManifestSHA256 string `json:"manifest_sha256,omitempty"`
+	ID              string `json:"id"`
+	ManifestSHA256  string `json:"manifest_sha256,omitempty"`
+	InstallationMAC string `json:"installation_mac,omitempty"`
 }
 
 type sealedRecoveryManifest struct {
@@ -31,6 +33,17 @@ func recoveryDigest(data []byte) string {
 	return hex.EncodeToString(digest[:])
 }
 
+func (marker restoreRecoveryMarker) installationMAC(key []byte) []byte {
+	mac := hmac.New(sha256.New, key)
+	_, _ = io.WriteString(mac, "simplelinuxupdater/restore-recovery/v1/"+marker.ID+"/"+marker.ManifestSHA256)
+	return mac.Sum(nil)
+}
+
+func (marker restoreRecoveryMarker) matchesInstallation(key []byte) bool {
+	mac, err := hex.DecodeString(marker.InstallationMAC)
+	return len(key) != 0 && err == nil && hmac.Equal(mac, marker.installationMAC(key))
+}
+
 func readRestoreRecoveryMarker(path string) (restoreRecoveryMarker, error) {
 	data, err := readRecoveryFile(path, 512)
 	if err != nil {
@@ -40,7 +53,8 @@ func readRestoreRecoveryMarker(path string) (restoreRecoveryMarker, error) {
 		return restoreRecoveryMarker{ID: id}, nil
 	}
 	var marker restoreRecoveryMarker
-	if err := json.Unmarshal(data, &marker); err != nil || !validRecoverySetID(marker.ID) || !validRecoveryDigest(marker.ManifestSHA256) {
+	if err := json.Unmarshal(data, &marker); err != nil || !validRecoverySetID(marker.ID) ||
+		!validRecoveryDigest(marker.ManifestSHA256) || !validRecoveryDigest(marker.InstallationMAC) {
 		return restoreRecoveryMarker{}, errors.New("invalid restore recovery marker")
 	}
 	return marker, nil

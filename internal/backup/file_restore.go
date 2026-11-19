@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -397,7 +398,8 @@ func (s *Service) applyArchiveFiles(ctx context.Context, files map[string]string
 	if err := s.ValidateDatabaseFile(ctx, files["servers.db"], backupKey); err != nil {
 		return err
 	}
-	preparedDB, err := s.ReencryptDatabaseFile(ctx, files["servers.db"], backupKey, s.deps.CurrentEncryptionKey())
+	installationKey := s.deps.CurrentEncryptionKey()
+	preparedDB, err := s.ReencryptDatabaseFile(ctx, files["servers.db"], backupKey, installationKey)
 	if err != nil {
 		return err
 	}
@@ -490,6 +492,7 @@ func (s *Service) applyArchiveFiles(ctx context.Context, files map[string]string
 	// Publishing the marker and syncing the database directory also makes
 	// the snapshot directory entry durable before any live file is changed.
 	marker := restoreRecoveryMarker{ID: seal.SetID, ManifestSHA256: recoveryDigest(manifest)}
+	marker.InstallationMAC = hex.EncodeToString(marker.installationMAC(installationKey))
 	created, err := fs.publishRecoveryMarker(markerPath, marker)
 	if err != nil {
 		cause := fmt.Errorf("persist restore recovery marker: %w", err)

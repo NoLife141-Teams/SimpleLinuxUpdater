@@ -234,6 +234,29 @@ func TestOfflineRecoveryRequiresIntactSealForUnreadableSQLite(t *testing.T) {
 	}
 }
 
+func TestOfflineRecoveryRejectsSealedSetWithWrongInstallationKey(t *testing.T) {
+	f, _, id := interruptedRecoveryFixture(t, true)
+	// Both databases in this fixture lack encrypted credentials. They share
+	// the deployed paths a copied set could have on a different volume.
+	damaged := []byte("unreadable SQLite from a different installation")
+	if err := os.WriteFile(f.db, damaged, 0600); err != nil {
+		t.Fatal(err)
+	}
+	f.service.deps.DecodeEncryptionKey = func(string) ([]byte, error) { return []byte("other installation key"), nil }
+	for _, selection := range []string{"", id} {
+		report, err := f.service.OfflineRestoreRecovery(t.Context(), selection, offlineRecoveryMergeFixtureJobs)
+		if (err != nil) != (selection != "") || !report.RecoveryRequired || report.Diagnosis != "" ||
+			len(report.Sets) != 1 || report.Sets[0].Ready || report.Sets[0].Blocker != "installation_mismatch" {
+			t.Fatalf("recovery with foreign seal (%q) = %+v, %v", selection, report, err)
+		}
+	}
+	present, markerErr := RestoreRecoveryPending(f.db)
+	retained, readErr := os.ReadFile(f.db)
+	if markerErr != nil || !present || readErr != nil || !bytes.Equal(retained, damaged) {
+		t.Fatalf("foreign set changed recovery state: marker=%v, error=%v, read=%v", present, markerErr, readErr)
+	}
+}
+
 func TestOfflineRecoveryReleasesOnlyThePhysicalInstallation(t *testing.T) {
 	f, root, id := interruptedRecoveryFixture(t, true)
 	child := filepath.Join(root, "child")

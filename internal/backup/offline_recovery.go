@@ -196,6 +196,9 @@ func (s *Service) prepareOfflineRecoverySet(ctx context.Context, rootPath, work 
 		return "", nil, errors.New(code)
 	}
 	id := result.ID
+	if marker.ManifestSHA256 != "" && !marker.matchesInstallation(key) {
+		return fail("installation_mismatch")
+	}
 	info, err := os.Lstat(rootPath)
 	if err != nil || !info.IsDir() || info.Mode().Perm()&0077 != 0 {
 		return fail("invalid_manifest")

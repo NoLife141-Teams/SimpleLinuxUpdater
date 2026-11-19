@@ -165,22 +165,23 @@ func (s *Service) ProcessDueWithRecovery(now time.Time, store SchedulerWatermark
 	pending := s.PendingMissedTicks()
 	processedPending := make(map[string]struct{}, len(pending))
 	durableMinutes := make(map[string]struct{})
+	requests := make([]ScheduleRequest, 0, len(pending))
 	currentDenied := false
 	if store.LoadDenials != nil {
 		denials, err := store.LoadDenials(currentUTC.Add(-DefaultSchedulerRecoveryHorizon), currentUTC)
 		if err != nil {
 			return fmt.Errorf("load scheduled maintenance denials: %w", err)
 		}
-		for _, denial := range denials {
-			durableMinutes[MissedTickKey(denial.Tick, deps.TimestampLayout)] = struct{}{}
-		}
 		denialFingerprint, err := recoverySnapshot.denialFingerprint(currentFingerprint)
 		if err != nil {
 			return err
 		}
-		currentDenied, err = recoveryService.recoverSchedulerDenials(denials, currentUTC, denialFingerprint, currentFingerprint, processedPending)
-		if err != nil {
-			return err
+		for _, denial := range denials {
+			durableMinutes[MissedTickKey(denial.Tick, deps.TimestampLayout)] = struct{}{}
+			if request, eligible := denial.recoveryRequest(currentUTC, denialFingerprint, currentFingerprint); eligible {
+				requests = append(requests, request)
+				currentDenied = currentDenied || denial.Tick.Equal(currentUTC)
+			}
 		}
 	}
 	if historicalStateKnown {
@@ -197,11 +198,17 @@ func (s *Service) ProcessDueWithRecovery(now time.Time, store SchedulerWatermark
 			if _, recorded := durableMinutes[key]; recorded {
 				continue
 			}
-			if err := recoveryService.ProcessDueSlot(tick); err != nil {
-				return err
-			}
-			processedPending[key] = struct{}{}
+			requests = append(requests, tick)
 		}
+	}
+	// An earlier generic denial can already consume a wave. Replay both
+	// sources in time order so a later operation cannot take its attribution.
+	sort.Slice(requests, func(i, j int) bool { return requests[i].Now.Before(requests[j].Now) })
+	for _, request := range requests {
+		if err := recoveryService.ProcessDueSlot(request); err != nil {
+			return err
+		}
+		processedPending[MissedTickKey(request.Now, deps.TimestampLayout)] = struct{}{}
 	}
 
 	if found && historicalStateKnown && watermark.Before(currentUTC) {

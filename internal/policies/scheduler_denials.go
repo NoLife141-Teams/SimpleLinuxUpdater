@@ -74,34 +74,23 @@ func (snapshot schedulerRecoverySnapshot) denialFingerprint(schedulingState stri
 	return fmt.Sprintf("%s:targets:%x", schedulingState, sha256.Sum256(encoded)), nil
 }
 
-func (s *Service) recoverSchedulerDenials(denials []SchedulerDenial, current time.Time, fingerprint, schedulingFingerprint string, processed map[string]struct{}) (bool, error) {
-	layout := s.EnsureDeps().TimestampLayout
-	currentDenied := false
-	for _, denial := range denials {
-		observedAt, blocker := denial.ObservedAt, denial.Blocker
-		if fingerprint == "" || denial.Fingerprint != fingerprint {
-			matchingSchedule := schedulingFingerprint != "" && strings.HasPrefix(denial.Fingerprint, schedulingFingerprint+":targets:")
-			if !matchingSchedule || !denial.Tick.Equal(current) {
-				// Ordinary historical reconstruction may still cover this
-				// slot without attributing the obsolete observation.
-				continue
-			}
-			// The observation matches the scheduling rules, but its inventory
-			// proof cannot establish the exact target or cause.
-			observedAt, blocker = denial.Tick, maintenance.Blocker{}
+func (denial SchedulerDenial) recoveryRequest(current time.Time, fingerprint, schedulingFingerprint string) (ScheduleRequest, bool) {
+	observedAt, blocker := denial.ObservedAt, denial.Blocker
+	if fingerprint == "" || denial.Fingerprint != fingerprint {
+		matchingSchedule := schedulingFingerprint != "" && strings.HasPrefix(denial.Fingerprint, schedulingFingerprint+":targets:")
+		if !matchingSchedule || !denial.Tick.Equal(current) {
+			// Ordinary historical reconstruction may still cover this slot
+			// without attributing the obsolete observation.
+			return ScheduleRequest{}, false
 		}
-		if denial.Tick.Equal(current) {
-			currentDenied = true
-		}
-		if !observedAt.UTC().Truncate(time.Minute).Equal(denial.Tick) {
-			observedAt, blocker = denial.Tick, maintenance.Blocker{}
-		}
-		if err := s.ProcessDueSlot(ScheduleRequest{Now: observedAt, MaintenanceActive: true, MaintenanceBlocker: blocker, Admitted: true}); err != nil {
-			return false, err
-		}
-		processed[MissedTickKey(denial.Tick, layout)] = struct{}{}
+		// The observation matches the scheduling rules, but its inventory
+		// proof cannot establish the exact target or cause.
+		observedAt, blocker = denial.Tick, maintenance.Blocker{}
 	}
-	return currentDenied, nil
+	if !observedAt.UTC().Truncate(time.Minute).Equal(denial.Tick) {
+		observedAt, blocker = denial.Tick, maintenance.Blocker{}
+	}
+	return ScheduleRequest{Now: observedAt, MaintenanceActive: true, MaintenanceBlocker: blocker, Admitted: true}, true
 }
 
 func ensureSchedulerDenials(db *sql.DB) error {

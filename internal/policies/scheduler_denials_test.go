@@ -320,3 +320,85 @@ func TestSchedulerDenialsAttributeConsecutiveSlotsToTheirWinners(t *testing.T) {
 		}
 	}
 }
+
+func TestSchedulerDenialReplaysEarlierInMemorySkipBeforeLaterRecordedCause(t *testing.T) {
+	repo, _ := newTestRepository(t)
+	origin := time.Date(2026, 11, 19, 4, 25, 0, 0, time.UTC)
+	firstTick := origin.Add(5 * time.Minute)
+	secondTick := firstTick.Add(time.Minute)
+	now := firstTick.Add(-time.Minute)
+	inventory := []servers.Server{{Name: "canary"}, {Name: "host"}}
+	policy := Policy{
+		ID: 1, Revision: 1, Name: "rollout", Enabled: true, TargetServers: []string{"canary", "host"},
+		ExecutionMode: ExecutionApprovalRequired, PackageScope: PackageScopeSecurity, CadenceKind: CadenceDaily, TimeLocal: "04:25",
+		RolloutMode: RolloutCanaryWaves, CanaryMode: CanaryExplicit, CanaryServers: []string{"canary"}, WaveSize: 1, WaveDelayMinutes: 5,
+	}
+	coordinator := maintenance.NewCoordinator(maintenance.Deps{Store: maintenance.NewMemoryStore()})
+	if err := coordinator.Initialize(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	deps := testServiceDeps()
+	deps.Maintenance = coordinator
+	deps.Now = func() time.Time { return now }
+	deps.Occurrences = repo
+	deps.ListPolicies = func() ([]Policy, error) { return []Policy{policy}, nil }
+	deps.ListRuns = repo.ListRuns
+	deps.ListRolloutRuns = repo.ListRolloutRuns
+	deps.SnapshotServers = func() []servers.Server { return inventory }
+	deps.HandleScheduledRun = func(req ScheduledRunRequest) ScheduledRunResult {
+		if req.Outcome != RunReasonMaintenance {
+			t.Fatalf("unexpected admission during denial: %+v", req)
+		}
+		_, inserted, err := repo.CreateRun(Run{
+			PolicyID: req.Policy.ID, ServerName: req.Server.Name, ScheduledForUTC: req.ScheduledForUTC,
+			Status: RunSkipped, Reason: req.Outcome, FinishedAt: now.Format(DefaultTimestampLayout),
+			MaintenanceCause: req.MaintenanceBlocker.Cause, BlockingJobID: req.MaintenanceBlocker.JobID, MaintenanceTickUTC: req.MaintenanceTickUTC,
+		})
+		return ScheduledRunResult{Inserted: inserted, Err: err}
+	}
+	service := NewService(deps)
+	store := SchedulerWatermarkStore{
+		Load: repo.LoadSchedulerWatermark, Save: repo.SaveSchedulerWatermark,
+		LoadStateFingerprint: repo.LoadSchedulerStateFingerprint, SaveStateFingerprint: repo.SaveSchedulerStateFingerprint,
+		LoadStateRevision: repo.LoadSchedulerStateRevision, SaveDenial: repo.SaveSchedulerDenial,
+		LoadDenials: repo.LoadSchedulerDenials, DeleteDenialsBefore: repo.DeleteSchedulerDenialsBefore,
+	}
+	if _, err := repo.AcceptOccurrence(newOccurrence(service, policy, origin, inventory, nil)); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := repo.CreateRun(Run{
+		PolicyID: policy.ID, ServerName: "canary", ScheduledForUTC: origin.Format(DefaultTimestampLayout),
+		Status: RunSucceeded, FinishedAt: origin.Add(time.Minute).Format(DefaultTimestampLayout),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.ProcessDueWithRecovery(now, store); err != nil {
+		t.Fatal(err)
+	}
+	lease, decision := coordinator.TryExclusive(maintenance.OperationBackupExport)
+	if !decision.Allowed {
+		t.Fatal("exclusive export refused")
+	}
+	now = firstTick
+	if err := service.ProcessDueWithRecovery(now, store); err != nil {
+		t.Fatal(err)
+	}
+	if err := lease.Activate(t.Context(), maintenance.OperationFacts{JobID: "later-export"}); err != nil {
+		t.Fatal(err)
+	}
+	now = secondTick
+	if err := service.ProcessDueWithRecovery(now, store); err != nil {
+		t.Fatal(err)
+	}
+	if err := lease.Close(); err != nil {
+		t.Fatal(err)
+	}
+	now = secondTick.Add(time.Minute)
+	if err := service.ProcessDueWithRecovery(now, store); err != nil {
+		t.Fatal(err)
+	}
+	run, err := repo.FindRun(policy.ID, "host", origin.Format(DefaultTimestampLayout))
+	if err != nil || run.Reason != RunReasonMaintenance || run.BlockingJobID != "" {
+		t.Fatalf("earlier denied wave = %+v, %v, want a generic maintenance skip", run, err)
+	}
+}

@@ -211,15 +211,17 @@ func TestSecondReviewFailedRollbackKeepsMaintenanceClosed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("rollback recovery files were discarded: %v", err)
 	}
-	var snapshots []struct {
-		Target, BackupPath string
-		Exists             bool
+	var manifest struct {
+		Snapshots []struct {
+			Target, BackupPath string
+			Exists             bool
+		} `json:"snapshots"`
 	}
-	if err := json.Unmarshal(manifestData, &snapshots); err != nil {
+	if err := json.Unmarshal(manifestData, &manifest); err != nil {
 		t.Fatal(err)
 	}
 	foundOriginal := false
-	for _, snapshot := range snapshots {
+	for _, snapshot := range manifest.Snapshots {
 		if !snapshot.Exists {
 			continue
 		}

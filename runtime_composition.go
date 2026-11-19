@@ -257,15 +257,8 @@ func (c *runtimeComposition) Compose() AppDeps {
 			}
 		}
 	}
-	if deps.NotificationService == nil {
-		deps.NotificationService = NewNotificationService(NotificationServiceDeps{
-			Now:            deps.Now,
-			ReadConditions: newNotificationConditionSource(deps.DB, deps.Now, deps.PublicOrigin),
-			DB:             deps.DB,
-		})
-	}
-	if deps.AuthService == nil {
-		deps.AuthService = NewAuthService(deps.DB)
+	if deps.InstallationHealth == nil {
+		deps.InstallationHealth = newInstallationHealth()
 	}
 	if deps.MaintenanceCoordinator == nil {
 		deps.MaintenanceCoordinator = maintenancepkg.NewCoordinator(maintenancepkg.Deps{
@@ -275,6 +268,29 @@ func (c *runtimeComposition) Compose() AppDeps {
 				return internalbackup.RestoreRecoveryPending(deps.DBPath())
 			},
 		})
+	}
+	if deps.NotificationService == nil {
+		deps.NotificationService = NewNotificationService(NotificationServiceDeps{
+			Now:            deps.Now,
+			ReadConditions: newNotificationConditionSource(deps.DB, deps.Now, deps.PublicOrigin),
+			DB:             deps.DB,
+			RestoreDeliveryBlocked: func() bool {
+				// Initialization publishes the persisted maintenance state
+				// before readiness. Check the phase before reading that state.
+				if deps.InstallationHealth.Phase() == "initializing" {
+					return true
+				}
+				state := deps.MaintenanceCoordinator.Snapshot()
+				if state.RecoveryRequired || (state.Active && state.Kind == string(maintenancepkg.OperationBackupRestore)) {
+					return true
+				}
+				pending, err := internalbackup.RestoreRecoveryPending(deps.DBPath())
+				return pending || err != nil
+			},
+		})
+	}
+	if deps.AuthService == nil {
+		deps.AuthService = NewAuthService(deps.DB)
 	}
 	if deps.AuditService == nil {
 		deps.AuditService = newAuditServiceWithHealthObservation(deps.DB, notifyAudit, func() (*time.Location, string) {
@@ -553,9 +569,6 @@ func (c *runtimeComposition) Compose() AppDeps {
 	}
 	if deps.BackupAutomation == nil {
 		deps.BackupAutomation = newBackupAutomation(deps)
-	}
-	if deps.InstallationHealth == nil {
-		deps.InstallationHealth = newInstallationHealth()
 	}
 	c.deps = deps
 	return deps

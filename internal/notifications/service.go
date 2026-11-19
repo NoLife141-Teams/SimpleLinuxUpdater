@@ -265,23 +265,24 @@ type WebhookPayload struct {
 }
 
 type ServiceDeps struct {
-	ReadConditions        ConditionSource
-	ConditionPollInterval time.Duration
-	DB                    DBProvider
-	HTTPClient            HTTPClient
-	EncryptSecret         func(string) (string, error)
-	DecryptSecret         func(string) (string, error)
-	Now                   func() time.Time
-	Backoff               func(attempt int) time.Duration
-	Logf                  func(string, ...any)
-	QueueSize             int
-	DeliveryTimeout       time.Duration
-	PollInterval          time.Duration
-	ClaimTTL              time.Duration
-	Retention             time.Duration
-	PruneInterval         time.Duration
-	NewID                 func() string
-	NextOutboxWake        func(context.Context, *sql.DB, time.Duration) (time.Time, bool, error)
+	ReadConditions         ConditionSource
+	RestoreDeliveryBlocked func() bool
+	ConditionPollInterval  time.Duration
+	DB                     DBProvider
+	HTTPClient             HTTPClient
+	EncryptSecret          func(string) (string, error)
+	DecryptSecret          func(string) (string, error)
+	Now                    func() time.Time
+	Backoff                func(attempt int) time.Duration
+	Logf                   func(string, ...any)
+	QueueSize              int
+	DeliveryTimeout        time.Duration
+	PollInterval           time.Duration
+	ClaimTTL               time.Duration
+	Retention              time.Duration
+	PruneInterval          time.Duration
+	NewID                  func() string
+	NextOutboxWake         func(context.Context, *sql.DB, time.Duration) (time.Time, bool, error)
 }
 
 type Service struct {
@@ -392,6 +393,21 @@ func (s *Service) run(ctx context.Context) {
 	}()
 	var retryTimer *time.Timer
 	var retryC <-chan time.Time
+	waitForRestore := func() bool {
+		if s.deps.RestoreDeliveryBlocked != nil && s.deps.RestoreDeliveryBlocked() {
+			// A durable rollback set represents the complete delivery
+			// evidence only while a marked restore cannot send new work.
+			s.endPersistence()
+			s.health.Stop()
+			if retryTimer == nil {
+				retryTimer = time.NewTimer(s.deps.PollInterval)
+				retryC = retryTimer.C
+			}
+			return true
+		}
+		return false
+	}
+cycle:
 	for {
 		prune := false
 		select {
@@ -413,8 +429,11 @@ func (s *Service) run(ctx context.Context) {
 		case <-pruneTicker.C:
 			prune = true
 		}
-		if !s.beginPersistence(ctx) {
+		if s.isClosing() || !s.beginPersistence(ctx) {
 			return
+		}
+		if waitForRestore() {
+			continue
 		}
 		s.health.Tick(s.deps.Now())
 		cycleOK := true
@@ -468,6 +487,9 @@ func (s *Service) run(ctx context.Context) {
 			s.endPersistence()
 			if !s.beginPersistence(ctx) {
 				return
+			}
+			if waitForRestore() {
+				continue cycle
 			}
 		}
 		if claimFailed && s.isClosing() {

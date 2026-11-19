@@ -68,7 +68,7 @@ def qualification_overlay(work):
 
     # This marker can only be reached after applying the staged database and
     # removing SQLite sidecars, before host keys, handoff or runtime reload.
-    anchor = '\tif knownHosts, ok := files["known_hosts"]; ok {\n\t\tif err := fs.writeAtomicFileFromPath'
+    anchor = '\tif replacesKnownHosts {\n\t\tif err := fs.writeAtomicFileFromPath'
     instrument("internal/backup/file_restore.go", [
         ('\n\t"strings"\n', '\n\t"strings"\n\t"time"\n'),
         (anchor, """\
@@ -105,6 +105,10 @@ def qualification_overlay(work):
     finish = '\t\tif !scheduled {'
     instrument("internal/notifications/service.go", [
         ('\n\t"net/url"\n', '\n\t"net/url"\n\t"os"\n'),
+        ('\t\tif s.deps.RestoreDeliveryBlocked != nil && s.deps.RestoreDeliveryBlocked() {\n',
+         '\t\tif s.deps.RestoreDeliveryBlocked != nil && s.deps.RestoreDeliveryBlocked() {\n'
+         '\t\t\tif _, err := os.Stat("/work/observe-notifications"); err == nil {\n'
+         '\t\t\t\t_ = os.WriteFile("/work/notification-restore-paused", nil, 0600)\n\t\t\t}\n'),
         (anchor, '\t\tqualificationReconciled := false\n' + anchor),
         (failure, failure + ' else {\n\t\t\t\tqualificationReconciled = true\n\t\t\t}'),
         (finish, """\
@@ -787,11 +791,13 @@ class Harness:
         record["checkpoint"] = "recovery-restarts"
         observe = self.work / "observe-notifications"
         poll = self.work / "notification-poll-complete"
+        paused = self.work / "notification-restore-paused"
         observe.touch(exist_ok=False)
         for restart in range(2):
             if restart:
                 self.stop_app()
             poll.unlink(missing_ok=True)
+            paused.unlink(missing_ok=True)
             self.docker("start", self.app_name)
             self.connect_app(recovering=True, include_error_body=False)
             maintenance = self.api.request("GET", "/api/maintenance")
@@ -800,14 +806,10 @@ class Harness:
             for method, path in (("GET", report_path), ("POST", f"/api/update/{name}"), ("POST", f"/api/autoremove/{name}")):
                 blocked = self.api.request(method, path, allowed=(503,))
                 require(blocked.get("recovery_required"), "runtime bypassed the recovery latch")
-            until(poll.is_file, "notification worker did not finish condition reconciliation and drain")
-            require(poll.read_text() == fingerprint, "restored worker did not observe the original enabled webhook")
-            current_incident, current_chunks, current_delivery, state, admitted, _ = persistence()
-            fact = (state.get("Conditions") or {}).get(condition_id, {}).get("Fact", {})
-            require(fact.get("Active") and fact.get("TargetName") == name
-                    and json.loads(fact["MetaJSON"]).get("job_id") == job_id
-                    and admitted,
-                    "notification worker did not observe the original active incident and admission")
+            paused.unlink(missing_ok=True)
+            until(paused.is_file, "notification worker did not reach the restore delivery gate")
+            current_incident, current_chunks, current_delivery, _, admitted, _ = persistence()
+            require(admitted and not poll.exists(), "notification worker passed the restore delivery gate")
             require((current_incident, current_chunks, current_delivery) == (incident, chunks, delivered)
                     and receipts() == expected_receipts and execution_counts() == commands,
                     "restart changed the original evidence, repeated a delivery or executed another APT command")
@@ -824,25 +826,37 @@ class Harness:
                     and known_hosts.read_bytes() == trusted_hosts,
                     "replacement persistence, inventory or host trust failed verification")
         recovery_marker = self.work / "servers.db.restore-recovery"
-        snapshots = recovery_marker.read_text().strip()
+        marker = json.loads(recovery_marker.read_text())
+        snapshots = marker["id"]
         require(Path(snapshots).name == snapshots and snapshots.startswith("slu-restore-rollback-")
-                and (self.work / snapshots / "recovery.json").is_file(),
+                and (self.work / snapshots / "recovery.json").is_file() and marker.get("manifest_sha256"),
                 "durable recovery marker did not locate the rollback manifest")
+        damaged = b"qualification fixture with an unreadable SQLite header"
+        (self.work / "servers.db").write_bytes(damaged)
+        (self.work / "servers.db-wal").write_bytes(damaged)
         inspection = self.run_offline_recovery("--inspect")
+        expected_set = {"id": snapshots, "ready": True, "servers": 1, "apt_reports": 1}
         require(inspection["recovery_required"] and inspection["sets"] == [
-            {"id": snapshots, "ready": True, "servers": 1, "apt_reports": 1}
-        ], "offline recovery inspection did not validate the saved installation")
+            dict(expected_set, evidence_source="sealed_rollback")
+        ] and (self.work / "servers.db").read_bytes() == damaged,
+                "offline recovery inspection did not validate the sealed set without changing the damaged SQLite")
         self.interrupt_offline_recovery(snapshots)
-        require(self.run_offline_recovery("--inspect") == inspection,
+        retry = self.run_offline_recovery("--inspect")
+        require(retry["recovery_required"] and retry["sets"] == [dict(expected_set, evidence_source="live_database")],
                 "interrupted offline recovery did not preserve the validated set and latch")
+        (self.work / "servers.db").write_bytes(damaged)
+        (self.work / "servers.db-wal").write_bytes(damaged)
+        require(self.run_offline_recovery("--inspect") == inspection, "sealed recovery was unavailable on a new attempt")
         record["verified_interrupted_offline_recovery"] = True
+        record["verified_unreadable_sqlite_recovery"] = True
         recovered = self.run_offline_recovery("--apply", snapshots)
         diagnosis = recovered.get("diagnosis", "")
         require(recovered["applied"] == snapshots and not recovered["recovery_required"]
                 and Path(diagnosis).name == diagnosis and diagnosis.startswith("slu-recovery-diagnosis-")
-                and (self.work / diagnosis / "recovery.json").is_file(),
+                and (self.work / diagnosis / "recovery.json").is_file()
+                and (self.work / diagnosis / "snapshot-0").read_bytes() == damaged
+                and (self.work / diagnosis / "snapshot-1").read_bytes() == damaged,
                 "offline recovery did not preserve diagnostics and release the verified installation")
-        poll.unlink()
         self.docker("start", self.app_name)
         self.connect_app(include_error_body=False)
         self.api.request("GET", report_path, allowed=(401,))
@@ -854,6 +868,12 @@ class Harness:
             require("APT reconciliation is required" in blocked["error"], "recovered APT latch did not block " + action)
         until(poll.is_file, "notification worker did not finish after offline recovery")
         require(poll.read_text() == fingerprint, "recovered worker did not observe the original enabled webhook")
+        current_incident, current_chunks, current_delivery, state, admitted, _ = persistence()
+        fact = (state.get("Conditions") or {}).get(condition_id, {}).get("Fact", {})
+        require(fact.get("Active") and fact.get("TargetName") == name
+                and json.loads(fact["MetaJSON"]).get("job_id") == job_id and admitted
+                and (current_incident, current_chunks, current_delivery) == (incident, chunks, delivered),
+                "notification worker did not observe the exact recovered incident and admission")
         require(receipts() == expected_receipts and execution_counts() == commands,
                 "offline recovery repeated a webhook delivery or executed another APT command")
         record.update(job_id=job_id, authorized_report_preserved=True, webhook_deliveries=1,

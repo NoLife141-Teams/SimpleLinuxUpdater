@@ -24,11 +24,12 @@ import (
 const restoreRollbackPrefix = "slu-restore-rollback-"
 
 type OfflineRecoverySet struct {
-	ID         string `json:"id"`
-	Ready      bool   `json:"ready"`
-	Blocker    string `json:"blocker,omitempty"`
-	Servers    int    `json:"servers,omitempty"`
-	APTReports int    `json:"apt_reports,omitempty"`
+	ID             string `json:"id"`
+	Ready          bool   `json:"ready"`
+	Blocker        string `json:"blocker,omitempty"`
+	EvidenceSource string `json:"evidence_source,omitempty"`
+	Servers        int    `json:"servers,omitempty"`
+	APTReports     int    `json:"apt_reports,omitempty"`
 }
 
 type OfflineRecoveryReport struct {
@@ -56,13 +57,13 @@ func (s *Service) OfflineRestoreRecovery(ctx context.Context, selection string, 
 	}
 	report.RecoveryRequired = marked
 	var ids []string
+	var recorded restoreRecoveryMarker
 	if marked {
-		data, err := readRecoveryFile(marker, 512)
-		id := strings.TrimSpace(string(data))
-		if err != nil || !validRecoverySetID(id) {
+		recorded, err = readRestoreRecoveryMarker(marker)
+		if err != nil {
 			return report, errors.New("restore recovery marker is invalid")
 		}
-		ids = []string{id}
+		ids = []string{recorded.ID}
 	}
 	work, err := os.MkdirTemp(s.deps.TempDir(), "slu-offline-recovery-*")
 	if err != nil {
@@ -108,7 +109,7 @@ func (s *Service) OfflineRestoreRecovery(ctx context.Context, selection string, 
 		}
 		ids = []string{selection}
 	}
-	if liveErr != nil {
+	if liveErr != nil && recorded.ManifestSHA256 == "" {
 		for _, id := range ids {
 			report.Sets = append(report.Sets, OfflineRecoverySet{ID: id, Blocker: "current_database_unreadable"})
 		}
@@ -117,8 +118,10 @@ func (s *Service) OfflineRestoreRecovery(ctx context.Context, selection string, 
 		}
 		return report, nil
 	}
-	if err := s.deps.EnsureSchema(live); err != nil {
-		return report, errors.New("could not read current recovery evidence")
+	if live != nil {
+		if err := s.deps.EnsureSchema(live); err != nil {
+			return report, errors.New("could not read current recovery evidence")
+		}
 	}
 	config, err := readRecoveryFile(s.deps.ConfigPath(), MaxExtractedBytes)
 	if err != nil {
@@ -141,7 +144,11 @@ func (s *Service) OfflineRestoreRecovery(ctx context.Context, selection string, 
 
 	for _, id := range ids {
 		set := OfflineRecoverySet{ID: id}
-		staged, stagedHosts, setErr := s.prepareOfflineRecoverySet(ctx, filepath.Join(dir, id), work, targets, hosts, key, live, mergeJobs, &set)
+		chosen := recorded
+		if !marked {
+			chosen.ID = id
+		}
+		staged, stagedHosts, setErr := s.prepareOfflineRecoverySet(ctx, filepath.Join(dir, id), work, targets, hosts, key, live, mergeJobs, chosen, &set)
 		report.Sets = append(report.Sets, set)
 		if selection == "" {
 			continue
@@ -163,12 +170,22 @@ func (s *Service) OfflineRestoreRecovery(ctx context.Context, selection string, 
 			fs.syncPath(diagnosis) != nil || fs.syncPath(dir) != nil {
 			return report, errors.New("could not persist the diagnosis copy; recovery remains locked")
 		}
+		currentHosts := entries[len(targets)]
+		if stagedHosts != nil && stagedHosts.Exists == currentHosts.Exists && stagedHosts.SHA256 == currentHosts.SHA256 {
+			// Confirm the directory entry is durable even when a prior
+			// attempt installed or removed known_hosts before its sync failed.
+			if err := fs.syncPath(restoreEntryDirectory(hosts)); err != nil &&
+				(currentHosts.Exists || !errors.Is(err, os.ErrNotExist)) {
+				return report, errors.New("could not synchronize host trust; recovery remains locked")
+			}
+			stagedHosts = nil
+		}
 		if !marked {
-			if _, err := fs.publishRecoveryMarker(marker, filepath.Join(dir, id)); err != nil {
+			if _, err := fs.publishRecoveryMarker(marker, chosen); err != nil {
 				return report, errors.New("could not persist restore recovery marker")
 			}
 		}
-		if err := s.applyOfflineRecovery(ctx, fs, staged, stagedHosts, database, hosts, marker, filepath.Join(dir, id)); err != nil {
+		if err := s.applyOfflineRecovery(ctx, fs, staged, stagedHosts, database, hosts, marker, chosen, live != nil); err != nil {
 			return report, err
 		}
 		report.Applied = id
@@ -177,19 +194,21 @@ func (s *Service) OfflineRestoreRecovery(ctx context.Context, selection string, 
 	return report, nil
 }
 
-func (s *Service) prepareOfflineRecoverySet(ctx context.Context, rootPath, work string, targets []string, hosts string, key []byte, live *sql.DB, mergeJobs func(context.Context, *sql.DB, *sql.DB) error, result *OfflineRecoverySet) (string, *fileRestoreSnapshot, error) {
+func (s *Service) prepareOfflineRecoverySet(ctx context.Context, rootPath, work string, targets []string, hosts string, key []byte, live *sql.DB, mergeJobs func(context.Context, *sql.DB, *sql.DB) error, marker restoreRecoveryMarker, result *OfflineRecoverySet) (string, *fileRestoreSnapshot, error) {
 	fail := func(code string) (string, *fileRestoreSnapshot, error) {
 		result.Blocker = code
 		return "", nil, errors.New(code)
 	}
 	id := result.ID
+	if marker.ManifestSHA256 != "" && !marker.matchesInstallation(key) {
+		return fail("installation_mismatch")
+	}
 	info, err := os.Lstat(rootPath)
 	if err != nil || !info.IsDir() || info.Mode().Perm()&0077 != 0 {
 		return fail("invalid_manifest")
 	}
-	manifest, err := readRecoveryFile(filepath.Join(rootPath, "recovery.json"), 128*1024)
-	var snapshots []fileRestoreSnapshot
-	if err != nil || json.Unmarshal(manifest, &snapshots) != nil {
+	snapshots, sealed, err := loadRecoverySnapshots(rootPath, marker)
+	if err != nil {
 		return fail("invalid_manifest")
 	}
 	paths := append(append([]string{}, targets...), hosts)
@@ -199,12 +218,21 @@ func (s *Service) prepareOfflineRecoverySet(ctx context.Context, rootPath, work 
 	}
 	reconstructed := filepath.Join(work, id+".sqlite")
 	fs := restoreFiles{sync: s.syncRestoreFile}
-	for i, suffix := range []string{"", "-wal"} {
-		if indexed[i] != nil && indexed[i].Exists {
-			if err := fs.copySnapshot(reconstructed+suffix, indexed[i].BackupPath); err != nil {
-				return fail("invalid_database")
-			}
+	for i, suffix := range []string{"", "-wal", ".snapshot-shm", ".known_hosts"} {
+		entry := indexed[i]
+		if entry == nil || !entry.Exists {
+			continue
 		}
+		if i == 2 && !sealed {
+			continue
+		}
+		destination := reconstructed + suffix
+		digest, err := fs.copyAndHashSnapshot(destination, entry.BackupPath)
+		if err != nil || (sealed && digest != entry.SHA256) {
+			return fail("invalid_snapshot")
+		}
+		entry.SHA256 = digest
+		entry.BackupPath = destination
 	}
 	if err := s.ValidateDatabaseFile(ctx, reconstructed, key); err != nil {
 		return fail("invalid_database")
@@ -224,6 +252,18 @@ func (s *Service) prepareOfflineRecoverySet(ctx context.Context, rootPath, work 
 		return fail("invalid_database")
 	}
 	defer db.Close()
+	source := "live_database"
+	if live == nil {
+		// The sealed rollback database is the complete pre-replacement state.
+		// Use a separate connection and copy for the same evidence validation
+		// used when merging from a readable live database.
+		live, err = cloneRecoveryDatabase(ctx, fs, reconstructed+".evidence", reconstructed)
+		if err != nil {
+			return fail("invalid_database")
+		}
+		defer live.Close()
+		source = "sealed_rollback"
+	}
 	if mergeJobs == nil || mergeJobs(ctx, live, db) != nil {
 		return fail("apt_evidence_conflict")
 	}
@@ -258,7 +298,41 @@ func (s *Service) prepareOfflineRecoverySet(ctx context.Context, rootPath, work 
 		return fail("invalid_database")
 	}
 	result.Ready = true
+	result.EvidenceSource = source
 	return staged, indexed[3], nil
+}
+
+func loadRecoverySnapshots(root string, marker restoreRecoveryMarker) ([]fileRestoreSnapshot, bool, error) {
+	raw, err := readRecoveryFile(filepath.Join(root, "recovery.json"), 128*1024)
+	if err != nil {
+		return nil, false, err
+	}
+	if marker.ManifestSHA256 != "" && recoveryDigest(raw) != marker.ManifestSHA256 {
+		return nil, false, errors.New("rollback manifest does not match recovery marker")
+	}
+	var manifest sealedRecoveryManifest
+	if err := json.Unmarshal(raw, &manifest); err == nil {
+		// The database, WAL and SHM entries are always declared. Trust is
+		// included only when the restore could replace the active trust file.
+		expectedSnapshots := 3
+		if manifest.ReplacesKnownHosts {
+			expectedSnapshots++
+		}
+		if manifest.Version != restoreSealVersion || manifest.SetID != marker.ID || len(manifest.Snapshots) != expectedSnapshots {
+			return nil, false, errors.New("invalid sealed recovery manifest")
+		}
+		for _, entry := range manifest.Snapshots {
+			if entry.Exists && !validRecoveryDigest(entry.SHA256) || !entry.Exists && entry.SHA256 != "" {
+				return nil, false, errors.New("invalid snapshot digest")
+			}
+		}
+		return manifest.Snapshots, true, nil
+	}
+	var legacy []fileRestoreSnapshot
+	if marker.ManifestSHA256 != "" || json.Unmarshal(raw, &legacy) != nil {
+		return nil, false, errors.New("invalid legacy recovery manifest")
+	}
+	return legacy, false, nil
 }
 
 func validateRecoverySnapshots(root string, paths []string, snapshots []fileRestoreSnapshot) ([]*fileRestoreSnapshot, error) {
@@ -294,10 +368,14 @@ func validateRecoverySnapshots(root string, paths []string, snapshots []fileRest
 	return indexed, nil
 }
 
-func (s *Service) applyOfflineRecovery(ctx context.Context, fs restoreFiles, staged string, stagedHosts *fileRestoreSnapshot, database, hosts, marker, snapshotDir string) error {
+func (s *Service) applyOfflineRecovery(ctx context.Context, fs restoreFiles, staged string, stagedHosts *fileRestoreSnapshot, database, hosts, marker string, recorded restoreRecoveryMarker, readable bool) error {
 	fail := errors.New("could not apply verified recovery files; recovery remains locked")
-	if err := fs.checkpointRecoveryWAL(ctx, database); err != nil {
-		return fail
+	// For sealed recovery, the unreadable files have already been saved to
+	// the diagnosis directory. SQLite cannot checkpoint their WAL safely.
+	if readable {
+		if err := fs.checkpointRecoveryWAL(ctx, database); err != nil {
+			return fail
+		}
 	}
 	if err := fs.removeSQLiteSidecars(database); err != nil {
 		return fail
@@ -328,11 +406,12 @@ func (s *Service) applyOfflineRecovery(ctx context.Context, fs restoreFiles, sta
 		return fail
 	}
 	if err := fs.removeFile(marker); err != nil {
+		_, _ = fs.publishRecoveryMarker(marker, recorded)
 		return fail
 	}
 	store := maintenance.SQLiteStore{DB: func() *sql.DB { return db }}
 	if err := errors.Join(store.Save(ctx, maintenance.State{}), db.Close()); err != nil {
-		_, _ = fs.publishRecoveryMarker(marker, snapshotDir)
+		_, _ = fs.publishRecoveryMarker(marker, recorded)
 		return fail
 	}
 	return nil

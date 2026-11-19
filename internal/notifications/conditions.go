@@ -179,10 +179,12 @@ func migrateEpisodeApprovalAdmissions(state *conditionState, fingerprints map[st
 }
 
 func ensureConditionSchema(ctx context.Context, db *sql.DB) error {
-	if _, err := db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS notification_conditions (id INTEGER PRIMARY KEY CHECK(id=1), state_json TEXT NOT NULL); CREATE TABLE IF NOT EXISTS notification_server_identities(server_name TEXT PRIMARY KEY, identity TEXT NOT NULL UNIQUE)`); err != nil {
-		return err
-	}
-	return ensureAPTAdmissionSchema(ctx, db)
+	_, err := db.ExecContext(ctx, `
+		CREATE TABLE IF NOT EXISTS notification_conditions (id INTEGER PRIMARY KEY CHECK(id=1), state_json TEXT NOT NULL);
+		CREATE TABLE IF NOT EXISTS notification_server_identities (server_name TEXT PRIMARY KEY, identity TEXT NOT NULL UNIQUE);
+		CREATE TABLE IF NOT EXISTS notification_apt_admissions (identity TEXT PRIMARY KEY NOT NULL) WITHOUT ROWID;
+	`)
+	return err
 }
 
 const conditionStateQuery = `SELECT state_json FROM notification_conditions WHERE id=1`
@@ -224,7 +226,7 @@ func (s *Service) reconcileConditions(ctx context.Context) error {
 	s.conditionMu.Lock()
 	defer s.conditionMu.Unlock()
 	db := s.database()
-	state, err := loadConditionState(ctx, db)
+	state, err := loadAndMigrateConditionState(ctx, db)
 	if err != nil {
 		return err
 	}
@@ -476,7 +478,7 @@ func (s *Service) revalidateOutboxCondition(ctx context.Context, row *outboxRow,
 			return conditionIneligible, err
 		}
 	}
-	state, err := loadConditionState(ctx, s.database())
+	state, err := loadAndMigrateConditionState(ctx, s.database())
 	if err != nil {
 		return conditionIneligible, err
 	}

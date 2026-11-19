@@ -2,6 +2,8 @@ package notifications
 
 import (
 	"database/sql"
+	"encoding/json"
+	"errors"
 	"slices"
 	"strings"
 	"testing"
@@ -14,19 +16,25 @@ func TestAPTAdmissionMigrationPreservesExpiredDelivery(t *testing.T) {
 		ID: APTReconciliationConditionID("target", "old-job"), EventType: EventAPTReconciliationRequired,
 		TargetType: "server", TargetName: "node", Active: true,
 	}
+	h.facts = []ConditionFact{fact}
 	settings, err := h.service.currentSettings()
 	if err != nil {
 		t.Fatal(err)
 	}
 	fingerprint := destinationConfigFingerprint(settings, DestinationWebhook)
-	identity := aptAdmissionID(fact, fingerprint)
-	otherAdmission := episodeAdmissionID(Condition{Fact: rebootFact(true), Episode: 1}, fingerprint)
+	// Captured legacy key for target/old-job and the fixture webhook.
+	const identity = "condition/apt-reconciliation/" +
+		"380cf970c2e2471f434a3b9d81ac3e61cf124168346ca181ccb454d146c0f625/" +
+		"bf53c189816312a216c4190f1992529351cf8d86a337212037a9abf8b72a79e0"
+	otherCondition := Condition{Fact: rebootFact(false), Episode: 1}
+	otherAdmission := episodeAdmissionID(otherCondition, fingerprint)
 	state, err := loadConditionState(ctx, h.db)
 	if err != nil {
 		t.Fatal(err)
 	}
 	state.Admissions[identity] = true
 	state.Admissions[otherAdmission] = true
+	state.Conditions[otherCondition.Fact.ID] = otherCondition
 	if err := saveConditionState(ctx, h.db, &state); err != nil {
 		t.Fatal(err)
 	}
@@ -35,7 +43,7 @@ func TestAPTAdmissionMigrationPreservesExpiredDelivery(t *testing.T) {
 		BEGIN SELECT RAISE(ABORT, 'reject migration'); END`); err != nil {
 		t.Fatal(err)
 	}
-	if err := EnsureSchema(h.db); err == nil || !strings.Contains(err.Error(), "reject migration") {
+	if err := h.service.reconcileConditions(ctx); err == nil || !strings.Contains(err.Error(), "reject migration") {
 		t.Fatalf("migration result = %v, want rejected JSON update", err)
 	}
 	if exists, err := hasAPTAdmission(ctx, h.db, identity); err != nil || exists {
@@ -45,9 +53,7 @@ func TestAPTAdmissionMigrationPreservesExpiredDelivery(t *testing.T) {
 		t.Fatal(err)
 	}
 	for range 2 {
-		if err := EnsureSchema(h.db); err != nil {
-			t.Fatal(err)
-		}
+		h.reconcile(t)
 	}
 	got, err := loadAPTAdmissions(ctx, h.db)
 	if err != nil || !slices.Equal(got, []string{identity}) {
@@ -58,7 +64,6 @@ func TestAPTAdmissionMigrationPreservesExpiredDelivery(t *testing.T) {
 		t.Fatalf("legacy condition state = %+v, err = %v", state, err)
 	}
 	h.service = &Service{deps: h.service.deps, wake: make(chan struct{}, 1), monitoringStarted: true}
-	h.facts = []ConditionFact{fact}
 	h.reconcile(t)
 	h.drain(t)
 	if h.client.calls != 0 || h.count(t, EventAPTReconciliationRequired) != 0 {
@@ -72,6 +77,32 @@ func TestAPTAdmissionMigrationPreservesExpiredDelivery(t *testing.T) {
 	h.drain(t)
 	if h.client.calls != 1 || h.count(t, EventAPTReconciliationRequired) != 1 {
 		t.Fatal("a new destination for the incident did not get its own delivery")
+	}
+}
+
+func TestUnreadableConditionsDoNotPreventOpeningDBAndAreRejectedAtStaging(t *testing.T) {
+	live := newConditionHarness(t)
+	staged := openOutboxTestDB(t, "staged.db")
+	if err := EnsureSchema(staged); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := staged.Exec(`INSERT INTO notification_conditions(id,state_json) VALUES(1,?)`, `{"Admissions":`); err != nil {
+		t.Fatal(err)
+	}
+	// The normal application open must succeed so the operator can still
+	// inspect other installation state and recover notification persistence.
+	if err := EnsureSchema(staged); err != nil {
+		t.Fatalf("opening the database failed because condition data is unreadable: %v", err)
+	}
+	if err := live.service.PreparePersistenceReplacement(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	// Even if there is no live admission to copy, malformed archive state
+	// must fail before the application can install the replacement file.
+	err := live.service.StageAPTDeliveryEvidence(t.Context(), staged)
+	var invalidJSON *json.SyntaxError
+	if !errors.As(err, &invalidJSON) {
+		t.Fatalf("staging result = %v, want unreadable condition state", err)
 	}
 }
 

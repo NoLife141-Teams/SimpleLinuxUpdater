@@ -15,20 +15,31 @@ func aptAdmissionID(fact ConditionFact, fingerprint string) string {
 	return "condition/" + fact.ID + "/" + fingerprint
 }
 
-func ensureAPTAdmissionSchema(ctx context.Context, db *sql.DB) error {
+// loadAndMigrateConditionState upgrades legacy evidence before a notification
+// operation uses it. Schema initialization can still open a database whose
+// notification state is unreadable, and staging can reject it before replacement.
+func loadAndMigrateConditionState(ctx context.Context, db *sql.DB) (conditionState, error) {
+	state, err := loadConditionState(ctx, db)
+	if err != nil {
+		return conditionState{}, err
+	}
+	for identity := range state.Admissions {
+		if strings.HasPrefix(identity, aptAdmissionPrefix) {
+			return migrateLegacyAPTAdmissions(ctx, db)
+		}
+	}
+	return state, nil
+}
+
+func migrateLegacyAPTAdmissions(ctx context.Context, db *sql.DB) (conditionState, error) {
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
-		return err
+		return conditionState{}, err
 	}
 	defer func() { _ = tx.Rollback() }()
-	if _, err := tx.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS notification_apt_admissions (
-		identity TEXT PRIMARY KEY NOT NULL
-	) WITHOUT ROWID`); err != nil {
-		return err
-	}
 	state, err := readConditionState(tx.QueryRowContext(ctx, conditionStateQuery))
 	if err != nil {
-		return err
+		return conditionState{}, err
 	}
 	var legacy []string
 	foundLegacy := false
@@ -44,13 +55,13 @@ func ensureAPTAdmissionSchema(ctx context.Context, db *sql.DB) error {
 	if foundLegacy {
 		slices.Sort(legacy)
 		if err := mergeAPTAdmissionsTx(ctx, tx, legacy); err != nil {
-			return err
+			return conditionState{}, err
 		}
 		if err := saveConditionState(ctx, tx, &state); err != nil {
-			return err
+			return conditionState{}, err
 		}
 	}
-	return tx.Commit()
+	return state, tx.Commit()
 }
 
 func hasAPTAdmission(ctx context.Context, db *sql.DB, identity string) (bool, error) {

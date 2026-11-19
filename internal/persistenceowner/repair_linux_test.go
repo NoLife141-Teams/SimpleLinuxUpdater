@@ -45,7 +45,7 @@ func writePersistenceTestFile(t *testing.T, path string) {
 	}
 }
 
-func TestRepairNormalizesPathsAndRepairsRollbackJournal(t *testing.T) {
+func TestRepairNormalizesPathsAndRepairsInstallationSidecars(t *testing.T) {
 	root := t.TempDir()
 	dataRoot := filepath.Join(root, "data")
 	dbPath := filepath.Join(dataRoot, "tenant", "state", "servers.db")
@@ -58,6 +58,7 @@ func TestRepairNormalizesPathsAndRepairsRollbackJournal(t *testing.T) {
 		dbPath + "-shm",
 		dbPath + "-journal",
 		dbPath + ".lock",
+		dbPath + ".restore-isolation",
 		filepath.Join(filepath.Dir(dbPath), "config.json"),
 		knownHosts,
 	} {
@@ -84,6 +85,7 @@ func TestRepairNormalizesPathsAndRepairsRollbackJournal(t *testing.T) {
 		dbPath,
 		dbPath + "-journal",
 		dbPath + ".lock",
+		dbPath + ".restore-isolation",
 		filepath.Dir(knownHosts),
 		knownHosts,
 	} {

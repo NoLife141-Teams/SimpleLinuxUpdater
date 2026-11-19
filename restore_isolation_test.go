@@ -3,6 +3,7 @@ package main
 import (
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -10,8 +11,17 @@ import (
 )
 
 func TestRestoreIsolationResumeRequiresAdminConfirmationAndReauthentication(t *testing.T) {
-	now := time.Date(2026, 11, 19, 12, 0, 43, 0, time.UTC)
-	app := newTestAppWithDeps(t, filepath.Join(t.TempDir(), "servers.db"), AppDeps{Now: func() time.Time { return now }})
+	now := time.Date(2026, 11, 19, 12, 0, 59, 0, time.UTC)
+	var clock atomic.Int64
+	clock.Store(now.Unix())
+	app := newTestAppWithDeps(t, filepath.Join(t.TempDir(), "servers.db"), AppDeps{
+		Now: func() time.Time { return time.Unix(clock.Load(), 0).UTC() },
+		NotifyDashboardEvent: func(action string) {
+			if action == "backup.restore_isolation.resume" {
+				clock.Store(now.Add(2 * time.Second).Unix())
+			}
+		},
+	})
 	admin := app.authenticate(t)
 	if _, err := app.Deps.AuthService.CreateAccount("operator", testPasswordStrong, "operator"); err != nil {
 		t.Fatal(err)
@@ -51,9 +61,9 @@ func TestRestoreIsolationResumeRequiresAdminConfirmationAndReauthentication(t *t
 	}
 	isolation := app.Deps.RestoreIsolation
 	minute := now.Truncate(time.Minute)
-	resumeAt, stillBlocked := isolation.ScheduledWork(minute)
-	if isolation.BlocksExternalWork() || !stillBlocked || !resumeAt.Equal(minute.Add(time.Minute)) {
-		t.Fatal("resumption failed to fence the current schedule slot")
+	resumeAt, stillBlocked := isolation.ScheduledWork(minute.Add(time.Minute))
+	if isolation.BlocksExternalWork() || !stillBlocked || !resumeAt.Equal(minute.Add(2*time.Minute)) {
+		t.Fatal("resumption failed to fence a schedule slot that began during the audit")
 	}
 	if mark, found, err := watermark.LoadSchedulerWatermark(); err != nil || !found || !mark.Equal(minute) {
 		t.Fatalf("rebased mark = %v, %v, %v", mark, found, err)

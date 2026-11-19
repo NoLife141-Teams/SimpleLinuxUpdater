@@ -90,6 +90,7 @@ func repairWith(cfg Config, r *repairer) error {
 		dbPath + "-shm",
 		dbPath + "-journal",
 		dbPath + ".lock",
+		dbPath + ".restore-isolation",
 		filepath.Join(dbDir, "config.json"),
 	} {
 		if err := r.repairFile(path, false, dbPlan); err != nil {

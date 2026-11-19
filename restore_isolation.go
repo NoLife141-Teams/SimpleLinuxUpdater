@@ -67,7 +67,6 @@ func handleRestoreIsolationResume(c *gin.Context, deps AppDeps) {
 	}
 	ctx := c.Request.Context()
 	minute := deps.Now().UTC().Truncate(time.Minute)
-	resumeAt := minute.Add(time.Minute)
 	if err := prepareRestoreIsolationResume(deps, minute); err != nil {
 		log.Printf("restore isolation scheduler rebase failed: %v", err)
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Scheduling could not be safely rebased. External work stays paused."})
@@ -75,7 +74,7 @@ func handleRestoreIsolationResume(c *gin.Context, deps AppDeps) {
 	}
 	if err := deps.AuditService.Record(actorFromContext(c), clientIPFromContext(c), "backup.restore_isolation.resume",
 		"backup", "state", "success", "Approved explicit resumption of external work after isolated restore",
-		map[string]any{"schedules_resume_at": resumeAt.Format(time.RFC3339)}); err != nil {
+		nil); err != nil {
 		log.Printf("restore isolation resumption audit failed: %v", err)
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "The resumption decision could not be recorded. External work stays paused."})
 		return
@@ -83,7 +82,7 @@ func handleRestoreIsolationResume(c *gin.Context, deps AppDeps) {
 	if err := ctx.Err(); err != nil {
 		return
 	}
-	if err := deps.RestoreIsolation.Reactivate(resumeAt); err != nil {
+	if err := deps.RestoreIsolation.Reactivate(deps.Now); err != nil {
 		log.Printf("restore isolation release failed: %v", err)
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "The resumption decision could not be applied. Retry in Admin."})
 		return

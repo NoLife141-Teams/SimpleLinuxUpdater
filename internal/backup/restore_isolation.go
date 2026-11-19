@@ -22,7 +22,6 @@ type RestoreIsolation struct {
 	databasePath func() string
 	mu           sync.RWMutex
 	files        restoreFiles
-	syncFailed   bool
 }
 
 func NewRestoreIsolation(databasePath func() string) *RestoreIsolation {
@@ -30,6 +29,10 @@ func NewRestoreIsolation(databasePath func() string) *RestoreIsolation {
 }
 
 func RestoreIsolationPath(database string) string { return database + ".restore-isolation" }
+
+func restoreIsolationPendingPath(database string) string {
+	return RestoreIsolationPath(database) + ".resume-pending"
+}
 
 func (s *RestoreIsolation) State() (bool, error) {
 	s.mu.RLock()
@@ -59,10 +62,19 @@ func (s *RestoreIsolation) ScheduledWork(at time.Time) (resumeAt time.Time, bloc
 }
 
 func (s *RestoreIsolation) read() (restoreIsolationState, error) {
-	if s.syncFailed {
-		return restoreIsolationState{}, errors.New("restore isolation state was not synchronized")
+	database := s.databasePath()
+	if info, err := os.Lstat(restoreIsolationPendingPath(database)); err == nil {
+		if !info.IsDir() {
+			return restoreIsolationState{}, errors.New("invalid restore isolation resumption marker")
+		}
+		return restoreIsolationState{Active: true}, nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return restoreIsolationState{}, err
 	}
-	path := RestoreIsolationPath(s.databasePath())
+	return loadRestoreIsolationState(RestoreIsolationPath(database))
+}
+
+func loadRestoreIsolationState(path string) (restoreIsolationState, error) {
 	if _, err := os.Lstat(path); errors.Is(err, os.ErrNotExist) {
 		return restoreIsolationState{}, nil
 	}
@@ -78,56 +90,80 @@ func (s *RestoreIsolation) read() (restoreIsolationState, error) {
 }
 
 func (s *RestoreIsolation) Activate() error {
-	return s.write(restoreIsolationState{Active: true})
-}
-
-func (s *RestoreIsolation) Reactivate(resumeSchedules time.Time) error {
-	return s.write(restoreIsolationState{ResumeSchedules: resumeSchedules.UTC()})
-}
-
-func (s *RestoreIsolation) write(state restoreIsolationState) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	database, err := installationlock.ResolveDatabasePath(s.databasePath())
+	database, err := s.resolveDatabaseForWrite()
 	if err != nil {
 		return err
 	}
-	path := RestoreIsolationPath(database)
-	if info, err := os.Lstat(path); err == nil && !info.Mode().IsRegular() {
-		return errors.New("restore isolation path is not a regular file")
-	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
-	published, err := s.replaceState(path, state)
-	if !published {
-		return err
-	}
-	s.syncFailed = err != nil
-	if err != nil && !state.Active {
-		// A failed resumption must keep isolation visible after restart.
-		// A rename can already be visible even when the directory sync fails.
-		_, retainErr := s.replaceState(path, restoreIsolationState{Active: true})
-		s.syncFailed = retainErr != nil
-		return errors.Join(err, retainErr)
-	}
-	return err
+	return s.replaceState(RestoreIsolationPath(database), restoreIsolationState{Active: true})
 }
 
-func (s *RestoreIsolation) replaceState(path string, state restoreIsolationState) (published bool, err error) {
+func (s *RestoreIsolation) Reactivate(now func() time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	database, err := s.resolveDatabaseForWrite()
+	if err != nil {
+		return err
+	}
+	// Keep a durable gate across restarts until the new schedule boundary is
+	// committed. A temporary file already renamed into place can be visible
+	// after a sync error.
+	pending := restoreIsolationPendingPath(database)
+	if err := os.Mkdir(pending, 0700); err != nil {
+		if !errors.Is(err, os.ErrExist) {
+			return err
+		}
+		if info, statErr := os.Lstat(pending); statErr != nil || !info.IsDir() {
+			return errors.New("invalid restore isolation resumption marker")
+		}
+	}
+	dir := filepath.Dir(database)
+	if err := errors.Join(s.files.syncPath(pending), s.files.syncPath(dir)); err != nil {
+		return err
+	}
+	resumeAt := now().UTC().Truncate(time.Minute).Add(time.Minute)
+	if err := s.replaceState(RestoreIsolationPath(database), restoreIsolationState{ResumeSchedules: resumeAt}); err != nil {
+		return err
+	}
+	if !now().Before(resumeAt) {
+		return errors.New("restore isolation schedule boundary elapsed during resumption")
+	}
+	if err := os.Remove(pending); err != nil {
+		return err
+	}
+	// Removal releases the gate after all required writes are durable. If
+	// cleanup synchronization fails, a crash may safely restore the gate.
+	_ = s.files.syncPath(dir)
+	return nil
+}
+
+func (s *RestoreIsolation) resolveDatabaseForWrite() (string, error) {
+	database, err := installationlock.ResolveDatabasePath(s.databasePath())
+	if err != nil {
+		return "", err
+	}
+	if _, err := loadRestoreIsolationState(RestoreIsolationPath(database)); err != nil {
+		return "", err
+	}
+	return database, nil
+}
+
+func (s *RestoreIsolation) replaceState(path string, state restoreIsolationState) error {
 	dir := filepath.Dir(path)
 	file, err := os.CreateTemp(dir, ".slu-restore-isolation-*")
 	if err != nil {
-		return false, err
+		return err
 	}
 	defer os.Remove(file.Name())
 	if err := json.NewEncoder(file).Encode(state); err != nil {
-		return false, errors.Join(err, file.Close())
+		return errors.Join(err, file.Close())
 	}
 	if err := errors.Join(s.files.syncFile(file), file.Close()); err != nil {
-		return false, err
+		return err
 	}
 	if err := os.Rename(file.Name(), path); err != nil {
-		return false, err
+		return err
 	}
-	return true, s.files.syncPath(dir)
+	return s.files.syncPath(dir)
 }

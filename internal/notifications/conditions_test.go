@@ -39,7 +39,7 @@ type conditionHarness struct {
 	client    *conditionTestClient
 }
 
-func newConditionHarness(t *testing.T) *conditionHarness {
+func newConditionHarness(t testing.TB) *conditionHarness {
 	t.Helper()
 	db := openOutboxTestDB(t, "conditions.db")
 	prepareOutboxSettings(t, db, "https://hooks.example.test/test", true)

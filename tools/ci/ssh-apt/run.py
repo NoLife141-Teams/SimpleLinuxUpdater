@@ -738,17 +738,21 @@ class Harness:
                     (APT_EVENT, job_id)).fetchall()
                 row = db.execute("SELECT state_json FROM notification_conditions WHERE id=1").fetchone()
                 state = json.loads(row[0]) if row else {}
+                admitted = False
+                if len(delivered) == 1:
+                    fingerprint, condition_id = delivered[0][1], delivered[0][4]
+                    admitted = db.execute("SELECT 1 FROM notification_apt_admissions WHERE identity=?",
+                                          (f"condition/{condition_id}/{fingerprint}",)).fetchone() == (1,)
                 marker = db.execute("SELECT value FROM settings WHERE key='maintenance_state'").fetchone()
-                return incident, chunks, delivered, state, json.loads(marker[0]) if marker else {}
+                return incident, chunks, delivered, state, admitted, json.loads(marker[0]) if marker else {}
 
-        incident, chunks, delivered, _, _ = persistence()
+        incident, chunks, delivered, _, admitted, _ = persistence()
         require(incident and incident[:2] == ("failed", "reconciliation_required") and incident[2] and chunks
-                and len(delivered) == 1 and delivered[0][2:4] == ("succeeded", 1),
+                and len(delivered) == 1 and delivered[0][2:4] == ("succeeded", 1) and admitted,
                 "original job, logs or successful delivery were missing")
         fingerprint, condition_id = delivered[0][1], delivered[0][4]
         require(fingerprint and condition_id, "delivery was not tied to the incident and configured destination")
         self.redactions.append(fingerprint)
-        admission_id = f"condition/{condition_id}/{fingerprint}"
 
         record["checkpoint"] = "restore-process-kill"
         until(lambda: self.api.server(name)["status"] != "facts_refresh", "startup facts refresh did not finish")
@@ -758,12 +762,12 @@ class Harness:
         self.crash_during_restore(archive, passphrase)
         record["crash_confirmed_after_sqlite_replacement"] = True
         record["checkpoint"] = "staged-restore-evidence"
-        current_incident, current_chunks, current_delivery, state, marker = persistence()
+        current_incident, current_chunks, current_delivery, state, admitted, marker = persistence()
         require(marker.get("recovery_required") and marker.get("kind") == "backup_restore",
                 "replacement database did not persist the recovery latch before runtime reload")
         require((current_incident, current_chunks, current_delivery) == (incident, chunks, delivered),
                 "replacement database lost the exact job, logs or delivery before runtime reload")
-        require(state.get("Admissions", {}).get(admission_id) and condition_id not in (state.get("Conditions") or {}),
+        require(admitted and condition_id not in (state.get("Conditions") or {}),
                 "replacement database did not stage the admission independently of runtime reconciliation")
 
         record["checkpoint"] = "recovery-restarts"
@@ -784,11 +788,11 @@ class Harness:
                 require(blocked.get("recovery_required"), "runtime bypassed the recovery latch")
             until(poll.is_file, "notification worker did not finish condition reconciliation and drain")
             require(poll.read_text() == fingerprint, "restored worker did not observe the original enabled webhook")
-            current_incident, current_chunks, current_delivery, state, _ = persistence()
+            current_incident, current_chunks, current_delivery, state, admitted, _ = persistence()
             fact = (state.get("Conditions") or {}).get(condition_id, {}).get("Fact", {})
             require(fact.get("Active") and fact.get("TargetName") == name
                     and json.loads(fact["MetaJSON"]).get("job_id") == job_id
-                    and state.get("Admissions", {}).get(admission_id),
+                    and admitted,
                     "notification worker did not observe the original active incident and admission")
             require((current_incident, current_chunks, current_delivery) == (incident, chunks, delivered)
                     and receipts() == expected_receipts and execution_counts() == commands,

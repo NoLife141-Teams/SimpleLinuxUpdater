@@ -61,10 +61,10 @@ func TestNotificationOutboxMigratesDestinationFingerprintColumn(t *testing.T) {
 	if _, err := db.Exec(`CREATE TABLE notification_outbox (id TEXT PRIMARY KEY)`); err != nil {
 		t.Fatal(err)
 	}
-	if err := ensureOutboxDestinationFingerprintColumn(db); err != nil {
+	if err := ensureOutboxDestinationFingerprintColumn(t.Context(), db); err != nil {
 		t.Fatalf("ensureOutboxDestinationFingerprintColumn() error = %v", err)
 	}
-	if err := ensureOutboxDestinationFingerprintColumn(db); err != nil {
+	if err := ensureOutboxDestinationFingerprintColumn(t.Context(), db); err != nil {
 		t.Fatalf("ensureOutboxDestinationFingerprintColumn() second call error = %v", err)
 	}
 	var found int
@@ -810,7 +810,7 @@ func TestNotificationOutboxCountsPendingAndRetryingRows(t *testing.T) {
 	}
 }
 
-func openOutboxTestDB(t *testing.T, name string) *sql.DB {
+func openOutboxTestDB(t testing.TB, name string) *sql.DB {
 	t.Helper()
 	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), name))
 	if err != nil {
@@ -820,7 +820,7 @@ func openOutboxTestDB(t *testing.T, name string) *sql.DB {
 	return db
 }
 
-func prepareOutboxSettings(t *testing.T, db *sql.DB, endpoint string, enabled bool) {
+func prepareOutboxSettings(t testing.TB, db *sql.DB, endpoint string, enabled bool) {
 	t.Helper()
 	if _, err := db.Exec("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)"); err != nil {
 		t.Fatal(err)

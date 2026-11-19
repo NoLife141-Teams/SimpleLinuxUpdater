@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"maps"
 	"net/url"
 	"sort"
 	"strconv"
@@ -103,25 +102,6 @@ func APTReconciliationConditionID(target, jobID string) string {
 	return fmt.Sprintf("%s%x", aptConditionPrefix, digest[:])
 }
 
-func aptAdmissionID(fact ConditionFact, fingerprint string) string {
-	return "condition/" + fact.ID + "/" + fingerprint
-}
-
-func isAPTAdmission(identity string) bool {
-	return strings.HasPrefix(identity, "condition/"+aptConditionPrefix)
-}
-
-func mergeAPTAdmissions(state *conditionState, source map[string]bool) {
-	if state.Admissions == nil {
-		state.Admissions = make(map[string]bool)
-	}
-	for identity, admitted := range source {
-		if admitted && isAPTAdmission(identity) {
-			state.Admissions[identity] = true
-		}
-	}
-}
-
 func conditionFingerprints(settings Settings) map[string]string {
 	fingerprints := map[string]string{}
 	for _, destination := range []string{DestinationWebhook, DestinationDiscord, DestinationTelegram} {
@@ -198,18 +178,31 @@ func migrateEpisodeApprovalAdmissions(state *conditionState, fingerprints map[st
 	}
 }
 
-func ensureConditionSchema(db *sql.DB) error {
-	_, err := db.Exec(`CREATE TABLE IF NOT EXISTS notification_conditions (id INTEGER PRIMARY KEY CHECK(id=1), state_json TEXT NOT NULL); CREATE TABLE IF NOT EXISTS notification_server_identities(server_name TEXT PRIMARY KEY, identity TEXT NOT NULL UNIQUE)`)
+func ensureConditionSchema(ctx context.Context, db *sql.DB) error {
+	_, err := db.ExecContext(ctx, `
+		CREATE TABLE IF NOT EXISTS notification_conditions (id INTEGER PRIMARY KEY CHECK(id=1), state_json TEXT NOT NULL);
+		CREATE TABLE IF NOT EXISTS notification_server_identities (server_name TEXT PRIMARY KEY, identity TEXT NOT NULL UNIQUE);
+		CREATE TABLE IF NOT EXISTS notification_apt_admissions (identity TEXT PRIMARY KEY NOT NULL) WITHOUT ROWID;
+	`)
 	return err
 }
 
+const conditionStateQuery = `SELECT state_json FROM notification_conditions WHERE id=1`
+
 func loadConditionState(ctx context.Context, db *sql.DB) (conditionState, error) {
+	if db != nil {
+		return readConditionState(db.QueryRowContext(ctx, conditionStateQuery))
+	}
+	return readConditionState(nil)
+}
+
+func readConditionState(row *sql.Row) (conditionState, error) {
 	state := conditionState{Conditions: map[string]Condition{}, Admissions: map[string]bool{}, Reminders: map[string]string{}}
-	if db == nil {
+	if row == nil {
 		return state, nil
 	}
 	var raw string
-	err := db.QueryRowContext(ctx, `SELECT state_json FROM notification_conditions WHERE id=1`).Scan(&raw)
+	err := row.Scan(&raw)
 	if errors.Is(err, sql.ErrNoRows) {
 		return state, nil
 	}
@@ -232,7 +225,8 @@ func conditionList(state conditionState) []Condition {
 func (s *Service) reconcileConditions(ctx context.Context) error {
 	s.conditionMu.Lock()
 	defer s.conditionMu.Unlock()
-	state, err := loadConditionState(ctx, s.database())
+	db := s.database()
+	state, err := loadAndMigrateConditionState(ctx, db)
 	if err != nil {
 		return err
 	}
@@ -250,7 +244,7 @@ func (s *Service) reconcileConditions(ctx context.Context) error {
 	}
 	now := s.deps.Now().UTC()
 	fingerprints := conditionFingerprints(settings)
-	if err := migrateApprovalOutboxHistory(ctx, s.database(), &state); err != nil {
+	if err := migrateApprovalOutboxHistory(ctx, db, &state); err != nil {
 		return err
 	}
 	migrateEpisodeApprovalAdmissions(&state, fingerprints)
@@ -307,17 +301,27 @@ func (s *Service) reconcileConditions(ctx context.Context) error {
 			fingerprint := destinationConfigFingerprint(settings, destination)
 			identity := episodeAdmissionID(condition, fingerprint)
 			exactApproval := fact.EventType == EventApprovalPublished && fact.Generation != ""
-			if fact.EventType == EventAPTReconciliationRequired {
-				identity = aptAdmissionID(fact, fingerprint)
-			}
+			exactAPT := fact.EventType == EventAPTReconciliationRequired
 			admission := fact.approvalAdmission(fingerprint)
-			if exactApproval {
+			switch {
+			case exactApproval:
 				if _, exists := state.findApprovalAdmission(fact.ID, admission); exists {
 					continue
 				}
 				identity = admission.intentID(fact.ID)
-			} else if state.Admissions[identity] {
-				continue
+			case exactAPT:
+				identity = aptAdmissionID(fact, fingerprint)
+				exists, err := hasAPTAdmission(ctx, db, identity)
+				if err != nil {
+					return err
+				}
+				if exists {
+					continue
+				}
+			default:
+				if state.Admissions[identity] {
+					continue
+				}
 			}
 			intent := conditionIntent(condition)
 			intent.ID = identity
@@ -327,6 +331,9 @@ func (s *Service) reconcileConditions(ctx context.Context) error {
 			}
 			admitted[0].DestinationFingerprint = fingerprint
 			rows = append(rows, admitted...)
+			if exactAPT {
+				continue
+			}
 			if exactApproval {
 				admission.OutboxID = admitted[0].ID
 				state.recordApprovalAdmission(fact.ID, admission)
@@ -374,12 +381,30 @@ func (s *Service) reconcileConditions(ctx context.Context) error {
 	if string(original) == string(raw) && len(rows) == 0 {
 		return nil
 	}
-	tx, err := s.database().BeginTx(ctx, nil)
+	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	if err := insertOutboxRowsTx(ctx, tx, rows, now.Format(time.RFC3339Nano)); err != nil {
+	admittedRows := rows[:0]
+	for _, row := range rows {
+		if row.EventType != EventAPTReconciliationRequired {
+			admittedRows = append(admittedRows, row)
+			continue
+		}
+		result, err := tx.ExecContext(ctx, insertAPTAdmissionSQL, row.Intent.ID)
+		if err != nil {
+			return err
+		}
+		n, err := result.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if n == 1 {
+			admittedRows = append(admittedRows, row)
+		}
+	}
+	if err := insertOutboxRowsTx(ctx, tx, admittedRows, now.Format(time.RFC3339Nano)); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO notification_conditions(id,state_json) VALUES(1,?) ON CONFLICT(id) DO UPDATE SET state_json=excluded.state_json`, string(raw)); err != nil {
@@ -456,7 +481,7 @@ func (s *Service) revalidateOutboxCondition(ctx context.Context, row *outboxRow,
 			return conditionIneligible, err
 		}
 	}
-	state, err := loadConditionState(ctx, s.database())
+	state, err := loadAndMigrateConditionState(ctx, s.database())
 	if err != nil {
 		return conditionIneligible, err
 	}
@@ -495,7 +520,11 @@ func (s *Service) revalidateOutboxCondition(ctx context.Context, row *outboxRow,
 		}
 	} else if row.EventType == EventAPTReconciliationRequired {
 		identity := aptAdmissionID(fact, row.DestinationFingerprint)
-		if !state.Admissions[identity] || row.ID != outboxDeliveryID(identity, row.Destination) {
+		exists, err := hasAPTAdmission(ctx, s.database(), identity)
+		if err != nil {
+			return conditionIneligible, err
+		}
+		if !exists || row.ID != outboxDeliveryID(identity, row.Destination) {
 			return conditionIneligible, nil
 		}
 	} else if condition.Episode != meta.Episode {
@@ -512,25 +541,21 @@ func (s *Service) restoreConditions(ctx context.Context, db *sql.DB) error {
 	if state == nil {
 		return nil
 	}
-	archived, err := loadConditionState(ctx, db)
-	if err != nil {
-		return err
-	}
 	restored := *state
-	restored.Admissions = maps.Clone(state.Admissions)
-	mergeAPTAdmissions(&restored, archived.Admissions)
 	// Do not replay historical audit events from the restored database. Current
 	// domain state is revalidated by the source before any pending delivery.
 	restored.Cursor = "restore"
 	return saveConditionState(ctx, db, &restored)
 }
 
-func saveConditionState(ctx context.Context, db *sql.DB, state *conditionState) error {
+func saveConditionState(ctx context.Context, store interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+}, state *conditionState) error {
 	raw, err := json.Marshal(state)
 	if err != nil {
 		return err
 	}
-	_, err = db.ExecContext(ctx, `INSERT INTO notification_conditions(id,state_json) VALUES(1,?) ON CONFLICT(id) DO UPDATE SET state_json=excluded.state_json`, string(raw))
+	_, err = store.ExecContext(ctx, `INSERT INTO notification_conditions(id,state_json) VALUES(1,?) ON CONFLICT(id) DO UPDATE SET state_json=excluded.state_json`, string(raw))
 	return err
 }
 
@@ -553,13 +578,6 @@ func pruneConditionState(state *conditionState, fingerprints map[string]string, 
 		}
 	}
 	keep := map[string]bool{}
-	// An older archive can reintroduce an incident after its outbox history
-	// has expired. Keep only hashed admission identities for that case.
-	for identity, admitted := range state.Admissions {
-		if admitted && isAPTAdmission(identity) {
-			keep[identity] = true
-		}
-	}
 	for _, condition := range state.Conditions {
 		if (condition.Fact.EventType == EventApprovalPublished && condition.Fact.Generation != "") || condition.Fact.EventType == EventAPTReconciliationRequired {
 			continue

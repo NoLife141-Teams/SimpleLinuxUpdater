@@ -141,6 +141,9 @@ func (a *backupAutomation) copyNextSecondaryBackup(parent context.Context) error
 	if err := a.observeSecondaryCopies(ctx, root, binding, verifiedCopies); err != nil {
 		return err
 	}
+	if err := a.checkSecondaryIntegrity(ctx, root, binding, verifiedCopies); err != nil {
+		return err
+	}
 	if cleanup.Archive.ID != "" && removeOwnedSecondaryTemporary(ctx, root, binding, cleanup) {
 		err := a.updateCurrentSecondary(ctx, binding, cleanup.Archive.ID, func(_ *backupSecondaryState, current *backupSecondaryCopy) (bool, error) {
 			if current.Temporary != cleanup.Temporary || current.FileIdentity != cleanup.FileIdentity {
@@ -318,6 +321,7 @@ func (a *backupAutomation) stageAndPublishSecondary(ctx context.Context, root *o
 			return false, errBackupSecondaryDeferred
 		}
 		current.VerifiedAt = backupStamp(a.now())
+		current.Integrity = confirmedBackupIntegrity(current.VerifiedAt)
 		current.ModifiedAt = backupStamp(published.ModTime())
 		current.ChangedAt = backupStamp(backupIntegrityChangeTime(published))
 		current.Transferring = false
@@ -479,8 +483,11 @@ func verifySecondaryFile(ctx context.Context, root *os.Root, name, identity stri
 	if !sameBackupIntegrityFile(before, after) {
 		return nil, errors.New("secondary archive changed while being verified")
 	}
-	if bytes != before.Size() || fmt.Sprintf("%x", digest.Sum(nil)) != archive.SHA256 {
-		return nil, errBackupSecondaryMismatch
+	if bytes != before.Size() {
+		return nil, io.ErrUnexpectedEOF
+	}
+	if fmt.Sprintf("%x", digest.Sum(nil)) != archive.SHA256 {
+		return after, errBackupSecondaryMismatch
 	}
 	return after, nil
 }
@@ -577,7 +584,7 @@ func (a *backupAutomation) retainSecondaryBackups(ctx context.Context, root *os.
 				oldest = item
 				break
 			}
-			if !item.Unavailable {
+			if secondaryIntegrityFresh(item, a.now()) {
 				keepers = append(keepers, item)
 			}
 		}
@@ -620,6 +627,11 @@ func (a *backupAutomation) retainSecondaryBackups(ctx context.Context, root *os.
 			if !a.secondaryConfigured(state.Secondary) || state.Secondary.Binding != binding ||
 				len(keepers) < max(1, state.Config.Retain) {
 				return false, errBackupSecondaryDeferred
+			}
+			for _, keeper := range keepers {
+				if !secondaryIntegrityFresh(keeper, a.now()) {
+					return false, errBackupSecondaryDeferred
+				}
 			}
 			return false, nil
 		}); err != nil {

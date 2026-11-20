@@ -609,6 +609,93 @@ func TestSecondaryRetentionCountsOnlyCopiesStillPresentAndUnchanged(t *testing.T
 	}
 }
 
+func TestSecondaryRetentionWaitsForConfirmedReplacementIntegrity(t *testing.T) {
+	_, automation, now := newBackupAutomationTest(t)
+	secondary := secondaryBackupTestDirectory(t, automation)
+	automation.deployment.SecondaryDirectory = secondary
+	config := backupAutomationStateForTest(t, automation).Config
+	config.Retain = 2
+	if _, err := automation.Configure(t.Context(), config); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := automation.validateSecondaryDestination(t.Context(), nil); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		*now = now.Add(time.Minute)
+		if err := automation.Tick(t.Context(), true); err != nil {
+			t.Fatal(err)
+		}
+		if err := automation.copyNextSecondaryBackup(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	state := backupAutomationStateForTest(t, automation)
+	older, newer := state.Secondary.Copies[0], state.Secondary.Copies[1]
+	oldPath := filepath.Join(secondary, older.Archive.Name)
+	newPath := filepath.Join(secondary, newer.Archive.Name)
+	original, err := os.ReadFile(newPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	damaged := append([]byte(nil), original...)
+	damaged[len(damaged)/2] ^= 1
+	if err := os.WriteFile(newPath, damaged, 0600); err != nil {
+		t.Fatal(err)
+	}
+	modTime := parseBackupStamp(newer.ModifiedAt)
+	if err := os.Chtimes(newPath, modTime, modTime); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(newPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Emulate a filesystem whose metadata observation does not reveal
+	// the changed bytes, including the ctime available on this test host.
+	state.Secondary.Copies[1].ChangedAt = backupStamp(backupIntegrityChangeTime(info))
+	if !secondaryCopyMatches(info, state.Secondary.Copies[1]) {
+		t.Fatal("fixture changed the observed metadata")
+	}
+	if err := automation.save(t.Context(), state); err != nil {
+		t.Fatal(err)
+	}
+	config.Retain = 1
+	if _, err := automation.Configure(t.Context(), config); err != nil {
+		t.Fatal(err)
+	}
+	*now = now.Add(backupIntegrityNewestAfter)
+	if err := automation.copyNextSecondaryBackup(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(oldPath); err != nil {
+		t.Fatalf("retention removed the last healthy copy: %v", err)
+	}
+	restarted := newBackupAutomation(automation.deps)
+	restarted.deployment = automation.deployment
+	status, err := restarted.Status(t.Context())
+	if err != nil || status.Secondary == nil || status.Secondary.Failure != "copy_corrupt" ||
+		status.Secondary.Integrity.State != backupIntegrityMismatch || status.Secondary.CapturedAt != older.Archive.CapturedAt {
+		t.Fatalf("fallback status after restarting = %+v, %v", status.Secondary, err)
+	}
+	if err := os.WriteFile(newPath, original, 0600); err != nil {
+		t.Fatal(err)
+	}
+	*now = now.Add(backupIntegrityNewestAfter)
+	if err := restarted.copyNextSecondaryBackup(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(oldPath); !os.IsNotExist(err) {
+		t.Fatalf("retention did not resume after confirming a healthy copy: %v", err)
+	}
+	state = backupAutomationStateForTest(t, restarted)
+	if len(state.Secondary.Copies) != 1 || state.Secondary.Copies[0].VerifiedAt != newer.VerifiedAt ||
+		state.Secondary.Copies[0].Integrity.State != backupIntegrityMatched ||
+		state.Secondary.Copies[0].Integrity.CheckedAt == newer.VerifiedAt {
+		t.Fatalf("publication and integrity evidence = %+v", state.Secondary.Copies)
+	}
+}
+
 func TestSecondaryTransferStopsWritingDuringRestore(t *testing.T) {
 	_, automation, _ := newBackupAutomationTest(t)
 	secondary := secondaryBackupTestDirectory(t, automation)

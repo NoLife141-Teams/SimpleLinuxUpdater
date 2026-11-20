@@ -223,6 +223,13 @@ preserves files that do not match a registered copy. Admin shows the queue
 and the capture time of the latest copy known to be verified. If the mount is
 available, a missing copy or one whose file identity or metadata changed is
 reported separately and excluded from the count of verified copies.
+The worker also checks the encrypted SHA-256 on the approved mount, with
+at most one periodic digest read per 30-second cycle. It checks the newest
+published copy hourly and other copies daily, with an earlier retry for
+unavailable results. Admin separates publication verification from integrity
+observations. A copy needs a matching digest less than 24 hours old and the
+same file metadata to count toward secondary retention. The worker keeps older
+copies while enough newer copies lack that evidence.
 To recover without the primary host, obtain a copy from the secondary mount and use the normal archive
 restore workflow in isolation on the new installation. Keep the original
 passphrase in a separate secret store.

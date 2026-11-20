@@ -200,6 +200,8 @@
                 failure: String(data.secondary.failure || ""),
                 capturedAt: String(data.secondary.captured_at || ""),
                 verifiedAt: String(data.secondary.verified_at || ""),
+                integrityState: String(data.secondary.integrity?.state || ""),
+                integrityAt: String(data.secondary.integrity?.attempted_at || ""),
             } : null,
             catalog: {
                 archives: (Array.isArray(data.catalog?.archives) ? data.catalog.archives : []).slice(0, 200).map(item => ({

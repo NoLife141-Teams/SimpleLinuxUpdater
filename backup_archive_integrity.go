@@ -76,12 +76,12 @@ func backupIntegrityCandidate(s backupAutomationState, now time.Time) (ownedBack
 		if archive.Integrity.State != backupIntegrityUnavailable && (newest == nil || capture.After(newestCapture)) {
 			newest, newestCapture = archive, capture
 		}
-		if backupIntegrityDue(*archive, now, backupIntegrityOtherAfter) && (oldestDue == nil ||
+		if backupIntegrityCheckDue(archive.Integrity, now, backupIntegrityOtherAfter) && (oldestDue == nil ||
 			parseBackupStamp(archive.Integrity.AttemptedAt).Before(parseBackupStamp(oldestDue.Integrity.AttemptedAt))) {
 			oldestDue = archive
 		}
 	}
-	if newest != nil && backupIntegrityDue(*newest, now, backupIntegrityNewestAfter) {
+	if newest != nil && backupIntegrityCheckDue(newest.Integrity, now, backupIntegrityNewestAfter) {
 		return *newest, true
 	}
 	if oldestDue != nil {
@@ -98,11 +98,11 @@ func validBackupIntegrityDigest(digest string) bool {
 	return err == nil
 }
 
-func backupIntegrityDue(archive ownedBackupArchive, now time.Time, interval time.Duration) bool {
-	if archive.Integrity.State == backupIntegrityUnavailable {
+func backupIntegrityCheckDue(integrity backupArchiveIntegrity, now time.Time, interval time.Duration) bool {
+	if integrity.State == backupIntegrityUnavailable {
 		interval = backupIntegrityRetryAfter
 	}
-	last := parseBackupStamp(archive.Integrity.AttemptedAt)
+	last := parseBackupStamp(integrity.AttemptedAt)
 	return last.IsZero() || last.After(now) || now.Sub(last) >= interval
 }
 

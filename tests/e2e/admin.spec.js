@@ -2488,6 +2488,13 @@ test("admin validates optional secondary backups and reports their availability 
     await expect(panel).toContainText("Mount unavailable or replaced");
     await expect(panel).toContainText("1 pending");
     await expect(page.locator("#backup-secondary-captured")).not.toHaveText("Unknown");
+    automation.secondary = {
+        ...automation.secondary, pending: 0, failed: 1, failure: "copy_corrupt",
+        integrity: {state: "mismatch", attempted_at: "2026-11-20T06:00:00Z"},
+    };
+    await panel.getByRole("button", { name: "Refresh secondary status" }).click();
+    await expect(panel).toContainText("A secondary copy failed its integrity check");
+    await expect(page.locator("#backup-secondary-integrity")).toContainText("Digest mismatch ·");
     await expect(page.locator("#backup-automation-status")).toContainText("Verified encrypted backup");
 });
 

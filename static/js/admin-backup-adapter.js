@@ -657,10 +657,12 @@
             const state = {
                 validation_required: "Validation required", waiting: "Waiting for a verified primary backup",
                 pending: "Copy pending", degraded: "Needs attention", verified: "Copy verified",
+                integrity_pending: "Waiting for an integrity check",
             };
             const failure = {
                 storage_unavailable: "Mount unavailable or replaced", copy_failed: "Copy could not be verified",
                 copy_unavailable: "A verified copy is missing or changed", retention_failed: "Retention could not finish",
+                copy_corrupt: "A secondary copy failed its integrity check",
                 publication_pending: "Linked copy still needs verification", queue_full: "A copy was skipped because the queue was full",
             };
             document.getElementById("backup-secondary-status").textContent =
@@ -670,6 +672,13 @@
                 secondary.capturedAt ? formatSessionTime(secondary.capturedAt) : "Unknown";
             document.getElementById("backup-secondary-verified").textContent =
                 secondary.verifiedAt ? formatSessionTime(secondary.verifiedAt) : "Never";
+            const integrity = {
+                matched: "Digest matched", mismatch: "Digest mismatch",
+                unavailable: "Unavailable", check_due: "Check due",
+            };
+            const integrityAt = secondary.integrityAt ? formatSessionTime(secondary.integrityAt) : "";
+            document.getElementById("backup-secondary-integrity").textContent =
+                [integrity[secondary.integrityState] || "Not checked", integrityAt].filter(Boolean).join(" · ");
         }
 
         function renderBackupAutomation(updateForm = false) {

@@ -65,6 +65,37 @@ func TestSecondaryBackupRejectsLocalFallback(t *testing.T) {
 	}
 }
 
+func TestSecondaryValidationRejectsUnconfirmedHardLink(t *testing.T) {
+	for _, linked := range []bool{false, true} {
+		name := "unsupported hard link"
+		if linked {
+			name = "link confirmed by the server but reported as failed"
+		}
+		t.Run(name, func(t *testing.T) {
+			_, automation, _ := newBackupAutomationTest(t)
+			secondary := secondaryBackupTestDirectory(t, automation)
+			automation.deployment.SecondaryDirectory = secondary
+			automation.linkSecondaryArchive = func(root *os.Root, source, target string) error {
+				if linked {
+					if err := root.Link(source, target); err != nil {
+						t.Fatal(err)
+					}
+				}
+				return errors.New("secondary storage could not confirm the link")
+			}
+			if _, err := automation.validateSecondaryDestination(t.Context(), nil); err == nil || !strings.Contains(err.Error(), "hard links") {
+				t.Fatalf("validation must refuse unconfirmed publication capability: %v", err)
+			}
+			if state := backupAutomationStateForTest(t, automation); state.Secondary.Approved {
+				t.Fatalf("publication probe failure granted secondary write access: %+v", state.Secondary)
+			}
+			if entries, err := os.ReadDir(secondary); err != nil || len(entries) != 0 {
+				t.Fatalf("validation left probe files on the mount: %v (%v)", entries, err)
+			}
+		})
+	}
+}
+
 func TestSecondaryValidationReleasesAdmissionAndDoesNotApproveAfterRestore(t *testing.T) {
 	app, automation, _ := newBackupAutomationTest(t)
 	automation.deployment.SecondaryDirectory = secondaryBackupTestDirectory(t, automation)

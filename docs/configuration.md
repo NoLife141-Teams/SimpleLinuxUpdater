@@ -202,10 +202,11 @@ the passphrase outside that directory. The mount must support private files,
 atomic no-overwrite hard links and directory fsync.
 
 In Admin → Backup & Restore, validate the primary settings and then use
-**Validate secondary destination**. Validation pins the identity of the
-secondary directory. An absent or replaced mount blocks writes until the
-approved mount returns or the operator validates a new one. Restore suspends
-secondary copies until the destination is revalidated.
+**Validate secondary destination**. Validation checks that the mount supports
+publication by hard link and pins the identity of the secondary directory. An
+absent or replaced mount blocks writes until the approved mount returns or the
+operator validates a new one. Restore suspends secondary copies until the
+destination is revalidated.
 
 New verified primary archives enter the secondary copy queue. The worker copies
 the existing encrypted bytes after the primary export releases exclusive

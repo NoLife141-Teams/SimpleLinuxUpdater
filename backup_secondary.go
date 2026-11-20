@@ -251,16 +251,8 @@ func (a *backupAutomation) validateSecondaryDestination(ctx context.Context, adm
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	name := ".slu-secondary-validation-" + rand.Text()
-	probe, err := root.OpenFile(name, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
-	if err != nil {
-		return nil, errors.New("secondary backup storage is not writable")
-	}
-	syncErr := probe.Sync()
-	closeErr := probe.Close()
-	removeErr := root.Remove(name)
-	if syncErr != nil || closeErr != nil || removeErr != nil || a.syncSecondaryDirectory(root) != nil {
-		return nil, errors.New("secondary backup storage write validation or cleanup failed")
+	if err := a.probeSecondaryPublication(ctx, root); err != nil {
+		return nil, err
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -294,6 +286,40 @@ func (a *backupAutomation) validateSecondaryDestination(ctx context.Context, adm
 		return nil, errors.New("secondary backup validation could not be saved")
 	}
 	return a.secondaryStatus(state.Secondary), nil
+}
+
+func (a *backupAutomation) probeSecondaryPublication(ctx context.Context, root *os.Root) error {
+	name := ".slu-secondary-validation-" + rand.Text()
+	linkedName := name + ".link"
+	probe, err := root.OpenFile(name, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+	if err != nil {
+		return errors.New("secondary backup storage is not writable")
+	}
+	info, statErr := probe.Stat()
+	writeErr := errors.Join(statErr, probe.Sync(), probe.Close())
+	var linkErr, removeLinkErr error
+	linkedToProbe := false
+	if writeErr == nil && ctx.Err() == nil {
+		linkErr = a.linkSecondaryArchive(root, name, linkedName)
+		linked, err := root.Lstat(linkedName)
+		linkedToProbe = err == nil && os.SameFile(info, linked)
+		// A failed response can still leave the link on remote storage. Remove
+		// it only when it refers to the probe we created.
+		if linkedToProbe {
+			removeLinkErr = root.Remove(linkedName)
+		}
+	}
+	cleanupErr := errors.Join(removeLinkErr, root.Remove(name), a.syncSecondaryDirectory(root))
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if writeErr != nil || cleanupErr != nil {
+		return errors.New("secondary backup storage write validation or cleanup failed")
+	}
+	if linkErr != nil || !linkedToProbe {
+		return errors.New("secondary backup storage must support atomic hard links")
+	}
+	return nil
 }
 
 func handleBackupSecondaryValidate(c *gin.Context, automation *backupAutomation) {

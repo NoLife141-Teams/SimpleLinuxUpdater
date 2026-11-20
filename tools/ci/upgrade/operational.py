@@ -35,6 +35,8 @@ WEBHOOK_PORT = 22923
 WEBHOOK_CONTACTS = "/tmp/slu-qualification-webhook-contacts"
 WEBHOOK_URL = f"http://127.0.0.1:{WEBHOOK_PORT}/receive"
 UPGRADE_HOST_TOKEN = "[127.0.0.1]:9"
+LEGACY_APT_SERVER = "legacy-apt-fixture"
+LEGACY_APT_JOB = "qualification-legacy-apt-incident"
 
 
 @dataclass(frozen=True)
@@ -108,6 +110,7 @@ class Qualification:
         self.network = self.prefix + "-bridge"
         self.candidate = self.prefix + ":candidate"
         self.vm_runner = self.prefix + ":vm"
+        self.apt_fixture_image = self.prefix + ":apt-fixture"
         self.report = {
             "schema_version": 1,
             "candidate_commit": sha,
@@ -191,8 +194,11 @@ class Qualification:
             time.sleep(min(0.4, max(0, deadline - time.monotonic())))
         raise RuntimeError("application did not become ready on the private qualification bridge")
 
-    def verify_inventory(self, api, container, known_host):
+    def verify_inventory(self, api, container, known_host, *, upgraded=False):
         servers = api.request("GET", "/api/servers")
+        if upgraded:
+            require(any(server["name"] == LEGACY_APT_SERVER for server in servers), "legacy APT host was lost")
+            servers = [server for server in servers if server["name"] != LEGACY_APT_SERVER]
         require(len(servers) == 1 and servers[0]["name"] == "upgrade-fixture"
                 and servers[0]["disabled"] and servers[0]["has_password"]
                 and servers[0]["tags"] == ["qualification"], "fixture inventory was not preserved")
@@ -239,6 +245,54 @@ class Qualification:
     def docker_rollback(self, backup):
         self.restore_archive(self.prefix + "-rollback", backup.image, self.create_volume("rollback-data"), backup, "rollback-admin")
 
+    def add_legacy_apt_target(self, api, app_name):
+        fixture = self.source / "tools/ci/ssh-apt"
+        base = json.loads((fixture / "images.json").read_text())["debian13"]
+        docker("build", "--platform", PLATFORM, "--build-arg", "BASE_IMAGE=" + base,
+               "--label", self.label, "-t", self.apt_fixture_image, fixture, timeout=180)
+        name = self.prefix + "-apt-target"
+        docker("run", "--pull", "never", "--detach", "--label", self.label, "--name", name,
+               "--network", self.network, "--env", "SLU_FIXTURE_OWNER=" + uuid.uuid4().hex,
+               "--cap-add=SYS_PTRACE", "--pids-limit", "256", "--memory", "768m", self.apt_fixture_image)
+        address = str(ipaddress.IPv4Address(docker("inspect", "--format",
+            "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}", name)))
+        public_key = until(lambda: self.legacy_host_key(name), "legacy APT target did not generate its SSH key")
+        password = secrets.token_urlsafe(32)
+        docker("exec", name, "/bin/sh", "-ec", 'printf "root:%s\\n" "$1" | chpasswd', "fixture-password", password)
+        docker("exec", "--user", "app", app_name, "/bin/sh", "-ec",
+               'umask 077; printf "%s\\n" "$1" >> /data/known_hosts',
+               "seed-legacy-host-key", f"{address} {public_key}")
+        api.request("POST", "/api/servers", {"name": LEGACY_APT_SERVER, "host": address, "port": 22,
+            "user": "root", "pass": password}, allowed=(201,))
+
+    def legacy_host_key(self, name):
+        try:
+            return " ".join(docker("exec", name, "cat", "/etc/ssh/ssh_host_ed25519_key.pub").split()[:2])
+        except RuntimeError:
+            return None
+
+    def check_legacy_apt_admission(self, api):
+        health = api.request("GET", "/api/installation/health")
+        host = next((host for host in health["restore_apt_hosts"] if host["name"] == LEGACY_APT_SERVER), None)
+        require(host and host["state"] == "legacy_target_unverified" and host["legacy_job_id"] == LEGACY_APT_JOB,
+                "candidate did not present the legacy APT incident")
+        result = api.request("POST", f"/api/autoremove/{LEGACY_APT_SERVER}", {}, allowed=(409,))
+        require(result["reason_code"] == "restore_apt_validation_required", "legacy APT incident did not block admission")
+        return host
+
+    def resolve_legacy_apt_incident(self, api, credentials, host):
+        api.request("POST", "/api/auth/reauthenticate", {"password": credentials["password"]})
+        result = until(lambda: self.probe_legacy_apt_incident(api, host),
+                       "read-only qualification could not resolve the legacy APT incident", seconds=30)
+        require(result["state"] == "approved" and "legacy_job_id" not in result, "legacy resolution did not authorize the verified target")
+
+    def probe_legacy_apt_incident(self, api, host):
+        result = api.request("POST", "/api/backup/restore-isolation/apt-check", {
+            "name": host["name"], "identity": host["identity"],
+            "target_revision": host["target_revision"], "confirm_legacy_job_id": LEGACY_APT_JOB,
+        }, timeout=38)
+        return result if result["state"] != "unreachable" else None
+
     def docker_upgrade(self):
         published = PIN["published_image"]
         require(re.fullmatch(r"ghcr\.io/nolife141-teams/simplelinuxupdater@sha256:[0-9a-f]{64}", published),
@@ -267,7 +321,20 @@ class Qualification:
         archive = old.request("POST", "/api/backup/export", {"passphrase": phrase, "include_known_hosts": True}, binary=True)
         require(len(archive) > 100 and ssh_password.encode() not in archive, "missing or unencrypted backup archive")
         backup = PublishedBackup(published, credentials, archive, phrase, known_host)
+        self.add_legacy_apt_target(old, old_name)
         docker("stop", "--timeout", "25", old_name)
+        self.edit_fixture_database(old_name, "published-data", "seed-legacy-apt-incident", """
+import sqlite3
+import sys
+
+with sqlite3.connect('/data/servers.db') as db:
+    if 'apt_target' in {column[1] for column in db.execute('PRAGMA table_info(jobs)')}:
+        raise ValueError('fixture requires a published pre-target database')
+    db.execute('INSERT INTO jobs(id,kind,server_name,actor,status,phase,error_class,created_at,updated_at) '
+               'VALUES(?,?,?,?,?,?,?,?,?)',
+               (sys.argv[1], 'update', sys.argv[2], 'qualification-admin', 'failed', 'complete', 'reconciliation_required',
+                '2026-01-03T00:00:00Z', '2026-01-03T00:00:00Z'))
+""", LEGACY_APT_JOB, LEGACY_APT_SERVER)
         docker("run", "--pull", "never", "--rm", "--label", self.label, "--name", self.prefix + "-copy",
                "--network", "none", "--entrypoint", "/bin/sh",
                "--mount", f"type=volume,src={old_volume},dst=/source,readonly",
@@ -277,11 +344,15 @@ class Qualification:
         new_name = self.prefix + "-upgraded"
         new = self.start_app(new_name, self.candidate, new_volume)
         new.request("POST", "/api/auth/login", credentials)
-        self.verify_inventory(new, new_name, known_host)
+        self.verify_inventory(new, new_name, known_host, upgraded=True)
+        self.check_legacy_apt_admission(new)
         docker("restart", "--timeout", "25", new_name)
         self.connect(new_name, new)
         new.request("POST", "/api/auth/login", credentials)
-        self.verify_inventory(new, new_name, known_host)
+        self.verify_inventory(new, new_name, known_host, upgraded=True)
+        host = self.check_legacy_apt_admission(new)
+        self.resolve_legacy_apt_incident(new, credentials, host)
+        self.report["docker_upgrade"]["legacy_apt_incident_migration"] = "passed"
         self.report["docker_upgrade"]["copied_volume_restart"] = "passed"
 
         self.restore_archive(self.prefix + "-restored", self.candidate, restored_volume, backup, "recovery-admin")
@@ -741,7 +812,7 @@ HTTPServer(("127.0.0.1", int(port)), Receiver).serve_forever()
         try:
             images = docker("image", "ls", "--filter", "label=" + self.label, "--format", "{{.Repository}}:{{.Tag}}").splitlines()
             for image in images:
-                if image in (self.candidate, self.vm_runner):
+                if image in (self.candidate, self.vm_runner, self.apt_fixture_image):
                     docker("image", "rm", image)
         except Exception as error:
             errors.append(str(error))

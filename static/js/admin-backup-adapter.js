@@ -433,8 +433,8 @@
                 const host = hosts.get(checkbox.dataset.restoreAptSelect);
                 if (!host) continue;
                 checkbox.checked = aptSelection.has(host.identity);
-                checkbox.disabled = Boolean(aptRun || host.disabled || (!checkbox.checked && aptSelection.size >= aptBatchLimit));
-                row.querySelector("[data-restore-apt-name]").disabled = Boolean(aptRun || host.disabled);
+                checkbox.disabled = Boolean(aptRun || host.disabled || host.legacyJobID || (!checkbox.checked && aptSelection.size >= aptBatchLimit));
+                row.querySelector("[data-restore-apt-name]").disabled = Boolean(aptRun || host.disabled || host.state === "legacy_target_changed");
                 const initial = aptRun?.hosts.get(host.identity);
                 const result = aptResults.get(host.identity);
                 const completed = initial && host.checkedAt && host.checkedAt !== initial.checkedAt && !host.checking;
@@ -463,9 +463,13 @@
 
         async function checkRestoredAPT(hosts, single) {
             if (aptRun || !hosts.length || hosts.length > aptBatchLimit) return;
+            const legacy = hosts.find(host => host.legacyJobID);
+            if (legacy && (!single || !window.confirm(`Confirm through a trusted console that ${legacy.name} is the original machine in the job report. A healthy read-only APT check can then resolve the incident. Continue?`))) return;
             const lifetime = lifecycle.capture();
             const feedback = document.getElementById("restore-apt-feedback");
-            const targets = hosts.map(({ name, identity, targetRevision }) => ({ name, identity, target_revision: targetRevision || undefined }));
+            const targets = hosts.map(({ name, identity, targetRevision, legacyJobID }) => ({
+                name, identity, target_revision: targetRevision || undefined, confirm_legacy_job_id: legacyJobID || undefined,
+            }));
             const run = { single, name: targets[0].name, hosts: new Map(hosts.map(host => [host.identity, host])) };
             aptRun = run;
             for (const { identity } of targets) aptResults.delete(identity);

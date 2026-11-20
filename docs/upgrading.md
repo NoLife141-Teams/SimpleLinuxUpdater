@@ -25,9 +25,11 @@ Repair APT requires the current reconciliation job and its recorded SSH
 endpoint. The repair connection verifies the SSH host key captured during
 mutation. After confirming the original machine through a trusted console,
 an administrator can enter an independently verified key fingerprint in the
-repair dialog. This confirmation is audited. A historical job without a recorded target remains available as a
-report. Verify the original machine and its package state independently before
-resuming maintenance for that history.
+repair dialog. This confirmation is audited. An unresolved historical incident without a recorded target
+blocks package maintenance. In **Admin → Installation Health → APT validation**, review the original job
+report and confirm the original machine using a trusted console before running the read-only APT check.
+A healthy check records the resolution and permits maintenance on the validated target. If the SSH endpoint
+has changed, restore access to the original endpoint and verify it before proceeding.
 
 For rollback, restore the verified pre-upgrade archive into a separate
 v0.5.8 installation as described in [Restore and rollback](#restore-and-rollback).

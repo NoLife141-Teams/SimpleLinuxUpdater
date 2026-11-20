@@ -7,6 +7,8 @@
         unreachable: "Unreachable · check connectivity", host_key_unverified: "SSH key unverified · review host trust",
         locks_unverified: "APT locks active or unknown · check again", dpkg_incomplete: "Incomplete package state · inspect dpkg",
         apt_unverified: "APT health check failed · inspect the host", unavailable: "Package check unavailable · review SSH permissions",
+        legacy_target_unverified: "Legacy APT incident · confirm the original machine",
+        legacy_target_changed: "Legacy APT incident · original SSH endpoint required",
     };
     function describeRestoreAPTState(state) {
         return aptStates[state] || "Check required";
@@ -707,12 +709,19 @@
                 const checkbox = document.createElement("input");
                 checkbox.type = "checkbox";
                 checkbox.dataset.restoreAptSelect = host.identity;
+                checkbox.hidden = Boolean(host.legacyJobID);
                 checkbox.setAttribute("aria-label", `Select ${host.name} for APT check`);
                 selection.append(checkbox);
                 row.append(selection);
                 const name = document.createElement("th");
                 name.scope = "row";
                 name.textContent = host.name;
+                if (host.legacyReportURL) {
+                    const report = document.createElement("a");
+                    report.href = host.legacyReportURL;
+                    report.textContent = "Original job report";
+                    name.append(document.createElement("br"), report);
+                }
                 row.append(name);
                 for (const value of [describeRestoreAPTState(host.state), date(host.checkedAt)]) {
                     const cell = document.createElement("td");
@@ -725,8 +734,9 @@
                 button.className = "btn-ghost inline-btn";
                 button.dataset.restoreAptName = host.name;
                 button.dataset.restoreAptIdentity = host.identity;
-                button.textContent = "Check APT";
-                button.setAttribute("aria-label", `Check APT on ${host.name}`);
+                const action = host.legacyJobID ? "Confirm and check APT" : "Check APT";
+                button.textContent = action;
+                button.setAttribute("aria-label", `${action} on ${host.name}`);
                 button.disabled = host.disabled;
                 const progress = document.createElement("div");
                 progress.className = "muted";

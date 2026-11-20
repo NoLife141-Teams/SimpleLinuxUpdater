@@ -73,11 +73,12 @@ type restoreResumeHostBinding struct {
 func collectRestoreResumeSnapshot(ctx context.Context, deps AppDeps, activation string, now time.Time) restoreResumeSnapshot {
 	snapshot := restoreResumeSnapshot{Activation: activation, ReviewRevision: deps.restoreResumeReview.revision.Load()}
 	observations, aptErr := deps.RestoreAPTValidation.all(ctx)
+	legacy, legacyErr := pendingLegacyAPTIncidents(ctx, deps.DB())
 	state := deps.ServerState
 	state.Lock()
 	inventory := state.CloneServers()
 	sort.Slice(inventory, func(i, j int) bool { return inventory[i].Name < inventory[j].Name })
-	if aptErr == nil {
+	if aptErr == nil && legacyErr == nil {
 		snapshot.Impact.Hosts = make([]restoreResumeHost, 0, len(inventory))
 	}
 	for _, server := range inventory {
@@ -85,7 +86,7 @@ func collectRestoreResumeSnapshot(ctx context.Context, deps AppDeps, activation 
 		snapshot.Inventory = append(snapshot.Inventory, restoreResumeHostBinding{
 			Name: server.Name, Identity: server.Identity, Target: server.APTTarget(), HostKey: observation.key,
 		})
-		if aptErr != nil {
+		if aptErr != nil || legacyErr != nil {
 			continue
 		}
 		needsReconciliation := state.StatusMap()[server.Name].RequiresAPTReconciliation()
@@ -95,6 +96,8 @@ func collectRestoreResumeSnapshot(ctx context.Context, deps AppDeps, activation 
 			host.Allowed, host.Reason = false, "disabled"
 		case needsReconciliation:
 			host.Allowed, host.Reason = false, "reconciliation_required"
+		case legacyAPTIncidentForServer(legacy, server).jobID != "":
+			host.Allowed, host.Reason = false, "legacy_target_unverified"
 		case required:
 			facts := observation.facts(server, now, true, false)
 			host.CheckedAt = facts.CheckedAt

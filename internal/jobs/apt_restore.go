@@ -58,6 +58,12 @@ func LatestVerifiedAPTRepairs(ctx context.Context, read *sql.Tx) ([]Record, erro
 	return repairs, rows.Err()
 }
 
+// ReadAPTRecoveryJob reads a recovery report from the same live snapshot as
+// its incident.
+func ReadAPTRecoveryJob(ctx context.Context, read *sql.Tx, id string) (Record, error) {
+	return getJobRow(ctx, read, id)
+}
+
 // ImportAPTRecoveryEvidence writes a terminal job to an isolated restore
 // database. Apply supplies the live snapshot to carry its retained log stream.
 func (r *SQLiteRepository) ImportAPTRecoveryEvidence(ctx context.Context, record Record, logSource *sql.Tx) error {

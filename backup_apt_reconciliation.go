@@ -34,6 +34,9 @@ func prepareAPTRestore(ctx context.Context, liveDB, stagedDB *sql.DB, now string
 	if err != nil {
 		return err
 	}
+	if err := preserveLegacyAPTIncidents(ctx, live, stagedDB); err != nil {
+		return err
+	}
 	return evidence.compare(ctx, stagedDB, now, live)
 }
 

@@ -527,7 +527,7 @@ type ActionAdmissionOptions struct {
 	ExpectedJobID           string
 }
 
-var ErrRestoreAPTValidation = errors.New("APT validation is required after restore; check this server in Installation Health")
+var ErrRestoreAPTValidation = errors.New("APT validation is required; check this server in Installation Health")
 
 func (s *State) packageValidationSnapshot(name string) (Server, uint64, bool) {
 	s.Lock()

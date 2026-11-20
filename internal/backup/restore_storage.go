@@ -224,16 +224,16 @@ func (targets restoreStorageTargets) replacementNeeds(databaseBytes, hostsBytes 
 	return needs
 }
 
-func (s *Service) decryptStorageBlocker(path string) error {
+func (s *Service) decryptStorage(path string) []RestoreStorageVolume {
 	info, err := os.Stat(path)
 	if err != nil || info.Size() <= 0 || info.Size() > MaxUploadBytes {
 		return nil // let the bounded envelope reader report invalid input
 	}
 	encoded := min(uint64(info.Size()), uint64(maxEncodedPayloadBytes))
 	ciphertext := min(encoded*3/4, uint64(maxCiphertextBytes))
-	return storageBlocker(s.estimateRestoreStorage(restoreStorageNeed{
+	return s.estimateRestoreStorage(restoreStorageNeed{
 		directory: s.deps.TempDir(), role: restoreStoragePreparation, bytes: encoded + ciphertext,
-	}))
+	})
 }
 
 func (s *Service) archiveRestoreStorage(sizes map[string]uint64) ([]RestoreStorageVolume, bool) {

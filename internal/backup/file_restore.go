@@ -714,8 +714,10 @@ func (s *Service) verifyArchiveFile(ctx context.Context, encrypted TemporaryFile
 		result.Blockers = append(result.Blockers, ReadinessIssue{Code: "unsupported_version", Message: fmt.Sprintf("Backup version %d is not supported; this application accepts version %d.", envelope.Version, FormatVersion)})
 		return result, nil
 	}
+	var preparation []RestoreStorageVolume
 	if assessStorage {
-		if err := s.decryptStorageBlocker(encrypted.Path); err != nil {
+		preparation = s.decryptStorage(encrypted.Path)
+		if err := storageBlocker(preparation); err != nil {
 			return result.withStorageFailure(err), nil
 		}
 	}
@@ -726,6 +728,7 @@ func (s *Service) verifyArchiveFile(ctx context.Context, encrypted TemporaryFile
 			return result, nil
 		}
 		if assessStorage && IsStorageFull(err) {
+			result.Storage = preparation
 			return result.withStorageFailure(err), nil
 		}
 		return VerifyResult{}, &RestoreError{Stage: RestoreStageDecrypt, Err: err}
@@ -835,7 +838,7 @@ func (s *Service) RestoreArchiveFileWithOptions(ctx context.Context, encrypted T
 	if err := ValidatePassphrase(passphrase); err != nil {
 		return RestoreResult{}, err
 	}
-	if err := s.decryptStorageBlocker(encrypted.Path); err != nil {
+	if err := storageBlocker(s.decryptStorage(encrypted.Path)); err != nil {
 		return RestoreResult{}, &RestoreError{Stage: RestoreStageApply, Err: err}
 	}
 	plain, err := s.decryptFile(encrypted.Path, passphrase)

@@ -57,18 +57,18 @@ func TestNotificationOutboxMigratesExistingSettingsDatabase(t *testing.T) {
 	}
 }
 
-func TestNotificationOutboxMigratesDestinationFingerprintColumn(t *testing.T) {
+func TestNotificationOutboxMigratesDeliveryColumns(t *testing.T) {
 	db := openOutboxTestDB(t, "destination-fingerprint-migration.db")
 	if _, err := db.Exec(`CREATE TABLE notification_outbox (id TEXT PRIMARY KEY)`); err != nil {
 		t.Fatal(err)
 	}
-	if err := ensureOutboxDestinationFingerprintColumn(t.Context(), db); err != nil {
-		t.Fatalf("ensureOutboxDestinationFingerprintColumn() error = %v", err)
+	if err := migrateOutboxColumns(t.Context(), db); err != nil {
+		t.Fatalf("migrateOutboxColumns() error = %v", err)
 	}
-	if err := ensureOutboxDestinationFingerprintColumn(t.Context(), db); err != nil {
-		t.Fatalf("ensureOutboxDestinationFingerprintColumn() second call error = %v", err)
+	if err := migrateOutboxColumns(t.Context(), db); err != nil {
+		t.Fatalf("migrateOutboxColumns() second call error = %v", err)
 	}
-	var found int
+	found := map[string]int{}
 	rows, err := db.Query(`PRAGMA table_info(notification_outbox)`)
 	if err != nil {
 		t.Fatal(err)
@@ -82,15 +82,15 @@ func TestNotificationOutboxMigratesDestinationFingerprintColumn(t *testing.T) {
 		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
 			t.Fatal(err)
 		}
-		if name == "destination_fingerprint" {
-			found++
-		}
+		found[name]++
 	}
 	if err := rows.Err(); err != nil {
 		t.Fatal(err)
 	}
-	if found != 1 {
-		t.Fatalf("destination_fingerprint columns=%d, want 1", found)
+	for _, name := range []string{"destination_fingerprint", "attempt_id", "last_indeterminate_at"} {
+		if found[name] != 1 {
+			t.Fatalf("%s columns=%d, want 1", name, found[name])
+		}
 	}
 }
 

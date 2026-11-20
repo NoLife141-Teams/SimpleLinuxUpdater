@@ -301,6 +301,7 @@ func testRateLimitedLaneRepairsFailedCompletion(t *testing.T, scenario string) {
 		if err := recoverExpiredOutboxClaims(t.Context(), h.db, h.now, defaultOutboxClaimTTL, outboxDeliveries{}); err != nil {
 			t.Fatal(err)
 		}
+		h.now = h.now.Add(indeterminateRetryDelay)
 		h.service.processOutboxRow(t.Context(), claim(first))
 	}
 	if _, err := h.db.Exec("DROP TRIGGER reject_rate_limit_completion"); err != nil {
@@ -309,7 +310,7 @@ func testRateLimitedLaneRepairsFailedCompletion(t *testing.T, scenario string) {
 	if scenario == "flush after a released claim" {
 		h.service.flushRateLimitCompletions(t.Context())
 		diagnostics, err := h.service.DeliveryDiagnostics()
-		want := h.now.Add(retryAfter - defaultOutboxClaimTTL)
+		want := h.now.Add(retryAfter - defaultOutboxClaimTTL - indeterminateRetryDelay)
 		if err != nil || !diagnostics.RateLimitedUntil[DestinationWebhook].Equal(want) {
 			t.Fatalf("flush after claim recovery lost the observed deadline: %+v, %v", diagnostics, err)
 		}

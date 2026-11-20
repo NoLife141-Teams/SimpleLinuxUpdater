@@ -26,11 +26,14 @@ const (
 	outboxSkipDestinationUnconfigured = "destination_unconfigured"
 	outboxSkipDestinationChanged      = "destination_configuration_changed"
 
-	defaultOutboxClaimTTL  = 2 * time.Minute
-	defaultOutboxRetention = 30 * 24 * time.Hour
+	defaultOutboxClaimTTL     = 2 * time.Minute
+	defaultOutboxRetention    = 30 * 24 * time.Hour
+	indeterminateRetryDelay   = 30 * time.Second
+	outboxIndeterminateReason = "delivery_outcome_indeterminate"
 )
 
 var errOutboxCompletionLostClaim = errors.New("notification outbox completion lost its claim")
+var errOutboxAttemptNotAdmitted = errors.New("notification outbox attempt no longer eligible")
 
 type outboxRow struct {
 	ID                     string
@@ -42,6 +45,8 @@ type outboxRow struct {
 	Attempts               int
 	NextAttemptAt          string
 	ClaimedAt              string
+	AttemptID              string
+	AttemptedAt            string
 }
 
 type outboxOutcome struct {
@@ -49,12 +54,14 @@ type outboxOutcome struct {
 	Attempts               int
 	NextAttemptAt          string
 	AttemptedAt            string
+	LastIndeterminateAt    string
 	CompletedAt            string
 	StatusCode             int
 	Error                  string
 	DurationMS             int64
 	DestinationFingerprint string
 	RateLimitedUntil       string
+	AttemptID              string
 }
 
 type outboxSnapshot struct {
@@ -105,7 +112,7 @@ func loadCurrentOutboxRows(ctx context.Context, db *sql.DB) (outboxReplacement, 
 	rows, err := db.QueryContext(ctx, `
 		SELECT id, destination, event_type, action, target_type, target_name, status, message,
 		       event_created_at, actor, client_ip, meta_json, destination_fingerprint, state,
-		       attempts, next_attempt_at, claimed_at, attempted_at, completed_at, status_code,
+		       attempts, next_attempt_at, claimed_at, attempted_at, last_indeterminate_at, completed_at, status_code,
 		       error, duration_ms, created_at
 		  FROM notification_outbox
 	`)
@@ -122,7 +129,7 @@ func loadCurrentOutboxRows(ctx context.Context, db *sql.DB) (outboxReplacement, 
 			&snapshot.Row.Intent.Actor, &snapshot.Row.Intent.ClientIP, &snapshot.Row.Intent.MetaJSON,
 			&snapshot.Row.DestinationFingerprint, &snapshot.Outcome.State, &snapshot.Outcome.Attempts,
 			&snapshot.Outcome.NextAttemptAt, &snapshot.Row.ClaimedAt, &snapshot.Outcome.AttemptedAt,
-			&snapshot.Outcome.CompletedAt, &snapshot.Outcome.StatusCode, &snapshot.Outcome.Error,
+			&snapshot.Outcome.LastIndeterminateAt, &snapshot.Outcome.CompletedAt, &snapshot.Outcome.StatusCode, &snapshot.Outcome.Error,
 			&snapshot.Outcome.DurationMS, &snapshot.CreatedAt,
 		); err != nil {
 			return outboxReplacement{}, err
@@ -139,7 +146,9 @@ func loadCurrentOutboxRows(ctx context.Context, db *sql.DB) (outboxReplacement, 
 		}
 		if snapshot.Outcome.State == outboxStateRetrying {
 			snapshot.Row.ClaimedAt = ""
-			snapshot.Outcome.CompletedAt = ""
+			if snapshot.Outcome.Error != outboxIndeterminateReason {
+				snapshot.Outcome.CompletedAt = ""
+			}
 		}
 		snapshot.Row.State = snapshot.Outcome.State
 		snapshot.Row.Attempts = snapshot.Outcome.Attempts
@@ -182,7 +191,7 @@ func (replacement *outboxReplacement) suppressExpiredAPTDeliveries(ctx context.C
 				// The live ledger knows this admission even after its history has
 				// expired. An older archive cannot put it back into the queue.
 				if _, err := tx.ExecContext(ctx, `UPDATE notification_outbox
-					SET state=?, attempts=0, next_attempt_at='', claimed_at='', attempted_at='', completed_at=?,
+					SET state=?, next_attempt_at='', claimed_at='', attempt_id='', completed_at=?,
 					    status_code=0, error=?, duration_ms=0, updated_at=?
 					WHERE id=?`, outboxStateSkipped, now, outboxSkipConditionIneligible, now, id); err != nil {
 					return err
@@ -217,9 +226,9 @@ func restoreCurrentOutboxRows(ctx context.Context, db *sql.DB, replacement *outb
 			INSERT INTO notification_outbox (
 				id, destination, event_type, action, target_type, target_name, status, message,
 				event_created_at, actor, client_ip, meta_json, destination_fingerprint, state,
-				attempts, next_attempt_at, claimed_at, attempted_at, completed_at, status_code,
+				attempts, next_attempt_at, claimed_at, attempted_at, last_indeterminate_at, completed_at, status_code,
 				error, duration_ms, created_at, updated_at
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(id) DO UPDATE SET
 				destination = excluded.destination,
 				event_type = excluded.event_type,
@@ -234,29 +243,35 @@ func restoreCurrentOutboxRows(ctx context.Context, db *sql.DB, replacement *outb
 				meta_json = excluded.meta_json,
 				destination_fingerprint = excluded.destination_fingerprint,
 				state = excluded.state,
-				attempts = excluded.attempts,
-				next_attempt_at = excluded.next_attempt_at,
+				attempts = max(notification_outbox.attempts, excluded.attempts),
+				next_attempt_at = CASE WHEN excluded.state = 'retrying' AND excluded.attempts = notification_outbox.attempts
+				    AND rtrim(notification_outbox.next_attempt_at, 'Z') > rtrim(excluded.next_attempt_at, 'Z')
+				    THEN notification_outbox.next_attempt_at ELSE excluded.next_attempt_at END,
 				claimed_at = excluded.claimed_at,
+				attempt_id = '',
 				attempted_at = excluded.attempted_at,
+				last_indeterminate_at = CASE WHEN rtrim(notification_outbox.last_indeterminate_at, 'Z') >
+				    rtrim(excluded.last_indeterminate_at, 'Z') THEN notification_outbox.last_indeterminate_at
+				    ELSE excluded.last_indeterminate_at END,
 				completed_at = excluded.completed_at,
 				status_code = excluded.status_code,
 				error = excluded.error,
 				duration_ms = excluded.duration_ms,
 				created_at = excluded.created_at,
 				updated_at = excluded.updated_at
-			WHERE NOT (notification_outbox.event_type = ? AND excluded.event_type = ? AND (
+			WHERE NOT (
 				(notification_outbox.state = ? AND excluded.state <> ?)
 				OR (excluded.state IN (?, ?, ?) AND (
 					notification_outbox.state IN (?, ?) OR notification_outbox.attempts > excluded.attempts
 				))
-			))
+			)
 		`, row.ID, row.Destination, row.EventType, row.Intent.Action, row.Intent.TargetType,
 			row.Intent.TargetName, row.Intent.Status, row.Intent.Message, row.Intent.CreatedAt,
 			row.Intent.Actor, row.Intent.ClientIP, row.Intent.MetaJSON, row.DestinationFingerprint,
 			outcome.State, outcome.Attempts, outcome.NextAttemptAt, row.ClaimedAt,
-			outcome.AttemptedAt, outcome.CompletedAt, outcome.StatusCode, outcome.Error,
+			outcome.AttemptedAt, outcome.LastIndeterminateAt, outcome.CompletedAt, outcome.StatusCode, outcome.Error,
 			outcome.DurationMS, snapshot.CreatedAt, now,
-			EventAPTReconciliationRequired, EventAPTReconciliationRequired, outboxStateSucceeded, outboxStateSucceeded,
+			outboxStateSucceeded, outboxStateSucceeded,
 			outboxStatePending, outboxStateClaimed, outboxStateRetrying, outboxStateFailed, outboxStateSkipped); err != nil {
 			return err
 		}
@@ -264,10 +279,12 @@ func restoreCurrentOutboxRows(ctx context.Context, db *sql.DB, replacement *outb
 	for id, outcome := range replacement.TerminalOutcomes {
 		if _, err := tx.ExecContext(ctx, `
 			UPDATE notification_outbox
-			   SET state = ?, attempts = ?, next_attempt_at = ?, claimed_at = '', attempted_at = ?,
+			   SET state = ?, attempts = max(attempts, ?), next_attempt_at = ?, claimed_at = '', attempt_id = '', attempted_at = ?,
+			       last_indeterminate_at = CASE WHEN rtrim(last_indeterminate_at, 'Z') < rtrim(?, 'Z')
+			           THEN ? ELSE last_indeterminate_at END,
 			       completed_at = ?, status_code = ?, error = ?, duration_ms = ?, updated_at = ?
 			 WHERE id = ? AND state IN (?, ?, ?)
-		`, outcome.State, outcome.Attempts, outcome.NextAttemptAt, outcome.AttemptedAt,
+		`, outcome.State, outcome.Attempts, outcome.NextAttemptAt, outcome.AttemptedAt, outcome.LastIndeterminateAt, outcome.LastIndeterminateAt,
 			outcome.CompletedAt, outcome.StatusCode, outcome.Error, outcome.DurationMS, now, id,
 			outboxStatePending, outboxStateClaimed, outboxStateRetrying); err != nil {
 			return err
@@ -333,7 +350,9 @@ func ensureSchema(ctx context.Context, db *sql.DB) error {
 			attempts INTEGER NOT NULL DEFAULT 0,
 			next_attempt_at TEXT NOT NULL DEFAULT '',
 			claimed_at TEXT NOT NULL DEFAULT '',
+			attempt_id TEXT NOT NULL DEFAULT '',
 			attempted_at TEXT NOT NULL DEFAULT '',
+			last_indeterminate_at TEXT NOT NULL DEFAULT '',
 			completed_at TEXT NOT NULL DEFAULT '',
 			status_code INTEGER NOT NULL DEFAULT 0,
 			error TEXT NOT NULL DEFAULT '',
@@ -344,8 +363,8 @@ func ensureSchema(ctx context.Context, db *sql.DB) error {
 	`); err != nil {
 		return fmt.Errorf("create notification outbox: %w", err)
 	}
-	if err := ensureOutboxDestinationFingerprintColumn(ctx, db); err != nil {
-		return fmt.Errorf("migrate notification outbox destination binding: %w", err)
+	if err := migrateOutboxColumns(ctx, db); err != nil {
+		return fmt.Errorf("migrate notification outbox: %w", err)
 	}
 	if _, err := db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_notification_outbox_due
 		ON notification_outbox (state, next_attempt_at, created_at, id)`); err != nil {
@@ -383,12 +402,12 @@ func ensureSchema(ctx context.Context, db *sql.DB) error {
 	return nil
 }
 
-func ensureOutboxDestinationFingerprintColumn(ctx context.Context, db *sql.DB) error {
+func migrateOutboxColumns(ctx context.Context, db *sql.DB) error {
 	rows, err := db.QueryContext(ctx, `PRAGMA table_info(notification_outbox)`)
 	if err != nil {
 		return err
 	}
-	found := false
+	columns := make(map[string]bool)
 	for rows.Next() {
 		var cid int
 		var name, columnType string
@@ -398,9 +417,7 @@ func ensureOutboxDestinationFingerprintColumn(ctx context.Context, db *sql.DB) e
 			_ = rows.Close()
 			return err
 		}
-		if name == "destination_fingerprint" {
-			found = true
-		}
+		columns[name] = true
 	}
 	if err := rows.Err(); err != nil {
 		_ = rows.Close()
@@ -409,11 +426,22 @@ func ensureOutboxDestinationFingerprintColumn(ctx context.Context, db *sql.DB) e
 	if err := rows.Close(); err != nil {
 		return err
 	}
-	if found {
-		return nil
+	migrations := []struct {
+		column string
+		query  string
+	}{
+		{"destination_fingerprint", `ALTER TABLE notification_outbox ADD COLUMN destination_fingerprint TEXT NOT NULL DEFAULT ''`},
+		{"attempt_id", `ALTER TABLE notification_outbox ADD COLUMN attempt_id TEXT NOT NULL DEFAULT ''`},
+		{"last_indeterminate_at", `ALTER TABLE notification_outbox ADD COLUMN last_indeterminate_at TEXT NOT NULL DEFAULT ''`},
 	}
-	_, err = db.ExecContext(ctx, `ALTER TABLE notification_outbox ADD COLUMN destination_fingerprint TEXT NOT NULL DEFAULT ''`)
-	return err
+	for _, migration := range migrations {
+		if !columns[migration.column] {
+			if _, err := db.ExecContext(ctx, migration.query); err != nil {
+				return fmt.Errorf("add %s: %w", migration.column, err)
+			}
+		}
+	}
+	return nil
 }
 
 func destinationConfigFingerprint(settings Settings, destination string) string {
@@ -511,12 +539,23 @@ func recoverExpiredOutboxClaims(ctx context.Context, db *sql.DB, now time.Time, 
 	}
 	cutoff := now.Add(-claimTTL).UTC().Format(time.RFC3339Nano)
 	nowText := now.UTC().Format(time.RFC3339Nano)
+	retryAt := now.UTC().Add(indeterminateRetryDelay).Format(time.RFC3339Nano)
 	_, err := db.ExecContext(ctx, `
 		UPDATE notification_outbox
-		   SET state = ?, claimed_at = '', next_attempt_at = ?, updated_at = ?
+		   SET state = CASE WHEN attempt_id <> '' AND completed_at = '' AND attempts >= ? THEN ? ELSE ? END,
+		       next_attempt_at = CASE WHEN attempt_id <> '' AND completed_at = ''
+		           THEN CASE WHEN attempts >= ? THEN '' ELSE ? END ELSE ? END,
+		       last_indeterminate_at = CASE WHEN attempt_id <> '' AND completed_at = ''
+		           THEN attempted_at ELSE last_indeterminate_at END,
+		       status_code = CASE WHEN attempt_id <> '' AND completed_at = '' THEN 0 ELSE status_code END,
+		       duration_ms = CASE WHEN attempt_id <> '' AND completed_at = '' THEN 0 ELSE duration_ms END,
+		       error = CASE WHEN attempt_id <> '' AND completed_at = '' THEN ? ELSE error END,
+		       completed_at = CASE WHEN attempt_id <> '' AND completed_at = '' THEN ? ELSE completed_at END,
+		       claimed_at = '', updated_at = ?
 		 WHERE state = ? AND rtrim(claimed_at, 'Z') <= rtrim(?, 'Z')
 		   AND destination IS NOT ? AND destination IS NOT ? AND destination IS NOT ?
-	`, outboxStateRetrying, nowText, nowText, outboxStateClaimed, cutoff, active[0], active[1], active[2])
+	`, defaultAttempts, outboxStateFailed, outboxStateRetrying, defaultAttempts, retryAt, nowText,
+		outboxIndeterminateReason, nowText, nowText, outboxStateClaimed, cutoff, active[0], active[1], active[2])
 	return err
 }
 
@@ -546,7 +585,8 @@ const outboxEffectiveDue = `CASE
 	WHEN binding.configuration IS NOT NULL AND (NOT ` + outboxDestinationEnabled + `
 		OR (json_type(binding.configuration, '$.destination_fingerprints')='object'
 		AND o.destination_fingerprint<>'' AND o.destination_fingerprint IS NOT ` + outboxCurrentFingerprint + `))
-	THEN CASE WHEN o.status_code=429 AND o.next_attempt_at=health.rate_limited_until THEN ''
+	THEN CASE WHEN (o.status_code=429 AND o.next_attempt_at=health.rate_limited_until)
+		OR o.error='` + outboxIndeterminateReason + `' THEN ''
 		ELSE rtrim(o.next_attempt_at, 'Z') END
 	ELSE max(rtrim(o.next_attempt_at, 'Z'), COALESCE(rtrim(health.rate_limited_until, 'Z'), ''))
 END`
@@ -565,7 +605,7 @@ func claimNextOutboxRow(ctx context.Context, db *sql.DB, now time.Time, active o
 	err = tx.QueryRowContext(ctx, `
 		SELECT o.id, o.destination, o.event_type, o.action, o.target_type, o.target_name, o.status, o.message,
 		       o.event_created_at, o.actor, o.client_ip, o.meta_json, o.destination_fingerprint, o.state, o.attempts,
-		       o.next_attempt_at, o.claimed_at
+		       o.next_attempt_at, o.claimed_at, o.attempt_id
 		  FROM notification_outbox o
 		`+outboxSchedulingJoins+`
 		 WHERE o.state IN (?, ?) AND `+outboxEffectiveDue+` <= rtrim(?, 'Z')
@@ -576,7 +616,7 @@ func claimNextOutboxRow(ctx context.Context, db *sql.DB, now time.Time, active o
 		&row.ID, &row.Destination, &row.EventType, &row.Intent.Action, &row.Intent.TargetType,
 		&row.Intent.TargetName, &row.Intent.Status, &row.Intent.Message, &row.Intent.CreatedAt,
 		&row.Intent.Actor, &row.Intent.ClientIP, &row.Intent.MetaJSON, &row.DestinationFingerprint,
-		&row.State, &row.Attempts, &row.NextAttemptAt, &row.ClaimedAt,
+		&row.State, &row.Attempts, &row.NextAttemptAt, &row.ClaimedAt, &row.AttemptID,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
@@ -606,28 +646,60 @@ func claimNextOutboxRow(ctx context.Context, db *sql.DB, now time.Time, active o
 	return &row, nil
 }
 
+// admitOutboxAttempt consumes the attempt before an HTTP request can leave the
+// worker. The token ties a later completion to this particular admission
+// across claim expiry, settings changes and database replacement.
+func admitOutboxAttempt(ctx context.Context, db *sql.DB, row *outboxRow, fingerprint string, now time.Time) error {
+	token := rand.Text()
+	attemptedAt := now.UTC().Format(time.RFC3339Nano)
+	result, err := db.ExecContext(ctx, `
+		UPDATE notification_outbox
+		   SET attempts = attempts + 1, attempt_id = ?, attempted_at = ?, completed_at = '',
+		       status_code = 0, error = '', duration_ms = 0, destination_fingerprint = ?, updated_at = ?
+		 WHERE id = ? AND state = ? AND claimed_at = ?
+		   AND attempts = ? AND attempts < ? AND (attempt_id = '' OR completed_at <> '')
+		   AND (destination_fingerprint = '' OR destination_fingerprint = ?)
+	`, token, attemptedAt, fingerprint, attemptedAt, row.ID, outboxStateClaimed,
+		row.ClaimedAt, row.Attempts, defaultAttempts, fingerprint)
+	if err != nil {
+		return err
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if changed != 1 {
+		return errOutboxAttemptNotAdmitted
+	}
+	row.Attempts++
+	row.AttemptID = token
+	row.AttemptedAt = attemptedAt
+	row.DestinationFingerprint = fingerprint
+	return nil
+}
+
 func completeOutboxRow(ctx context.Context, db *sql.DB, id string, outcome outboxOutcome, now string, recoverReleased bool) error {
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	// Recovery can finish a released claim only while its original attempt
-	// count still matches. A later completion must keep precedence.
+	// Recovery can finish an indeterminate attempt while its token still
+	// matches. An intervening admission or completion replaces that token.
 	var destination string
 	err = tx.QueryRowContext(ctx, `
 		UPDATE notification_outbox
 		   SET state = ?, attempts = ?, next_attempt_at = ?, claimed_at = '', attempted_at = ?,
-		       completed_at = ?, status_code = ?, error = ?, duration_ms = ?, updated_at = ?,
+		       completed_at = ?, status_code = ?, error = ?, duration_ms = ?, updated_at = ?, attempt_id = '',
 		       destination_fingerprint = CASE WHEN destination_fingerprint='' AND ?<>''
 		           THEN ? ELSE destination_fingerprint END
-		 WHERE id = ? AND (state = ? OR (? AND state = ?))
-		   AND (NOT ? OR attempts = ?)
+		 WHERE id = ? AND (state = ? OR (? AND (state = ? OR (state = ? AND error = ?))))
+		   AND attempt_id = ? AND attempts = ?
 		 RETURNING destination
 	`, outcome.State, outcome.Attempts, outcome.NextAttemptAt, outcome.AttemptedAt,
 		outcome.CompletedAt, outcome.StatusCode, outcome.Error, outcome.DurationMS, now,
 		outcome.RateLimitedUntil, outcome.DestinationFingerprint, id, outboxStateClaimed,
-		recoverReleased, outboxStateRetrying, recoverReleased, outcome.Attempts-1).Scan(&destination)
+		recoverReleased, outboxStateRetrying, outboxStateFailed, outboxIndeterminateReason, outcome.AttemptID, outcome.Attempts).Scan(&destination)
 	if errors.Is(err, sql.ErrNoRows) {
 		return errOutboxCompletionLostClaim
 	}
@@ -660,7 +732,7 @@ func releaseOutboxClaim(ctx context.Context, db *sql.DB, id, nextAttemptAt, now 
 	_, err := db.ExecContext(ctx, `
 		UPDATE notification_outbox
 		   SET state = ?, claimed_at = '', next_attempt_at = ?, updated_at = ?
-		 WHERE id = ? AND state = ?
+		 WHERE id = ? AND state = ? AND (attempt_id = '' OR completed_at <> '')
 	`, outboxStateRetrying, nextAttemptAt, now, id, outboxStateClaimed)
 	return err
 }

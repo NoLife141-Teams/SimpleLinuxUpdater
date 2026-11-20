@@ -19,6 +19,11 @@ func MergeOfflineDeliveryEvidence(ctx context.Context, live, staged *sql.DB, now
 	if err := ensureSchema(ctx, staged); err != nil {
 		return err
 	}
+	for _, db := range []*sql.DB{live, staged} {
+		if err := recoverExpiredOutboxClaims(ctx, db, now, 0, outboxDeliveries{}); err != nil {
+			return err
+		}
+	}
 	observed, incoming, err := loadPersistenceEvidence(ctx, live)
 	if err != nil {
 		return err

@@ -2045,6 +2045,7 @@ test("delivery history opens on demand, filters by job and navigates retained re
     const item = {
         destination: "webhook", state: "retrying", event_type: "approval.published",
         job_id: job, approval_generation: 7, attempts: 2, created_at: "2026-11-18T18:00:00Z",
+        last_indeterminate_at: "2026-11-18T18:01:00Z",
         next_attempt_at: "2026-11-18T18:05:00Z", reason: "Destination returned HTTP 503.",
     };
     const incidentJob = "2d28c63fd8924e7c84b0264f05e12424";
@@ -2094,6 +2095,7 @@ test("delivery history opens on demand, filters by job and navigates retained re
     await expect(results.getByRole("listitem")).toHaveCount(2);
     await expect(history).toContainText("Completed deliveries are kept for 30 days.");
     await expect(history).toContainText("Plan generation 7");
+    await expect(history.getByText("Indeterminate attempt ·", { exact: false })).toBeVisible();
     await expect(history.getByText("Next retry ·", { exact: false })).toBeVisible();
     await expect(results.getByText("Delivered", { exact: true })).toBeVisible();
     const incident = results.getByRole("listitem").filter({ hasText: "APT reconciliation required" });

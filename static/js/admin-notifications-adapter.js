@@ -747,6 +747,7 @@
                 if (item.reason) addText(delivery, "small", item.reason);
                 for (const [label, timestamp] of [
                     ["Queued", item.created_at], ["Last attempt", item.attempted_at],
+                    ["Indeterminate attempt", item.last_indeterminate_at],
                     ["Completed", item.completed_at], ["Next retry", item.next_attempt_at],
                 ]) {
                     const display = timestamp && formatAdminRefreshTime(timestamp);

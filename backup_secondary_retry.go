@@ -126,8 +126,16 @@ func (a *backupAutomation) catchUpSecondaryCopy(ctx context.Context, root *os.Ro
 				for i := range state.Secondary.Copies {
 					if copy := &state.Secondary.Copies[i]; copy.Archive.ID == candidate.ID &&
 						copy.VerifiedAt == existing.VerifiedAt && copy.Failure == existing.Failure {
+						if copy.VerifiedAt != "" {
+							replacement.Attempts, replacement.Retried = copy.Attempts, copy.Retried
+						}
+						exhausted := replacement.Attempts >= replacement.attemptLimit()
+						if exhausted {
+							replacement.Failure = "copy_failed"
+						}
 						*copy = replacement
-						state.Secondary.CatchUp = false
+						// An exhausted archive leaves the slot free for another eligible source.
+						state.Secondary.CatchUp = exhausted
 						return true, nil
 					}
 				}

@@ -26,6 +26,7 @@ const (
 var errBackupSecondaryDeferred = errors.New("secondary backup waiting for installation maintenance")
 var errBackupSecondaryMismatch = errors.New("secondary archive does not match its registered file and digest")
 var errBackupSecondaryPublicationPending = errors.New("secondary backup publication could not be confirmed")
+var errBackupSecondaryStorageUnavailable = errors.New("secondary backup storage is unavailable for a new transfer")
 
 func (a *backupAutomation) cancelSecondaryTransfer() {
 	a.secondaryCancelMu.Lock()
@@ -174,7 +175,7 @@ func (a *backupAutomation) copyNextSecondaryBackup(parent context.Context) error
 			return copyErr
 		}
 		reason := "copy_failed"
-		if !backupArchiveMountAvailable(root.Name(), binding.Directory) {
+		if errors.Is(copyErr, errBackupSecondaryStorageUnavailable) || !backupArchiveMountAvailable(root.Name(), binding.Directory) {
 			reason = "storage_unavailable"
 		} else if errors.Is(copyErr, errBackupSecondaryPublicationPending) {
 			reason = "publication_pending"
@@ -399,10 +400,10 @@ func (a *backupAutomation) startSecondaryTransfer(ctx context.Context, root *os.
 		return nil, errors.New("secondary backup attempt budget is exhausted")
 	}
 	if !backupArchiveMountAvailable(root.Name(), binding.Directory) {
-		return nil, errBackupSecondaryDeferred
+		return nil, errBackupSecondaryStorageUnavailable
 	}
 	if !removeOwnedSecondaryTemporary(ctx, root, binding, *copy) {
-		return nil, errors.New("previous secondary backup temporary file could not be removed")
+		return nil, fmt.Errorf("%w: previous secondary backup temporary file could not be removed", errBackupSecondaryStorageUnavailable)
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -410,17 +411,17 @@ func (a *backupAutomation) startSecondaryTransfer(ctx context.Context, root *os.
 	temporary := ".slu-secondary-" + rand.Text() + ".tmp"
 	destination, err := root.OpenFile(temporary, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: create secondary backup temporary file: %w", errBackupSecondaryStorageUnavailable, err)
 	}
 	staged, err := destination.Stat()
 	if err != nil {
 		_ = destination.Close()
-		return nil, err
+		return nil, fmt.Errorf("%w: inspect secondary backup temporary file: %w", errBackupSecondaryStorageUnavailable, err)
 	}
 	identity := backupCatalogFileIdentity(staged)
 	if identity == "" {
 		_ = destination.Close()
-		return nil, errors.New("cannot identify secondary backup temporary file")
+		return nil, fmt.Errorf("%w: cannot identify secondary backup temporary file", errBackupSecondaryStorageUnavailable)
 	}
 	err = a.updateCurrentSecondary(ctx, binding, copy.Archive.ID, func(_ *backupSecondaryState, current *backupSecondaryCopy) (bool, error) {
 		if !current.pending() || current.Attempts != copy.Attempts || current.FileIdentity != copy.FileIdentity {

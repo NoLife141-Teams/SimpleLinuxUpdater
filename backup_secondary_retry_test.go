@@ -43,6 +43,12 @@ func TestSecondaryCatchUpSurvivesRestartAndNewMountApproval(t *testing.T) {
 	if err := restarted.copyNextSecondaryBackup(t.Context()); err != nil {
 		t.Fatal(err)
 	}
+	state = backupAutomationStateForTest(t, restarted)
+	state.Secondary.Copies[0].Attempts = backupSecondaryMaxAttempts + 1
+	state.Secondary.Copies[0].Retried = true
+	if err := restarted.save(t.Context(), state); err != nil {
+		t.Fatal(err)
+	}
 	offline := secondary + ".offline"
 	if err := os.Rename(secondary, offline); err != nil {
 		t.Fatal(err)
@@ -64,6 +70,10 @@ func TestSecondaryCatchUpSurvivesRestartAndNewMountApproval(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(secondary, archive.Name)); err != nil {
 		t.Fatalf("returning mount did not catch up the missing registered copy: %v", err)
+	}
+	state = backupAutomationStateForTest(t, restarted)
+	if copy := state.Secondary.Copies[0]; copy.Attempts != backupSecondaryMaxAttempts+2 || !copy.Retried {
+		t.Fatalf("catch-up reset the attempt budget on the same mount: %+v", copy)
 	}
 	previous := secondary + ".previous"
 	if err := os.Rename(secondary, previous); err != nil {
@@ -181,6 +191,21 @@ func TestSecondaryLateMountFailureBeforeTransferPreservesBudget(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("requires filesystem traversal permissions to be enforced")
 	}
+	for _, tc := range []struct {
+		name string
+		mode os.FileMode
+	}{
+		{name: "not traversable", mode: 0600},
+		{name: "readable but not writable", mode: 0500},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			testSecondaryLateMountFailureBeforeTransfer(t, tc.mode)
+		})
+	}
+}
+
+func testSecondaryLateMountFailureBeforeTransfer(t *testing.T, mode os.FileMode) {
+	t.Helper()
 	_, automation, now := newBackupAutomationTest(t)
 	secondary := secondaryBackupTestDirectory(t, automation)
 	t.Cleanup(func() { _ = os.Chmod(secondary, 0700) })
@@ -209,7 +234,7 @@ func TestSecondaryLateMountFailureBeforeTransferPreservesBudget(t *testing.T) {
 		if calls == 2 {
 			// The worker already opened and observed the secondary mount.
 			// Remove access just before it starts the new transfer.
-			if err := os.Chmod(secondary, 0600); err != nil {
+			if err := os.Chmod(secondary, mode); err != nil {
 				t.Fatal(err)
 			}
 		}

@@ -223,7 +223,8 @@ the approved mount returns or a replacement is approved, the worker queues
 the newest eligible registered primary archive whose copy is missing from
 that mount. This includes archives previously skipped by a full queue.
 This catch-up uses the same bounded queue and holds its source against
-retention. Admin distinguishes waiting for the mount, transferring and failed
+retention. A missing copy keeps its spent attempt budget on the same mount.
+Admin distinguishes waiting for the mount, transferring and failed
 copies. Use **Retry copy** after administrator reauthentication for an
 eligible archive that was skipped by a full queue or exhausted its attempts.
 The worker checks the registered source digest and mount before admitting the

@@ -666,6 +666,18 @@ func TestBackupStorageOutageAlertsOnceAcrossRestartAndRecovers(t *testing.T) {
 	restarted := NewNotificationService(deps)
 	t.Cleanup(func() { closeWorker(restarted) })
 	restarted.StartConditionMonitoring()
+	evaluationDeadline := time.Now().Add(4 * time.Second)
+	for {
+		_, facts, err := restarted.InstallationHealth(t.Context())
+		if err == nil && facts.LastConditionEvaluationAt != nil {
+			break
+		}
+		if !time.Now().Before(evaluationDeadline) {
+			t.Fatalf("restarted worker did not evaluate the ongoing outage: %v", err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	waitFor(1, true)
 
 	if err := os.Remove(directory); err != nil {
 		t.Fatal(err)
@@ -685,6 +697,39 @@ func TestBackupStorageOutageAlertsOnceAcrossRestartAndRecovers(t *testing.T) {
 	closeWorker(restarted)
 	if client.calls.Load() != 1 || client.disclosedArchive.Load() {
 		t.Fatalf("outage deliveries=%d, disclosed archive path or ID=%v", client.calls.Load(), client.disclosedArchive.Load())
+	}
+}
+
+func TestBackupStorageAlertWaitsForCurrentProcessObservation(t *testing.T) {
+	binding := backupStorageBinding("/archives")
+	checked := time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
+	now := checked.Add(time.Hour)
+	observation := newBackupArchiveObservation(checked, "available", "owner", "directory")
+	observation.recordStorageHistory(backupArchiveObservation{}, binding)
+	active := backupStorageCondition(binding, observation, now, nil, nil)[0]
+	if !active.Active {
+		t.Fatal("stale observation in the running process did not open its outage")
+	}
+
+	observation.Process = "previous-process"
+	if fact := backupStorageCondition(binding, observation, now, nil, nil)[0]; fact.Active {
+		t.Fatal("restart opened an outage from the prior process's observation alone")
+	}
+	if health := observation.storageHealth(binding, now); health.State != "not_observed" ||
+		health.LastAvailableAt != backupStamp(checked) || health.AlertDue {
+		t.Fatalf("startup projection lost history or confirmed current availability: %+v", health)
+	}
+	previous := []notificationpkg.Condition{{Fact: active, Episode: 1}}
+	if fact := backupStorageCondition(binding, observation, now, previous, nil)[0]; !fact.Active ||
+		!fact.Suspended || fact.Generation != active.Generation {
+		t.Fatalf("restart retired the earlier episode before probing: %+v", fact)
+	}
+
+	failed := newBackupArchiveObservation(now, "unavailable", "owner", "")
+	failed.recordStorageHistory(observation, binding)
+	if fact := backupStorageCondition(binding, failed, now, previous, nil)[0]; !fact.Active ||
+		fact.Suspended || fact.Generation != active.Generation {
+		t.Fatalf("first confirmed failure lost the earlier episode: %+v", fact)
 	}
 }
 

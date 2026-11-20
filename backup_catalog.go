@@ -429,7 +429,8 @@ func handleBackupCatalogOperation(c *gin.Context, a *backupAutomation, verify bo
 			return
 		}
 		ready := verifyErr == nil && result.RestoreReady
-		if ready {
+		mountAvailable := backupCatalogMountAvailable(root, directory)
+		if ready || !mountAvailable {
 			verified := *archive
 			verified.SizeBytes = &snapshot.file.Size
 			verified.FileIdentity = backupCatalogFileIdentity(snapshot.info)
@@ -439,7 +440,7 @@ func handleBackupCatalogOperation(c *gin.Context, a *backupAutomation, verify bo
 			// The readiness pipeline verified pinned bytes. Confirm that their
 			// registered file is still present before restoring local coverage.
 			storage, availability := "unavailable", "unavailable"
-			if backupCatalogMountAvailable(root, directory) {
+			if mountAvailable {
 				storage = "available"
 				availability, _ = backupArchiveAvailabilityAt(root, verified, owner, directory)
 				if availability == "present" {

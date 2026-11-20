@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"time"
 
 	notificationpkg "debian-updater/internal/notifications"
@@ -44,11 +45,8 @@ func (a *backupAutomation) recordArchiveObservation(state *backupAutomationState
 
 func (o *backupArchiveObservation) recordStorageHistory(previous backupArchiveObservation, binding string) {
 	at := parseBackupStamp(o.CheckedAt)
-	history := backupStorageHistory{Binding: binding}
-	if earlier := previous.storageHealth(binding, at); earlier != nil {
-		history.LastAvailableAt = earlier.LastAvailableAt
-		history.UnavailableAt = earlier.UnavailableAt
-	}
+	history, _ := previous.storageHistoryAsOf(binding, at)
+	history.Binding = binding
 	if o.Storage == "available" {
 		history.LastAvailableAt = o.CheckedAt
 		history.UnavailableAt = ""
@@ -58,26 +56,36 @@ func (o *backupArchiveObservation) recordStorageHistory(previous backupArchiveOb
 	o.StorageHistory = history
 }
 
+func (o backupArchiveObservation) storageHistoryAsOf(binding string, now time.Time) (backupStorageHistory, time.Time) {
+	checked := parseBackupStamp(o.CheckedAt)
+	if o.StorageHistory.Binding != binding || checked.IsZero() || checked.After(now) {
+		return backupStorageHistory{}, time.Time{}
+	}
+	history := o.StorageHistory
+	if history.UnavailableAt == "" && now.Sub(checked) >= backupStorageStaleAfter {
+		history.UnavailableAt = backupStamp(checked.Add(backupStorageStaleAfter))
+	}
+	return history, checked
+}
+
 func (o backupArchiveObservation) storageHealth(binding string, now time.Time) *backupStorageHealth {
 	if binding == "" {
 		return nil
 	}
-	health := &backupStorageHealth{State: "not_observed"}
-	checked := parseBackupStamp(o.CheckedAt)
-	if o.StorageHistory.Binding != binding || checked.IsZero() || checked.After(now) {
+	history, checked := o.storageHistoryAsOf(binding, now)
+	health := &backupStorageHealth{State: "not_observed", LastAvailableAt: history.LastAvailableAt}
+	// The observer and notification worker start independently. Evidence from
+	// before this process preserves history but cannot confirm a current outage.
+	if checked.IsZero() || o.Process != backupArchiveObservationProcess {
 		return health
 	}
-	health.LastAvailableAt = o.StorageHistory.LastAvailableAt
-	health.UnavailableAt = o.StorageHistory.UnavailableAt
+	health.UnavailableAt = history.UnavailableAt
 	switch {
 	case now.Sub(checked) >= backupStorageStaleAfter:
 		health.State = "stale"
-		if health.UnavailableAt == "" {
-			health.UnavailableAt = backupStamp(checked.Add(backupStorageStaleAfter))
-		}
 	case o.Storage != "available":
 		health.State = "unavailable"
-	case o.Process == backupArchiveObservationProcess:
+	default:
 		health.State = "available"
 	}
 	start := parseBackupStamp(health.UnavailableAt)
@@ -94,17 +102,19 @@ func backupStorageCondition(binding string, observation backupArchiveObservation
 	if binding == "" {
 		return []notificationpkg.ConditionFact{fact}
 	}
-	if readErr != nil {
+	health := observation.storageHealth(binding, now)
+	if readErr != nil || health.State == "not_observed" {
 		for _, condition := range previous {
-			if condition.Fact.ID == fact.ID && condition.Fact.Active {
+			if condition.Fact.ID == fact.ID && condition.Fact.Active &&
+				strings.HasPrefix(condition.Fact.Generation, binding+"/") {
 				suspended := condition.Fact
 				suspended.Suspended = true
 				return []notificationpkg.ConditionFact{suspended}
 			}
 		}
-		return nil
+		return []notificationpkg.ConditionFact{fact}
 	}
-	if health := observation.storageHealth(binding, now); health.AlertDue {
+	if health.AlertDue {
 		fact.Active = true
 		fact.Generation = binding + "/" + health.UnavailableAt
 		fact.CreatedAt = health.UnavailableAt

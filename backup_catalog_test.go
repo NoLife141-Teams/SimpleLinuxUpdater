@@ -286,6 +286,37 @@ func TestBackupCatalogRejectsReplacedCorruptSymlinkMissingAndForeign(t *testing.
 	}
 }
 
+func TestBackupCatalogFailedReverifyDoesNotConfirmWithdrawnMount(t *testing.T) {
+	app, a, cookie, archive := publishedCatalogFixture(t)
+	now := a.now()
+	a.deps.Now = func() time.Time { return now }
+	if err := a.observeArchiveAvailability(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	lastAvailable := now
+	directory := a.deployment.Directory
+	unmounted := directory + ".unmounted"
+	t.Cleanup(func() { _ = os.RemoveAll(unmounted) })
+	a.verify = func(context.Context, internalbackup.TemporaryFile, string) (internalbackup.VerifyResult, error) {
+		if err := os.Rename(directory, unmounted); err != nil {
+			t.Fatal(err)
+		}
+		now = now.Add(time.Hour)
+		return internalbackup.VerifyResult{}, errors.New("fixture restore preparation failure")
+	}
+	if rec := catalogRequest(app, cookie, archive.ID, "verify"); rec.Code != http.StatusConflict {
+		t.Fatalf("failed reverify accepted the initial open mount as current: %d %s", rec.Code, rec.Body.String())
+	}
+	state := backupAutomationStateForTest(t, a)
+	if got := state.Observation.storageHealth(backupStorageBinding(directory), now); got.State != "unavailable" ||
+		got.LastAvailableAt != backupStamp(lastAvailable) || !got.AlertDue {
+		t.Fatalf("withdrawn mount was recorded as recovered: %+v", got)
+	}
+	if got := state.Archives[0]; got.Verification != "verified" || got.LossActive {
+		t.Fatalf("withdrawn mount changed the historical verification: %+v", got)
+	}
+}
+
 func TestBackupCatalogReverifyDiscardsProofAfterInPlaceMutation(t *testing.T) {
 	app, a, now := newBackupAutomationTest(t)
 	cookie := app.authenticate(t)

@@ -3,6 +3,7 @@
 import argparse
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing, contextmanager
+from datetime import datetime
 import http.client
 import http.cookiejar
 import ipaddress
@@ -1232,13 +1233,15 @@ finally:
         self.redactions.append(endpoint)
         self.api.request("PUT", "/api/notifications/settings", {
             "enabled": True, "webhook_url_intent": "replace", "webhook_url": endpoint, "event_types": [event],
+            "discord": {"enabled": False, "webhook_url_intent": "preserve"},
+            "telegram": {"enabled": False, "credentials_intent": "preserve"},
         })
 
         def archives():
             return self.api.request("GET", "/api/installation/health")["backup_archives"]
 
         def deliveries():
-            history = self.api.request("GET", "/api/notifications/delivery-history?destination=webhook)
+            history = self.api.request("GET", "/api/notifications/delivery-history?destination=webhook")
             return [item for item in history["items"] if item["event_type"] == event]
 
         def receipts():
@@ -1282,8 +1285,22 @@ finally:
             self.docker("restart", self.app_name)
             self.connect_app()
             self.api.request("POST", "/api/auth/login", credentials)
-            until(lambda: archives()["storage_health"]["state"] == "unavailable",
-                  "restarted observer did not confirm the continued outage")
+
+            def observed_unavailable():
+                facts = archives()
+                if facts["storage_health"]["state"] == "unavailable":
+                    return facts["checked_at"]
+                return None
+
+            checked = until(observed_unavailable, "restarted observer did not confirm the continued outage")
+            checked = datetime.fromisoformat(checked.replace("Z", "+00:00"))
+
+            def evaluated_after_observation():
+                notifications = self.api.request("GET", "/api/installation/health")["notifications"]
+                at = notifications.get("last_condition_evaluation_at")
+                return at and datetime.fromisoformat(at.replace("Z", "+00:00")) > checked
+
+            until(evaluated_after_observation, "restarted worker did not evaluate the fresh outage observation")
             require(delivered() and len(receipts()) == 1, "restart repeated the outage notification")
         finally:
             directory.rmdir()

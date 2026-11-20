@@ -52,11 +52,12 @@ func MergeOfflineDeliveryEvidence(ctx context.Context, live, staged *sql.DB, now
 			continue
 		}
 		_, terminal := saved.TerminalOutcomes[id]
-		pending, queued := saved.RetainedRows[id]
+		_, queued := saved.RetainedRows[id]
 		revalidates := isConditionEvent(snapshot.Row.EventType) || snapshot.Row.EventType == EventReminder
-		// Keep a terminal result or a more advanced retry from either copy.
-		// Import only matching ordinary rows and work the runtime can revalidate.
-		if terminal || (queued && pending.Outcome.Attempts > snapshot.Outcome.Attempts) || (!queued && !revalidates) {
+		// The merge keeps the more advanced outcome and retains independent
+		// attempt evidence from both copies. Unmatched work still has to
+		// support revalidation before it can be imported.
+		if !terminal && !queued && !revalidates {
 			delete(incoming.RetainedRows, id)
 		}
 	}

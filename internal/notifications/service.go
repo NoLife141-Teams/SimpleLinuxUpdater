@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -522,6 +523,9 @@ func stageAPTDeliveryEvidence(ctx context.Context, staged *sql.DB, replacement *
 	if err := PrepareArchivedPersistence(ctx, staged); err != nil {
 		return err
 	}
+	if err := recoverExpiredOutboxClaims(ctx, staged, now, 0, outboxDeliveries{}); err != nil {
+		return err
+	}
 	if len(replacement.APTAdmissions) == 0 && replacement.LastSuccessfulDelivery == "" && len(replacement.DestinationHealth) == 0 {
 		return nil
 	}
@@ -798,9 +802,7 @@ func (s *Service) processOutboxRow(ctx context.Context, row outboxRow) bool {
 	if s.queuedDeliveryBlocked(ctx) {
 		return s.releaseClaim(row, 0, "delivery suspended")
 	}
-	if err := s.retrySQLiteContention(func() error {
-		return admitOutboxAttempt(ctx, s.database(), &row, fingerprint, s.deps.Now())
-	}); err != nil {
+	if err := s.admitQueuedOutboxAttempt(ctx, &row, settings, fingerprint); err != nil {
 		s.health.Error(s.deps.Now())
 		s.releaseClaim(row, s.deps.PollInterval, "attempt admission could not be persisted")
 		return false
@@ -858,6 +860,26 @@ func (s *Service) processOutboxRow(ctx context.Context, row outboxRow) bool {
 		s.deps.Logf("notification diagnostic persistence failed for %q: %v", row.ID, err)
 	}
 	return err == nil
+}
+
+func (s *Service) admitQueuedOutboxAttempt(ctx context.Context, row *outboxRow, validated Settings, fingerprint string) error {
+	now := s.deps.Now()
+	s.settingsMu.Lock()
+	defer s.settingsMu.Unlock()
+	return s.retrySQLiteContention(func() error {
+		current, err := s.loadSettings()
+		if err != nil {
+			return err
+		}
+		if !destinationEnabled(current, row.Destination) ||
+			destinationConfigFingerprint(current, row.Destination) != fingerprint ||
+			!slices.Equal(current.EventTypes, validated.EventTypes) ||
+			(row.EventType == EventReminder && (current.RemindersEnabled != validated.RemindersEnabled ||
+				current.ReminderIntervalMinutes != validated.ReminderIntervalMinutes)) {
+			return errOutboxAttemptNotAdmitted
+		}
+		return admitOutboxAttempt(ctx, s.database(), row, fingerprint, now)
+	})
 }
 
 func (s *Service) persistOutboxCompletion(ctx context.Context, id string, outcome outboxOutcome, recoverReleased bool) error {

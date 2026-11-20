@@ -1,6 +1,7 @@
 package notifications
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"net/http"
@@ -90,7 +91,8 @@ func TestNotificationAttemptSurvivesProcessLoss(t *testing.T) {
 				t.Fatalf("received %d requests, want %d", got, tc.requests)
 			}
 			deps := outboxTestDeps(db, time.Hour)
-			deps.Now = func() time.Time { return now }
+			restartTime := now.Add(-time.Minute)
+			deps.Now = func() time.Time { return restartTime }
 			deps.RestoreDeliveryBlocked = func() bool { return true }
 			restarted := NewService(deps)
 			defer closeOutboxService(t, restarted)
@@ -105,7 +107,7 @@ func TestNotificationAttemptSurvivesProcessLoss(t *testing.T) {
 			}
 			wantNext := ""
 			if tc.wantState == outboxStateRetrying {
-				wantNext = now.Add(indeterminateRetryDelay).Format(time.RFC3339Nano)
+				wantNext = restartTime.Add(indeterminateRetryDelay).Format(time.RFC3339Nano)
 			}
 			if item.NextAttemptAt != wantNext {
 				t.Fatalf("next retry = %q, want %q", item.NextAttemptAt, wantNext)
@@ -136,8 +138,16 @@ func TestNotificationAdmissionFailurePreventsRequest(t *testing.T) {
 
 func TestOfflineRestoreKeepsSpentNotificationAttempts(t *testing.T) {
 	now := time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
-	for _, remaining := range []int{0, 1} {
-		t.Run(map[int]string{0: "exhausted", 1: "can retry"}[remaining], func(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		remaining  int
+		archiveWon bool
+	}{
+		{"exhausted", 0, false},
+		{"can retry", 1, false},
+		{"archive held a recorded success", 0, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
 			live, stage := openOutboxTestDB(t, "live.db"), openOutboxTestDB(t, "archive.db")
 			endpoint := "https://hooks.example.test/restore"
 			intent := DeliveryIntent{ID: "offline-attempt", Action: EventUpdateComplete}
@@ -146,7 +156,14 @@ func TestOfflineRestoreKeepsSpentNotificationAttempts(t *testing.T) {
 				insertPendingOutboxIntent(t, db, intent, now)
 			}
 			id := outboxDeliveryID(intent.ID, DestinationWebhook)
-			before := defaultAttempts - remaining - 1
+			if tc.archiveWon {
+				if _, err := stage.Exec(`UPDATE notification_outbox
+					SET attempts=1, state='succeeded', status_code=200, completed_at=? WHERE id=?`,
+					now.Format(time.RFC3339Nano), id); err != nil {
+					t.Fatal(err)
+				}
+			}
+			before := defaultAttempts - tc.remaining - 1
 			if _, err := live.Exec("UPDATE notification_outbox SET attempts=? WHERE id=?", before, id); err != nil {
 				t.Fatal(err)
 			}
@@ -167,14 +184,82 @@ func TestOfflineRestoreKeepsSpentNotificationAttempts(t *testing.T) {
 				FROM notification_outbox WHERE id=?`, id).Scan(&attempts, &state, &reason, &lastIndeterminate); err != nil {
 				t.Fatal(err)
 			}
-			wantState := outboxStateRetrying
-			if remaining == 0 {
+			wantState, wantReason := outboxStateRetrying, outboxIndeterminateReason
+			if tc.remaining == 0 {
 				wantState = outboxStateFailed
 			}
-			if state != wantState || reason != outboxIndeterminateReason || attempts != before+1 ||
+			if tc.archiveWon {
+				wantState, wantReason = outboxStateSucceeded, ""
+			}
+			if state != wantState || reason != wantReason || attempts != before+1 ||
 				lastIndeterminate != now.Format(time.RFC3339Nano) {
 				t.Fatalf("restored result = %s %s after %d attempts at %s", state, reason, attempts, lastIndeterminate)
 			}
 		})
+	}
+}
+
+func TestQueuedConditionRotationBeforeAdmissionPreventsStaleRequest(t *testing.T) {
+	h := newConditionHarness(t)
+	h.facts = []ConditionFact{rebootFact(true)}
+	h.reconcile(t)
+	row, err := claimNextOutboxRow(t.Context(), h.db, h.now, outboxDeliveries{})
+	if err != nil || row == nil {
+		t.Fatalf("fixture claim = %+v, %v", row, err)
+	}
+	h.service.deps.ReadConditions = func(_ context.Context, cursor string, _ []Condition) (ConditionBatch, error) {
+		_, err := h.service.SaveSettings(SettingsUpdate{
+			Enabled: true, WebhookURLIntent: WebhookURLReplace, WebhookURL: "https://rotated.example.test/hooks",
+			EventTypes: SupportedEvents(),
+		})
+		return ConditionBatch{Cursor: cursor, Facts: h.facts}, err
+	}
+	h.service.processOutboxRow(t.Context(), *row)
+	if h.client.calls != 0 {
+		t.Fatalf("sent %d requests to credentials rotated before admission", h.client.calls)
+	}
+	var attempts int
+	if err := h.db.QueryRow("SELECT attempts FROM notification_outbox WHERE id=?", row.ID).Scan(&attempts); err != nil || attempts != 0 {
+		t.Fatalf("attempts for stale credentials = %d, %v", attempts, err)
+	}
+}
+
+func TestStagedRestoreKeepsInterruptionFromArchivedAPTAttempt(t *testing.T) {
+	live, archived := newConditionHarness(t), newConditionHarness(t)
+	fact := ConditionFact{
+		ID: APTReconciliationConditionID("target", "interrupted"), EventType: EventAPTReconciliationRequired,
+		TargetType: "server", TargetName: "node", Active: true,
+	}
+	for _, h := range []*conditionHarness{live, archived} {
+		h.facts = []ConditionFact{fact}
+		h.reconcile(t)
+	}
+	live.client.fail = true
+	ctx := t.Context()
+	row, err := claimNextOutboxRow(ctx, live.db, live.now, outboxDeliveries{})
+	if err != nil || row == nil {
+		t.Fatalf("live claim = %+v, %v", row, err)
+	}
+	live.service.processOutboxRow(ctx, *row)
+	staged, err := claimNextOutboxRow(ctx, archived.db, archived.now, outboxDeliveries{})
+	if err != nil || staged == nil {
+		t.Fatalf("archive claim = %+v, %v", staged, err)
+	}
+	if err := admitOutboxAttempt(ctx, archived.db, staged, staged.DestinationFingerprint, archived.now); err != nil {
+		t.Fatal(err)
+	}
+	if err := live.service.PreparePersistenceReplacement(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := live.service.StageAPTDeliveryEvidence(ctx, archived.db); err != nil {
+		t.Fatal(err)
+	}
+	history, err := archived.service.DeliveryHistory(ctx, DeliveryHistoryQuery{})
+	if err != nil || len(history.Items) != 1 {
+		t.Fatalf("staged history = %+v, %v", history, err)
+	}
+	if item := history.Items[0]; item.Attempts != 1 || item.LastIndeterminateAt != archived.now.Format(time.RFC3339Nano) ||
+		item.NextAttemptAt != archived.now.Add(indeterminateRetryDelay).Format(time.RFC3339Nano) {
+		t.Fatalf("staged attempt = %+v", item)
 	}
 }

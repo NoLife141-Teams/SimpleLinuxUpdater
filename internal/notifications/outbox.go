@@ -222,7 +222,7 @@ func restoreCurrentOutboxRows(ctx context.Context, db *sql.DB, replacement *outb
 		// Deterministic APT admissions can share delivery history across both
 		// databases. Keep success, and never reopen a terminal result or roll
 		// back the attempt count when the incoming copy is still in progress.
-		if _, err := tx.ExecContext(ctx, `
+		result, err := tx.ExecContext(ctx, `
 			INSERT INTO notification_outbox (
 				id, destination, event_type, action, target_type, target_name, status, message,
 				event_created_at, actor, client_ip, meta_json, destination_fingerprint, state,
@@ -272,12 +272,16 @@ func restoreCurrentOutboxRows(ctx context.Context, db *sql.DB, replacement *outb
 			outcome.AttemptedAt, outcome.LastIndeterminateAt, outcome.CompletedAt, outcome.StatusCode, outcome.Error,
 			outcome.DurationMS, snapshot.CreatedAt, now,
 			outboxStateSucceeded, outboxStateSucceeded,
-			outboxStatePending, outboxStateClaimed, outboxStateRetrying, outboxStateFailed, outboxStateSkipped); err != nil {
+			outboxStatePending, outboxStateClaimed, outboxStateRetrying, outboxStateFailed, outboxStateSkipped)
+		if err != nil {
+			return err
+		}
+		if err := mergeUnappliedAttemptEvidence(ctx, tx, result, row.ID, outcome); err != nil {
 			return err
 		}
 	}
 	for id, outcome := range replacement.TerminalOutcomes {
-		if _, err := tx.ExecContext(ctx, `
+		result, err := tx.ExecContext(ctx, `
 			UPDATE notification_outbox
 			   SET state = ?, attempts = max(attempts, ?), next_attempt_at = ?, claimed_at = '', attempt_id = '', attempted_at = ?,
 			       last_indeterminate_at = CASE WHEN rtrim(last_indeterminate_at, 'Z') < rtrim(?, 'Z')
@@ -286,7 +290,11 @@ func restoreCurrentOutboxRows(ctx context.Context, db *sql.DB, replacement *outb
 			 WHERE id = ? AND state IN (?, ?, ?)
 		`, outcome.State, outcome.Attempts, outcome.NextAttemptAt, outcome.AttemptedAt, outcome.LastIndeterminateAt, outcome.LastIndeterminateAt,
 			outcome.CompletedAt, outcome.StatusCode, outcome.Error, outcome.DurationMS, now, id,
-			outboxStatePending, outboxStateClaimed, outboxStateRetrying); err != nil {
+			outboxStatePending, outboxStateClaimed, outboxStateRetrying)
+		if err != nil {
+			return err
+		}
+		if err := mergeUnappliedAttemptEvidence(ctx, tx, result, id, outcome); err != nil {
 			return err
 		}
 	}
@@ -305,6 +313,28 @@ func restoreCurrentOutboxRows(ctx context.Context, db *sql.DB, replacement *outb
 		}
 	}
 	return tx.Commit()
+}
+
+// The archive can have a more conclusive result (for example, a recorded
+// success). Keep it while preserving attempts and interruption evidence seen
+// in the live installation.
+func mergeUnappliedAttemptEvidence(ctx context.Context, tx *sql.Tx, result sql.Result, id string, outcome outboxOutcome) error {
+	if outcome.Attempts == 0 && outcome.LastIndeterminateAt == "" {
+		return nil
+	}
+	changed, err := result.RowsAffected()
+	if err != nil || changed != 0 {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, `
+		UPDATE notification_outbox
+		   SET attempts = max(attempts, ?),
+		       last_indeterminate_at = CASE WHEN rtrim(last_indeterminate_at, 'Z') < rtrim(?, 'Z')
+		           THEN ? ELSE last_indeterminate_at END
+		 WHERE id = ? AND (attempts < ? OR rtrim(last_indeterminate_at, 'Z') < rtrim(?, 'Z'))
+	`, outcome.Attempts, outcome.LastIndeterminateAt, outcome.LastIndeterminateAt,
+		id, outcome.Attempts, outcome.LastIndeterminateAt)
+	return err
 }
 
 type outboxCounts struct {
@@ -533,6 +563,8 @@ func insertOutboxRowsTx(ctx context.Context, tx *sql.Tx, rows []outboxRow, now s
 	return nil
 }
 
+// A zero claim TTL is used after startup or persistence handoff, when every
+// claim belongs to a stopped worker even if the wall clock has moved backward.
 func recoverExpiredOutboxClaims(ctx context.Context, db *sql.DB, now time.Time, claimTTL time.Duration, active outboxDeliveries) error {
 	if db == nil {
 		return nil
@@ -552,10 +584,11 @@ func recoverExpiredOutboxClaims(ctx context.Context, db *sql.DB, now time.Time, 
 		       error = CASE WHEN attempt_id <> '' AND completed_at = '' THEN ? ELSE error END,
 		       completed_at = CASE WHEN attempt_id <> '' AND completed_at = '' THEN ? ELSE completed_at END,
 		       claimed_at = '', updated_at = ?
-		 WHERE state = ? AND rtrim(claimed_at, 'Z') <= rtrim(?, 'Z')
+		 WHERE state = ? AND (? OR rtrim(claimed_at, 'Z') <= rtrim(?, 'Z'))
 		   AND destination IS NOT ? AND destination IS NOT ? AND destination IS NOT ?
 	`, defaultAttempts, outboxStateFailed, outboxStateRetrying, defaultAttempts, retryAt, nowText,
-		outboxIndeterminateReason, nowText, nowText, outboxStateClaimed, cutoff, active[0], active[1], active[2])
+		outboxIndeterminateReason, nowText, nowText, outboxStateClaimed, claimTTL == 0, cutoff,
+		active[0], active[1], active[2])
 	return err
 }
 

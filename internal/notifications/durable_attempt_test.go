@@ -199,6 +199,70 @@ func TestOfflineRestoreKeepsSpentNotificationAttempts(t *testing.T) {
 	}
 }
 
+func TestRestoreKeepsRecordedOutcomeForArchivedFinalAttempt(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		statusCode int
+		swapAPT    bool
+	}{
+		{"live success", http.StatusNoContent, false},
+		{"live rate limit", http.StatusTooManyRequests, false},
+		{"archived APT rate limit", http.StatusTooManyRequests, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newConditionHarness(t)
+			if tc.swapAPT {
+				h.facts = []ConditionFact{{
+					ID: APTReconciliationConditionID("target", "interrupted"), EventType: EventAPTReconciliationRequired,
+					TargetType: "server", TargetName: "node", Active: true,
+				}}
+				h.reconcile(t)
+			} else {
+				insertPendingOutboxIntent(t, h.db, DeliveryIntent{ID: "archived-final-attempt", Action: EventUpdateComplete}, h.now)
+			}
+			if _, err := h.db.Exec("UPDATE notification_outbox SET attempts=?", defaultAttempts-1); err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(t.TempDir(), "archive.db")
+			h.service.deps.HTTPClient = notificationHTTPFunc(func(*http.Request) (*http.Response, error) {
+				// Capture the database after admission and before the HTTP result.
+				if _, err := h.db.Exec("VACUUM INTO ?", path); err != nil {
+					t.Fatal(err)
+				}
+				header := make(http.Header)
+				header.Set("Retry-After", "90")
+				return &http.Response{StatusCode: tc.statusCode, Header: header, Body: http.NoBody}, nil
+			})
+			h.drain(t)
+			staged, err := sql.Open("sqlite", path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer staged.Close()
+			live, restored := h.db, staged
+			if tc.swapAPT {
+				live, restored = staged, h.db
+			}
+			if err := MergeOfflineDeliveryEvidence(t.Context(), live, restored, h.now); err != nil {
+				t.Fatal(err)
+			}
+			var state, reason string
+			var attempts, recordedStatus int
+			if err := restored.QueryRow(`SELECT state, attempts, status_code, error FROM notification_outbox`).
+				Scan(&state, &attempts, &recordedStatus, &reason); err != nil {
+				t.Fatal(err)
+			}
+			wantState := outboxStateSucceeded
+			if tc.statusCode == http.StatusTooManyRequests {
+				wantState = outboxStateFailed
+			}
+			if state != wantState || attempts != defaultAttempts || recordedStatus != tc.statusCode || reason == outboxIndeterminateReason {
+				t.Fatalf("restored outcome = %s, %d attempts, HTTP %d, reason %q", state, attempts, recordedStatus, reason)
+			}
+		})
+	}
+}
+
 func TestQueuedConditionRotationBeforeAdmissionPreventsStaleRequest(t *testing.T) {
 	h := newConditionHarness(t)
 	h.facts = []ConditionFact{rebootFact(true)}

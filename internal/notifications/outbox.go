@@ -219,9 +219,8 @@ func restoreCurrentOutboxRows(ctx context.Context, db *sql.DB, replacement *outb
 	for _, snapshot := range replacement.RetainedRows {
 		row := snapshot.Row
 		outcome := snapshot.Outcome
-		// Deterministic APT admissions can share delivery history across both
-		// databases. Keep success, and never reopen a terminal result or roll
-		// back the attempt count when the incoming copy is still in progress.
+		// Both copies can retain the same delivery. Keep recorded outcomes
+		// and spent attempts, even when the other copy is still in progress.
 		result, err := tx.ExecContext(ctx, `
 			INSERT INTO notification_outbox (
 				id, destination, event_type, action, target_type, target_name, status, message,
@@ -264,6 +263,7 @@ func restoreCurrentOutboxRows(ctx context.Context, db *sql.DB, replacement *outb
 				OR (excluded.state IN (?, ?, ?) AND (
 					notification_outbox.state IN (?, ?) OR notification_outbox.attempts > excluded.attempts
 				))
+				OR (notification_outbox.state = ? AND notification_outbox.error <> ? AND excluded.error = ?)
 			)
 		`, row.ID, row.Destination, row.EventType, row.Intent.Action, row.Intent.TargetType,
 			row.Intent.TargetName, row.Intent.Status, row.Intent.Message, row.Intent.CreatedAt,
@@ -272,7 +272,8 @@ func restoreCurrentOutboxRows(ctx context.Context, db *sql.DB, replacement *outb
 			outcome.AttemptedAt, outcome.LastIndeterminateAt, outcome.CompletedAt, outcome.StatusCode, outcome.Error,
 			outcome.DurationMS, snapshot.CreatedAt, now,
 			outboxStateSucceeded, outboxStateSucceeded,
-			outboxStatePending, outboxStateClaimed, outboxStateRetrying, outboxStateFailed, outboxStateSkipped)
+			outboxStatePending, outboxStateClaimed, outboxStateRetrying, outboxStateFailed, outboxStateSkipped,
+			outboxStateFailed, outboxIndeterminateReason, outboxIndeterminateReason)
 		if err != nil {
 			return err
 		}
@@ -281,16 +282,24 @@ func restoreCurrentOutboxRows(ctx context.Context, db *sql.DB, replacement *outb
 		}
 	}
 	for id, outcome := range replacement.TerminalOutcomes {
+		// The archive may have captured this last attempt before its result was
+		// recorded. That recovered failure stands only without live evidence of
+		// successful delivery or a recorded completion of the same attempt.
+		recorded := (outcome.State == outboxStateSucceeded || outcome.State == outboxStateFailed) &&
+			outcome.Error != outboxIndeterminateReason && outcome.AttemptedAt != "" && outcome.CompletedAt != ""
 		result, err := tx.ExecContext(ctx, `
 			UPDATE notification_outbox
 			   SET state = ?, attempts = max(attempts, ?), next_attempt_at = ?, claimed_at = '', attempt_id = '', attempted_at = ?,
 			       last_indeterminate_at = CASE WHEN rtrim(last_indeterminate_at, 'Z') < rtrim(?, 'Z')
 			           THEN ? ELSE last_indeterminate_at END,
 			       completed_at = ?, status_code = ?, error = ?, duration_ms = ?, updated_at = ?
-			 WHERE id = ? AND state IN (?, ?, ?)
+			 WHERE id = ? AND (state IN (?, ?, ?) OR (
+			     state = ? AND error = ? AND ? AND (? OR (attempts = ? AND attempted_at = ?))
+			 ))
 		`, outcome.State, outcome.Attempts, outcome.NextAttemptAt, outcome.AttemptedAt, outcome.LastIndeterminateAt, outcome.LastIndeterminateAt,
 			outcome.CompletedAt, outcome.StatusCode, outcome.Error, outcome.DurationMS, now, id,
-			outboxStatePending, outboxStateClaimed, outboxStateRetrying)
+			outboxStatePending, outboxStateClaimed, outboxStateRetrying,
+			outboxStateFailed, outboxIndeterminateReason, recorded, outcome.State == outboxStateSucceeded, outcome.Attempts, outcome.AttemptedAt)
 		if err != nil {
 			return err
 		}

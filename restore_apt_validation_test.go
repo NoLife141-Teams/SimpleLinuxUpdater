@@ -1,12 +1,16 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"database/sql"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
+	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
@@ -260,44 +264,230 @@ func TestRestoreAPTHealthKeepsArchivedReconciliationVisible(t *testing.T) {
 	}
 }
 
-func TestCancelledRestoreAPTRecheckRevokesAcceptedProof(t *testing.T) {
+func TestCancelledRestoreAPTBatchRevokesPriorProofAndRejectsConcurrentRecheck(t *testing.T) {
 	app := newIsolatedTestApp(t)
 	admin := app.authenticate(t)
-	server, err := app.Deps.ServerInventoryService.Create(Server{Name: "srv", Host: "srv.example.test", User: "root"})
-	if err != nil {
-		t.Fatal(err)
+	var targets []restoreAPTCheckTarget
+	var servers []Server
+	for _, name := range []string{"approved", "pending"} {
+		server, err := app.Deps.ServerInventoryService.Create(Server{Name: name, Host: name + ".example.test", User: "root"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		servers = append(servers, server)
+		targets = append(targets, restoreAPTCheckTarget{Name: server.Name, Identity: server.Identity})
 	}
 	validation := app.Deps.RestoreAPTValidation
 	if _, err := validation.prepare(t.Context(), app.Deps.DB(), true); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := app.Deps.DB().Exec(`UPDATE restore_apt_validation SET host_key='SHA256:approved',result='healthy',approved=1 WHERE identity=?`, server.Identity); err != nil {
+	if _, err := app.Deps.DB().Exec(`UPDATE restore_apt_validation SET host_key='SHA256:approved',result='healthy',approved=1 WHERE identity=?`, servers[0].Identity); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := validation.authorize(t.Context(), server); err != nil {
+	if _, err := validation.authorize(t.Context(), servers[0]); err != nil {
 		t.Fatalf("authorize prior check: %v", err)
 	}
+
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
+	entered := make(chan string, len(targets))
 	validation.sessions = HostMaintenanceSessionFactoryFunc(func(_ context.Context, req HostMaintenanceSessionRequest) (HostMaintenanceSession, error) {
 		req.OnConnectedHostKey("SHA256:approved")
-		return &HostMaintenanceSessionFuncs{CheckRestoredAPTFunc: func(context.Context) string {
-			cancel()
-			return "unavailable"
+		return &HostMaintenanceSessionFuncs{CheckRestoredAPTFunc: func(probeCtx context.Context) string {
+			entered <- req.Server.Name
+			<-probeCtx.Done()
+			return "healthy"
 		}}, nil
 	})
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest("POST", restoreAPTValidationRoute,
-		strings.NewReader(`{"name":"srv","identity":"`+server.Identity+`"}`)).WithContext(ctx)
+	body, err := json.Marshal(gin.H{"targets": targets})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest("POST", restoreAPTValidationRoute, bytes.NewReader(body)).WithContext(ctx)
 	req.Header.Set("Content-Type", "application/json")
 	req.AddCookie(admin)
 	markSameOriginAuthRequest(req)
-	app.Handler.ServeHTTP(rec, req)
-	if !errors.Is(ctx.Err(), context.Canceled) {
-		t.Fatalf("check never reached the host: %d, %s", rec.Code, rec.Body.String())
+	finished := make(chan struct{})
+	go func() {
+		defer close(finished)
+		app.Handler.ServeHTTP(httptest.NewRecorder(), req)
+	}()
+	wait := time.After(5 * time.Second)
+	for range targets {
+		select {
+		case <-entered:
+		case <-wait:
+			t.Fatal("batch did not reach both hosts")
+		}
 	}
-	if _, err := validation.authorize(t.Context(), server); !errors.Is(err, serverpkg.ErrRestoreAPTValidation) {
-		t.Fatalf("cancelled check reused prior permission: %v", err)
+	if rec := identityRequest(app, "POST", restoreAPTValidationRoute, admin, "", targets[0]); rec.Code != http.StatusConflict {
+		t.Errorf("concurrent check of same host: %d, %s", rec.Code, rec.Body)
+	}
+	cancel()
+	select {
+	case <-finished:
+	case <-time.After(5 * time.Second):
+		t.Fatal("batch did not release its lease on cancellation")
+	}
+	for _, server := range servers {
+		if _, err := validation.authorize(t.Context(), server); !errors.Is(err, serverpkg.ErrRestoreAPTValidation) {
+			t.Errorf("cancelled check authorized %s: %v", server.Name, err)
+		}
+	}
+}
+
+func TestRestoredAPTBatchChecksSelectedHostsWithBoundedConcurrency(t *testing.T) {
+	app := newIsolatedTestApp(t)
+	admin := app.authenticate(t)
+	loggedIn := identityLogin(t, app, "admin")
+	sm := app.Deps.CurrentSessionManager()
+	staleSession, err := sm.Load(t.Context(), loggedIn.Value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sm.Put(staleSession, "auth_reauthenticated_at", time.Now().Add(-6*time.Minute).Unix())
+	if _, _, err := sm.Commit(staleSession); err != nil {
+		t.Fatal(err)
+	}
+	var selected []restoreAPTCheckTarget
+	var servers []Server
+	for _, name := range []string{"healthy", "offline", "changed-key", "locked", "moved", "later", "stale", "not-selected"} {
+		server, err := app.Deps.ServerInventoryService.Create(Server{Name: name, Host: name + ".example.test", User: "root"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		servers = append(servers, server)
+		if name != "not-selected" {
+			selected = append(selected, restoreAPTCheckTarget{Name: name, Identity: server.Identity})
+		}
+	}
+	selected[6].Identity = "older-identity"
+	validation := app.Deps.RestoreAPTValidation
+	if _, err := validation.prepare(t.Context(), app.Deps.DB(), true); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.Deps.RestoreIsolation.Activate(); err != nil {
+		t.Fatal(err)
+	}
+	var active, peak atomic.Int32
+	entered := make(chan string, len(servers))
+	unblock := make(chan struct{})
+	defer func() {
+		select {
+		case <-unblock:
+		default:
+			close(unblock)
+		}
+	}()
+	validation.sessions = HostMaintenanceSessionFactoryFunc(func(ctx context.Context, req HostMaintenanceSessionRequest) (HostMaintenanceSession, error) {
+		n := active.Add(1)
+		for max := peak.Load(); n > max && !peak.CompareAndSwap(max, n); max = peak.Load() {
+		}
+		defer active.Add(-1)
+		entered <- req.Server.Name
+		select {
+		case <-unblock:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+		switch req.Server.Name {
+		case "offline":
+			return nil, errors.New("offline")
+		case "changed-key":
+			return nil, errRestoredAPTKeyChanged
+		}
+		req.OnConnectedHostKey("SHA256:fixture")
+		return &HostMaintenanceSessionFuncs{CheckRestoredAPTFunc: func(context.Context) string {
+			if req.Server.Name == "locked" {
+				return "locks_unverified"
+			}
+			return "healthy"
+		}}, nil
+	})
+	post := func(cookie *http.Cookie, targets []restoreAPTCheckTarget) *httptest.ResponseRecorder {
+		return identityRequest(app, "POST", restoreAPTValidationRoute, cookie, "", gin.H{"targets": targets})
+	}
+	if rec := post(loggedIn, selected); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("without recent reauthentication: %d, %s", rec.Code, rec.Body)
+	}
+	if rec := post(admin, []restoreAPTCheckTarget{selected[0], selected[0]}); rec.Code != http.StatusBadRequest {
+		t.Fatalf("duplicate selection: %d, %s", rec.Code, rec.Body)
+	}
+	overLimit := make([]restoreAPTCheckTarget, restoreAPTCheckBatchLimit+1)
+	for i := range overLimit {
+		overLimit[i] = restoreAPTCheckTarget{Name: fmt.Sprintf("server-%d", i), Identity: fmt.Sprintf("identity-%d", i)}
+	}
+	if rec := post(admin, overLimit); rec.Code != http.StatusBadRequest {
+		t.Fatalf("oversize selection: %d, %s", rec.Code, rec.Body)
+	}
+
+	responses := make(chan *httptest.ResponseRecorder, 1)
+	go func() { responses <- post(admin, selected) }()
+	limit := time.After(5 * time.Second)
+	for range restoreAPTCheckConcurrency {
+		select {
+		case <-entered:
+		case <-limit:
+			t.Fatal("concurrent probes never reached SSH")
+		}
+	}
+	var inProgress int
+	var displayedTargetRevision string
+	for _, fact := range validation.hostFacts(t.Context(), app.Deps.ServerState, validation.now(), true) {
+		if fact.Name == "moved" {
+			displayedTargetRevision = fact.TargetRevision
+		}
+		if fact.Checking {
+			inProgress++
+		}
+	}
+	if inProgress != restoreAPTCheckConcurrency {
+		t.Errorf("reported %d active checks", inProgress)
+	}
+	if displayedTargetRevision == "" {
+		t.Fatal("installation health did not expose the selection's target revision")
+	}
+	if rec := identityRequest(app, "POST", restoreIsolationResumeRoute, admin, "", gin.H{"confirmation": "RESUME"}); rec.Code != http.StatusServiceUnavailable {
+		t.Errorf("resume during active batch: %d, %s", rec.Code, rec.Body)
+	}
+	moved := servers[4]
+	moved.Host = "new-target.example.test"
+	updated, err := app.Deps.ServerInventoryService.Update(moved.Name, moved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	servers[4] = updated
+	close(unblock)
+	rec := <-responses
+	var response struct{ Results []restoreAPTCheckResult }
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil || rec.Code != http.StatusOK || len(response.Results) != len(selected) {
+		t.Fatalf("batch result: %d, %s (%v)", rec.Code, rec.Body, err)
+	}
+	if peak.Load() != restoreAPTCheckConcurrency || len(entered) != 1 {
+		t.Fatalf("dialed outside selection or concurrency limit: peak %d, extra dials %d", peak.Load(), len(entered))
+	}
+	for i, expected := range []string{"healthy", "unreachable", "host_key_unverified", "locks_unverified", "", "healthy", ""} {
+		got := response.Results[i]
+		if got.Name != selected[i].Name || got.Identity != selected[i].Identity || got.State != expected || (got.Error != "") != (expected == "") {
+			t.Errorf("result %d = %+v, want state %q", i, got, expected)
+		}
+	}
+	stale := restoreAPTCheckTarget{Name: updated.Name, Identity: updated.Identity, TargetRevision: displayedTargetRevision}
+	staleResponse := post(admin, []restoreAPTCheckTarget{stale})
+	if staleResponse.Code != http.StatusOK || !strings.Contains(staleResponse.Body.String(), "SSH target changed") || len(entered) != 1 {
+		t.Fatalf("stale displayed target could be probed: %d, %s", staleResponse.Code, staleResponse.Body)
+	}
+	if strings.Contains(rec.Body.String(), "SHA256:") {
+		t.Fatal("batch response exposed host key evidence")
+	}
+	if rec := identityRequest(app, "POST", restoreIsolationResumeRoute, admin, "", gin.H{"confirmation": "RESUME"}); rec.Code != http.StatusOK {
+		t.Fatalf("explicit resume after batch: %d, %s", rec.Code, rec.Body)
+	}
+	for index, server := range servers {
+		_, err := validation.authorize(t.Context(), server)
+		if (err == nil) != (index == 0 || index == 5) {
+			t.Errorf("post-resume admission for %s = %v", server.Name, err)
+		}
 	}
 }
 

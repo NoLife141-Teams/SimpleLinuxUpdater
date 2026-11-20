@@ -322,7 +322,7 @@
         };
     }
 
-    function normalizeInstallation(data = {}) {
+    function normalizeInstallation(data = {}, previousRestoreAPTHosts = []) {
         const timestamp = value => typeof value === "string" ? value : "";
         const count = value => Number.isFinite(value) && value >= 0 ? value : null;
         const notifications = data.notifications || {};
@@ -347,13 +347,17 @@
                 lastTick: timestamp(value?.last_tick), lastProgress: timestamp(value?.last_progress), lastError: timestamp(value?.last_error), errors: count(value?.errors) };
         });
         const restoreIsolation = ["active", "inactive", "unavailable"].includes(data.restore_isolation) ? data.restore_isolation : "";
-        const restoreAPTHosts = (Array.isArray(data.restore_apt_hosts) ? data.restore_apt_hosts : [])
-            .filter(host => host && typeof host.name === "string" && typeof host.identity === "string")
-            .map(host => ({ name: host.name, identity: host.identity, disabled: Boolean(host.disabled),
-                state: String(host.state || "pending"), checkedAt: timestamp(host.checked_at) }));
+        const restoreAPTHostsAvailable = Array.isArray(data.restore_apt_hosts);
+        const restoreAPTHosts = restoreAPTHostsAvailable
+            ? data.restore_apt_hosts
+                .filter(host => host && typeof host.name === "string" && typeof host.identity === "string")
+                .map(host => ({ name: host.name, identity: host.identity, disabled: Boolean(host.disabled),
+                    state: String(host.state || "pending"), checkedAt: timestamp(host.checked_at),
+                    checking: Boolean(host.checking), targetRevision: String(host.target_revision || "") }))
+            : previousRestoreAPTHosts;
         const archives = data.backup_archives || {};
         const point = archives.recovery_point || {};
-        return { state: String(data.state || "unavailable"), checkedAt: timestamp(data.checked_at), maintenance: Boolean(data.maintenance), restoreIsolation, restoreAPTHosts, workers,
+        return { state: String(data.state || "unavailable"), checkedAt: timestamp(data.checked_at), maintenance: Boolean(data.maintenance), restoreIsolation, restoreAPTHosts, restoreAPTHostsAvailable, workers,
             backupAvailable: Boolean(data.backup_available), backupState: String(data.backup_state || "unavailable"), verifiedAt: timestamp(data.last_verified_backup_at), backupAgeSeconds: count(data.verified_backup_age_seconds),
             backupArchives: {
                 state: ["covered", "missing", "no_registered"].includes(archives.state) ? archives.state : "unknown",
@@ -908,7 +912,10 @@
             }
 
             switch (event.type) {
-                case "installationSnapshotReceived": if (accept("installation", event.requestID, event.receivedAt)) { installation = normalizeInstallation(event.data); return [effect("render", {area:"workspace"})]; } return [];
+                case "installationSnapshotReceived":
+                    if (!accept("installation", event.requestID, event.receivedAt)) return [];
+                    installation = normalizeInstallation(event.data, installation?.restoreAPTHosts);
+                    return [effect("render", {area:"workspace"})];
  case "snapshotRequested": return request(event.stream);
                 case "snapshotFailed": return fail(event.stream, event.requestID, event.error);
                 case "timezoneSnapshotReceived": {

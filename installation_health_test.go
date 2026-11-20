@@ -146,6 +146,9 @@ func TestInstallationDiagnosticsAndMetricsBoundaries(t *testing.T) {
 	if rec.Code != 200 || rec.Header().Get("Cache-Control") == "" {
 		t.Fatalf("admin diagnostics = %d %s", rec.Code, rec.Body.String())
 	}
+	if !strings.Contains(rec.Body.String(), `"restore_apt_hosts":[]`) {
+		t.Fatalf("diagnostics did not distinguish an empty APT host list from an unavailable one: %s", rec.Body)
+	}
 	if strings.Contains(rec.Body.String(), app.DBPath) || strings.Contains(rec.Body.String(), "webhook_url") {
 		t.Fatal("diagnostic leaked private facts")
 	}

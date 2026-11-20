@@ -5,6 +5,10 @@
         const lifecycle = root.BrowserEffects.create();
         const fetch = lifecycle.fetch;
         let reauthentication;
+        const aptSelection = new Map();
+        const aptResults = new Map();
+        const aptBatchLimit = 12;
+        let aptRun = null;
         const IntersectionObserver = root.IntersectionObserver
             ? lifecycle.observer(root.IntersectionObserver)
             : undefined;
@@ -25,6 +29,7 @@
             renderAdminWorkspace,
             updateFileLabel,
             refreshInstallation,
+            describeRestoreAPTState,
         } = options;
         const commandPlans = new Set();
         function beginAdminCommand(...args) {
@@ -344,6 +349,13 @@
             lifecycle.init();
             reauthentication = root.Reauthentication.create(lifecycle);
             lifecycle.own(clearBackupCredentials);
+            lifecycle.own(() => {
+                aptSelection.clear();
+                aptResults.clear();
+                aptRun = null;
+                const feedback = document.getElementById("restore-apt-feedback");
+                if (feedback) feedback.textContent = "";
+            });
             renderBackupAutomationControls();
             lifecycle.listen(document.getElementById("backup-archive-catalog"), "click", event => {
                 const button = event.target.closest("button[data-backup-archive]");
@@ -354,38 +366,134 @@
             const aptPanel = document.getElementById("restore-apt-validation");
             lifecycle.listen(aptPanel, "click", event => {
                 const button = event.target.closest("button[data-restore-apt-name]");
-                if (button) void checkRestoredAPT(aptPanel, button);
+                if (button && !button.disabled) {
+                    const host = adminPageView().installation.restoreAPTHosts.find(item => item.identity === button.dataset.restoreAptIdentity);
+                    if (host) void checkRestoredAPT([host], true);
+                } else if (event.target.closest("#restore-apt-check-selected")) {
+                    const hosts = adminPageView().installation.restoreAPTHosts;
+                    void checkRestoredAPT(hosts.filter(host => aptSelection.has(host.identity)), false);
+                }
             });
+            lifecycle.listen(aptPanel, "change", event => {
+                const input = event.target.closest("input[data-restore-apt-select]");
+                if (!input || input.disabled || aptRun) return;
+                const host = adminPageView().installation?.restoreAPTHosts.find(item => item.identity === input.dataset.restoreAptSelect);
+                if (!host) return;
+                if (input.checked) aptSelection.set(host.identity, {name: host.name, targetRevision: host.targetRevision});
+                else aptSelection.delete(host.identity);
+                renderRestoreAPTControls();
+            });
+            renderRestoreAPTControls();
         }
 
-        async function checkRestoredAPT(panel, button) {
-            if (button.disabled || panel.getAttribute("aria-busy") === "true") return;
+        function renderRestoreAPTControls() {
+            const panel = document.getElementById("restore-apt-validation");
+            if (!panel) return;
+            const view = adminPageView();
+            const aptSnapshotCurrent = view.installation?.restoreAPTHostsAvailable &&
+                view.streams?.installation?.freshness === "fresh";
+            const hosts = new Map((view.installation?.restoreAPTHosts || []).map(host => [host.identity, host]));
+            for (const [identity, selected] of aptSelection) {
+                const host = hosts.get(identity);
+                if (!host || host.disabled || host.name !== selected.name || host.targetRevision !== selected.targetRevision) {
+                    aptSelection.delete(identity);
+                }
+            }
+            for (const [identity, result] of aptResults) {
+                if (hosts.get(identity)?.name !== result.name) aptResults.delete(identity);
+            }
+            let finished = 0;
+            for (const row of panel.querySelectorAll("tbody tr")) {
+                const checkbox = row.querySelector("[data-restore-apt-select]");
+                const host = hosts.get(checkbox.dataset.restoreAptSelect);
+                if (!host) continue;
+                checkbox.checked = aptSelection.has(host.identity);
+                checkbox.disabled = Boolean(aptRun || host.disabled || (!checkbox.checked && aptSelection.size >= aptBatchLimit));
+                row.querySelector("[data-restore-apt-name]").disabled = Boolean(aptRun || host.disabled);
+                const initial = aptRun?.hosts.get(host.identity);
+                const result = aptResults.get(host.identity);
+                const completed = initial && host.checkedAt && host.checkedAt !== initial.checkedAt && !host.checking;
+                const resultTime = Date.parse(result?.checked_at) || 0;
+                const snapshotTime = Date.parse(host.checkedAt) || 0;
+                const showResult = result?.state && result.target_revision === (host.targetRevision || undefined) &&
+                    (resultTime > snapshotTime ||
+                        (!aptSnapshotCurrent && resultTime === snapshotTime && result.state !== host.state));
+                if (completed) finished++;
+                row.querySelector("[data-restore-apt-progress]").textContent =
+                    result?.error ? result.error :
+                    showResult ? `Last submitted check · ${describeRestoreAPTState(result.state)}` :
+                    initial && host.checking ? "Checking…" :
+                    completed ? "Check finished" :
+                    initial ? "Waiting to check…" : "";
+            }
+            const selected = panel.querySelector("#restore-apt-check-selected");
+            selected.disabled = Boolean(aptRun || !aptSelection.size);
+            selected.textContent = aptSelection.size ? `Check selected (${aptSelection.size})` : "Check selected";
+            if (aptRun) {
+                const feedback = document.getElementById("restore-apt-feedback");
+                const progress = aptRun.single ? `Checking ${aptRun.name}…` : `${finished} of ${aptRun.hosts.size} checks finished.`;
+                if (feedback.textContent !== progress) feedback.textContent = progress;
+            }
+        }
+
+        async function checkRestoredAPT(hosts, single) {
+            if (aptRun || !hosts.length || hosts.length > aptBatchLimit) return;
             const lifetime = lifecycle.capture();
             const feedback = document.getElementById("restore-apt-feedback");
-            const name = button.dataset.restoreAptName;
-            panel.setAttribute("aria-busy", "true");
-            button.disabled = true;
-            feedback.textContent = `Checking ${name}…`;
-            const release = () => {
-                panel.removeAttribute("aria-busy");
-                button.disabled = false;
+            const targets = hosts.map(({ name, identity, targetRevision }) => ({ name, identity, target_revision: targetRevision || undefined }));
+            const run = { single, name: targets[0].name, hosts: new Map(hosts.map(host => [host.identity, host])) };
+            aptRun = run;
+            for (const { identity } of targets) aptResults.delete(identity);
+            renderRestoreAPTControls();
+            let timer, polling = !single;
+            const stopPolling = () => {
+                polling = false;
+                lifecycle.clearTimeout(timer);
             };
-            const unregister = lifecycle.own(() => {
-                release();
-                feedback.textContent = "";
-            });
+            const poll = () => {
+                timer = lifecycle.setTimeout(async () => {
+                    await refreshInstallation();
+                    if (polling && lifecycle.isCurrent(lifetime)) poll();
+                }, 1500);
+            };
+            if (polling) poll();
+            const release = () => {
+                stopPolling();
+                aptRun = null;
+                renderRestoreAPTControls();
+            };
+            const unregister = lifecycle.own(stopPolling);
             try {
-                await reauthentication.sensitive(
+                const response = await reauthentication.sensitive(
                     "/api/backup/restore-isolation/apt-check",
                     { method: "POST", headers: { "Content-Type": "application/json" },
-                        body: JSON.stringify({ name, identity: button.dataset.restoreAptIdentity }) },
+                        body: JSON.stringify(single ? targets[0] : { targets }) },
                     "Check APT after restore",
                 );
                 if (!lifecycle.isCurrent(lifetime)) return;
-                feedback.textContent = `Check finished for ${name}.`;
-                await refreshInstallation();
+                stopPolling();
+                let needsAttention = 0;
+                if (!single) {
+                    const results = new Map((response.results || []).map(result => [result.identity, result]));
+                    for (const { name, identity } of targets) {
+                        const result = results.get(identity);
+                        aptResults.set(identity, result?.name === name ? result : { name, error: "No check result received. Try again." });
+                        if (result?.name === name && ["healthy", "approved"].includes(result.state) && !result.error) {
+                            aptSelection.delete(identity);
+                        } else {
+                            needsAttention++;
+                        }
+                    }
+                }
+                const subject = targets.length === 1 ? "1 server" : `${targets.length} servers`;
+                const attention = needsAttention === 1 ? " 1 needs attention." : needsAttention ? ` ${needsAttention} need attention.` : "";
+                feedback.textContent = single ? `Check finished for ${run.name}.` : `Checks finished for ${subject}.${attention}`;
+                void refreshInstallation().then(() => {
+                    if (lifecycle.isCurrent(lifetime)) renderRestoreAPTControls();
+                });
             } catch (error) {
-                if (lifecycle.isCurrent(lifetime)) feedback.textContent = error.message || "Could not check APT.";
+                if (lifecycle.isCurrent(lifetime)) feedback.textContent = error.name === "AbortError"
+                    ? "APT checks cancelled." : error.message || "Could not check APT.";
             } finally {
                 if (lifecycle.isCurrent(lifetime)) {
                     unregister();
@@ -959,6 +1067,7 @@
         return Object.freeze({
             init,
             destroy: lifecycle.destroy,
+            renderRestoreAPTControls,
             renderBackupRestoreReview: (...args) =>
                 lifecycle.active
                     ? renderBackupRestoreReview(...args)

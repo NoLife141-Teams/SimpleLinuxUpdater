@@ -1,5 +1,16 @@
 // Composition of browser adapters; interaction owners retain state and decisions.
 (function (root) {
+    const aptStates = {
+        pending: "Check required", healthy: "Validated · ready to resume", approved: "Package maintenance allowed",
+        reconciliation_required: "APT reconciliation required · repair from Status",
+        expired: "Check expired · check again", target_changed: "SSH target changed · check again",
+        unreachable: "Unreachable · check connectivity", host_key_unverified: "SSH key unverified · review host trust",
+        locks_unverified: "APT locks active or unknown · check again", dpkg_incomplete: "Incomplete package state · inspect dpkg",
+        apt_unverified: "APT health check failed · inspect the host", unavailable: "Package check unavailable · review SSH permissions",
+    };
+    function describeRestoreAPTState(state) {
+        return aptStates[state] || "Check required";
+    }
     let current = null;
     function mount() {
         current?.destroy();
@@ -126,6 +137,7 @@
             renderAdminWorkspace: (...args) => renderAdminWorkspace(...args),
             updateFileLabel: (...args) => updateFileLabel(...args),
             refreshInstallation: () => fetchInstallationHealth(),
+            describeRestoreAPTState,
         });
         const {
             renderBackupRestoreReview,
@@ -673,21 +685,21 @@
             document.getElementById("restore-isolation-controls").hidden = !["active", "unavailable"].includes(view.restoreIsolation);
             const aptPanel = document.getElementById("restore-apt-validation");
             aptPanel.hidden = view.restoreAPTHosts.length === 0;
-            const aptStates = {
-                pending: "Check required", healthy: "Validated · ready to resume", approved: "Package maintenance allowed",
-                reconciliation_required: "APT reconciliation required · repair from Status",
-                expired: "Check expired · check again", target_changed: "SSH target changed · check again",
-                unreachable: "Unreachable · check connectivity", host_key_unverified: "SSH key unverified · review host trust",
-                locks_unverified: "APT locks active or unknown · check again", dpkg_incomplete: "Incomplete package state · inspect dpkg",
-                apt_unverified: "APT health check failed · inspect the host", unavailable: "Package check unavailable · review SSH permissions",
-            };
+            aptPanel.querySelector("[data-restore-apt-unavailable]").hidden = view.restoreAPTHostsAvailable;
             aptPanel.querySelector("tbody").replaceChildren(...view.restoreAPTHosts.map(host => {
                 const row = document.createElement("tr");
+                const selection = document.createElement("td");
+                const checkbox = document.createElement("input");
+                checkbox.type = "checkbox";
+                checkbox.dataset.restoreAptSelect = host.identity;
+                checkbox.setAttribute("aria-label", `Select ${host.name} for APT check`);
+                selection.append(checkbox);
+                row.append(selection);
                 const name = document.createElement("th");
                 name.scope = "row";
                 name.textContent = host.name;
                 row.append(name);
-                for (const value of [aptStates[host.state] || "Check required", date(host.checkedAt)]) {
+                for (const value of [describeRestoreAPTState(host.state), date(host.checkedAt)]) {
                     const cell = document.createElement("td");
                     cell.textContent = value;
                     row.append(cell);
@@ -701,10 +713,14 @@
                 button.textContent = "Check APT";
                 button.setAttribute("aria-label", `Check APT on ${host.name}`);
                 button.disabled = host.disabled;
-                command.append(button);
+                const progress = document.createElement("div");
+                progress.className = "muted";
+                progress.dataset.restoreAptProgress = "";
+                command.append(button, progress);
                 row.append(command);
                 return row;
             }));
+            adminBackup.renderRestoreAPTControls();
             const body = document.getElementById("installation-workers");
             body.replaceChildren(...view.workers.map(worker => {
                 const row = document.createElement("tr");

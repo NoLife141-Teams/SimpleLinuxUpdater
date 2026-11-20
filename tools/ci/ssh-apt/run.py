@@ -1156,9 +1156,13 @@ finally:
             fail = api.request("POST", f"/api/update/{name}", allowed=(409,))
             require(fail["code"] == "restore_isolated", "package work entered during restore validation")
         route = "/api/backup/restore-isolation/apt-check"
-        for name, expected in ((healthy, "healthy"), (incomplete, "dpkg_incomplete"), (unreachable, "unreachable")):
-            fact = api.request("POST", route, {"name": name, "identity": identities[name]}, timeout=35)
-            require(fact["state"] == expected, "unexpected restoration validation outcome for " + name)
+        selection = [{"name": name, "identity": identities[name]} for name in (healthy, incomplete, unreachable)]
+        response = api.request("POST", route, {"targets": selection}, timeout=55)
+        require([(fact["name"], fact["identity"], fact["state"]) for fact in response["results"]] == [
+            (healthy, identities[healthy], "healthy"),
+            (incomplete, identities[incomplete], "dpkg_incomplete"),
+            (unreachable, identities[unreachable], "unreachable"),
+        ], "the validation batch did not report distinct results in selection order")
         require(all(package_state(name) == digest for name, digest in initial.items()), "a validation probe changed package state")
         record["checkpoint"] = "resume-and-run-batch"
         api.request("POST", "/api/backup/restore-isolation/resume", {"confirmation": "RESUME"})
@@ -1188,7 +1192,7 @@ finally:
         api.request("POST", "/api/auth/login", credentials)
         fail = api.request("POST", f"/api/update/{incomplete}", allowed=(409,))
         require(fail["reason_code"] == "restore_apt_validation_required", "restart released an unverified host")
-        record.update(read_only_probes=True, healthy_host_resumed=True, incomplete_host_blocked=True,
+        record.update(read_only_probes=True, batched_restore_apt_checks=True, healthy_host_resumed=True, incomplete_host_blocked=True,
                       unreachable_host_blocked=True, gated_after_restart=True, partial_batch_admission=True)
         del record["checkpoint"]
 

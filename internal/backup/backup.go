@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"debian-updater/internal/installationhealth"
+	"debian-updater/internal/privatefile"
 	serverpkg "debian-updater/internal/servers"
 
 	"golang.org/x/crypto/scrypt"
@@ -1008,7 +1009,7 @@ func (s *Service) ApplyFiles(ctx context.Context, files map[string][]byte) error
 // Keep byte-oriented callers on the same bounded file replacement and recovery
 // path used by uploaded archives.
 func (s *Service) applyFiles(ctx context.Context, files map[string][]byte) error {
-	dir, err := os.MkdirTemp(s.deps.TempDir(), "slu-restore-input-*")
+	dir, err := privatefile.MkdirTemp(s.deps.TempDir(), "slu-restore-input-*")
 	if err != nil {
 		return err
 	}

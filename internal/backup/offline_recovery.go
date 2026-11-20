@@ -17,6 +17,7 @@ import (
 	"debian-updater/internal/jobs"
 	"debian-updater/internal/maintenance"
 	"debian-updater/internal/notifications"
+	"debian-updater/internal/privatefile"
 
 	"golang.org/x/crypto/ssh/knownhosts"
 	"modernc.org/sqlite"
@@ -97,7 +98,7 @@ func (s *Service) OfflineRestoreRecovery(ctx context.Context, selection string, 
 	if err := storageBlocker(volumes); err != nil {
 		return storageFailure(err)
 	}
-	work, err := os.MkdirTemp(tempDir, "slu-offline-recovery-*")
+	work, err := privatefile.MkdirTemp(tempDir, "slu-offline-recovery-*")
 	if err != nil {
 		if IsStorageFull(err) {
 			return storageFailure(err)
@@ -195,7 +196,7 @@ func (s *Service) OfflineRestoreRecovery(ctx context.Context, selection string, 
 	diagnosisTargets := append(append([]string{}, targets...), hosts, s.deps.ConfigPath(), marker)
 	for _, id := range ids {
 		set := OfflineRecoverySet{ID: id}
-		setWork, err := os.MkdirTemp(work, "set-*")
+		setWork, err := privatefile.MkdirTemp(work, "set-*")
 		if err != nil {
 			if IsStorageFull(err) {
 				return storageFailure(err)
@@ -342,7 +343,7 @@ func (s *Service) prepareOfflineRecoverySet(ctx context.Context, rootPath, work 
 		return fail("installation_mismatch", nil)
 	}
 	info, err := os.Lstat(rootPath)
-	if err != nil || !info.IsDir() || info.Mode().Perm()&0077 != 0 {
+	if err != nil || !info.IsDir() || !privatefile.IsPrivatePath(rootPath, info) {
 		return fail("invalid_manifest", nil)
 	}
 	snapshots, sealed, err := loadRecoverySnapshots(rootPath, marker)
@@ -523,7 +524,7 @@ func validateRecoverySnapshots(root string, paths []string, snapshots []fileRest
 		}
 		if entry.Exists {
 			same, err := sameRestoreEntry(path, entry.BackupPath)
-			if err != nil || !same || statErr != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0077 != 0 {
+			if err != nil || !same || statErr != nil || !info.Mode().IsRegular() || !privatefile.IsPrivatePath(path, info) {
 				return nil, errors.New("invalid rollback snapshot file")
 			}
 			entry.BackupPath = path

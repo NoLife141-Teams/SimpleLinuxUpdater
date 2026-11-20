@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"debian-updater/internal/installationlock"
+	"debian-updater/internal/privatefile"
 )
 
 type restoreIsolationState struct {
@@ -171,7 +172,7 @@ func (s *RestoreIsolation) resolveDatabaseForWrite() (string, error) {
 
 func (s *RestoreIsolation) replaceState(path string, state restoreIsolationState) error {
 	dir := filepath.Dir(path)
-	file, err := os.CreateTemp(dir, ".slu-restore-isolation-*")
+	file, err := privatefile.CreateTemp(dir, ".slu-restore-isolation-*")
 	if err != nil {
 		return err
 	}
@@ -182,7 +183,7 @@ func (s *RestoreIsolation) replaceState(path string, state restoreIsolationState
 	if err := errors.Join(s.files.syncFile(file), file.Close()); err != nil {
 		return err
 	}
-	if err := os.Rename(file.Name(), path); err != nil {
+	if err := renameRestoreFile(file.Name(), path); err != nil {
 		return err
 	}
 	return s.files.syncPath(dir)

@@ -16,6 +16,7 @@ import (
 
 	authpkg "debian-updater/internal/auth"
 	notificationpkg "debian-updater/internal/notifications"
+	"debian-updater/internal/privatefile"
 	serverpkg "debian-updater/internal/servers"
 )
 
@@ -301,12 +302,8 @@ type fileRestoreSnapshot struct {
 }
 
 func (fs restoreFiles) snapshotFilesToDirectory(tempRoot string, targets []string, prefix string) (string, []fileRestoreSnapshot, error) {
-	dir, err := os.MkdirTemp(tempRoot, prefix+"*")
+	dir, err := privatefile.MkdirTemp(tempRoot, prefix+"*")
 	if err != nil {
-		return "", nil, err
-	}
-	if err := os.Chmod(dir, 0700); err != nil {
-		_ = os.RemoveAll(dir)
 		return "", nil, err
 	}
 	snapshots := make([]fileRestoreSnapshot, 0, len(targets))
@@ -349,7 +346,7 @@ func (fs restoreFiles) writeAtomicFileFromPath(target, source string, mode os.Fi
 			return err
 		}
 	}
-	tmp, err := os.CreateTemp(restoreEntryDirectory(target), ".restore-*")
+	tmp, err := privatefile.CreateTemp(restoreEntryDirectory(target), ".restore-*")
 	if err != nil {
 		return err
 	}
@@ -376,7 +373,7 @@ func (fs restoreFiles) writeAtomicFileFromPath(target, source string, mode os.Fi
 		_ = os.Remove(tmpPath)
 		return err
 	}
-	if err := os.Rename(tmpPath, target); err != nil {
+	if err := renameRestoreFile(tmpPath, target); err != nil {
 		_ = os.Remove(tmpPath)
 		return err
 	}

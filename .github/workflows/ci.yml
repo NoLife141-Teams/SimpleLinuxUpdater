@@ -394,6 +394,31 @@ jobs:
             upgrade-evidence/operational/vm-report.json
           retention-days: 1
 
+  windows-restore-qualification:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+      - name: Qualify Windows amd64 restore and offline recovery on NTFS
+        run: python tools/ci/upgrade/windows_restore.py --output windows-restore-evidence
+      - name: Retain redacted Windows restore evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: windows-restore-qualification-${{ github.run_attempt }}
+          path: windows-restore-evidence/report.json
+          retention-days: 1
+
   ci-required:
     if: always()
     needs:
@@ -405,12 +430,14 @@ jobs:
       - docker-smoke
       - ssh-apt
       - upgrade-qualification
+      - windows-restore-qualification
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - name: Verify required CI results
         env:
           UPGRADE_RESULT: ${{ needs.upgrade-qualification.result }}
+          WINDOWS_RESTORE_RESULT: ${{ needs.windows-restore-qualification.result }}
           CHANGES_RESULT: ${{ needs.preflight.result }}
           GO_REQUIRED: ${{ github.event_name == 'push' || needs.preflight.outputs.go == 'true' }}
           E2E_REQUIRED: ${{ github.event_name == 'push' || needs.preflight.outputs.e2e == 'true' }}
@@ -435,6 +462,7 @@ jobs:
           test "$CHANGES_RESULT" = success
           test "$FRONTEND_QUALITY_RESULT" = success
           test "$UPGRADE_RESULT" = success
+          test "$WINDOWS_RESTORE_RESULT" = success
 
           if [ "$GO_REQUIRED" = true ]; then
             test "$TEST_RESULT" = success

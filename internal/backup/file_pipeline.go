@@ -24,6 +24,8 @@ import (
 	"unicode/utf16"
 	"unicode/utf8"
 
+	"debian-updater/internal/privatefile"
+
 	"golang.org/x/crypto/scrypt"
 )
 
@@ -70,17 +72,7 @@ func (i ArchiveFileInspection) Remove() error {
 }
 
 func createTemporaryFile(dir, pattern string) (*os.File, error) {
-	file, err := os.CreateTemp(dir, pattern)
-	if err != nil {
-		return nil, err
-	}
-	if err := file.Chmod(0600); err != nil {
-		path := file.Name()
-		_ = file.Close()
-		_ = os.Remove(path)
-		return nil, err
-	}
-	return file, nil
+	return privatefile.CreateTemp(dir, pattern)
 }
 
 func closeTemporaryFile(file *os.File) (TemporaryFile, error) {
@@ -1054,12 +1046,8 @@ func InspectTarGzFileWithLimits(path, tempRoot string, maxFileBytes, maxTotalByt
 }
 
 func inspectTarGzFileWithLimits(ctx context.Context, path, tempRoot string, maxFileBytes, maxTotalBytes int64) (ArchiveFileInspection, error) {
-	extractDir, err := os.MkdirTemp(tempRoot, "slu-backup-extract-*")
+	extractDir, err := privatefile.MkdirTemp(tempRoot, "slu-backup-extract-*")
 	if err != nil {
-		return ArchiveFileInspection{}, err
-	}
-	if err := os.Chmod(extractDir, 0700); err != nil {
-		_ = os.RemoveAll(extractDir)
 		return ArchiveFileInspection{}, err
 	}
 	inspection := ArchiveFileInspection{Files: make(map[string]string), dir: extractDir}

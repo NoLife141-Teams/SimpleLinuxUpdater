@@ -25,6 +25,7 @@ import (
 
 	apptimepkg "debian-updater/internal/apptime"
 	internalbackup "debian-updater/internal/backup"
+	"debian-updater/internal/installationhealth"
 	maintenancepkg "debian-updater/internal/maintenance"
 	notificationpkg "debian-updater/internal/notifications"
 	observabilitypkg "debian-updater/internal/observability"
@@ -34,6 +35,92 @@ import (
 	"github.com/alexedwards/scs/v2"
 	"github.com/gin-gonic/gin"
 )
+
+func TestRestoreStorageRefusalResumesOriginalInstallation(t *testing.T) {
+	root := t.TempDir()
+	runtime := newRuntimeComposition(AppDeps{})
+	var app *testApp
+	service := NewBackupServiceWithDeps(internalbackup.ServiceDeps{
+		RestoredRuntime: runtime,
+		ProbeRestoreStorage: func(dir string) installationhealth.VolumeCapacity {
+			if dir != root {
+				available := uint64(128 << 20)
+				return installationhealth.VolumeCapacity{Device: 2, Identified: true, AvailableBytes: &available}
+			}
+			available := uint64(128 << 20)
+			if app.Deps.InstallationHealth.Phase() == "reloading" {
+				available = 1 << 20
+			}
+			return installationhealth.VolumeCapacity{Device: 1, Identified: true, AvailableBytes: &available}
+		},
+	})
+	app = newTestAppWithDeps(t, filepath.Join(root, "servers.db"), AppDeps{
+		DB:            getDB,
+		BackupService: service,
+	})
+	runtime.deps = app.Deps
+	cookie := app.authenticate(t)
+	const passphrase = "fixture-restore-storage-passphrase"
+	export := performContractRequest(app.Handler, http.MethodPost, "/api/backup/export",
+		bytes.NewBufferString(`{"passphrase":"`+passphrase+`"}`), cookie, true)
+	if export.Code != http.StatusOK {
+		t.Fatalf("export status = %d, want an encrypted archive", export.Code)
+	}
+
+	automation, err := app.Deps.BackupAutomation.readState(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	automation.Config.Enabled = true
+	automation.Approval = "original-installation-approval"
+	automation.Outcome = "configured"
+	if err := app.Deps.BackupAutomation.save(t.Context(), automation); err != nil {
+		t.Fatal(err)
+	}
+	originalDB := getDB()
+	originalSession := app.Deps.CurrentSessionManager()
+
+	var body bytes.Buffer
+	form := multipart.NewWriter(&body)
+	part, err := form.CreateFormFile("file", "restore.slubkp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := part.Write(export.Body.Bytes()); err != nil {
+		t.Fatal(err)
+	}
+	if err := form.WriteField("passphrase", passphrase); err != nil {
+		t.Fatal(err)
+	}
+	if err := form.Close(); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/backup/restore", &body)
+	req.Header.Set("Content-Type", form.FormDataContentType())
+	req.AddCookie(cookie)
+	markSameOriginAuthRequest(req)
+	rec := httptest.NewRecorder()
+	app.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusInsufficientStorage || !strings.Contains(rec.Body.String(), "insufficient_storage") ||
+		strings.Contains(rec.Body.String(), root) {
+		t.Fatalf("restore status = %d, want a privacy-safe storage refusal (body=%s)", rec.Code, rec.Body.String())
+	}
+	if getDB() == originalDB || app.Deps.CurrentSessionManager() == originalSession {
+		t.Fatal("storage refusal did not reconnect the original installation after draining persistence")
+	}
+	if phase := app.Deps.InstallationHealth.Phase(); phase != "ready" {
+		t.Fatalf("installation phase after rejection = %q, want ready", phase)
+	}
+	preserved, err := app.Deps.BackupAutomation.readState(t.Context())
+	if err != nil || !preserved.Config.Enabled || preserved.Approval != automation.Approval || preserved.Outcome != automation.Outcome {
+		t.Fatalf("rejected restore changed original backup schedule: %+v, %v", preserved, err)
+	}
+	var status, errorClass string
+	if err := getDB().QueryRow("SELECT status, error_class FROM jobs WHERE id = ?", rec.Header().Get("X-Job-ID")).Scan(&status, &errorClass); err != nil ||
+		status != jobStatusFailed || errorClass != "insufficient_storage" {
+		t.Fatalf("failed restore job status = %q, error class = %q, err = %v", status, errorClass, err)
+	}
+}
 
 func TestBackupVerificationRejectsUnreadableArchivedNotifications(t *testing.T) {
 	const canary = "private-notification-canary"

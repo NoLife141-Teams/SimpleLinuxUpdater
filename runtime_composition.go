@@ -76,6 +76,65 @@ func (c *runtimeComposition) StagePersistenceReplacement(ctx context.Context, st
 	return nil
 }
 
+func (c *runtimeComposition) ResumeOriginalPersistence(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if c == nil || c.deps.DB == nil {
+		return fmt.Errorf("reopen original persistence: database is unavailable")
+	}
+	deps := c.deps
+	db := deps.DB()
+	if db == nil {
+		return fmt.Errorf("reopen original persistence: database is unavailable")
+	}
+	if _, err := c.rebuildJobManager(db); err != nil {
+		return fmt.Errorf("rebuild original job manager: %w", err)
+	}
+	if err := c.rebuildSessionManager(db); err != nil {
+		return fmt.Errorf("rebuild original auth session manager: %w", err)
+	}
+	if resumer, ok := deps.NotificationService.(notificationpkg.OriginalPersistenceResumer); ok {
+		if err := resumer.ResumeOriginalPersistence(ctx); err != nil {
+			return fmt.Errorf("resume original Notification Delivery Lifecycle: %w", err)
+		}
+	} else if reloader, ok := deps.NotificationService.(notificationpkg.PersistenceReloader); ok {
+		if err := reloader.ReloadPersistence(ctx); err != nil {
+			return fmt.Errorf("resume original Notification Delivery Lifecycle: %w", err)
+		}
+	}
+	if deps.InstallationHealth != nil {
+		deps.InstallationHealth.setPhase("ready")
+	}
+	return nil
+}
+
+func (c *runtimeComposition) rebuildJobManager(db *sql.DB) (*JobManager, error) {
+	deps := c.deps
+	if deps.NewJobManager == nil || deps.SetCurrentJobManager == nil {
+		return nil, fmt.Errorf("runtime dependency is unavailable")
+	}
+	jm := deps.NewJobManager(db)
+	if jm == nil {
+		return nil, fmt.Errorf("job manager unavailable")
+	}
+	deps.SetCurrentJobManager(jm)
+	return jm, nil
+}
+
+func (c *runtimeComposition) rebuildSessionManager(db *sql.DB) error {
+	deps := c.deps
+	if deps.NewSessionManager == nil || deps.SetSessionManager == nil {
+		return fmt.Errorf("runtime dependency is unavailable")
+	}
+	sm, err := deps.NewSessionManager(db)
+	if err != nil {
+		return err
+	}
+	deps.SetSessionManager(sm)
+	return nil
+}
+
 func (c *runtimeComposition) ReloadRestoredState(ctx context.Context) (resultErr error) {
 	if c != nil && c.deps.InstallationHealth != nil {
 		c.deps.InstallationHealth.setPhase("reloading")
@@ -130,14 +189,10 @@ func (c *runtimeComposition) ReloadRestoredState(ctx context.Context) (resultErr
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("reload restored runtime: %w", err)
 	}
-	if deps.NewJobManager == nil || deps.SetCurrentJobManager == nil {
-		return fmt.Errorf("rebuild restored job manager: runtime dependency is unavailable")
+	jm, err := c.rebuildJobManager(db)
+	if err != nil {
+		return fmt.Errorf("rebuild restored job manager: %w", err)
 	}
-	jm := deps.NewJobManager(db)
-	if jm == nil {
-		return fmt.Errorf("rebuild restored job manager: job manager unavailable")
-	}
-	deps.SetCurrentJobManager(jm)
 	if deps.VulnerabilityScans != nil {
 		// Recover Job State Transition before generic interruption.
 		if err := deps.VulnerabilityScans.reconcile(ctx, false); err != nil {
@@ -170,14 +225,9 @@ func (c *runtimeComposition) ReloadRestoredState(ctx context.Context) (resultErr
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("reload restored runtime: %w", err)
 	}
-	if deps.NewSessionManager == nil || deps.SetSessionManager == nil {
-		return fmt.Errorf("rebuild restored auth session manager: runtime dependency is unavailable")
-	}
-	sm, err := deps.NewSessionManager(db)
-	if err != nil {
+	if err := c.rebuildSessionManager(db); err != nil {
 		return fmt.Errorf("rebuild restored auth session manager: %w", err)
 	}
-	deps.SetSessionManager(sm)
 	if deps.VulnerabilityScans != nil {
 		if err := deps.VulnerabilityScans.Reconcile(ctx); err != nil {
 			return fmt.Errorf("audit restored vulnerability scans: %w", err)

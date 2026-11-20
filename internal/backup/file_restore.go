@@ -488,7 +488,7 @@ func (s *Service) applyArchiveFiles(ctx context.Context, files map[string]string
 	databaseBytes, _ := sizeOnDisk(preparedDB.Path)
 	hostsBytes, _ := sizeOnDisk(knownHosts)
 	if err := storageBlocker(s.estimateRestoreStorage(storageTargets.replacementNeeds(databaseBytes, hostsBytes, true)...)); err != nil {
-		return s.reloadOriginalPersistence(ctx, errors.Join(err, preparedDB.Remove()), restoreHandoff)
+		return s.resumeAfterStorageRejection(ctx, errors.Join(err, preparedDB.Remove()), restoreHandoff)
 	}
 	snapshotDir, snapshots, err := fs.snapshotFilesToDirectory(snapshotRoot, targets, restoreRollbackPrefix)
 	if err != nil {
@@ -520,7 +520,7 @@ func (s *Service) applyArchiveFiles(ctx context.Context, files map[string]string
 	if err := storageBlocker(s.estimateRestoreStorage(storageTargets.replacementNeeds(databaseBytes, hostsBytes, false)...)); err != nil {
 		// Release unpublished reservations before reopening the live runtime.
 		cause := errors.Join(err, os.RemoveAll(snapshotDir), preparedDB.Remove())
-		return s.reloadOriginalPersistence(ctx, cause, restoreHandoff)
+		return s.resumeAfterStorageRejection(ctx, cause, restoreHandoff)
 	}
 	if opts.BeforeReplacement != nil {
 		if err := opts.BeforeReplacement(); err != nil {
@@ -637,6 +637,19 @@ func (s *Service) reloadOriginalPersistence(ctx context.Context, cause error, re
 		}
 	}
 	if err := s.deps.RestoredRuntime.ReloadRestoredState(recoveryCtx); err != nil {
+		return &IncompleteRecoveryError{Cause: cause, Recovery: err}
+	}
+	return cause
+}
+
+func (s *Service) resumeAfterStorageRejection(ctx context.Context, cause error, restoreHandoff func(context.Context) error) error {
+	resumer, ok := s.deps.RestoredRuntime.(OriginalPersistenceResumer)
+	if !ok {
+		return s.reloadOriginalPersistence(ctx, cause, restoreHandoff)
+	}
+	resumeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), rollbackTimeout)
+	defer cancel()
+	if err := resumer.ResumeOriginalPersistence(resumeCtx); err != nil {
 		return &IncompleteRecoveryError{Cause: cause, Recovery: err}
 	}
 	return cause
@@ -773,6 +786,9 @@ func (s *Service) verifyArchiveFile(ctx context.Context, encrypted TemporaryFile
 	result.DatabaseValid = true
 	counts, err := InspectDatabaseSafeCountsFile(ctx, inspection.Files["servers.db"])
 	if err != nil {
+		if assessStorage && IsStorageFull(err) {
+			return result.withStorageFailure(err), nil
+		}
 		return VerifyResult{}, &RestoreError{Stage: RestoreStageArchive, Err: err}
 	}
 	result.SafeCounts = counts

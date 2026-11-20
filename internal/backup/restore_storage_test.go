@@ -2,6 +2,7 @@ package backup
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"os"
 	"path/filepath"
@@ -12,6 +13,29 @@ import (
 
 	"debian-updater/internal/installationhealth"
 )
+
+func TestRestoreStorageReviewInvalidatesCapacityWhenPreparationRunsOutOfSpace(t *testing.T) {
+	f := newDurabilityFixture(t, t.TempDir(), testRestoredRuntime{})
+	archive := restoreStorageFixtureArchive(t, f)
+	f.service.deps.ProbeRestoreStorage = func(string) installationhealth.VolumeCapacity {
+		available := uint64(128 << 20)
+		return installationhealth.VolumeCapacity{Device: 1, Identified: true, AvailableBytes: &available}
+	}
+	f.service.deps.EnsureSchema = func(*sql.DB) error {
+		return &os.PathError{Op: "write", Path: f.db, Err: syscall.ENOSPC}
+	}
+	result, err := f.service.VerifyArchiveFileWithReview(t.Context(), archive, testPassphrase, nil)
+	if err != nil || result.RestoreReady || len(result.Storage) != 1 {
+		t.Fatalf("review after preparation ran out of space = %+v, %v", result, err)
+	}
+	if result.Storage[0].State != restoreStorageUnknown || result.Storage[0].AvailableBytes != nil {
+		t.Fatalf("review reported stale available capacity after storage exhaustion: %+v", result.Storage[0])
+	}
+	if len(result.Blockers) != 1 || result.Blockers[0].Code != "insufficient_storage" ||
+		strings.Contains(result.Blockers[0].Message, f.db) {
+		t.Fatalf("unexpected storage blocker = %+v", result.Blockers)
+	}
+}
 
 func restoreStorageFixtureArchive(t *testing.T, f durabilityFixture) TemporaryFile {
 	t.Helper()

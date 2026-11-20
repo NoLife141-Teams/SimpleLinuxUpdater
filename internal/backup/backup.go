@@ -297,6 +297,12 @@ type RestoredRuntime interface {
 	ReloadRestoredState(context.Context) error
 }
 
+// OriginalPersistenceResumer reattaches the runtime to the original state
+// when a restore was blocked before replacing any files.
+type OriginalPersistenceResumer interface {
+	ResumeOriginalPersistence(context.Context) error
+}
+
 // ReplacementStager carries persistence facts that must survive an exit after
 // the first file replacement. It runs after the runtime has drained its writers.
 type ReplacementStager interface {

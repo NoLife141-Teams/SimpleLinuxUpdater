@@ -20,10 +20,17 @@ func FilesystemCapacity(path string) VolumeCapacity {
 	}
 	volume := VolumeCapacity{Device: uint64(info.Dev), Identified: true}
 	var stat unix.Statfs_t
-	if unix.Fstatfs(fd, &stat) != nil || stat.Bsize <= 0 {
+	if unix.Fstatfs(fd, &stat) != nil {
 		return volume
 	}
-	blockSize := uint64(stat.Bsize)
+	fragmentSize := stat.Frsize
+	if fragmentSize <= 0 {
+		fragmentSize = stat.Bsize
+	}
+	if fragmentSize <= 0 {
+		return volume
+	}
+	blockSize := uint64(fragmentSize)
 	available := uint64(math.MaxUint64)
 	if stat.Bavail <= available/blockSize {
 		available = stat.Bavail * blockSize

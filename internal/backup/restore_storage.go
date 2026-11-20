@@ -6,6 +6,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 
@@ -258,13 +259,20 @@ func (s *Service) archiveRestoreStorage(sizes map[string]uint64) ([]RestoreStora
 
 func (r VerifyResult) withStorageFailure(err error) VerifyResult {
 	var storage *RestoreStorageError
-	if !errors.As(err, &storage) {
-		storage = &RestoreStorageError{}
-	}
-	if len(storage.Volumes) != 0 {
+	message := "Preparing the archive ran out of storage space. Free space on the preparation volume before retrying."
+	if errors.As(err, &storage) {
 		r.Storage = storage.Volumes
+		message = storage.Error()
+	} else {
+		for i := range r.Storage {
+			volume := &r.Storage[i]
+			if slices.Contains(volume.Roles, restoreStoragePreparation) {
+				volume.State = restoreStorageUnknown
+				volume.AvailableBytes = nil
+			}
+		}
 	}
-	r.Blockers = append(r.Blockers, ReadinessIssue{Code: "insufficient_storage", Message: storage.Error()})
+	r.Blockers = append(r.Blockers, ReadinessIssue{Code: "insufficient_storage", Message: message})
 	r.RestoreReady = false
 	return r
 }

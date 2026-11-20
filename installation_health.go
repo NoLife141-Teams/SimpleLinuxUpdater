@@ -210,6 +210,7 @@ func installationSnapshot(ctx context.Context, deps AppDeps) installationDiagnos
 		if err == nil {
 			out.Workers["backup"] = deps.BackupAutomation.health.Snapshot(facts.Config.Enabled)
 			out.BackupArchives = facts.archiveCoverage(now)
+			out.BackupArchives.StorageHealth = facts.Observation.storageHealth(backupStorageBinding(deps.BackupAutomation.deployment.Directory), now)
 		}
 	}
 	if service, ok := deps.NotificationService.(interface {

@@ -264,6 +264,7 @@
                     <div class="checkbox-row"><input type="checkbox" id="notification-event-backup-verify-failed" data-notification-event="backup.verify.failed"><label for="notification-event-backup-verify-failed">Failed backup verification</label></div>
                     <div class="checkbox-row"><input type="checkbox" id="notification-event-backup-coverage-missing" data-notification-event="backup.coverage.missing"><label for="notification-event-backup-coverage-missing">Missing backup recovery evidence</label></div>
                     <div class="checkbox-row"><input type="checkbox" id="notification-event-backup-coverage-stale" data-notification-event="backup.coverage.stale"><label for="notification-event-backup-coverage-stale">Stale backup recovery evidence</label></div>
+                    <div class="checkbox-row"><input type="checkbox" id="notification-event-backup-storage-unavailable" data-notification-event="backup.storage.unavailable"><label for="notification-event-backup-storage-unavailable">Prolonged backup storage unavailability</label></div>
                     <h3>Grouped reminders</h3>
                     <div class="checkbox-row"><input type="checkbox" id="notification-reminders-enabled"><label for="notification-reminders-enabled">Remind me about unresolved conditions</label></div>
                     <label for="notification-reminder-interval" class="form-label">Minimum interval (minutes)</label>
@@ -1083,6 +1084,11 @@
                     <div><dt>Observed</dt><dd id="installation-checked">Unavailable</dd></div>
                     <div><dt>Verified backup evidence</dt><dd id="installation-backup">Unavailable</dd></div>
                     <div><dt>Local backup archives</dt><dd id="installation-backup-archives">Unavailable</dd></div>
+                    <div id="installation-backup-storage-row" hidden>
+                        <dt>Backup storage observation</dt>
+                        <dd id="installation-backup-storage"></dd>
+                        <dd id="installation-backup-storage-help" hidden><a href="https://github.com/NoLife141-Teams/SimpleLinuxUpdater/blob/main/docs/troubleshooting.md#backup-storage-unavailable">Backup storage and offline recovery guide</a></dd>
+                    </div>
                     <div><dt>Newest verified local recovery point</dt><dd id="installation-backup-recovery-point">Unavailable</dd></div>
                     <div><dt>Notifications</dt><dd id="installation-notifications">Unavailable</dd></div>
                     <div><dt>Notification condition evaluation</dt><dd id="installation-notification-evaluation">Unavailable</dd></div>

@@ -560,7 +560,11 @@ func (l *backupOperationLifecycle) Restore(ctx context.Context, cmd backupRestor
 			deps.Logf("backup restore requires operator recovery: %v", err)
 			// Database and notification persistence may still be unavailable or
 			// paused. Do not issue ordinary audit/job writes after failed recovery.
-			return backupOperationOutcome{Kind: backupOperationRestoreApplyFailed, JobID: job.ID, PublicError: "backup recovery incomplete; maintenance remains active", Err: err}
+			message := "backup recovery incomplete; maintenance remains active"
+			if internalbackup.IsStorageFull(incomplete.Recovery) {
+				message = "Restore recovery ran out of space. Maintenance remains active. Stop the app, free space on the affected recovery volume and run backup recover --inspect."
+			}
+			return backupOperationOutcome{Kind: backupOperationRestoreApplyFailed, JobID: job.ID, PublicError: message, Err: err}
 		}
 		return l.failRestoreArchive(job, cmd, err)
 	}

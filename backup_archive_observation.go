@@ -24,11 +24,12 @@ var errBackupArchiveObservationDeferred = errors.New("backup archive observation
 var backupArchiveObservationProcess = rand.Text()
 
 type backupArchiveObservation struct {
-	CheckedAt         string `json:"checked_at,omitempty"`
-	Storage           string `json:"storage,omitempty"`
-	Owner             string `json:"owner,omitempty"`
-	DirectoryIdentity string `json:"directory_identity,omitempty"`
-	Process           string `json:"process,omitempty"`
+	CheckedAt         string               `json:"checked_at,omitempty"`
+	Storage           string               `json:"storage,omitempty"`
+	Owner             string               `json:"owner,omitempty"`
+	DirectoryIdentity string               `json:"directory_identity,omitempty"`
+	Process           string               `json:"process,omitempty"`
+	StorageHistory    backupStorageHistory `json:"storage_history,omitzero"`
 }
 
 func newBackupArchiveObservation(at time.Time, storage, owner, directory string) backupArchiveObservation {
@@ -44,14 +45,15 @@ type backupArchiveScan struct {
 }
 
 type backupArchiveCoverage struct {
-	State          string              `json:"state"`
-	Storage        string              `json:"storage"`
-	CheckedAt      string              `json:"checked_at,omitempty"`
-	Verified       int                 `json:"verified"`
-	Lost           int                 `json:"lost"`
-	Unknown        int                 `json:"unknown"`
-	LastVerifiedAt string              `json:"last_verified_at,omitempty"`
-	RecoveryPoint  backupRecoveryPoint `json:"recovery_point"`
+	State          string               `json:"state"`
+	Storage        string               `json:"storage"`
+	StorageHealth  *backupStorageHealth `json:"storage_health,omitempty"`
+	CheckedAt      string               `json:"checked_at,omitempty"`
+	Verified       int                  `json:"verified"`
+	Lost           int                  `json:"lost"`
+	Unknown        int                  `json:"unknown"`
+	LastVerifiedAt string               `json:"last_verified_at,omitempty"`
+	RecoveryPoint  backupRecoveryPoint  `json:"recovery_point"`
 }
 
 type backupRecoveryPoint struct {
@@ -245,7 +247,7 @@ func (a *backupAutomation) observeArchiveAvailabilityWithScan(ctx context.Contex
 			events = append(events, *event)
 		}
 	}
-	current.Observation = scan.observation
+	a.recordArchiveObservation(&current, scan.observation)
 	return a.save(commitCtx, current, events...)
 }
 

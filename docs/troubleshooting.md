@@ -236,6 +236,18 @@ Fix:
 - Ensure the process user can read/write the data directory.
 - In Docker, mount a volume to `/data`.
 
+## Backup storage unavailable
+
+In Admin → Installation Health, check the last successful storage observation.
+Verify that the configured archive mount is present and readable by the service
+user. A stale observation means the worker has not confirmed the result recently.
+After the mount returns, check that a new observation succeeds and the catalog
+shows a verified recovery point again.
+
+If a restore is interrupted and offline inspection reports `insufficient_storage`,
+free space on the affected recovery volume and inspect again. Follow the
+[incomplete backup recovery procedure](#incomplete-backup-recovery).
+
 ## Incomplete backup recovery
 
 If both backup application and recovery fail, the app keeps maintenance active and returns `backup recovery incomplete; maintenance remains active`. Requests, scheduled work and queued notifications stay blocked. An interrupted restore also stays blocked on startup. Before changing active files, the app synchronizes the rollback files and their versioned manifest and creates a durable marker beside SQLite. For `servers.db`, the marker is `servers.db.restore-recovery`. It binds the manifest to the rollback directory. Reserve this path for recovery state. Startup recognizes the marker even when the SQLite maintenance state is missing. A restart alone does not clear it.

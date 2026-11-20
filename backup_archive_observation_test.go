@@ -275,7 +275,7 @@ func TestBackupArchiveLossNotifiesOnceAcrossWorkerRestartAndReverification(t *te
 	client := &archiveObservationDeliveryClient{archiveID: archive.ID, archiveDirectory: a.deployment.Directory}
 	deps := NotificationServiceDeps{
 		DB: app.Deps.DB, Now: a.deps.Now, HTTPClient: client, ConditionPollInterval: 10 * time.Millisecond,
-		ReadConditions: newNotificationConditionSource(app.Deps.DB, a.deps.Now, nil),
+		ReadConditions: newNotificationConditionSource(app.Deps.DB, a.deps.Now, nil, ""),
 	}
 	var runs []*NotificationService
 	startWorker := func() *NotificationService {
@@ -554,5 +554,157 @@ func TestBackupArchiveObserverDoesNotWaitOnPublication(t *testing.T) {
 	state, err := a.readState(t.Context())
 	if err != nil || state.Observation.CheckedAt != "" {
 		t.Fatalf("observer persisted stale results during publication: %+v, %v", state.Observation, err)
+	}
+}
+
+func TestBackupStorageOutageAlertsOnceAcrossRestartAndRecovers(t *testing.T) {
+	app, a, _, archive := publishedCatalogFixture(t)
+	initial := a.now()
+	directory := a.deployment.Directory
+	binding := backupStorageBinding(directory)
+	var clock atomic.Int64
+	clock.Store(initial.UnixNano())
+	now := func() time.Time { return time.Unix(0, clock.Load()).UTC() }
+	a.deps.Now = now
+	observeAt := func(at time.Time) backupArchiveObservation {
+		t.Helper()
+		clock.Store(at.UnixNano())
+		if err := a.observeArchiveAvailability(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		return backupAutomationStateForTest(t, a).Observation
+	}
+	first := observeAt(initial)
+	unmounted := directory + ".unmounted"
+	if err := os.Rename(directory, unmounted); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(unmounted) })
+	if err := os.Mkdir(directory, 0700); err != nil {
+		t.Fatal(err)
+	}
+	outageAt := initial.Add(time.Minute)
+	outage := observeAt(outageAt)
+	if first.Storage != "available" || outage.Storage != "unavailable" {
+		t.Fatalf("fixture mount status = %s then %s", first.Storage, outage.Storage)
+	}
+	source := newNotificationConditionSource(app.Deps.DB, now, nil, directory)
+	checkFact := func(source notificationpkg.ConditionSource, active bool) notificationpkg.ConditionFact {
+		t.Helper()
+		batch, err := source(t.Context(), "", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		fact := lastConditionFact(batch.Facts, backupStorageConditionID)
+		if fact.Active != active || lastConditionFact(batch.Facts, "backup/coverage/missing").Active {
+			t.Fatalf("unexpected outage or archive-loss fact: %+v", batch.Facts)
+		}
+		return fact
+	}
+	checkFact(source, false)
+	outage = observeAt(outageAt.Add(backupStorageAlertAfter))
+	want := checkFact(source, true)
+	if health := outage.storageHealth(binding, now()); health.LastAvailableAt != backupStamp(initial) ||
+		health.UnavailableAt != backupStamp(outageAt) || !health.AlertDue || health.State != "unavailable" {
+		t.Fatalf("unexpected storage history: %+v", health)
+	}
+	checkFact(newNotificationConditionSource(app.Deps.DB, now, nil, ""), false)
+	checkFact(newNotificationConditionSource(app.Deps.DB, now, nil, t.TempDir()), false)
+	if state := backupAutomationStateForTest(t, a); state.Archives[0].LossActive ||
+		state.Archives[0].Verification != "verified" || state.archiveCoverage(now()).RecoveryPoint.State != "unknown" {
+		t.Fatalf("mount outage altered archive verification: %+v", state.Archives)
+	}
+
+	client := &archiveObservationDeliveryClient{archiveID: archive.ID, archiveDirectory: directory}
+	deps := NotificationServiceDeps{
+		DB: app.Deps.DB, Now: now, HTTPClient: client, ConditionPollInterval: 10 * time.Millisecond,
+		ReadConditions: source,
+	}
+	firstWorker := NewNotificationService(deps)
+	closeWorker := func(service *NotificationService) {
+		t.Helper()
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := service.Close(ctx); err != nil {
+			t.Error(err)
+		}
+	}
+	t.Cleanup(func() { closeWorker(firstWorker) })
+	if _, err := firstWorker.SaveSettings(NotificationSettingsUpdate{
+		Enabled: true, WebhookURL: "https://notifications.example.test/backups",
+		WebhookURLIntent: notificationpkg.WebhookURLReplace,
+		EventTypes:       []string{notificationpkg.EventBackupStorageUnavailable},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	firstWorker.StartConditionMonitoring()
+	waitFor := func(receipts int, active bool) {
+		t.Helper()
+		deadline := time.Now().Add(4 * time.Second)
+		var sent int
+		var factActive bool
+		for time.Now().Before(deadline) {
+			err := app.Deps.DB().QueryRow(`SELECT count(*) FROM notification_outbox WHERE event_type=? AND state='succeeded'`,
+				notificationpkg.EventBackupStorageUnavailable).Scan(&sent)
+			errState := app.Deps.DB().QueryRow(`SELECT json_extract(state_json,'$.Conditions."backup/storage/unavailable".Fact.Active')
+				FROM notification_conditions WHERE id=1`).Scan(&factActive)
+			if err == nil && errState == nil && sent == receipts && factActive == active {
+				return
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		t.Fatalf("stored deliveries = %d, condition active = %v, want %d and %v", sent, factActive, receipts, active)
+	}
+	waitFor(1, true)
+	closeWorker(firstWorker)
+	// Reopen condition evaluation and re-observe the mount after restart.
+	deps.ReadConditions = newNotificationConditionSource(app.Deps.DB, now, nil, directory)
+	observeAt(now().Add(5 * time.Minute))
+	if got := checkFact(deps.ReadConditions, true); got.Generation != want.Generation {
+		t.Fatalf("restart changed ongoing outage generation: %q != %q", got.Generation, want.Generation)
+	}
+	restarted := NewNotificationService(deps)
+	t.Cleanup(func() { closeWorker(restarted) })
+	restarted.StartConditionMonitoring()
+
+	if err := os.Remove(directory); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(unmounted, directory); err != nil {
+		t.Fatal(err)
+	}
+	recovered := observeAt(now().Add(time.Minute))
+	waitFor(1, false)
+	if health := recovered.storageHealth(binding, now()); health.State != "available" ||
+		health.LastAvailableAt != backupStamp(now()) || health.UnavailableAt != "" || health.AlertDue {
+		t.Fatalf("successful mount probe did not close its outage: %+v", health)
+	}
+	if coverage := backupAutomationStateForTest(t, a).archiveCoverage(now()); coverage.RecoveryPoint.State != "recent" {
+		t.Fatalf("coverage did not recover: %+v", coverage)
+	}
+	closeWorker(restarted)
+	if client.calls.Load() != 1 || client.disclosedArchive.Load() {
+		t.Fatalf("outage deliveries=%d, disclosed archive path or ID=%v", client.calls.Load(), client.disclosedArchive.Load())
+	}
+}
+
+func TestExpiredArchiveObservationContinuesIntoFailedProbe(t *testing.T) {
+	start := time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
+	binding := backupStorageBinding("/archives")
+	first := newBackupArchiveObservation(start, "available", "owner", "directory")
+	first.recordStorageHistory(backupArchiveObservation{}, binding)
+	staleAt := start.Add(backupStorageStaleAfter)
+	alertAt := staleAt.Add(backupStorageAlertAfter)
+	for _, at := range []time.Time{staleAt, alertAt.Add(-time.Second), alertAt} {
+		got := first.storageHealth(binding, at)
+		if got.State != "stale" || got.UnavailableAt != backupStamp(staleAt) || got.AlertDue != at.Equal(alertAt) {
+			t.Fatalf("storage health at %s = %+v", at, got)
+		}
+	}
+	next := newBackupArchiveObservation(alertAt, "unavailable", "", "")
+	next.recordStorageHistory(first, binding)
+	if got := next.storageHealth(binding, alertAt); got.State != "unavailable" ||
+		got.UnavailableAt != backupStamp(staleAt) || !got.AlertDue {
+		t.Fatalf("failed probe restarted a previously stale episode: %+v", got)
 	}
 }

@@ -33,10 +33,11 @@ APT_EVENT = "apt.reconciliation.required"
 RESTORE_CRASH = "restore-crash-after-sqlite-replacement"
 RESTORE_ISOLATION = "isolated-restore"
 RESTORE_APT_VALIDATION = "cold-restore-apt-validation"
+BACKUP_STORAGE_OUTAGE = "backup-storage-outage"
 SCENARIOS = ("root-upgrade", "operator-upgrade", "misconfigured-helper", "apt-lock",
              "plan-drift-and-obsolete-approval", "ssh-disconnect-during-mutation-and-repair",
              "batch-app-interruption-during-mutation-and-repair", "changed-host-key",
-             RESTORE_CRASH, RESTORE_ISOLATION, RESTORE_APT_VALIDATION,
+             RESTORE_CRASH, RESTORE_ISOLATION, RESTORE_APT_VALIDATION, BACKUP_STORAGE_OUTAGE,
              "systemd-active", "controlled-reboot", "official-provenance")
 
 
@@ -139,6 +140,12 @@ def qualification_overlay(work):
 \t\tendpoint = strings.TrimRight(settings.WebhookURL, "/") + "/" + destination
 \t}
 """ + encode_body),
+    ])
+    instrument("backup_archive_observation.go", [
+        ("const backupArchiveObservationInterval = 5 * time.Minute", "const backupArchiveObservationInterval = time.Second"),
+    ])
+    instrument("backup_storage_health.go", [
+        ("backupStorageAlertAfter  = 30 * time.Minute", "backupStorageAlertAfter  = 10 * time.Second"),
     ])
     overlay = work / "qualification-overlay.json"
     overlay.write_text(json.dumps({"Replace": replacements}))
@@ -384,12 +391,21 @@ class Harness:
         container_env["DEBIAN_UPDATER_LISTEN_ADDR"] = ":8080"
         container_env["DEBIAN_UPDATER_HOST_FACTS_AUTO_REFRESH_ENABLED"] = "true"
         container_env["TMPDIR"] = "/restore-temp"
+        archive_mount = self.work / "archive-mount-probe"
+        (archive_mount / "archives").mkdir(parents=True, mode=0o700)
+        secret = secrets.token_urlsafe(24)
+        self.redactions.append(secret)
+        (archive_mount / "passphrase").write_text(secret)
+        (archive_mount / "passphrase").chmod(0o600)
+        container_env["DEBIAN_UPDATER_BACKUP_DIR"] = "/fixture-backups/archives"
+        container_env["DEBIAN_UPDATER_BACKUP_PASSPHRASE_FILE"] = "/fixture-backups/passphrase"
         for key, value in container_env.items():
             env_args.extend(["--env", key + "=" + value])
         self.docker("run", "-d", "--name", self.app_name, "--network", self.network,
             "--label", LABEL + "=" + self.owner, "--user", f"{os.getuid()}:{os.getgid()}",
             "--pids-limit", "256", "--memory", "512m", "-p", "127.0.0.1::8080",
             "--tmpfs", "/restore-temp:rw,nosuid,nodev,size=32m,mode=1777",
+            "--mount", f"type=bind,src={archive_mount},dst=/fixture-backups",
             "--mount", f"type=bind,src={self.work},dst=/work", "--workdir", "/work",
             "--entrypoint", "/work/webserver", *env_args, self.image)
         self.connect_app()
@@ -1196,6 +1212,89 @@ finally:
                       unreachable_host_blocked=True, gated_after_restart=True, partial_batch_admission=True)
         del record["checkpoint"]
 
+    def qualify_backup_storage_outage(self, record):
+        from target import WEBHOOK_PORT
+
+        event = "backup.storage.unavailable"
+        credentials = {"username": "fixture-admin", "password": self.password}
+        self.api.request("POST", "/api/auth/login", credentials)
+        self.api.request("POST", "/api/auth/reauthenticate", {"password": self.password})
+        self.api.request("PUT", "/api/backup/automation", {
+            "enabled": False, "cadence": "daily", "time": "02:00", "weekday": 0,
+            "include_known_hosts": True, "retain": 2,
+        })
+        record["checkpoint"] = "verified-publication"
+        self.api.request("POST", "/api/backup/automation/run")
+        template = '{{ (index .NetworkSettings.Networks "' + self.network + '").IPAddress }}'
+        address = self.docker("inspect", "--format", template, self.container).strip()
+        require(ipaddress.IPv4Address(address).is_private, "receiver must use the owned private bridge")
+        endpoint = f"http://{address}:{WEBHOOK_PORT}/receive"
+        self.redactions.append(endpoint)
+        self.api.request("PUT", "/api/notifications/settings", {
+            "enabled": True, "webhook_url_intent": "replace", "webhook_url": endpoint, "event_types": [event],
+        })
+
+        def archives():
+            return self.api.request("GET", "/api/installation/health")["backup_archives"]
+
+        def deliveries():
+            history = self.api.request("GET", "/api/notifications/delivery-history?destination=webhook)
+            return [item for item in history["items"] if item["event_type"] == event]
+
+        def receipts():
+            text = self.target("sh", "-c", "cat /var/lib/slu-fixture/webhook-receipts 2>/dev/null || true")
+            return [item for item in map(json.loads, text.splitlines()) if item[0] == event]
+
+        def covered():
+            facts = archives()
+            return (facts["recovery_point"]["state"] == "recent" and facts["verified"] == 1
+                    and facts["storage_health"]["state"] == "available")
+
+        until(covered, "no observed and verified fixture recovery point")
+        mount = self.work / "archive-mount-probe"
+        directory, removed = mount / "archives", mount / "temporarily-unmounted"
+        record["checkpoint"] = "short-outage"
+        directory.rename(removed)
+        directory.mkdir(mode=0o700)
+        try:
+            until(lambda: archives()["storage_health"]["state"] == "unavailable",
+                  "replacement mount directory was not detected")
+            require(not deliveries(), "briefly unavailable backup storage created an alert")
+        finally:
+            directory.rmdir()
+            removed.rename(directory)
+        until(covered, "return of storage did not restore coverage")
+
+        record["checkpoint"] = "prolonged-outage"
+        directory.rename(removed)
+        directory.mkdir(mode=0o700)
+        try:
+            def delivered():
+                items = deliveries()
+                return len(items) == 1 and items[0]["state"] == "succeeded"
+            until(delivered, "prolonged outage did not produce one durable successful delivery")
+            facts = archives()
+            require(facts["lost"] == 0 and facts["storage_health"]["alert_due"]
+                    and facts["storage_health"].get("last_available_at"), "outage lost stored evidence")
+            require(receipts() == [[event, "Application backup", None]], "unexpected outage receipt")
+
+            record["checkpoint"] = "restart-with-outage"
+            self.docker("restart", self.app_name)
+            self.connect_app()
+            self.api.request("POST", "/api/auth/login", credentials)
+            until(lambda: archives()["storage_health"]["state"] == "unavailable",
+                  "restarted observer did not confirm the continued outage")
+            require(delivered() and len(receipts()) == 1, "restart repeated the outage notification")
+        finally:
+            directory.rmdir()
+            removed.rename(directory)
+        record["checkpoint"] = "recovery-of-coverage"
+        until(covered, "verified coverage did not return after storage recovered")
+        require(delivered() and len(receipts()) == 1, "storage recovery repeated the outage notification")
+        record.update(brief_outage_silent=True, confirmed_outage_delivered_once=True,
+                      deduplicated_after_restart=True, verified_coverage_restored=True)
+        del record["checkpoint"]
+
     def offline_recovery_container_args(self):
         require(self.owned("container", self.app_name), "application ownership mismatch")
         return ("--name", self.app_name + "-recovery", "--network", "none",
@@ -1443,6 +1542,12 @@ print(json.dumps([inspect_code, inspection, apply_code, blocked, unchanged, retr
         with self.scenario(RESTORE_APT_VALIDATION) as record:
             try:
                 self.qualify_cold_restore_apt_validation(record)
+            except (RuntimeError, OSError, ValueError, sqlite3.Error, subprocess.SubprocessError) as error:
+                raise AssertionError(f"fixture operation failed ({type(error).__name__})") from None
+
+        with self.scenario(BACKUP_STORAGE_OUTAGE) as record:
+            try:
+                self.qualify_backup_storage_outage(record)
             except (RuntimeError, OSError, ValueError, sqlite3.Error, subprocess.SubprocessError) as error:
                 raise AssertionError(f"fixture operation failed ({type(error).__name__})") from None
 

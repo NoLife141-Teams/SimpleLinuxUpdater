@@ -68,6 +68,10 @@ func maintenancePageHTMLFromSnapshotAndTime(state maintenancepkg.Snapshot, appli
 	if applicationTime != nil {
 		startedAtDisplay, timezoneLabel = applicationTime.Current().Format(state.StartedAt, jobTimestampLayout)
 	}
+	recoveryHelp := ""
+	if state.RecoveryRequired {
+		recoveryHelp = `<p>Stop the app and inspect the recovery sets with <code>backup recover --inspect</code>. If inspection reports insufficient storage, free space on the affected volume and inspect again. <a href="https://github.com/NoLife141-Teams/SimpleLinuxUpdater/blob/main/docs/troubleshooting.md#incomplete-backup-recovery">Offline recovery guide</a></p>`
+	}
 	return fmt.Sprintf(`<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -81,6 +85,7 @@ func maintenancePageHTMLFromSnapshotAndTime(state maintenancepkg.Snapshot, appli
     <div class="pulse" aria-hidden="true"></div>
     <h1>Maintenance Mode</h1>
     <p>%s</p>
+    %s
     <div class="meta">
       <div class="label">Current Operation</div>
       <div class="value">%s</div>
@@ -98,6 +103,7 @@ func maintenancePageHTMLFromSnapshotAndTime(state maintenancepkg.Snapshot, appli
 </body>
 </html>`,
 		html.EscapeString(message),
+		recoveryHelp,
 		html.EscapeString(kind),
 		html.EscapeString(startedAtDisplay),
 		html.EscapeString(timezoneLabel),

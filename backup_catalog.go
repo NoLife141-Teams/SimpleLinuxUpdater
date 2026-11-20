@@ -188,7 +188,7 @@ func (a *backupAutomation) catalogLocked(ctx context.Context, s *backupAutomatio
 		})
 	}
 	if changed {
-		s.Observation = newBackupArchiveObservation(a.now(), "available", owner, directory)
+		a.recordArchiveObservation(s, newBackupArchiveObservation(a.now(), "available", owner, directory))
 		return catalog, a.save(ctx, *s, events...)
 	}
 	return catalog, nil
@@ -328,7 +328,7 @@ func (a *backupAutomation) saveBackupCatalogSnapshotFailure(ctx context.Context,
 		digestMismatch = err == nil && sameBackupIntegrityFile(snapshot.info, named)
 		versionChanged = !digestMismatch
 	}
-	s.Observation = newBackupArchiveObservation(a.now(), "available", archive.Owner, directory)
+	a.recordArchiveObservation(&s, newBackupArchiveObservation(a.now(), "available", archive.Owner, directory))
 	at := s.Observation.CheckedAt
 	var event *AuditEvent
 	switch {
@@ -450,7 +450,7 @@ func handleBackupCatalogOperation(c *gin.Context, a *backupAutomation, verify bo
 				}
 			}
 			if availability != "present" {
-				s.Observation = newBackupArchiveObservation(a.now(), storage, owner, directory)
+				a.recordArchiveObservation(&s, newBackupArchiveObservation(a.now(), storage, owner, directory))
 				actor, ip := actorFromContext(c), clientIPFromContext(c)
 				if archiveAvailabilityLost(availability) {
 					archive.DirectoryIdentity = directory
@@ -486,7 +486,7 @@ func handleBackupCatalogOperation(c *gin.Context, a *backupAutomation, verify bo
 			archive.Verification = "failed"
 		}
 		archive.Availability = "present"
-		s.Observation = newBackupArchiveObservation(a.now(), "available", owner, directory)
+		a.recordArchiveObservation(&s, newBackupArchiveObservation(a.now(), "available", owner, directory))
 		archive.ObservedAt = s.Observation.CheckedAt
 		archive.ObservationProcess = backupArchiveObservationProcess
 		if ready {

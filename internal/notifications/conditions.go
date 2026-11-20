@@ -599,7 +599,7 @@ func saveConditionState(ctx context.Context, store interface {
 
 func isConditionEvent(event string) bool {
 	switch event {
-	case EventApprovalPublished, EventApprovalExpired, EventRebootRequired, EventAPTReconciliationRequired, EventBackupExportFailed, EventBackupVerifyFailed, EventBackupCoverageMissing, EventBackupCoverageStale:
+	case EventApprovalPublished, EventApprovalExpired, EventRebootRequired, EventAPTReconciliationRequired, EventBackupExportFailed, EventBackupVerifyFailed, EventBackupCoverageMissing, EventBackupCoverageStale, EventBackupStorageUnavailable:
 		return true
 	}
 	return false

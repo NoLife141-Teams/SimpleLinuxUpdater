@@ -58,6 +58,7 @@ func TestRestoreStorageRefusalResumesOriginalInstallation(t *testing.T) {
 		DB:            getDB,
 		BackupService: service,
 	})
+	app.Handler = sessionHandler(app.Router)
 	runtime.deps = app.Deps
 	cookie := app.authenticate(t)
 	const passphrase = "fixture-restore-storage-passphrase"
@@ -77,8 +78,10 @@ func TestRestoreStorageRefusalResumesOriginalInstallation(t *testing.T) {
 	if err := app.Deps.BackupAutomation.save(t.Context(), automation); err != nil {
 		t.Fatal(err)
 	}
-	originalDB := getDB()
-	originalSession := app.Deps.CurrentSessionManager()
+	missed := time.Now().UTC().Truncate(time.Minute)
+	app.Deps.PolicyService.RememberMissedTick(missed, maintenancepkg.Blocker{
+		Cause: maintenancepkg.BlockBackupExport, JobID: "preserved-maintenance-job",
+	})
 
 	var body bytes.Buffer
 	form := multipart.NewWriter(&body)
@@ -105,8 +108,8 @@ func TestRestoreStorageRefusalResumesOriginalInstallation(t *testing.T) {
 		strings.Contains(rec.Body.String(), root) {
 		t.Fatalf("restore status = %d, want a privacy-safe storage refusal (body=%s)", rec.Code, rec.Body.String())
 	}
-	if getDB() == originalDB || app.Deps.CurrentSessionManager() == originalSession {
-		t.Fatal("storage refusal did not reconnect the original installation after draining persistence")
+	if session := performContractRequest(app.Handler, http.MethodGet, "/api/auth/sessions", nil, cookie, false); session.Code != http.StatusOK {
+		t.Fatalf("original session after storage refusal status = %d, want %d", session.Code, http.StatusOK)
 	}
 	if phase := app.Deps.InstallationHealth.Phase(); phase != "ready" {
 		t.Fatalf("installation phase after rejection = %q, want ready", phase)
@@ -114,6 +117,10 @@ func TestRestoreStorageRefusalResumesOriginalInstallation(t *testing.T) {
 	preserved, err := app.Deps.BackupAutomation.readState(t.Context())
 	if err != nil || !preserved.Config.Enabled || preserved.Approval != automation.Approval || preserved.Outcome != automation.Outcome {
 		t.Fatalf("rejected restore changed original backup schedule: %+v, %v", preserved, err)
+	}
+	if pending := app.Deps.PolicyService.PendingMissedTicks(); len(pending) != 1 ||
+		!pending[0].Now.Equal(missed) || pending[0].MaintenanceBlocker.JobID != "preserved-maintenance-job" {
+		t.Fatalf("rejected restore changed original pending schedule: %+v", pending)
 	}
 	var status, errorClass string
 	if err := getDB().QueryRow("SELECT status, error_class FROM jobs WHERE id = ?", rec.Header().Get("X-Job-ID")).Scan(&status, &errorClass); err != nil ||
@@ -1038,12 +1045,18 @@ func TestAppScopedBackupRestoreReloadsServerStateAndSessionManager(t *testing.T)
 	if err != nil {
 		t.Fatalf("marshal backup config: %v", err)
 	}
+	deps.PolicyService.RememberMissedTick(time.Now(), maintenancepkg.Blocker{
+		Cause: maintenancepkg.BlockBackupRestore, JobID: "previous-installation-job",
+	})
 
 	if err := deps.BackupService.ApplyFiles(context.Background(), map[string][]byte{
 		"servers.db":  backupDB,
 		"config.json": backupConfig,
 	}); err != nil {
 		t.Fatalf("ApplyFiles() unexpected error: %v", err)
+	}
+	if pending := deps.PolicyService.PendingMissedTicks(); len(pending) != 0 {
+		t.Fatalf("restored inventory retained pending schedules from original files: %+v", pending)
 	}
 	lockAfter, err := os.Stat(dbFile + ".lock")
 	if err != nil || !os.SameFile(lockBefore, lockAfter) {

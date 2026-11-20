@@ -52,9 +52,6 @@ func (c *runtimeComposition) PreparePersistenceReplacement(ctx context.Context) 
 			return fmt.Errorf("prepare Notification Delivery Lifecycle persistence replacement: %w", err)
 		}
 	}
-	if c.deps.PolicyService != nil {
-		c.deps.PolicyService.ClearMissedTicks()
-	}
 	if c.resetCaches != nil {
 		c.resetCaches()
 	}
@@ -154,6 +151,9 @@ func (c *runtimeComposition) ReloadRestoredState(ctx context.Context) (resultErr
 		return err
 	}
 	deps := c.deps
+	if deps.PolicyService != nil {
+		deps.PolicyService.ClearMissedTicks()
+	}
 	if deps.DB == nil {
 		return fmt.Errorf("reopen restored persistence: database is unavailable")
 	}

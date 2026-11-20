@@ -206,3 +206,46 @@ func TestRestoreStorageExhaustionDuringReplacementRollsBack(t *testing.T) {
 	}
 	requireDurableRestoreState(t, f.db, f.hosts, originalRestoreServer, originalRestoreTrust, false)
 }
+
+type storageRejectionRuntime struct {
+	testRestoredRuntime
+	resume func() error
+}
+
+func (r storageRejectionRuntime) ResumeOriginalPersistence(context.Context) error {
+	return r.resume()
+}
+
+func TestRestoreStorageExhaustionBeforeReplacementResumesOriginalPersistence(t *testing.T) {
+	for _, failedFile := range []string{"snapshot-0", "recovery.json", ".slu-restore-recovery-"} {
+		t.Run(failedFile, func(t *testing.T) {
+			root := t.TempDir()
+			var f durabilityFixture
+			runtime := storageRejectionRuntime{
+				testRestoredRuntime: testRestoredRuntime{reload: func(context.Context) error {
+					return errors.New("restored state cannot be reloaded before replacement")
+				}},
+				resume: func() error {
+					snapshots, err := filepath.Glob(filepath.Join(root, restoreRollbackPrefix+"*"))
+					if err != nil || len(snapshots) != 0 {
+						t.Fatalf("unpublished snapshots still consume space while resuming: %v, %v", snapshots, err)
+					}
+					return nil
+				},
+			}
+			f = newDurabilityFixture(t, root, runtime)
+			f.service.syncRestoreFile = func(file *os.File) error {
+				if strings.HasPrefix(filepath.Base(file.Name()), failedFile) {
+					return syscall.ENOSPC
+				}
+				return file.Sync()
+			}
+			err := f.service.applyArchiveFiles(t.Context(), f.files, RestoreOptions{})
+			var incomplete *IncompleteRecoveryError
+			if !IsStorageFull(err) || errors.As(err, &incomplete) {
+				t.Fatalf("pre-replacement storage exhaustion should leave the original runtime available: %v", err)
+			}
+			requireDurableRestoreState(t, f.db, f.hosts, originalRestoreServer, originalRestoreTrust, false)
+		})
+	}
+}

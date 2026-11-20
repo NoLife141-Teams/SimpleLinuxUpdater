@@ -476,9 +476,21 @@ func (s *Service) applyArchiveFiles(ctx context.Context, files map[string]string
 		// been replaced. Preserve typed recovery errors if a preparer cannot unwind.
 		return fmt.Errorf("prepare restored persistence replacement: %w", err)
 	}
+	var snapshotDir string
+	abortBeforeReplacement := func(cause error) error {
+		var storage *RestoreStorageError
+		if !errors.As(cause, &storage) && !IsStorageFull(cause) {
+			return s.reloadOriginalPersistence(ctx, cause, restoreHandoff)
+		}
+		if snapshotDir != "" {
+			// Release unpublished reservations before reopening the live runtime.
+			cause = errors.Join(cause, os.RemoveAll(snapshotDir))
+		}
+		return s.resumeAfterStorageRejection(ctx, errors.Join(cause, preparedDB.Remove()), restoreHandoff)
+	}
 	if stager, ok := s.deps.RestoredRuntime.(ReplacementStager); ok {
 		if err := stageRuntimePersistence(ctx, preparedDB.Path, stager); err != nil {
-			return s.reloadOriginalPersistence(ctx, fmt.Errorf("stage restored runtime persistence: %w", err), restoreHandoff)
+			return abortBeforeReplacement(fmt.Errorf("stage restored runtime persistence: %w", err))
 		}
 	}
 	storageTargets := restoreStorageTargets{database: dbTarget, rollback: snapshotRoot}
@@ -488,11 +500,11 @@ func (s *Service) applyArchiveFiles(ctx context.Context, files map[string]string
 	databaseBytes, _ := sizeOnDisk(preparedDB.Path)
 	hostsBytes, _ := sizeOnDisk(knownHosts)
 	if err := storageBlocker(s.estimateRestoreStorage(storageTargets.replacementNeeds(databaseBytes, hostsBytes, true)...)); err != nil {
-		return s.resumeAfterStorageRejection(ctx, errors.Join(err, preparedDB.Remove()), restoreHandoff)
+		return abortBeforeReplacement(err)
 	}
 	snapshotDir, snapshots, err := fs.snapshotFilesToDirectory(snapshotRoot, targets, restoreRollbackPrefix)
 	if err != nil {
-		return s.reloadOriginalPersistence(ctx, err, restoreHandoff)
+		return abortBeforeReplacement(err)
 	}
 	keepSnapshots := false
 	defer func() {
@@ -513,18 +525,16 @@ func (s *Service) applyArchiveFiles(ctx context.Context, files map[string]string
 		err = fs.syncPath(snapshotDir)
 	}
 	if err != nil {
-		return s.reloadOriginalPersistence(ctx, fmt.Errorf("persist rollback manifest: %w", err), restoreHandoff)
+		return abortBeforeReplacement(fmt.Errorf("persist rollback manifest: %w", err))
 	}
 	// Snapshot files are already charged to their volume. Recheck only the
 	// remaining writes before creating the durable marker and replacing files.
 	if err := storageBlocker(s.estimateRestoreStorage(storageTargets.replacementNeeds(databaseBytes, hostsBytes, false)...)); err != nil {
-		// Release unpublished reservations before reopening the live runtime.
-		cause := errors.Join(err, os.RemoveAll(snapshotDir), preparedDB.Remove())
-		return s.resumeAfterStorageRejection(ctx, cause, restoreHandoff)
+		return abortBeforeReplacement(err)
 	}
 	if opts.BeforeReplacement != nil {
 		if err := opts.BeforeReplacement(); err != nil {
-			return s.reloadOriginalPersistence(ctx, err, restoreHandoff)
+			return abortBeforeReplacement(err)
 		}
 	}
 	// Publishing the marker and syncing the database directory also makes
@@ -541,7 +551,7 @@ func (s *Service) applyArchiveFiles(ctx context.Context, files map[string]string
 		if errors.Is(err, os.ErrExist) {
 			return &IncompleteRecoveryError{Cause: cause, Recovery: err}
 		}
-		return s.reloadOriginalPersistence(ctx, cause, restoreHandoff)
+		return abortBeforeReplacement(cause)
 	}
 	rollback := func(cause error) error {
 		rollbackCtx, cancelRollback := context.WithTimeout(context.WithoutCancel(ctx), rollbackTimeout)

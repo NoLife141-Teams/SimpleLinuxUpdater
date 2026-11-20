@@ -556,7 +556,10 @@ func (s *Service) ExportArchiveFileFromSnapshot(ctx context.Context, req ExportR
 
 func readJSONString(reader *bufio.Reader, writer io.Writer, maxBytes int64) (int64, error) {
 	first, err := reader.ReadByte()
-	if err != nil || first != '"' {
+	if err != nil {
+		return 0, archiveJSONReadError(err)
+	}
+	if first != '"' {
 		return 0, ErrMalformed
 	}
 	var written int64
@@ -591,7 +594,7 @@ func readJSONString(reader *bufio.Reader, writer io.Writer, maxBytes int64) (int
 	for {
 		b, err := reader.ReadByte()
 		if err != nil {
-			return written, ErrMalformed
+			return written, archiveJSONReadError(err)
 		}
 		switch b {
 		case '"':
@@ -604,7 +607,7 @@ func readJSONString(reader *bufio.Reader, writer io.Writer, maxBytes int64) (int
 		case '\\':
 			escaped, err := reader.ReadByte()
 			if err != nil {
-				return written, ErrMalformed
+				return written, archiveJSONReadError(err)
 			}
 			switch escaped {
 			case '"', '\\', '/':
@@ -638,7 +641,10 @@ func readJSONString(reader *bufio.Reader, writer io.Writer, maxBytes int64) (int
 				}
 				if utf16.IsSurrogate(r) {
 					prefix := make([]byte, 2)
-					if _, err := io.ReadFull(reader, prefix); err != nil || prefix[0] != '\\' || prefix[1] != 'u' {
+					if _, err := io.ReadFull(reader, prefix); err != nil {
+						return written, archiveJSONReadError(err)
+					}
+					if prefix[0] != '\\' || prefix[1] != 'u' {
 						return written, ErrMalformed
 					}
 					r2, err := readJSONHexRune(reader)
@@ -669,10 +675,17 @@ func readJSONString(reader *bufio.Reader, writer io.Writer, maxBytes int64) (int
 	}
 }
 
+func archiveJSONReadError(err error) error {
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return ErrMalformed
+	}
+	return err
+}
+
 func readJSONHexRune(reader io.Reader) (rune, error) {
 	var raw [4]byte
 	if _, err := io.ReadFull(reader, raw[:]); err != nil {
-		return 0, ErrMalformed
+		return 0, archiveJSONReadError(err)
 	}
 	var value rune
 	for _, b := range raw {
@@ -705,7 +718,7 @@ func skipJSONWhitespace(reader *bufio.Reader) error {
 
 func readRawJSONValue(reader *bufio.Reader, maxBytes int64) ([]byte, error) {
 	if err := skipJSONWhitespace(reader); err != nil {
-		return nil, ErrMalformed
+		return nil, archiveJSONReadError(err)
 	}
 	var raw bytes.Buffer
 	depth := 0
@@ -714,7 +727,7 @@ func readRawJSONValue(reader *bufio.Reader, maxBytes int64) ([]byte, error) {
 	for {
 		b, err := reader.ReadByte()
 		if err != nil {
-			return nil, ErrMalformed
+			return nil, archiveJSONReadError(err)
 		}
 		if !inString && depth == 0 && (b == ',' || b == '}') {
 			if err := reader.UnreadByte(); err != nil {
@@ -782,12 +795,19 @@ func parseEnvelopePath(ctx context.Context, path, tempDir string, extractPayload
 		return Envelope{}, TemporaryFile{}, err
 	}
 	defer file.Close()
-	reader := bufio.NewReaderSize(archiveContextReader{ctx, file}, 64*1024)
+	return parseEnvelopeReader(ctx, file, tempDir, extractPayload)
+}
+
+func parseEnvelopeReader(ctx context.Context, source io.Reader, tempDir string, extractPayload bool) (Envelope, TemporaryFile, error) {
+	reader := bufio.NewReaderSize(archiveContextReader{ctx, source}, 64*1024)
 	if err := skipJSONWhitespace(reader); err != nil {
-		return Envelope{}, TemporaryFile{}, ErrMalformed
+		return Envelope{}, TemporaryFile{}, archiveJSONReadError(err)
 	}
 	opening, err := reader.ReadByte()
-	if err != nil || opening != '{' {
+	if err != nil {
+		return Envelope{}, TemporaryFile{}, archiveJSONReadError(err)
+	}
+	if opening != '{' {
 		return Envelope{}, TemporaryFile{}, ErrMalformed
 	}
 	values := make(map[string]json.RawMessage)
@@ -808,11 +828,11 @@ func parseEnvelopePath(ctx context.Context, path, tempDir string, extractPayload
 	allowObjectEnd := true
 	for {
 		if err := skipJSONWhitespace(reader); err != nil {
-			return Envelope{}, TemporaryFile{}, ErrMalformed
+			return Envelope{}, TemporaryFile{}, archiveJSONReadError(err)
 		}
 		peek, err := reader.Peek(1)
 		if err != nil {
-			return Envelope{}, TemporaryFile{}, ErrMalformed
+			return Envelope{}, TemporaryFile{}, archiveJSONReadError(err)
 		}
 		if peek[0] == '}' {
 			if !allowObjectEnd {
@@ -823,7 +843,10 @@ func parseEnvelopePath(ctx context.Context, path, tempDir string, extractPayload
 		}
 		allowObjectEnd = true
 		var keyBuffer bytes.Buffer
-		if _, err := readJSONString(reader, &keyBuffer, 256); err != nil || !utf8.Valid(keyBuffer.Bytes()) {
+		if _, err := readJSONString(reader, &keyBuffer, 256); err != nil {
+			return Envelope{}, TemporaryFile{}, err
+		}
+		if !utf8.Valid(keyBuffer.Bytes()) {
 			return Envelope{}, TemporaryFile{}, ErrMalformed
 		}
 		key := keyBuffer.String()
@@ -836,14 +859,17 @@ func parseEnvelopePath(ctx context.Context, path, tempDir string, extractPayload
 		}
 		seen[key] = struct{}{}
 		if err := skipJSONWhitespace(reader); err != nil {
-			return Envelope{}, TemporaryFile{}, ErrMalformed
+			return Envelope{}, TemporaryFile{}, archiveJSONReadError(err)
 		}
 		colon, err := reader.ReadByte()
-		if err != nil || colon != ':' {
+		if err != nil {
+			return Envelope{}, TemporaryFile{}, archiveJSONReadError(err)
+		}
+		if colon != ':' {
 			return Envelope{}, TemporaryFile{}, ErrMalformed
 		}
 		if err := skipJSONWhitespace(reader); err != nil {
-			return Envelope{}, TemporaryFile{}, ErrMalformed
+			return Envelope{}, TemporaryFile{}, archiveJSONReadError(err)
 		}
 		if key == "payload_b64" {
 			payloadSeen = true
@@ -874,11 +900,11 @@ func parseEnvelopePath(ctx context.Context, path, tempDir string, extractPayload
 			}
 		}
 		if err := skipJSONWhitespace(reader); err != nil {
-			return Envelope{}, TemporaryFile{}, ErrMalformed
+			return Envelope{}, TemporaryFile{}, archiveJSONReadError(err)
 		}
 		separator, err := reader.ReadByte()
 		if err != nil {
-			return Envelope{}, TemporaryFile{}, ErrMalformed
+			return Envelope{}, TemporaryFile{}, archiveJSONReadError(err)
 		}
 		if separator == '}' {
 			break
@@ -896,7 +922,10 @@ func parseEnvelopePath(ctx context.Context, path, tempDir string, extractPayload
 		if err == io.EOF {
 			break
 		}
-		if err != nil || (b != ' ' && b != '\n' && b != '\r' && b != '\t') {
+		if err != nil {
+			return Envelope{}, TemporaryFile{}, err
+		}
+		if b != ' ' && b != '\n' && b != '\r' && b != '\t' {
 			return Envelope{}, TemporaryFile{}, ErrMalformed
 		}
 	}

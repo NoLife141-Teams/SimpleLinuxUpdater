@@ -9,11 +9,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
 	"testing"
+	"testing/iotest"
 
 	"debian-updater/internal/jobs"
 
@@ -40,6 +43,26 @@ func (r testRestoredRuntime) ReloadRestoredState(ctx context.Context) error {
 }
 
 const testPassphrase = "very-strong-passphrase"
+
+func TestArchiveEnvelopeDistinguishesInputFailureFromTruncation(t *testing.T) {
+	const truncated = `{"format":"simplelinuxupdater-backup","version":1,"payload_b64":"YWJj`
+	readFailure := &os.PathError{Op: "read", Path: "secondary.slubkp", Err: syscall.EIO}
+	for _, input := range []struct {
+		name   string
+		source io.Reader
+		want   error
+	}{
+		{"mount read failed", io.MultiReader(strings.NewReader(truncated), iotest.ErrReader(readFailure)), readFailure},
+		{"archive ends mid-payload", strings.NewReader(truncated), ErrMalformed},
+	} {
+		t.Run(input.name, func(t *testing.T) {
+			_, _, err := parseEnvelopeReader(t.Context(), input.source, "", false)
+			if !errors.Is(err, input.want) {
+				t.Fatalf("archive inspection returned %v, want %v", err, input.want)
+			}
+		})
+	}
+}
 
 type testArchiveEntry struct {
 	name     string

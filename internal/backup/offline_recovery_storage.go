@@ -1,7 +1,9 @@
 package backup
 
 import (
+	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"errors"
 	"os"
@@ -21,14 +23,12 @@ func recoveryFileNeed(directory, role string, paths ...string) restoreStorageNee
 	return need
 }
 
-func (s *Service) recoveryReplacementNeeds(database, hosts, stagedHosts string, databaseBytes uint64, checkpointLive bool, diagnosis []string) []restoreStorageNeed {
+func recoveryReplacementNeeds(ctx context.Context, database, hosts, stagedHosts string, databaseBytes uint64, live *sql.DB, diagnosis []string) []restoreStorageNeed {
 	sqlite := restoreStorageNeed{directory: restoreEntryDirectory(database), role: restoreStorageDatabase, bytes: databaseBytes}
-	if checkpointLive {
-		// A checkpoint can grow the live SQLite file before the atomic rename.
-		// Recovery from sealed evidence only copies the corrupt WAL for diagnosis.
-		wal := recoveryFileNeed(sqlite.directory, sqlite.role, database+"-wal")
-		sqlite.bytes = storageSum(sqlite.bytes, wal.bytes)
-		sqlite.incomplete = wal.incomplete
+	if live != nil {
+		growth, known := recoveryCheckpointGrowth(ctx, database, live)
+		sqlite.bytes = storageSum(sqlite.bytes, growth)
+		sqlite.incomplete = !known
 	}
 	needs := []restoreStorageNeed{sqlite}
 	if stagedHosts != "" {
@@ -38,6 +38,24 @@ func (s *Service) recoveryReplacementNeeds(database, hosts, stagedHosts string, 
 		needs = append(needs, recoveryFileNeed(restoreEntryDirectory(database), offlineRecoveryDiagnosis, diagnosis...))
 	}
 	return needs
+}
+
+func recoveryCheckpointGrowth(ctx context.Context, database string, live *sql.DB) (uint64, bool) {
+	walBytes, known := sizeOnDisk(database + "-wal")
+	if !known || walBytes == 0 {
+		return 0, known
+	}
+	currentBytes, known := sizeOnDisk(database)
+	if !known {
+		return 0, false
+	}
+	// The live copy includes committed WAL frames. Repeated versions of a
+	// page take space in the diagnosis snapshot but do not grow SQLite.
+	var logicalBytes uint64
+	if err := live.QueryRowContext(ctx, "SELECT page_count * page_size FROM pragma_page_count(), pragma_page_size()").Scan(&logicalBytes); err != nil {
+		return 0, false
+	}
+	return logicalBytes - min(logicalBytes, currentBytes), true
 }
 
 // A matching trust file only needs a directory sync. Only budget space for

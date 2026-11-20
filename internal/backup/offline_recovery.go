@@ -83,7 +83,7 @@ func (s *Service) OfflineRestoreRecovery(ctx context.Context, selection string, 
 	if tempDir == "" {
 		tempDir = os.TempDir()
 	}
-	preparation := recoveryFileNeed(tempDir, restoreStoragePreparation, database, database+"-wal", database+"-shm")
+	preparation := recoveryFileNeed(tempDir, restoreStoragePreparation, database, database+"-wal")
 	volumes := s.estimateRestoreStorage(preparation)
 	storageFailure := func(cause error) (OfflineRecoveryReport, error) {
 		report.Blocker = offlineRecoveryStorageBlocker
@@ -205,7 +205,7 @@ func (s *Service) OfflineRestoreRecovery(ctx context.Context, selection string, 
 				stagedBytes, _ := sizeOnDisk(staged)
 				hostsPath := recoveryHostReplacementPath(hosts, stagedHosts, true)
 				preparation := restoreStorageNeed{directory: setWork, role: restoreStoragePreparation}
-				writes := s.recoveryReplacementNeeds(database, hosts, hostsPath, stagedBytes, live != nil, diagnosisTargets)
+				writes := recoveryReplacementNeeds(ctx, database, hosts, hostsPath, stagedBytes, live, diagnosisTargets)
 				remaining := s.estimateRestoreStorage(append([]restoreStorageNeed{preparation}, writes...)...)
 				// Preparation files already consume space at this point. On
 				// shared volumes only the remaining writes need free space.
@@ -241,7 +241,7 @@ func (s *Service) OfflineRestoreRecovery(ctx context.Context, selection string, 
 			err := selected.storageFailure(cause, role)
 			return report, err
 		}
-		selected.Storage = s.estimateRestoreStorage(s.recoveryReplacementNeeds(database, hosts, hostsPath, databaseBytes, live != nil, diagnosisTargets)...)
+		selected.Storage = s.estimateRestoreStorage(recoveryReplacementNeeds(ctx, database, hosts, hostsPath, databaseBytes, live, diagnosisTargets)...)
 		if err := storageBlocker(selected.Storage); err != nil {
 			return failStorage(err, "")
 		}
@@ -293,7 +293,7 @@ func (s *Service) OfflineRestoreRecovery(ctx context.Context, selection string, 
 		if stagedHosts != nil && stagedHosts.Exists {
 			hostsPath = stagedHosts.BackupPath
 		}
-		selected.Storage = s.estimateRestoreStorage(s.recoveryReplacementNeeds(database, hosts, hostsPath, databaseBytes, live != nil, nil)...)
+		selected.Storage = s.estimateRestoreStorage(recoveryReplacementNeeds(ctx, database, hosts, hostsPath, databaseBytes, live, nil)...)
 		if err := storageBlocker(selected.Storage); err != nil {
 			discardProvisionalDiagnosis()
 			return failStorage(err, "")
@@ -345,25 +345,17 @@ func (s *Service) prepareOfflineRecoverySet(ctx context.Context, rootPath, work 
 	if err != nil {
 		return fail("invalid_manifest", nil)
 	}
-	var inputs, databaseInputs []string
+	var inputs []string
 	for i, entry := range indexed {
 		if entry == nil || !entry.Exists || (i == 2 && !sealed) {
 			continue
 		}
 		inputs = append(inputs, entry.BackupPath)
-		if i < 2 {
-			databaseInputs = append(databaseInputs, entry.BackupPath)
-		}
 	}
 	hostsPath := recoveryHostReplacementPath(hosts, indexed[len(targets)], sealed)
+	// Reserve the files copied in this phase. SQLite reports a full volume
+	// during evidence merging or compaction, whose output size is unknown.
 	preparation := recoveryFileNeed(work, restoreStoragePreparation, inputs...)
-	// The reconstructed database, SQLite's working files and VACUUM INTO
-	// output can coexist. The live clone already consumes space, and only
-	// its APT and delivery evidence can grow the reconstructed database.
-	database := recoveryFileNeed(work, restoreStoragePreparation, databaseInputs...)
-	databaseBytes := database.bytes
-	preparation.bytes = storageSum(preparation.bytes, storageSum(databaseBytes, databaseBytes))
-	preparation.incomplete = preparation.incomplete || database.incomplete
 	result.Storage = s.estimateRestoreStorage(preparation)
 	if err := storageBlocker(result.Storage); err != nil {
 		return "", nil, result.storageFailure(err, "")
@@ -371,7 +363,7 @@ func (s *Service) prepareOfflineRecoverySet(ctx context.Context, rootPath, work 
 	// Diagnosis and trust copies have sizes we can check now. SQLite's
 	// replacement size is only known after evidence is merged and VACUUM INTO
 	// has removed free pages, so check it after staging.
-	knownWrites := s.recoveryReplacementNeeds(targets[0], hosts, hostsPath, 0, false, diagnosis)
+	knownWrites := recoveryReplacementNeeds(ctx, targets[0], hosts, hostsPath, 0, live, diagnosis)
 	if err := storageBlocker(s.estimateRestoreStorage(knownWrites...)); err != nil {
 		return "", nil, result.storageFailure(err, "")
 	}
@@ -416,6 +408,10 @@ func (s *Service) prepareOfflineRecoverySet(ctx context.Context, rootPath, work 
 		// The sealed rollback database is the complete pre-replacement state.
 		// Use a separate connection and copy for the same evidence validation
 		// used when merging from a readable live database.
+		evidenceCopy := recoveryFileNeed(work, restoreStoragePreparation, reconstructed, reconstructed+"-wal")
+		if err := storageBlocker(s.estimateRestoreStorage(evidenceCopy)); err != nil {
+			return "", nil, result.storageFailure(err, "")
+		}
 		live, err = cloneRecoveryDatabase(ctx, fs, reconstructed+".evidence", reconstructed)
 		if err != nil {
 			return fail("invalid_database", err)

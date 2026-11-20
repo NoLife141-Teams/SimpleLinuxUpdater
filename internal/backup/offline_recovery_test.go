@@ -452,10 +452,18 @@ func TestOfflineRecoveryWriteFailureKeepsCommittedWALState(t *testing.T) {
 	for _, query := range []string{
 		"PRAGMA journal_mode=WAL",
 		"PRAGMA wal_autocheckpoint=0",
+		"PRAGMA synchronous=OFF",
 		"CREATE TABLE committed_before_recovery (value INTEGER NOT NULL)",
-		"INSERT INTO committed_before_recovery VALUES (42)",
+		"INSERT INTO committed_before_recovery VALUES (0)",
 	} {
 		if _, err := db.Exec(query); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// The WAL holds many versions of the same page. Its full size is
+	// needed for diagnosis, while checkpointing grows only a few pages.
+	for range 2300 {
+		if _, err := db.Exec("UPDATE committed_before_recovery SET value = value + 1"); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -464,6 +472,20 @@ func TestOfflineRecoveryWriteFailureKeepsCommittedWALState(t *testing.T) {
 	}
 	if err := fs.copySnapshot(f.db+"-wal", crashDB+"-wal"); err != nil {
 		t.Fatal(err)
+	}
+	tempDir := t.TempDir()
+	f.service.deps.TempDir = func() string { return tempDir }
+	f.service.deps.ProbeRestoreStorage = func(dir string) installationhealth.VolumeCapacity {
+		if dir == root || dir == filepath.Dir(f.hosts) {
+			free := uint64(22 << 20)
+			return installationhealth.VolumeCapacity{Device: 1, Identified: true, AvailableBytes: &free}
+		}
+		free := uint64(128 << 20)
+		return installationhealth.VolumeCapacity{Device: 2, Identified: true, AvailableBytes: &free}
+	}
+	preview, err := f.service.OfflineRestoreRecovery(t.Context(), "", offlineRecoveryMergeFixtureJobs)
+	if err != nil || len(preview.Sets) != 1 || !preview.Sets[0].Ready {
+		t.Fatalf("preview with sufficient space for actual checkpoint growth: %+v, %v", preview, err)
 	}
 	f.service.syncRestoreFile = func(file *os.File) error {
 		if filepath.Dir(file.Name()) == root && strings.HasPrefix(filepath.Base(file.Name()), ".restore-") {
@@ -481,7 +503,7 @@ func TestOfflineRecoveryWriteFailureKeepsCommittedWALState(t *testing.T) {
 	}
 	defer live.Close()
 	var value int
-	if err := live.QueryRow("SELECT value FROM committed_before_recovery").Scan(&value); err != nil || value != 42 {
+	if err := live.QueryRow("SELECT value FROM committed_before_recovery").Scan(&value); err != nil || value != 2300 {
 		t.Fatalf("failed replacement lost committed WAL data: value = %d, err = %v", value, err)
 	}
 }
@@ -613,18 +635,7 @@ func TestOfflineRecoveryBudgetsOnlyStagedEvidenceAfterCopyingLiveDatabase(t *tes
 			free := uint64(128 << 20)
 			return installationhealth.VolumeCapacity{Device: 1, Identified: true, AvailableBytes: &free}
 		}
-		free := uint64(28 << 20)
-		err := filepath.WalkDir(tempDir, func(path string, entry fs.DirEntry, err error) error {
-			if err != nil || entry.IsDir() {
-				return err
-			}
-			bytes, _ := sizeOnDisk(path)
-			free -= min(free, bytes)
-			return nil
-		})
-		if err != nil {
-			t.Fatal(err)
-		}
+		free := fixtureWorkspaceFree(t, tempDir, 28<<20)
 		return installationhealth.VolumeCapacity{Device: 2, Identified: true, AvailableBytes: &free}
 	}
 	checkEvidence := func(ctx context.Context, live, staged *sql.DB) error {
@@ -644,7 +655,23 @@ func TestOfflineRecoveryBudgetsOnlyStagedEvidenceAfterCopyingLiveDatabase(t *tes
 	}
 }
 
-func TestOfflineRecoveryBudgetsActualCompactedDatabaseOnReplacementVolume(t *testing.T) {
+func fixtureWorkspaceFree(t *testing.T, dir string, free uint64) uint64 {
+	t.Helper()
+	err := filepath.WalkDir(dir, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil || entry.IsDir() {
+			return err
+		}
+		bytes, _ := sizeOnDisk(path)
+		free -= min(free, bytes)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return free
+}
+
+func TestOfflineRecoveryBudgetsCompactionWithLimitedWorkspaceAndReplacementVolumes(t *testing.T) {
 	f, root, id := interruptedRecoveryFixtureWithSetup(t, false, func(f durabilityFixture) {
 		db, err := openRecoveryCopy(t.Context(), f.db)
 		if err != nil {
@@ -657,12 +684,18 @@ func TestOfflineRecoveryBudgetsActualCompactedDatabaseOnReplacementVolume(t *tes
 			t.Fatal(err)
 		}
 	})
-	tempFree, databaseFree := uint64(128<<20), uint64(14<<20)
+	tempDir := t.TempDir()
+	f.service.deps.TempDir = func() string { return tempDir }
+	// The workspace can hold the raw snapshot and compacted SQLite
+	// together, with margin. The replacement volume can hold the
+	// diagnosis and compacted SQLite, with margin.
+	databaseFree := uint64(14 << 20)
 	f.service.deps.ProbeRestoreStorage = func(dir string) installationhealth.VolumeCapacity {
 		if dir == root {
 			return installationhealth.VolumeCapacity{Device: 1, Identified: true, AvailableBytes: &databaseFree}
 		}
-		return installationhealth.VolumeCapacity{Device: 2, Identified: true, AvailableBytes: &tempFree}
+		free := fixtureWorkspaceFree(t, tempDir, 28<<20)
+		return installationhealth.VolumeCapacity{Device: 2, Identified: true, AvailableBytes: &free}
 	}
 	preview, err := f.service.OfflineRestoreRecovery(t.Context(), "", offlineRecoveryMergeFixtureJobs)
 	if err != nil || len(preview.Sets) != 1 || !preview.Sets[0].Ready {

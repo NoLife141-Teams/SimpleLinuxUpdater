@@ -1,0 +1,242 @@
+package main
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"net/url"
+
+	auditpkg "debian-updater/internal/audit"
+	"debian-updater/internal/jobs"
+	serverpkg "debian-updater/internal/servers"
+)
+
+type legacyAPTIncident struct {
+	jobID, name, identity, endpoint string
+}
+
+type legacyAPTIncidentEvidence struct {
+	legacyAPTIncident
+	resolved bool
+	record   jobs.Record
+}
+
+func captureLegacyAPTIncidents(ctx context.Context, live *sql.Tx) ([]legacyAPTIncidentEvidence, error) {
+	// The installed decision wins over an older archive. A resolved legacy
+	// incident must not reappear, and a pending incident must keep its report.
+	incidents, err := live.QueryContext(ctx, `SELECT job_id,server_name,identity,endpoint,resolved FROM legacy_apt_incidents`)
+	if err != nil {
+		return nil, err
+	}
+	defer incidents.Close()
+	var evidence []legacyAPTIncidentEvidence
+	for incidents.Next() {
+		var incident legacyAPTIncidentEvidence
+		if err := incidents.Scan(&incident.jobID, &incident.name, &incident.identity, &incident.endpoint, &incident.resolved); err != nil {
+			return nil, err
+		}
+		evidence = append(evidence, incident)
+	}
+	if err := incidents.Err(); err != nil {
+		return nil, err
+	}
+	if err := incidents.Close(); err != nil {
+		return nil, err
+	}
+	for i := range evidence {
+		incident := &evidence[i]
+		if !incident.resolved {
+			record, err := jobs.ReadAPTRecoveryJob(ctx, live, incident.jobID)
+			if err != nil {
+				return nil, err
+			}
+			incident.record = record
+		}
+	}
+	return evidence, nil
+}
+
+func preserveLegacyAPTIncidents(ctx context.Context, evidence []legacyAPTIncidentEvidence, staged *sql.DB, logSource *sql.Tx) (aptRestoreConflicts, error) {
+	if len(evidence) == 0 {
+		return nil, nil
+	}
+	stagedJobs := jobs.NewSQLiteRepository(staged)
+	var conflicts aptRestoreConflicts
+	for _, incident := range evidence {
+		if !incident.resolved {
+			err := stagedJobs.ImportAPTRecoveryEvidence(ctx, incident.record, logSource)
+			if errors.Is(err, jobs.ErrAPTRecoveryEvidenceConflict) {
+				conflicts = append(conflicts, aptRestoreConflict{
+					Code: "apt_evidence_conflict", Server: incident.record.ServerName, jobID: incident.jobID,
+					Message: "The archive contains conflicting APT job evidence for this server.",
+				})
+				continue
+			}
+			if err != nil {
+				return nil, err
+			}
+		}
+		if _, err := staged.ExecContext(ctx, `INSERT INTO legacy_apt_incidents(job_id,server_name,identity,endpoint,resolved)
+			VALUES(?,?,?,?,?) ON CONFLICT(job_id) DO UPDATE SET
+				server_name=excluded.server_name,identity=excluded.identity,endpoint=excluded.endpoint,resolved=excluded.resolved`,
+			incident.jobID, incident.name, incident.identity, incident.endpoint, incident.resolved); err != nil {
+			return nil, err
+		}
+	}
+	return conflicts, bindUnmatchedLegacyAPTIncidents(ctx, staged)
+}
+
+func (i legacyAPTIncident) matches(server Server) bool {
+	return i.name == server.Name || (i.identity != "" && i.identity == server.Identity) ||
+		(i.endpoint != "" && i.endpoint == serverpkg.NormalizeServerEndpoint(server.Host, server.Port).String())
+}
+
+func (i legacyAPTIncident) canVerify(server Server) bool {
+	return i.endpoint == "" || i.endpoint == serverpkg.NormalizeServerEndpoint(server.Host, server.Port).String()
+}
+
+func migrateLegacyAPTIncidents(db *sql.DB) error {
+	ctx := context.Background()
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `
+		WITH unresolved AS (
+			SELECT j.id, j.server_name,
+				row_number() OVER (PARTITION BY j.server_name ORDER BY j.created_at DESC, j.id DESC) AS position
+			FROM jobs j
+			WHERE j.apt_target='' AND j.server_name<>''
+				AND j.kind IN ('update','autoremove','apt_repair')
+				AND ((j.status='failed' AND j.error_class='reconciliation_required') OR
+					(j.status='running' AND ((j.kind='update' AND j.phase='apt_upgrade') OR
+						(j.kind='autoremove' AND j.phase='autoremove') OR (j.kind='apt_repair' AND j.phase='reconcile'))))
+				AND NOT EXISTS (SELECT 1 FROM jobs newer
+					WHERE newer.server_name=j.server_name AND newer.status='succeeded' AND newer.apt_target=''
+						AND newer.kind IN ('update','autoremove','apt_repair') AND newer.created_at>j.created_at)
+		)
+		INSERT INTO legacy_apt_incidents(job_id,server_name,identity,endpoint)
+		SELECT id,server_name,'','' FROM unresolved WHERE position=1
+		ON CONFLICT(job_id) DO NOTHING`); err != nil {
+		return err
+	}
+	if err := bindUnmatchedLegacyAPTIncidents(ctx, tx); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// Bind a name-only incident when its inventory entry first becomes available.
+// The accepted association follows renames and retains the original SSH
+// endpoint even if the inventory entry is edited or removed again.
+func bindUnmatchedLegacyAPTIncidents(ctx context.Context, db interface {
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+}) error {
+	rows, err := db.QueryContext(ctx, `SELECT i.job_id,s.identity,s.host,s.port
+		FROM legacy_apt_incidents i JOIN servers s ON s.name=i.server_name
+		WHERE i.resolved=0 AND i.identity='' AND i.endpoint='' AND s.identity<>'' AND s.host<>''`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	var incidents []legacyAPTIncident
+	for rows.Next() {
+		var incident legacyAPTIncident
+		var host string
+		var port int
+		if err := rows.Scan(&incident.jobID, &incident.identity, &host, &port); err != nil {
+			return err
+		}
+		incident.endpoint = serverpkg.NormalizeServerEndpoint(host, port).String()
+		incidents = append(incidents, incident)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	for _, incident := range incidents {
+		if _, err := db.ExecContext(ctx, `UPDATE legacy_apt_incidents SET identity=?,endpoint=? WHERE job_id=?`,
+			incident.identity, incident.endpoint, incident.jobID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func pendingLegacyAPTIncidents(ctx context.Context, db *sql.DB) ([]legacyAPTIncident, error) {
+	rows, err := db.QueryContext(ctx, `SELECT job_id,server_name,identity,endpoint FROM legacy_apt_incidents
+		WHERE resolved=0`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var incidents []legacyAPTIncident
+	for rows.Next() {
+		var incident legacyAPTIncident
+		if err := rows.Scan(&incident.jobID, &incident.name, &incident.identity, &incident.endpoint); err != nil {
+			return nil, err
+		}
+		incidents = append(incidents, incident)
+	}
+	return incidents, rows.Err()
+}
+
+func legacyAPTIncidentForServer(incidents []legacyAPTIncident, server Server) legacyAPTIncident {
+	var first legacyAPTIncident
+	for _, incident := range incidents {
+		if (first.jobID == "" || incident.jobID < first.jobID) && incident.matches(server) {
+			first = incident
+		}
+	}
+	return first
+}
+
+func (i legacyAPTIncident) facts(facts restoreAPTHostFacts) restoreAPTHostFacts {
+	facts.LegacyJobID = i.jobID
+	facts.LegacyReportURL = "/api/reports/jobs/" + url.PathEscape(i.jobID)
+	return facts
+}
+
+// Record the proof and its audit together so a partial write cannot lift the guard.
+func (v *restoreAPTValidation) resolveLegacyIncident(ctx context.Context, service *auditpkg.Service, actor, ip string,
+	server Server, incident legacyAPTIncident, observation restoreAPTObservation) error {
+	tx, err := v.db().BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	result, err := tx.ExecContext(ctx, `UPDATE legacy_apt_incidents SET resolved=1 WHERE job_id=? AND resolved=0`, incident.jobID)
+	if err != nil {
+		return err
+	}
+	if affected, err := result.RowsAffected(); err != nil || affected != 1 {
+		return serverpkg.ErrRestoreAPTValidation
+	}
+	endpoint := serverpkg.NormalizeServerEndpoint(server.Host, server.Port).String()
+	if _, err := tx.ExecContext(ctx, `INSERT INTO restore_apt_validation_targets(endpoint) VALUES (?)
+		ON CONFLICT(endpoint) DO NOTHING`, endpoint); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO restore_apt_validation(identity,target,host_key,result,checked_at,approved)
+		VALUES (?,?,?,?,?,?) ON CONFLICT(identity) DO UPDATE SET target=excluded.target,host_key=excluded.host_key,
+			result=excluded.result,checked_at=excluded.checked_at,approved=excluded.approved`,
+		server.Identity, observation.target, observation.key, observation.result, observation.checkedAt, observation.approved); err != nil {
+		return err
+	}
+	const action = "apt.legacy_incident.resolve"
+	event := service.PrepareEvent("", actor, ip, action, "server", server.Name, "success",
+		"Legacy APT incident resolved after operator confirmation and read-only validation",
+		map[string]any{"job_id": incident.jobID, "server_identity": server.Identity, "host_key_fingerprint": observation.key})
+	if err := auditpkg.WriteTx(tx, event); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	service.NotifyCommitted(action, event)
+	return nil
+}

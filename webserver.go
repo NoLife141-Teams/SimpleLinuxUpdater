@@ -313,6 +313,9 @@ func ensureSchema(db *sql.DB) error {
 	if err := ensureJobSchema(db); err != nil {
 		return err
 	}
+	if err := migrateLegacyAPTIncidents(db); err != nil {
+		return err
+	}
 	if _, err := db.Exec(statusBatchSchema); err != nil {
 		return err
 	}

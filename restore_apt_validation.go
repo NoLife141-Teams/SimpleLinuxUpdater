@@ -47,13 +47,15 @@ type restoreAPTObservation struct {
 }
 
 type restoreAPTHostFacts struct {
-	Name           string     `json:"name"`
-	Identity       string     `json:"identity"`
-	TargetRevision string     `json:"target_revision,omitempty"`
-	Disabled       bool       `json:"disabled"`
-	Checking       bool       `json:"checking,omitempty"`
-	State          string     `json:"state"`
-	CheckedAt      *time.Time `json:"checked_at,omitempty"`
+	Name            string     `json:"name"`
+	Identity        string     `json:"identity"`
+	TargetRevision  string     `json:"target_revision,omitempty"`
+	Disabled        bool       `json:"disabled"`
+	Checking        bool       `json:"checking,omitempty"`
+	State           string     `json:"state"`
+	CheckedAt       *time.Time `json:"checked_at,omitempty"`
+	LegacyJobID     string     `json:"legacy_job_id,omitempty"`
+	LegacyReportURL string     `json:"legacy_report_url,omitempty"`
 }
 
 func restoreAPTTargetRevision(target string) string {
@@ -75,6 +77,13 @@ func ensureRestoreAPTValidationSchema(db *sql.DB) error {
 		result TEXT NOT NULL DEFAULT 'pending',
 		checked_at INTEGER NOT NULL DEFAULT 0,
 		approved INTEGER NOT NULL DEFAULT 0
+	);
+	CREATE TABLE IF NOT EXISTS legacy_apt_incidents (
+		job_id TEXT PRIMARY KEY,
+		server_name TEXT NOT NULL,
+		identity TEXT NOT NULL,
+		endpoint TEXT NOT NULL,
+		resolved INTEGER NOT NULL DEFAULT 0
 	)`)
 	return err
 }
@@ -223,6 +232,10 @@ func (v *restoreAPTValidation) authorize(ctx context.Context, server Server) (st
 	if v == nil || v.db() == nil {
 		return "", nil
 	}
+	legacy, err := pendingLegacyAPTIncidents(ctx, v.db())
+	if err != nil || legacyAPTIncidentForServer(legacy, server).jobID != "" {
+		return "", serverpkg.ErrRestoreAPTValidation
+	}
 	observation, required, err := v.observe(ctx, server)
 	if err != nil {
 		return "", serverpkg.ErrRestoreAPTValidation
@@ -240,45 +253,63 @@ func (o restoreAPTObservation) authorizes(server Server) bool {
 	return o.approved && o.result == "healthy" && o.key != "" && o.target != "" && o.target == server.APTTarget()
 }
 
-func (v *restoreAPTValidation) all(ctx context.Context) (map[string]restoreAPTObservation, error) {
+func (v *restoreAPTValidation) all(ctx context.Context) (map[string]restoreAPTObservation, []legacyAPTIncident, error) {
 	db := v.db()
 	if db == nil {
-		return nil, errors.New("restore APT persistence is unavailable")
+		return nil, nil, errors.New("restore APT persistence is unavailable")
 	}
-	rows, err := db.QueryContext(ctx, `SELECT identity,target,host_key,result,checked_at,approved FROM restore_apt_validation`)
+	rows, err := db.QueryContext(ctx, `
+		SELECT identity,target,host_key,result,checked_at,approved,'' AS job_id,'' AS server_name,'' AS endpoint
+		FROM restore_apt_validation
+		UNION ALL
+		SELECT identity,'','','',0,0,job_id,server_name,endpoint
+		FROM legacy_apt_incidents WHERE resolved=0`)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer rows.Close()
 	result := make(map[string]restoreAPTObservation)
+	var legacy []legacyAPTIncident
 	for rows.Next() {
-		var identity string
+		var incident legacyAPTIncident
 		var observation restoreAPTObservation
-		if err := rows.Scan(&identity, &observation.target, &observation.key, &observation.result,
-			&observation.checkedAt, &observation.approved); err != nil {
-			return nil, err
+		if err := rows.Scan(&incident.identity, &observation.target, &observation.key, &observation.result,
+			&observation.checkedAt, &observation.approved, &incident.jobID, &incident.name, &incident.endpoint); err != nil {
+			return nil, nil, err
 		}
-		result[identity] = observation
+		if incident.jobID != "" {
+			legacy = append(legacy, incident)
+		} else {
+			result[incident.identity] = observation
+		}
 	}
-	return result, rows.Err()
+	return result, legacy, rows.Err()
 }
 
 func (v *restoreAPTValidation) hostFacts(ctx context.Context, state *serverpkg.State, now time.Time, isolated bool) []restoreAPTHostFacts {
-	observations, err := v.all(ctx)
+	observations, legacy, err := v.all(ctx)
 	if err != nil {
 		return nil
 	}
 	facts := make([]restoreAPTHostFacts, 0, len(observations))
-	if len(observations) == 0 {
+	if len(observations) == 0 && len(legacy) == 0 {
 		return facts
 	}
 	state.Lock()
 	defer state.Unlock()
 	for _, server := range state.Servers() {
-		if observation, required := observations[server.Identity]; required {
+		incident := legacyAPTIncidentForServer(legacy, server)
+		if observation, required := observations[server.Identity]; required || incident.jobID != "" {
 			status := state.StatusMap()[server.Name]
 			host := observation.facts(server, now, isolated, status.RequiresAPTReconciliation())
 			host.Checking = status != nil && status.Status == runtimepkg.StatusRestoreAPTCheck
+			if incident.jobID != "" {
+				host = incident.facts(host)
+				host.State = "legacy_target_unverified"
+				if !incident.canVerify(server) {
+					host.State = "legacy_target_changed"
+				}
+			}
 			facts = append(facts, host)
 		}
 	}
@@ -286,12 +317,13 @@ func (v *restoreAPTValidation) hostFacts(ctx context.Context, state *serverpkg.S
 }
 
 func (v *restoreAPTValidation) blocked(ctx context.Context, servers []Server) map[string]bool {
-	observations, err := v.all(ctx)
+	observations, legacy, err := v.all(ctx)
 	blocked := make(map[string]bool)
 	isolated := v.isolation.BlocksExternalWork()
 	for _, server := range servers {
 		observation, required := observations[server.Identity]
-		if err != nil || (required && (isolated || !observation.authorizes(server))) {
+		if err != nil || legacyAPTIncidentForServer(legacy, server).jobID != "" ||
+			(required && (isolated || !observation.authorizes(server))) {
 			blocked[server.Name] = true
 		}
 	}
@@ -367,10 +399,11 @@ func (v *restoreAPTValidation) probe(ctx context.Context, server Server) restore
 }
 
 type restoreAPTCheckTarget struct {
-	Name           string `json:"name"`
-	Identity       string `json:"identity"`
-	TargetRevision string `json:"target_revision,omitempty"`
-	target         string
+	Name               string `json:"name"`
+	Identity           string `json:"identity"`
+	TargetRevision     string `json:"target_revision,omitempty"`
+	ConfirmLegacyJobID string `json:"confirm_legacy_job_id,omitempty"`
+	target             string
 }
 
 type restoreAPTCheckResult struct {
@@ -512,8 +545,20 @@ func (v *restoreAPTValidation) check(ctx context.Context, deps AppDeps, target r
 	if server.APTTarget() != target.target {
 		return targetChanged()
 	}
+	legacy, err := pendingLegacyAPTIncidents(ctx, v.db())
+	if err != nil {
+		return target.failure(http.StatusServiceUnavailable, "The legacy APT incident state is unavailable.")
+	}
+	incident := legacyAPTIncidentForServer(legacy, server)
+	if incident.jobID != "" && (target.ConfirmLegacyJobID != incident.jobID ||
+		target.TargetRevision != restoreAPTTargetRevision(server.APTTarget()) || !incident.canVerify(server)) {
+		return target.failure(http.StatusConflict, "Confirm the original machine and select its current SSH target before checking the legacy APT incident.")
+	}
+	if incident.jobID == "" && target.ConfirmLegacyJobID != "" {
+		return target.failure(http.StatusConflict, "The legacy APT incident changed. Review the current state.")
+	}
 	previous, required, err := v.observe(ctx, server)
-	if err != nil || !required {
+	if err != nil || (!required && incident.jobID == "") {
 		return target.failure(http.StatusConflict, "This server has no pending restore validation.")
 	}
 	isolated, err := v.isolation.State()
@@ -545,9 +590,19 @@ func (v *restoreAPTValidation) check(ctx context.Context, deps AppDeps, target r
 	now := v.now()
 	observation.checkedAt = now.Unix()
 	observation.approved = !isolated && observation.result == "healthy"
+	if incident.jobID != "" && observation.result == "healthy" && observation.key != "" {
+		if err := v.resolveLegacyIncident(ctx, deps.AuditService, actor, ip, server, incident, observation); err != nil {
+			return target.failure(http.StatusServiceUnavailable, "The legacy APT resolution could not be saved and audited.")
+		}
+		status := deps.ServerState.CurrentStatusSnapshot(server.Name)
+		return restoreAPTCheckResult{restoreAPTHostFacts: observation.facts(server, now, isolated, status.RequiresAPTReconciliation())}
+	}
 	if err := deps.AuditService.Record(actor, ip, "backup.restore_apt.check",
 		"server", server.Name, observation.result, "Remote APT state checked after restore", nil); err != nil {
 		return target.failure(http.StatusServiceUnavailable, "The APT check could not be audited.")
+	}
+	if incident.jobID != "" {
+		return restoreAPTCheckResult{restoreAPTHostFacts: incident.facts(observation.facts(server, now, isolated, false))}
 	}
 	saved, err := v.db().ExecContext(ctx, `UPDATE restore_apt_validation
 		SET target=?,host_key=?,result=?,checked_at=?,approved=? WHERE identity=? AND target=?`, observation.target,

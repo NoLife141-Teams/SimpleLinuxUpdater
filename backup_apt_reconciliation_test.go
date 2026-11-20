@@ -60,6 +60,17 @@ func TestAPTRestoreComparisonReportsCurrentTargetsAndContradictoryJobs(t *testin
 			insertServer(staged, server)
 		}
 	}
+	legacy := Server{Name: "legacy", Identity: "legacy-id", Host: "legacy.internal", Port: 22}
+	insertServer(live, legacy)
+	insertServer(staged, legacy)
+	if _, err := live.Exec(`INSERT INTO jobs(id,kind,server_name,actor,status,error_class,created_at,updated_at)
+		VALUES('legacy-job','update','legacy','test','failed','reconciliation_required',?,?)`, created, created); err != nil {
+		t.Fatal(err)
+	}
+	if err := migrateLegacyAPTIncidents(live); err != nil {
+		t.Fatal(err)
+	}
+	insertIncident(staged, "legacy-job", legacy)
 	deps := AppDeps{
 		DB:                     func() *sql.DB { return live },
 		MaintenanceCoordinator: maintenance.NewCoordinator(maintenance.Deps{}),
@@ -107,10 +118,10 @@ func TestAPTRestoreComparisonReportsCurrentTargetsAndContradictoryJobs(t *testin
 	})
 	err := previewAPTRestore(t.Context(), deps, staged, created)
 	var conflicts aptRestoreConflicts
-	if !errors.As(err, &conflicts) || !errors.Is(err, jobs.ErrAPTRecoveryEvidenceConflict) || len(conflicts) != 3 {
+	if !errors.As(err, &conflicts) || !errors.Is(err, jobs.ErrAPTRecoveryEvidenceConflict) || len(conflicts) != 4 {
 		t.Fatalf("review conflicts = %+v, %v", conflicts, err)
 	}
-	for i, code := range []string{"apt_target_changed", "apt_evidence_conflict", "apt_target_missing"} {
+	for i, code := range []string{"apt_target_changed", "apt_evidence_conflict", "apt_evidence_conflict", "apt_target_missing"} {
 		if conflict := conflicts[i]; conflict.Code != code || conflict.jobID != conflict.Server+"-job" || conflict.ReportURL != "" {
 			t.Fatalf("unexpected conflict %d: %+v", i, conflict)
 		}

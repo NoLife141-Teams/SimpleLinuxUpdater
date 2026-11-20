@@ -50,6 +50,9 @@ func (r schedulerRevisionServerRepository) Save(servers []serverpkg.Server, txHo
 		if err := reconcileRestoredAPTInventory(context.Background(), tx, false); err != nil {
 			return err
 		}
+		if err := bindUnmatchedLegacyAPTIncidents(context.Background(), tx); err != nil {
+			return err
+		}
 		if changed {
 			return bumpSchedulerServerStateRevisionIfPresent(tx)
 		}

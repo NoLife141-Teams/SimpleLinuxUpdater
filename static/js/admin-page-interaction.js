@@ -373,7 +373,8 @@
                 .filter(host => host && typeof host.name === "string" && typeof host.identity === "string")
                 .map(host => ({ name: host.name, identity: host.identity, disabled: Boolean(host.disabled),
                     state: String(host.state || "pending"), checkedAt: timestamp(host.checked_at),
-                    checking: Boolean(host.checking), targetRevision: String(host.target_revision || "") }))
+                    checking: Boolean(host.checking), targetRevision: String(host.target_revision || ""),
+                    legacyJobID: String(host.legacy_job_id || ""), legacyReportURL: String(host.legacy_report_url || "") }))
             : previousRestoreAPTHosts;
         const archives = data.backup_archives || {};
         const point = archives.recovery_point || {};

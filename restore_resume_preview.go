@@ -72,7 +72,7 @@ type restoreResumeHostBinding struct {
 
 func collectRestoreResumeSnapshot(ctx context.Context, deps AppDeps, activation string, now time.Time) restoreResumeSnapshot {
 	snapshot := restoreResumeSnapshot{Activation: activation, ReviewRevision: deps.restoreResumeReview.revision.Load()}
-	observations, aptErr := deps.RestoreAPTValidation.all(ctx)
+	observations, legacy, aptErr := deps.RestoreAPTValidation.all(ctx)
 	state := deps.ServerState
 	state.Lock()
 	inventory := state.CloneServers()
@@ -95,6 +95,8 @@ func collectRestoreResumeSnapshot(ctx context.Context, deps AppDeps, activation 
 			host.Allowed, host.Reason = false, "disabled"
 		case needsReconciliation:
 			host.Allowed, host.Reason = false, "reconciliation_required"
+		case legacyAPTIncidentForServer(legacy, server).jobID != "":
+			host.Allowed, host.Reason = false, "legacy_target_unverified"
 		case required:
 			facts := observation.facts(server, now, true, false)
 			host.CheckedAt = facts.CheckedAt

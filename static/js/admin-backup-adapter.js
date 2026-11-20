@@ -420,7 +420,7 @@
             const hosts = new Map((view.installation?.restoreAPTHosts || []).map(host => [host.identity, host]));
             for (const [identity, selected] of aptSelection) {
                 const host = hosts.get(identity);
-                if (!host || host.disabled || host.name !== selected.name || host.targetRevision !== selected.targetRevision) {
+                if (!host || host.disabled || host.legacyJobID || host.name !== selected.name || host.targetRevision !== selected.targetRevision) {
                     aptSelection.delete(identity);
                 }
             }
@@ -433,8 +433,8 @@
                 const host = hosts.get(checkbox.dataset.restoreAptSelect);
                 if (!host) continue;
                 checkbox.checked = aptSelection.has(host.identity);
-                checkbox.disabled = Boolean(aptRun || host.disabled || (!checkbox.checked && aptSelection.size >= aptBatchLimit));
-                row.querySelector("[data-restore-apt-name]").disabled = Boolean(aptRun || host.disabled);
+                checkbox.disabled = Boolean(aptRun || host.disabled || host.legacyJobID || (!checkbox.checked && aptSelection.size >= aptBatchLimit));
+                row.querySelector("[data-restore-apt-name]").disabled = Boolean(aptRun || host.disabled || host.state === "legacy_target_changed");
                 const initial = aptRun?.hosts.get(host.identity);
                 const result = aptResults.get(host.identity);
                 const completed = initial && host.checkedAt && host.checkedAt !== initial.checkedAt && !host.checking;
@@ -463,9 +463,13 @@
 
         async function checkRestoredAPT(hosts, single) {
             if (aptRun || !hosts.length || hosts.length > aptBatchLimit) return;
+            const legacy = hosts.find(host => host.legacyJobID);
+            if (legacy && (!single || !window.confirm(`Confirm through a trusted console that ${legacy.name} is the original machine in the job report. A healthy read-only APT check can then resolve the incident. Continue?`))) return;
             const lifetime = lifecycle.capture();
             const feedback = document.getElementById("restore-apt-feedback");
-            const targets = hosts.map(({ name, identity, targetRevision }) => ({ name, identity, target_revision: targetRevision || undefined }));
+            const targets = hosts.map(({ name, identity, targetRevision, legacyJobID }) => ({
+                name, identity, target_revision: targetRevision || undefined, confirm_legacy_job_id: legacyJobID || undefined,
+            }));
             const run = { single, name: targets[0].name, hosts: new Map(hosts.map(host => [host.identity, host])) };
             aptRun = run;
             for (const { identity } of targets) aptResults.delete(identity);
@@ -493,7 +497,7 @@
                     "/api/backup/restore-isolation/apt-check",
                     { method: "POST", headers: { "Content-Type": "application/json" },
                         body: JSON.stringify(single ? targets[0] : { targets }) },
-                    "Check APT after restore",
+                    legacy ? "Resolve legacy APT incident" : "Check APT after restore",
                 );
                 if (!lifecycle.isCurrent(lifetime)) return;
                 stopPolling();
@@ -512,7 +516,9 @@
                 }
                 const subject = targets.length === 1 ? "1 server" : `${targets.length} servers`;
                 const attention = needsAttention === 1 ? " 1 needs attention." : needsAttention ? ` ${needsAttention} need attention.` : "";
-                feedback.textContent = single ? `Check finished for ${run.name}.` : `Checks finished for ${subject}.${attention}`;
+                feedback.textContent = legacy
+                    ? `${run.name} · ${describeRestoreAPTState(response.state)}`
+                    : single ? `Check finished for ${run.name}.` : `Checks finished for ${subject}.${attention}`;
                 void refreshInstallation().then(() => {
                     if (lifecycle.isCurrent(lifetime)) renderRestoreAPTControls();
                 });

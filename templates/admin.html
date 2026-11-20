@@ -1119,8 +1119,8 @@
                     <dl class="metrics-credential-facts" id="installation-notification-destinations"></dl>
                 </section>
                 <section id="restore-apt-validation" class="installation-notification-deliveries" aria-labelledby="restore-apt-validation-heading" hidden>
-                    <h3 id="restore-apt-validation-heading">APT checks after restore</h3>
-                    <p class="muted">Select up to 12 servers to check their package state. Unverified servers remain blocked after external work resumes.</p>
+                    <h3 id="restore-apt-validation-heading">APT validation</h3>
+                    <p class="muted">Select up to 12 restored servers for a read-only package check. For legacy incidents, review the original job report and confirm the machine individually.</p>
                     <p class="muted" data-restore-apt-unavailable hidden>The APT host list could not be refreshed.</p>
                     <div><button id="restore-apt-check-selected" class="btn-ghost inline-btn" type="button" disabled>Check selected</button></div>
                     <div class="table-wrap"><table><thead><tr><th>Select</th><th>Server</th><th>Package maintenance</th><th>Checked</th><th>Action</th></tr></thead><tbody></tbody></table></div>
@@ -1302,14 +1302,14 @@
     <script src="/static/js/scheduled-policy-administration-interaction.js?v=scheduled-autoremove-20261020"></script>
     <script src="/static/js/section-navigation.js?v=section-navigation-20261029"></script>
     <script src="/static/js/section-navigation-adapter.js?v=admin-horizontal-20261104"></script>
-    <script src="/static/js/admin-page-interaction.js?v=restore-resumption-676"></script>
+    <script src="/static/js/admin-page-interaction.js?v=legacy-apt-683"></script>
     <script src="/static/js/admin-session-ip-reveal.js?v=frontend-isolation-20261027"></script>
     <script src="/static/js/application-postcheck-adapter.js?v=admin-profile-test-eligibility-20261029"></script>
     <script src="/static/js/package-deferrals.js?v=frontend-isolation-20261027"></script>
 <script src="/static/js/admin-notifications-adapter.js?v=notification-apt-reconciliation-619"></script>
 <script src="/static/js/admin-account-adapter.js?v=frontend-isolation-20261027"></script>
-<script src="/static/js/admin-backup-adapter.js?v=restore-resumption-676"></script>
+<script src="/static/js/admin-backup-adapter.js?v=legacy-apt-683"></script>
 <script src="/static/js/admin-policies-adapter.js?v=apt-reconciliation-624"></script>
-<script src="/static/js/admin.js?v=backup-recovery-point-650"></script>
+<script src="/static/js/admin.js?v=legacy-apt-683"></script>
 </body>
 </html>

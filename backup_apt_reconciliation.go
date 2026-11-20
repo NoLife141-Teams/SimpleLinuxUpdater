@@ -39,7 +39,7 @@ func prepareAPTRestore(ctx context.Context, liveDB, stagedDB *sql.DB, now string
 
 func previewAPTRestore(ctx context.Context, deps AppDeps, stagedDB *sql.DB, now string) error {
 	evidence, err := captureAPTPreviewEvidence(ctx, deps)
-	if err != nil || (len(evidence.open) == 0 && len(evidence.repairs) == 0) {
+	if err != nil || (len(evidence.open) == 0 && len(evidence.repairs) == 0 && len(evidence.legacy) == 0) {
 		return err
 	}
 	return evidence.compare(ctx, stagedDB, now, nil)
@@ -71,6 +71,7 @@ func beginAPTRestoreSnapshot(ctx context.Context, liveDB *sql.DB) (*sql.Tx, erro
 type aptRestoreEvidence struct {
 	open    []jobs.Record
 	repairs []jobs.Record
+	legacy  []legacyAPTIncidentEvidence
 	targets aptRestoreTargets
 }
 
@@ -83,7 +84,11 @@ func captureAPTRestoreEvidence(ctx context.Context, live *sql.Tx) (aptRestoreEvi
 	if err != nil {
 		return aptRestoreEvidence{}, err
 	}
-	evidence := aptRestoreEvidence{open: open, repairs: repairs}
+	legacy, err := captureLegacyAPTIncidents(ctx, live)
+	if err != nil {
+		return aptRestoreEvidence{}, err
+	}
+	evidence := aptRestoreEvidence{open: open, repairs: repairs, legacy: legacy}
 	if len(open) != 0 || len(repairs) != 0 {
 		evidence.targets, err = aptRestoreInventory(ctx, live)
 	}
@@ -95,8 +100,12 @@ func (evidence aptRestoreEvidence) compare(ctx context.Context, stagedDB *sql.DB
 	if err := staged.MarkInterruptedAPTMutations(ctx, now); err != nil {
 		return err
 	}
+	legacyConflicts, err := preserveLegacyAPTIncidents(ctx, evidence.legacy, stagedDB, logSource)
+	if err != nil {
+		return err
+	}
 	if len(evidence.open) == 0 && len(evidence.repairs) == 0 {
-		return nil
+		return sortedAPTRestoreConflicts(legacyConflicts)
 	}
 	stagedTargets, err := aptRestoreInventory(ctx, stagedDB)
 	if err != nil {
@@ -167,12 +176,16 @@ func (evidence aptRestoreEvidence) compare(ctx context.Context, stagedDB *sql.DB
 		}
 		addConflict(incident, server, "apt_evidence_conflict", "The archive contradicts the current APT reconciliation state for this server.")
 	}
-	if len(conflicts) == 0 {
-		return nil
-	}
-	result := make(aptRestoreConflicts, 0, len(conflicts))
+	result := legacyConflicts
 	for _, conflict := range conflicts {
 		result = append(result, conflict)
+	}
+	return sortedAPTRestoreConflicts(result)
+}
+
+func sortedAPTRestoreConflicts(result aptRestoreConflicts) error {
+	if len(result) == 0 {
+		return nil
 	}
 	sort.Slice(result, func(i, j int) bool {
 		if result[i].Server != result[j].Server {

@@ -30,6 +30,8 @@ const (
 	defaultOutboxRetention = 30 * 24 * time.Hour
 )
 
+var errOutboxCompletionLostClaim = errors.New("notification outbox completion lost its claim")
+
 type outboxRow struct {
 	ID                     string
 	Destination            string
@@ -52,6 +54,7 @@ type outboxOutcome struct {
 	Error                  string
 	DurationMS             int64
 	DestinationFingerprint string
+	RateLimitedUntil       string
 }
 
 type outboxSnapshot struct {
@@ -517,6 +520,37 @@ func recoverExpiredOutboxClaims(ctx context.Context, db *sql.DB, now time.Time, 
 	return err
 }
 
+// Eligibility and wake scheduling share the same destination binding. Legacy
+// unbound rows use the current binding until an HTTP 429 binds their retry.
+const outboxCurrentFingerprint = `json_extract(binding.configuration, '$.destination_fingerprints.' || o.destination)`
+
+const outboxDestinationEnabled = `COALESCE(json_extract(binding.configuration, CASE o.destination
+	WHEN 'webhook' THEN '$.enabled'
+	WHEN 'discord' THEN '$.discord_enabled'
+	WHEN 'telegram' THEN '$.telegram_enabled'
+END), 0)`
+
+const outboxSchedulingJoins = `
+	LEFT JOIN (
+		SELECT CASE WHEN json_valid(value) THEN value END AS configuration
+		FROM settings WHERE key=?
+	) binding ON TRUE
+	LEFT JOIN notification_destination_health health
+		ON health.destination=o.destination
+		AND health.fingerprint=COALESCE(NULLIF(o.destination_fingerprint, ''), ` + outboxCurrentFingerprint + `)
+`
+
+// A disabled or rotated destination's cooldown must not delay revalidating its rows.
+// Preserve independent delays, such as a new backoff after a revalidation error.
+const outboxEffectiveDue = `CASE
+	WHEN binding.configuration IS NOT NULL AND (NOT ` + outboxDestinationEnabled + `
+		OR (json_type(binding.configuration, '$.destination_fingerprints')='object'
+		AND o.destination_fingerprint<>'' AND o.destination_fingerprint IS NOT ` + outboxCurrentFingerprint + `))
+	THEN CASE WHEN o.status_code=429 AND o.next_attempt_at=health.rate_limited_until THEN ''
+		ELSE rtrim(o.next_attempt_at, 'Z') END
+	ELSE max(rtrim(o.next_attempt_at, 'Z'), COALESCE(rtrim(health.rate_limited_until, 'Z'), ''))
+END`
+
 func claimNextOutboxRow(ctx context.Context, db *sql.DB, now time.Time, active outboxDeliveries) (*outboxRow, error) {
 	if db == nil {
 		return nil, nil
@@ -529,15 +563,16 @@ func claimNextOutboxRow(ctx context.Context, db *sql.DB, now time.Time, active o
 	defer func() { _ = tx.Rollback() }()
 	var row outboxRow
 	err = tx.QueryRowContext(ctx, `
-		SELECT id, destination, event_type, action, target_type, target_name, status, message,
-		       event_created_at, actor, client_ip, meta_json, destination_fingerprint, state, attempts,
-		       next_attempt_at, claimed_at
-		  FROM notification_outbox
-		 WHERE state IN (?, ?) AND (next_attempt_at = '' OR rtrim(next_attempt_at, 'Z') <= rtrim(?, 'Z'))
-		   AND destination IS NOT ? AND destination IS NOT ? AND destination IS NOT ?
-		 ORDER BY rowid
+		SELECT o.id, o.destination, o.event_type, o.action, o.target_type, o.target_name, o.status, o.message,
+		       o.event_created_at, o.actor, o.client_ip, o.meta_json, o.destination_fingerprint, o.state, o.attempts,
+		       o.next_attempt_at, o.claimed_at
+		  FROM notification_outbox o
+		`+outboxSchedulingJoins+`
+		 WHERE o.state IN (?, ?) AND `+outboxEffectiveDue+` <= rtrim(?, 'Z')
+		   AND o.destination IS NOT ? AND o.destination IS NOT ? AND o.destination IS NOT ?
+		 ORDER BY o.rowid
 		 LIMIT 1
-	`, outboxStatePending, outboxStateRetrying, nowText, active[0], active[1], active[2]).Scan(
+	`, SettingsKey, outboxStatePending, outboxStateRetrying, nowText, active[0], active[1], active[2]).Scan(
 		&row.ID, &row.Destination, &row.EventType, &row.Intent.Action, &row.Intent.TargetType,
 		&row.Intent.TargetName, &row.Intent.Status, &row.Intent.Message, &row.Intent.CreatedAt,
 		&row.Intent.Actor, &row.Intent.ClientIP, &row.Intent.MetaJSON, &row.DestinationFingerprint,
@@ -571,23 +606,30 @@ func claimNextOutboxRow(ctx context.Context, db *sql.DB, now time.Time, active o
 	return &row, nil
 }
 
-func completeOutboxRow(ctx context.Context, db *sql.DB, id string, outcome outboxOutcome, now string) error {
+func completeOutboxRow(ctx context.Context, db *sql.DB, id string, outcome outboxOutcome, now string, recoverReleased bool) error {
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
+	// Recovery can finish a released claim only while its original attempt
+	// count still matches. A later completion must keep precedence.
 	var destination string
 	err = tx.QueryRowContext(ctx, `
 		UPDATE notification_outbox
 		   SET state = ?, attempts = ?, next_attempt_at = ?, claimed_at = '', attempted_at = ?,
-		       completed_at = ?, status_code = ?, error = ?, duration_ms = ?, updated_at = ?
-		 WHERE id = ? AND state = ?
+		       completed_at = ?, status_code = ?, error = ?, duration_ms = ?, updated_at = ?,
+		       destination_fingerprint = CASE WHEN destination_fingerprint='' AND ?<>''
+		           THEN ? ELSE destination_fingerprint END
+		 WHERE id = ? AND (state = ? OR (? AND state = ?))
+		   AND (NOT ? OR attempts = ?)
 		 RETURNING destination
 	`, outcome.State, outcome.Attempts, outcome.NextAttemptAt, outcome.AttemptedAt,
-		outcome.CompletedAt, outcome.StatusCode, outcome.Error, outcome.DurationMS, now, id, outboxStateClaimed).Scan(&destination)
+		outcome.CompletedAt, outcome.StatusCode, outcome.Error, outcome.DurationMS, now,
+		outcome.RateLimitedUntil, outcome.DestinationFingerprint, id, outboxStateClaimed,
+		recoverReleased, outboxStateRetrying, recoverReleased, outcome.Attempts-1).Scan(&destination)
 	if errors.Is(err, sql.ErrNoRows) {
-		return errors.New("notification outbox completion lost its claim")
+		return errOutboxCompletionLostClaim
 	}
 	if err != nil {
 		return err
@@ -602,7 +644,7 @@ func completeOutboxRow(ctx context.Context, db *sql.DB, id string, outcome outbo
 		(success || outcome.State == outboxStateRetrying || outcome.State == outboxStateFailed) {
 		event := destinationHealthEvidence{
 			destination: destination, fingerprint: outcome.DestinationFingerprint,
-			attemptAt: outcome.CompletedAt, state: outcome.State,
+			attemptAt: outcome.CompletedAt, state: outcome.State, rateLimitedUntil: outcome.RateLimitedUntil,
 		}
 		if success {
 			event.successAt = outcome.CompletedAt
@@ -646,13 +688,14 @@ func nextOutboxWake(ctx context.Context, db *sql.DB, claimTTL time.Duration, act
 	var nextAttempt, oldestClaim string
 	err := db.QueryRowContext(ctx, `
 		SELECT
-			COALESCE(MIN(CASE WHEN state = ? AND next_attempt_at != '' THEN rtrim(next_attempt_at, 'Z') END) || 'Z', ''),
-			COALESCE(MIN(CASE WHEN state = ? AND claimed_at != '' THEN rtrim(claimed_at, 'Z') END) || 'Z', '')
-		  FROM notification_outbox
-		 WHERE state IN (?, ?)
-		   AND destination IS NOT ? AND destination IS NOT ? AND destination IS NOT ?
-	`, outboxStateRetrying, outboxStateClaimed, outboxStateRetrying, outboxStateClaimed,
-		active[0], active[1], active[2]).Scan(&nextAttempt, &oldestClaim)
+			COALESCE(MIN(CASE WHEN o.state IN (?, ?) THEN NULLIF(`+outboxEffectiveDue+`, '') END) || 'Z', ''),
+			COALESCE(MIN(CASE WHEN o.state = ? AND o.claimed_at != '' THEN rtrim(o.claimed_at, 'Z') END) || 'Z', '')
+		  FROM notification_outbox o
+		`+outboxSchedulingJoins+`
+		 WHERE o.state IN (?, ?, ?)
+		   AND o.destination IS NOT ? AND o.destination IS NOT ? AND o.destination IS NOT ?
+	`, outboxStatePending, outboxStateRetrying, outboxStateClaimed, SettingsKey,
+		outboxStatePending, outboxStateRetrying, outboxStateClaimed, active[0], active[1], active[2]).Scan(&nextAttempt, &oldestClaim)
 	if err != nil {
 		return time.Time{}, false, err
 	}

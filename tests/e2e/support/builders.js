@@ -681,6 +681,7 @@ async function stubAdminApi(page, state = {}) {
             }
             return fulfillJson(route, {
                 last_attempt: state.notificationDiagnosticsResponse || null,
+                rate_limited_until: state.notificationRateLimits,
             });
         },
     );

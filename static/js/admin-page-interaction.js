@@ -103,12 +103,17 @@
             .filter(item => item && typeof item === "object")
             .sort((left, right) => String(right.attempted_at ?? right.attemptedAt ?? "").localeCompare(String(left.attempted_at ?? left.attemptedAt ?? "")))[0];
         const raw = data.last_attempt ?? data.lastAttempt ?? data.last_delivery ?? data.lastDelivery ?? latestAttempt ?? null;
-        if (!raw || typeof raw !== "object") return { lastAttempt: null };
+        const rateLimitedDestinations = ["webhook", "discord", "telegram"].flatMap(destination => {
+            const until = data.rate_limited_until?.[destination];
+            return typeof until === "string" && Number.isFinite(Date.parse(until)) ? [{ destination, until }] : [];
+        });
+        if (!raw || typeof raw !== "object") return { lastAttempt: null, rateLimitedDestinations };
         const rawOutcome = String(raw.outcome || "").trim().toLowerCase();
         const outcome = ["succeeded", "retrying", "failed"].includes(rawOutcome)
             ? rawOutcome
             : raw.success ? "succeeded" : "failed";
         return {
+            rateLimitedDestinations,
             lastAttempt: {
                 destination: String(raw.destination || "").trim(),
                 eventType: String(raw.event_type ?? raw.eventType ?? "").trim(),
@@ -845,7 +850,8 @@
             if (plan.command === "saveTimezone" && !failed) applyTimezone(data || plan.payload);
             if (plan.command === "saveNotifications" && !failed) applyNotifications(data || plan.payload);
             if (plan.command === "testNotification" && data && (data.last_attempt || data.last_delivery)) {
-                applyDeliveryDiagnostics(data);
+                const { lastAttempt } = normalizeDeliveryDiagnostics(data);
+                notificationDiagnostics = { ...notificationDiagnostics, lastAttempt };
                 acceptAuthoritative("notificationDiagnostics", new Date().toISOString());
             }
             if (plan.command === "changePassword" && !failed) {

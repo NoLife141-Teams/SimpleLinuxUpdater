@@ -377,7 +377,7 @@ func TestInstallationHealthDeliveryAndSuccessTimestampCommitTogether(t *testing.
 		t.Fatal(err)
 	}
 	outcome := outboxOutcome{State: outboxStateSucceeded, StatusCode: 204, CompletedAt: now}
-	if err := completeOutboxRow(t.Context(), h.db, id, outcome, now); err == nil {
+	if err := completeOutboxRow(t.Context(), h.db, id, outcome, now, false); err == nil {
 		t.Fatal("delivery completed without persisting the success timestamp")
 	}
 	var persisted string

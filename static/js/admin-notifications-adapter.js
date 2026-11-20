@@ -88,6 +88,21 @@
                 "notification-diagnostics-error",
             );
             if (refresh) refresh.disabled = stream.status === "loading";
+            const pauses = document.getElementById("notification-diagnostics-rate-limits");
+            if (pauses) {
+                const labels = { webhook: "Webhook", discord: "Discord", telegram: "Telegram" };
+                const entries = (diagnostics.rateLimitedDestinations || []).map(({destination, until}) => {
+                    const row = document.createElement("div");
+                    const label = document.createElement("dt");
+                    label.textContent = `${labels[destination]} queue paused`;
+                    const deadline = document.createElement("dd");
+                    deadline.textContent = `HTTP 429 · Next eligible at ${formatAdminRefreshTime(until, "medium")}`;
+                    row.append(label, deadline);
+                    return row;
+                });
+                pauses.replaceChildren(...entries);
+                pauses.hidden = entries.length === 0;
+            }
             if (!status) {
                 if (facts) facts.hidden = true;
                 if (message) {
@@ -135,7 +150,7 @@
             if (retryRow) retryRow.hidden = !hasRetry;
             if (retryAt)
                 retryAt.textContent = hasRetry
-                    ? formatAdminRefreshTime(status.nextRetryAt) ||
+                    ? formatAdminRefreshTime(status.nextRetryAt, "medium") ||
                       status.nextRetryAt
                     : "";
             if (errorRow) errorRow.hidden = !status.error;
@@ -897,6 +912,7 @@
                         "Notification settings saved.",
                     "",
                 );
+                void fetchNotificationDeliveryDiagnostics();
             } catch (err) {
                 if (
                     !lifecycle.isCurrent(lifetime) ||
@@ -939,6 +955,7 @@
                 if (!lifecycle.isCurrent(lifetime)) return;
                 const payload = await res.json().catch(() => ({}));
                 if (!lifecycle.isCurrent(lifetime)) return;
+                const refreshInterrupted = adminPageView().streams.notificationDiagnostics.status === "loading";
                 if (!res.ok) {
                     finishAdminCommand(
                         plan,
@@ -947,6 +964,7 @@
                         true,
                     );
                     renderNotificationDiagnostics();
+                    if (refreshInterrupted) void fetchNotificationDeliveryDiagnostics();
                     const message = await parseErrorResponse(
                         res,
                         "Notification test failed.",
@@ -961,6 +979,7 @@
                     "Notification test delivered.",
                 );
                 renderNotificationDiagnostics();
+                if (refreshInterrupted) void fetchNotificationDeliveryDiagnostics();
                 const destinationLabel =
                     destination.charAt(0).toUpperCase() + destination.slice(1);
                 setNotificationFeedback(

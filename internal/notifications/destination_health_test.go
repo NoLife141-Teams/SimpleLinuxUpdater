@@ -316,7 +316,7 @@ func TestDestinationHealthPersistsAtomicallyWithCompletion(t *testing.T) {
 		t.Fatal(err)
 	}
 	outcome := outboxOutcome{State: outboxStateSucceeded, StatusCode: 204, AttemptedAt: now, CompletedAt: now, DestinationFingerprint: "configuration"}
-	if err := completeOutboxRow(t.Context(), h.db, id, outcome, now); err == nil {
+	if err := completeOutboxRow(t.Context(), h.db, id, outcome, now, false); err == nil {
 		t.Fatal("outcome completed without persisting the destination observation")
 	}
 	var state, lastSuccess string

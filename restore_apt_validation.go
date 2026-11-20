@@ -589,7 +589,8 @@ func (v *restoreAPTValidation) check(ctx context.Context, deps AppDeps, target r
 		if err := v.resolveLegacyIncident(ctx, deps.AuditService, actor, ip, server, incident, observation); err != nil {
 			return target.failure(http.StatusServiceUnavailable, "The legacy APT resolution could not be saved and audited.")
 		}
-		return restoreAPTCheckResult{restoreAPTHostFacts: observation.facts(server, now, isolated, false)}
+		status := deps.ServerState.CurrentStatusSnapshot(server.Name)
+		return restoreAPTCheckResult{restoreAPTHostFacts: observation.facts(server, now, isolated, status.RequiresAPTReconciliation())}
 	}
 	if err := deps.AuditService.Record(actor, ip, "backup.restore_apt.check",
 		"server", server.Name, observation.result, "Remote APT state checked after restore", nil); err != nil {

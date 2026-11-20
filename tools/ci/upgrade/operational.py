@@ -194,11 +194,8 @@ class Qualification:
             time.sleep(min(0.4, max(0, deadline - time.monotonic())))
         raise RuntimeError("application did not become ready on the private qualification bridge")
 
-    def verify_inventory(self, api, container, known_host, *, upgraded=False):
+    def verify_inventory(self, api, container, known_host):
         servers = api.request("GET", "/api/servers")
-        if upgraded:
-            require(any(server["name"] == LEGACY_APT_SERVER for server in servers), "legacy APT host was lost")
-            servers = [server for server in servers if server["name"] != LEGACY_APT_SERVER]
         require(len(servers) == 1 and servers[0]["name"] == "upgrade-fixture"
                 and servers[0]["disabled"] and servers[0]["has_password"]
                 and servers[0]["tags"] == ["qualification"], "fixture inventory was not preserved")
@@ -249,27 +246,43 @@ class Qualification:
         fixture = self.source / "tools/ci/ssh-apt"
         base = json.loads((fixture / "images.json").read_text())["debian13"]
         docker("build", "--platform", PLATFORM, "--build-arg", "BASE_IMAGE=" + base,
-               "--label", self.label, "-t", self.apt_fixture_image, fixture, timeout=180)
+               "--label", self.label, "--file", fixture / "target.Dockerfile",
+               "-t", self.apt_fixture_image, fixture, timeout=180)
         name = self.prefix + "-apt-target"
         docker("run", "--pull", "never", "--detach", "--label", self.label, "--name", name,
                "--network", self.network, "--env", "SLU_FIXTURE_OWNER=" + uuid.uuid4().hex,
                "--cap-add=SYS_PTRACE", "--pids-limit", "256", "--memory", "768m", self.apt_fixture_image)
         address = str(ipaddress.IPv4Address(docker("inspect", "--format",
             "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}", name)))
-        public_key = until(lambda: self.legacy_host_key(name), "legacy APT target did not generate its SSH key")
+        public_keys = until(lambda: self.legacy_host_keys(name), "legacy APT target did not generate its SSH keys")
         password = secrets.token_urlsafe(32)
-        docker("exec", name, "/bin/sh", "-ec", 'printf "root:%s\\n" "$1" | chpasswd', "fixture-password", password)
+        with tempfile.TemporaryFile() as stream:
+            stream.write(f"root:{password}\n".encode())
+            stream.seek(0)
+            docker("exec", "--interactive", name, "chpasswd", stdin=stream)
         docker("exec", "--user", "app", app_name, "/bin/sh", "-ec",
                'umask 077; printf "%s\\n" "$1" >> /data/known_hosts',
-               "seed-legacy-host-key", f"{address} {public_key}")
+               "seed-legacy-host-keys", "\n".join(f"{address} {key}" for key in public_keys))
         api.request("POST", "/api/servers", {"name": LEGACY_APT_SERVER, "host": address, "port": 22,
             "user": "root", "pass": password}, allowed=(201,))
 
-    def legacy_host_key(self, name):
+    def legacy_host_keys(self, name):
         try:
-            return " ".join(docker("exec", name, "cat", "/etc/ssh/ssh_host_ed25519_key.pub").split()[:2])
+            keys = docker("exec", name, "cat",
+                          *(f"/etc/ssh/ssh_host_{algorithm}_key.pub" for algorithm in ("ecdsa", "ed25519", "rsa")))
         except RuntimeError:
             return None
+        lines = keys.splitlines()
+        if len(lines) == 3:
+            return [" ".join(key.split()[:2]) for key in lines]
+        return None
+
+    def copy_upgrade_volume(self, source, destination, suffix):
+        docker("run", "--pull", "never", "--rm", "--label", self.label, "--name", self.prefix + "-" + suffix,
+               "--network", "none", "--entrypoint", "/bin/sh",
+               "--mount", f"type=volume,src={source},dst=/source,readonly",
+               "--mount", f"type=volume,src={destination},dst=/target",
+               self.candidate, "-ec", "cp -a /source/. /target/")
 
     def check_legacy_apt_admission(self, api):
         health = api.request("GET", "/api/installation/health")
@@ -292,6 +305,43 @@ class Qualification:
             "target_revision": host["target_revision"], "confirm_legacy_job_id": LEGACY_APT_JOB,
         }, timeout=38)
         return result if result["state"] != "unreachable" else None
+
+    def qualify_legacy_apt_upgrade(self, published_name, published_api, published_volume, credentials):
+        # The resolved probe adds a protected endpoint. Keep it out of the
+        # baseline volume used for the separate in-place restore scenario.
+        legacy_volume = self.create_volume("legacy-apt-data")
+        docker("start", published_name)
+        self.connect(published_name, published_api)
+        published_api.request("POST", "/api/auth/login", credentials)
+        self.add_legacy_apt_target(published_api, published_name)
+        docker("stop", "--timeout", "25", published_name)
+        self.edit_fixture_database(published_name, "published-data", "seed-legacy-apt-incident", """
+import sqlite3
+import sys
+
+with sqlite3.connect('/data/servers.db') as db:
+    if 'apt_target' in {column[1] for column in db.execute('PRAGMA table_info(jobs)')}:
+        raise ValueError('fixture requires a published pre-target database')
+    db.execute('INSERT INTO jobs(id,kind,server_name,actor,status,phase,error_class,created_at,updated_at) '
+               'VALUES(?,?,?,?,?,?,?,?,?)',
+               (sys.argv[1], 'update', sys.argv[2], 'qualification-admin', 'failed', 'complete', 'reconciliation_required',
+                '2026-01-03T00:00:00Z', '2026-01-03T00:00:00Z'))
+""", LEGACY_APT_JOB, LEGACY_APT_SERVER)
+        self.copy_upgrade_volume(published_volume, legacy_volume, "copy-legacy-apt")
+        name = self.prefix + "-legacy-apt-upgraded"
+        api = self.start_app(name, self.candidate, legacy_volume)
+        api.request("POST", "/api/auth/login", credentials)
+        self.check_legacy_apt_admission(api)
+        docker("restart", "--timeout", "25", name)
+        self.connect(name, api)
+        api.request("POST", "/api/auth/login", credentials)
+        host = self.check_legacy_apt_admission(api)
+        self.resolve_legacy_apt_incident(api, credentials, host)
+        health = api.request("GET", "/api/installation/health")
+        validated = next((host for host in health["restore_apt_hosts"] if host["name"] == LEGACY_APT_SERVER), None)
+        require(validated and validated["state"] == "approved" and "legacy_job_id" not in validated,
+                "candidate did not retain the legacy APT resolution")
+        self.report["docker_upgrade"]["legacy_apt_incident_migration"] = "passed"
 
     def docker_upgrade(self):
         published = PIN["published_image"]
@@ -321,42 +371,23 @@ class Qualification:
         archive = old.request("POST", "/api/backup/export", {"passphrase": phrase, "include_known_hosts": True}, binary=True)
         require(len(archive) > 100 and ssh_password.encode() not in archive, "missing or unencrypted backup archive")
         backup = PublishedBackup(published, credentials, archive, phrase, known_host)
-        self.add_legacy_apt_target(old, old_name)
         docker("stop", "--timeout", "25", old_name)
-        self.edit_fixture_database(old_name, "published-data", "seed-legacy-apt-incident", """
-import sqlite3
-import sys
-
-with sqlite3.connect('/data/servers.db') as db:
-    if 'apt_target' in {column[1] for column in db.execute('PRAGMA table_info(jobs)')}:
-        raise ValueError('fixture requires a published pre-target database')
-    db.execute('INSERT INTO jobs(id,kind,server_name,actor,status,phase,error_class,created_at,updated_at) '
-               'VALUES(?,?,?,?,?,?,?,?,?)',
-               (sys.argv[1], 'update', sys.argv[2], 'qualification-admin', 'failed', 'complete', 'reconciliation_required',
-                '2026-01-03T00:00:00Z', '2026-01-03T00:00:00Z'))
-""", LEGACY_APT_JOB, LEGACY_APT_SERVER)
-        docker("run", "--pull", "never", "--rm", "--label", self.label, "--name", self.prefix + "-copy",
-               "--network", "none", "--entrypoint", "/bin/sh",
-               "--mount", f"type=volume,src={old_volume},dst=/source,readonly",
-               "--mount", f"type=volume,src={new_volume},dst=/target",
-               self.candidate, "-ec", "cp -a /source/. /target/")
+        self.copy_upgrade_volume(old_volume, new_volume, "copy")
 
         new_name = self.prefix + "-upgraded"
         new = self.start_app(new_name, self.candidate, new_volume)
         new.request("POST", "/api/auth/login", credentials)
-        self.verify_inventory(new, new_name, known_host, upgraded=True)
-        self.check_legacy_apt_admission(new)
+        self.verify_inventory(new, new_name, known_host)
         docker("restart", "--timeout", "25", new_name)
         self.connect(new_name, new)
         new.request("POST", "/api/auth/login", credentials)
-        self.verify_inventory(new, new_name, known_host, upgraded=True)
-        host = self.check_legacy_apt_admission(new)
-        self.resolve_legacy_apt_incident(new, credentials, host)
-        self.report["docker_upgrade"]["legacy_apt_incident_migration"] = "passed"
+        self.verify_inventory(new, new_name, known_host)
         self.report["docker_upgrade"]["copied_volume_restart"] = "passed"
 
         self.restore_archive(self.prefix + "-restored", self.candidate, restored_volume, backup, "recovery-admin")
         self.report["docker_upgrade"]["separate_volume_restore"] = "passed"
+        docker("pull", "--platform", PLATFORM, PYTHON_IMAGE, timeout=150)
+        self.qualify_legacy_apt_upgrade(old_name, old, old_volume, credentials)
         return new_name, new, backup
 
     def start_batch_probe(self, name):

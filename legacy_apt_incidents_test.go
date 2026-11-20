@@ -45,9 +45,6 @@ func TestLegacyAPTIncidentGuardsMaintenanceUntilExplicitVerification(t *testing.
 	if err := v.admit(unaffected); err != nil {
 		t.Fatalf("resolved historical incident blocked an unrelated host: %v", err)
 	}
-	if err := v.admit(affected); !errors.Is(err, serverpkg.ErrRestoreAPTValidation) {
-		t.Fatalf("legacy incident did not fence maintenance: %v", err)
-	}
 	if res := identityRequest(app, "POST", "/api/autoremove/"+affected.Name, admin, "", nil); res.Code != 409 ||
 		!strings.Contains(res.Body.String(), "restore_apt_validation_required") {
 		t.Fatalf("manual admission=%d: %s", res.Code, res.Body.String())
@@ -89,6 +86,13 @@ func TestLegacyAPTIncidentGuardsMaintenanceUntilExplicitVerification(t *testing.
 	if res := identityRequest(app, "POST", restoreAPTValidationRoute, admin, "", check); res.Code != http.StatusOK ||
 		!strings.Contains(res.Body.String(), `"state":"approved"`) {
 		t.Fatalf("healthy probe=%d: %s", res.Code, res.Body.String())
+	}
+	var auditedJob, auditedIdentity string
+	if err := db.QueryRow(`
+		SELECT json_extract(meta_json, '$.job_id'), json_extract(meta_json, '$.server_identity')
+		FROM audit_events WHERE action='apt.legacy_incident.resolve' AND status='success' AND target_name=?`,
+		affected.Name).Scan(&auditedJob, &auditedIdentity); err != nil || auditedJob != id || auditedIdentity != affected.Identity {
+		t.Fatalf("audit record does not describe the resolved incident: %q %q %v", auditedJob, auditedIdentity, err)
 	}
 	if err := ensureSchema(db); err != nil {
 		t.Fatal(err)

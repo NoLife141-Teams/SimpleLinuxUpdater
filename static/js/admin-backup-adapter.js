@@ -578,7 +578,7 @@
             const failure = {
                 storage_unavailable: "Mount unavailable or replaced", copy_failed: "Copy could not be verified",
                 copy_unavailable: "A verified copy is missing or changed", retention_failed: "Retention could not finish",
-                publication_pending: "Linked copy still needs verification", queue_full: "Copy queue is full",
+                publication_pending: "Linked copy still needs verification", queue_full: "A copy was skipped because the queue was full",
             };
             document.getElementById("backup-secondary-status").textContent =
                 [state[secondary.state] || "Unavailable", failure[secondary.failure]].filter(Boolean).join(" · ");

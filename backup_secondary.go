@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"net/http"
 	"os"
@@ -9,6 +10,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	maintenancepkg "debian-updater/internal/maintenance"
 
 	"github.com/gin-gonic/gin"
 )
@@ -74,7 +77,7 @@ func (a *backupAutomation) secondaryStatus(state backupSecondaryState) *backupSe
 		return status
 	}
 	var latestVerified, latestCapture time.Time
-	hasUnavailableCopies := false
+	hasUnavailableCopies, hasSkippedCopies := false, false
 	for _, copy := range state.Copies {
 		if copy.Unavailable {
 			hasUnavailableCopies = true
@@ -89,12 +92,16 @@ func (a *backupAutomation) secondaryStatus(state backupSecondaryState) *backupSe
 			status.Pending++
 		} else {
 			status.Failed++
+			hasSkippedCopies = hasSkippedCopies || copy.Failure == "queue_full"
 		}
 	}
 	if a.secondaryConfigured(state) {
 		status.Failure = state.LastFailure
 		if status.Failure == "" && hasUnavailableCopies {
 			status.Failure = "copy_unavailable"
+		}
+		if status.Failure == "" && hasSkippedCopies {
+			status.Failure = "queue_full"
 		}
 		switch {
 		case status.Failure != "" || status.Failed > 0:
@@ -123,10 +130,15 @@ func (a *backupAutomation) queueSecondaryCopy(state *backupAutomationState, arch
 			pending++
 		}
 	}
+	copy := backupSecondaryCopy{Archive: archive}
 	if pending >= backupSecondaryQueueLimit {
-		state.Secondary.LastFailure = "queue_full"
-		return
+		// Record the uncovered archive without increasing the queue or pinning
+		// its primary source. A successful transfer can clear LastFailure.
+		copy.Attempts = backupSecondaryMaxAttempts
+		copy.Failure = "queue_full"
+		state.Secondary.LastFailure = copy.Failure
 	}
+	state.Secondary.Copies = append(state.Secondary.Copies, copy)
 	// Bound historical failures alongside the pending source pins. Temp
 	// registrations remain until the worker can safely clean the approved mount.
 	failed := 0
@@ -139,7 +151,6 @@ func (a *backupAutomation) queueSecondaryCopy(state *backupAutomationState, arch
 			}
 		}
 	}
-	state.Secondary.Copies = append(state.Secondary.Copies, backupSecondaryCopy{Archive: archive})
 }
 
 func (a *backupAutomation) secondaryProtectsSource(state backupSecondaryState, id string) bool {
@@ -211,24 +222,68 @@ func backupFilesystemDevice(identity string) string {
 	return device
 }
 
-func (a *backupAutomation) ValidateSecondaryDestination(ctx context.Context) (*backupSecondaryStatus, error) {
+func (a *backupAutomation) validateSecondaryDestination(ctx context.Context, admission *maintenancepkg.SharedLease) (*backupSecondaryStatus, error) {
 	if !a.secondaryMu.TryLock() {
 		return nil, errors.New("wait for the current secondary backup before validating the destination")
 	}
 	defer a.secondaryMu.Unlock()
+	if admission == nil {
+		lease, decision := a.deps.MaintenanceCoordinator.TryShared(maintenancepkg.WorkInteractive)
+		if !decision.Allowed {
+			return nil, errBackupSecondaryDeferred
+		}
+		admission = lease
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	a.setSecondaryCancellation(cancel)
+	defer func() {
+		cancel()
+		a.setSecondaryCancellation(nil)
+	}()
+	// A restore can cancel validation once we release authentication's lease.
+	// All operations on the secondary filesystem run outside maintenance admission.
+	admission.Close()
 	root, binding, err := a.openSecondaryDestination()
 	if err != nil {
 		return nil, err
 	}
 	defer root.Close()
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	state, err := a.load(ctx)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	name := ".slu-secondary-validation-" + rand.Text()
+	probe, err := root.OpenFile(name, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
 	if err != nil {
-		return nil, errors.New("secondary backup settings are unavailable")
+		return nil, errors.New("secondary backup storage is not writable")
+	}
+	syncErr := probe.Sync()
+	closeErr := probe.Close()
+	removeErr := root.Remove(name)
+	if syncErr != nil || closeErr != nil || removeErr != nil || a.syncSecondaryDirectory(root) != nil {
+		return nil, errors.New("secondary backup storage write validation or cleanup failed")
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
 	if !backupArchiveMountAvailable(root.Name(), binding.Directory) {
 		return nil, errors.New("secondary backup storage changed during validation")
+	}
+
+	lease, decision := a.deps.MaintenanceCoordinator.TryShared(maintenancepkg.WorkInteractive)
+	if !decision.Allowed {
+		return nil, errBackupSecondaryDeferred
+	}
+	defer lease.Close()
+	if !a.mu.TryLock() {
+		return nil, errBackupSecondaryDeferred
+	}
+	defer a.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	state, err := a.load(ctx)
+	if err != nil {
+		return nil, errors.New("secondary backup settings are unavailable")
 	}
 	if state.Secondary.Binding != binding {
 		// A different mount grants no authority over files from the old one.
@@ -243,7 +298,9 @@ func (a *backupAutomation) ValidateSecondaryDestination(ctx context.Context) (*b
 
 func handleBackupSecondaryValidate(c *gin.Context, automation *backupAutomation) {
 	setNoStoreHeaders(c)
-	status, err := automation.ValidateSecondaryDestination(c.Request.Context())
+	value, _ := c.Get(maintenanceSharedLeaseContextKey)
+	lease, _ := value.(*maintenancepkg.SharedLease)
+	status, err := automation.validateSecondaryDestination(c.Request.Context(), lease)
 	if err != nil {
 		c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
 		return

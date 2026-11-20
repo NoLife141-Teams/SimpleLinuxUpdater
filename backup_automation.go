@@ -99,6 +99,7 @@ type backupAutomationDeployment struct{ Directory, SecretFile, SecondaryDirector
 type backupAutomation struct {
 	health                 installationhealthpkg.Worker
 	copyArchive            func(io.Writer, io.Reader) (int64, error)
+	linkSecondaryArchive   func(*os.Root, string, string) error
 	syncSecondaryDirectory func(*os.Root) error
 	mu                     sync.Mutex
 	scanMu                 sync.Mutex
@@ -133,7 +134,10 @@ func loadBackupAutomationDeployment() (backupAutomationDeployment, error) {
 
 func newBackupAutomation(deps AppDeps) *backupAutomation {
 	d, _ := loadBackupAutomationDeployment() // main validates malformed environment before startup.
-	a := &backupAutomation{deps: deps, deployment: d, copyArchive: io.Copy, syncSecondaryDirectory: syncSecondaryDirectory}
+	a := &backupAutomation{
+		deps: deps, deployment: d, copyArchive: io.Copy,
+		linkSecondaryArchive: (*os.Root).Link, syncSecondaryDirectory: syncSecondaryDirectory,
+	}
 	a.export = func(ctx context.Context, cmd backupExportCommand) backupOperationOutcome {
 		return newBackupOperationLifecycle(deps).Export(ctx, cmd)
 	}

@@ -33,6 +33,12 @@ func (a *backupAutomation) cancelSecondaryTransfer() {
 	}
 }
 
+func (a *backupAutomation) setSecondaryCancellation(cancel context.CancelFunc) {
+	a.secondaryCancelMu.Lock()
+	defer a.secondaryCancelMu.Unlock()
+	a.secondaryCancel = cancel
+}
+
 func (a *backupAutomation) monitorSecondaryBackups(ctx context.Context) {
 	ticker := time.NewTicker(backupSecondaryPollInterval)
 	defer ticker.Stop()
@@ -92,9 +98,7 @@ func (a *backupAutomation) copyNextSecondaryBackup(parent context.Context) error
 	defer stopTimeout()
 	defer func() {
 		cancel()
-		a.secondaryCancelMu.Lock()
-		a.secondaryCancel = nil
-		a.secondaryCancelMu.Unlock()
+		a.setSecondaryCancellation(nil)
 	}()
 
 	var pending, cleanup backupSecondaryCopy
@@ -105,9 +109,7 @@ func (a *backupAutomation) copyNextSecondaryBackup(parent context.Context) error
 			return false, nil
 		}
 		binding = state.Secondary.Binding
-		a.secondaryCancelMu.Lock()
-		a.secondaryCancel = cancel
-		a.secondaryCancelMu.Unlock()
+		a.setSecondaryCancellation(cancel)
 		now := a.now()
 		for _, item := range state.Secondary.Copies {
 			if item.VerifiedAt != "" {
@@ -266,8 +268,10 @@ func (a *backupAutomation) stageAndPublishSecondary(ctx context.Context, root *o
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if err := root.Link(copy.Temporary, copy.Archive.Name); err != nil {
-			return err
+		if err := a.linkSecondaryArchive(root, copy.Temporary, copy.Archive.Name); err != nil {
+			// A remote filesystem may have created the link before returning an
+			// error. Reconcile the registered inode even on the last attempt.
+			return fmt.Errorf("%w: link secondary archive: %w", errBackupSecondaryPublicationPending, err)
 		}
 	default:
 		if copy.Transferring {

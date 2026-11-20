@@ -11,8 +11,11 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
+
+	maintenancepkg "debian-updater/internal/maintenance"
 )
 
 func secondaryBackupTestDirectory(t *testing.T, automation *backupAutomation) string {
@@ -54,11 +57,117 @@ func TestSecondaryBackupRejectsLocalFallback(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(secondary) })
 	automation.deployment.SecondaryDirectory = secondary
-	if _, err := automation.ValidateSecondaryDestination(t.Context()); err == nil || !strings.Contains(err.Error(), "mounted separately") {
+	if _, err := automation.validateSecondaryDestination(t.Context(), nil); err == nil || !strings.Contains(err.Error(), "mounted separately") {
 		t.Fatalf("validation accepted a local fallback on the primary filesystem: %v", err)
 	}
 	if state := backupAutomationStateForTest(t, automation); state.Secondary.Approved {
 		t.Fatalf("local fallback approval was persisted: %+v", state.Secondary)
+	}
+}
+
+func TestSecondaryValidationReleasesAdmissionAndDoesNotApproveAfterRestore(t *testing.T) {
+	app, automation, _ := newBackupAutomationTest(t)
+	automation.deployment.SecondaryDirectory = secondaryBackupTestDirectory(t, automation)
+	admin := app.authenticate(t)
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	entered, release := make(chan struct{}), make(chan struct{})
+	releaseSync := sync.OnceFunc(func() { close(release) })
+	defer releaseSync()
+	automation.syncSecondaryDirectory = func(*os.Root) error {
+		close(entered)
+		<-release
+		return nil
+	}
+	finished := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		finished <- identityRequest(app, http.MethodPost, backupSecondaryValidateRoute, admin, "", nil)
+	}()
+	select {
+	case <-entered:
+	case response := <-finished:
+		t.Fatalf("validation did not reach the mounted directory sync: %d %s", response.Code, response.Body)
+	case <-ctx.Done():
+		t.Fatal("timed out waiting for secondary validation to sync")
+	}
+	exported := make(chan error, 1)
+	go func() { exported <- automation.Tick(ctx, true) }()
+	select {
+	case err := <-exported:
+		state := backupAutomationStateForTest(t, automation)
+		if err != nil || state.Outcome != "succeeded" || len(state.Archives) != 1 {
+			t.Fatalf("secondary validation blocked primary export: %s, %d archives (%v)", state.Outcome, len(state.Archives), err)
+		}
+	case <-ctx.Done():
+		t.Fatal("primary export waited for secondary validation")
+	}
+	lease, decision := automation.deps.MaintenanceCoordinator.TryExclusive(maintenancepkg.OperationBackupRestore)
+	if !decision.Allowed {
+		t.Fatal("secondary validation held maintenance admission during directory sync")
+	}
+	runtime := runtimeComposition{deps: AppDeps{BackupAutomation: automation}}
+	prepareErr := runtime.PreparePersistenceReplacement(ctx)
+	lease.Close()
+	if prepareErr != nil {
+		t.Fatal(prepareErr)
+	}
+	releaseSync()
+	select {
+	case response := <-finished:
+		if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), "context canceled") {
+			t.Fatalf("stale validation survived persistence replacement: %d %s", response.Code, response.Body)
+		}
+	case <-ctx.Done():
+		t.Fatal("stale validation did not finish after persistence replacement")
+	}
+	if state := backupAutomationStateForTest(t, automation); state.Secondary.Approved {
+		t.Fatalf("canceled validation granted secondary write access: %+v", state.Secondary)
+	}
+}
+
+func TestSecondaryQueueOverflowRemainsVisibleAfterSuccessfulCopy(t *testing.T) {
+	_, automation, now := newBackupAutomationTest(t)
+	automation.deployment.SecondaryDirectory = secondaryBackupTestDirectory(t, automation)
+	if _, err := automation.validateSecondaryDestination(t.Context(), nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := automation.Tick(t.Context(), true); err != nil {
+		t.Fatal(err)
+	}
+	state := backupAutomationStateForTest(t, automation)
+	for len(state.Secondary.Copies) < backupSecondaryQueueLimit {
+		archive := state.Archives[0]
+		id, err := newBackupArchiveID()
+		if err != nil {
+			t.Fatal(err)
+		}
+		archive.ID = id
+		state.Secondary.Copies = append(state.Secondary.Copies, backupSecondaryCopy{Archive: archive, RetryAt: backupStamp(now.Add(time.Hour))})
+	}
+	if err := automation.save(t.Context(), state); err != nil {
+		t.Fatal(err)
+	}
+	*now = now.Add(time.Minute)
+	if err := automation.Tick(t.Context(), true); err != nil {
+		t.Fatal(err)
+	}
+	state = backupAutomationStateForTest(t, automation)
+	if len(state.Secondary.Copies) != backupSecondaryQueueLimit+1 {
+		t.Fatalf("queue overflow was not recorded: %d records", len(state.Secondary.Copies))
+	}
+	skipped := state.Secondary.Copies[backupSecondaryQueueLimit]
+	if skipped.Archive.ID != state.Archives[len(state.Archives)-1].ID || skipped.Failure != "queue_full" ||
+		automation.secondaryProtectsSource(state.Secondary, skipped.Archive.ID) {
+		t.Fatalf("overflow did not record an unpinned failure for the new archive: %+v", skipped)
+	}
+	if err := automation.copyNextSecondaryBackup(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	status, err := automation.Status(t.Context())
+	if err != nil || status.State != "succeeded" || status.Secondary == nil || status.Secondary.State != "degraded" ||
+		status.Secondary.VerifiedAt == "" || status.Secondary.Failure != "queue_full" || status.Secondary.Failed != 1 ||
+		status.Secondary.Pending != backupSecondaryQueueLimit-1 {
+		t.Fatalf("successful replication hid an uncovered archive: %+v (%v)", status.Secondary, err)
 	}
 }
 
@@ -189,11 +298,56 @@ func TestVerifiedSecondaryBackupSurvivesPrimaryLossAndRestoresInIsolation(t *tes
 	}
 }
 
+func TestSecondaryPublicationReconcilesLinkErrorAfterLastAttempt(t *testing.T) {
+	_, automation, now := newBackupAutomationTest(t)
+	secondary := secondaryBackupTestDirectory(t, automation)
+	automation.deployment.SecondaryDirectory = secondary
+	if _, err := automation.validateSecondaryDestination(t.Context(), nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := automation.Tick(t.Context(), true); err != nil {
+		t.Fatal(err)
+	}
+	state := backupAutomationStateForTest(t, automation)
+	state.Secondary.Copies[0].Attempts = backupSecondaryMaxAttempts - 1
+	if err := automation.save(t.Context(), state); err != nil {
+		t.Fatal(err)
+	}
+	linkReplyLost := errors.New("secondary storage returned an error after committing the link")
+	automation.linkSecondaryArchive = func(root *os.Root, staged, named string) error {
+		if err := root.Link(staged, named); err != nil {
+			return err
+		}
+		return linkReplyLost
+	}
+	if err := automation.copyNextSecondaryBackup(t.Context()); !errors.Is(err, linkReplyLost) {
+		t.Fatalf("secondary publication did not report the ambiguous link result: %v", err)
+	}
+	linked := backupAutomationStateForTest(t, automation).Secondary.Copies[0]
+	if !linked.pending() || linked.VerifiedAt != "" || linked.Attempts != backupSecondaryMaxAttempts {
+		t.Fatalf("last linked attempt was not kept for reconciliation: %+v", linked)
+	}
+	*now = now.Add(time.Duration(backupSecondaryMaxAttempts) * backupSecondaryRetryBase)
+	restarted := newBackupAutomation(automation.deps)
+	restarted.deployment = automation.deployment
+	if err := restarted.copyNextSecondaryBackup(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	copy := backupAutomationStateForTest(t, restarted).Secondary.Copies[0]
+	if copy.VerifiedAt == "" || copy.Attempts != linked.Attempts || copy.FileIdentity != linked.FileIdentity {
+		t.Fatalf("restart did not verify the already published link: %+v", copy)
+	}
+	entries, err := os.ReadDir(secondary)
+	if err != nil || len(entries) != 1 || entries[0].Name() != copy.Archive.Name {
+		t.Fatalf("reconciling the link left extra files: %v (%v)", entries, err)
+	}
+}
+
 func TestSecondaryBackupResumesAfterAtomicLinkAndPreservesForeignFiles(t *testing.T) {
 	_, automation, now := newBackupAutomationTest(t)
 	secondary := secondaryBackupTestDirectory(t, automation)
 	automation.deployment.SecondaryDirectory = secondary
-	if _, err := automation.ValidateSecondaryDestination(t.Context()); err != nil {
+	if _, err := automation.validateSecondaryDestination(t.Context(), nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := automation.Tick(t.Context(), true); err != nil {
@@ -262,7 +416,7 @@ func TestSecondaryTransferReleasesExclusiveAdmissionAndPinsPrimarySource(t *test
 	if _, err := automation.Configure(t.Context(), state.Config); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := automation.ValidateSecondaryDestination(t.Context()); err != nil {
+	if _, err := automation.validateSecondaryDestination(t.Context(), nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := automation.Tick(t.Context(), true); err != nil {
@@ -318,7 +472,7 @@ func TestSecondaryBackupInterruptedAttemptsRemainBounded(t *testing.T) {
 	_, automation, _ := newBackupAutomationTest(t)
 	secondary := secondaryBackupTestDirectory(t, automation)
 	automation.deployment.SecondaryDirectory = secondary
-	if _, err := automation.ValidateSecondaryDestination(t.Context()); err != nil {
+	if _, err := automation.validateSecondaryDestination(t.Context(), nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := automation.Tick(t.Context(), true); err != nil {
@@ -371,7 +525,7 @@ func TestSecondaryRetentionCountsOnlyCopiesStillPresentAndUnchanged(t *testing.T
 	if _, err := automation.Configure(t.Context(), config); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := automation.ValidateSecondaryDestination(t.Context()); err != nil {
+	if _, err := automation.validateSecondaryDestination(t.Context(), nil); err != nil {
 		t.Fatal(err)
 	}
 	for range 3 {
@@ -428,7 +582,7 @@ func TestSecondaryTransferStopsWritingDuringRestore(t *testing.T) {
 	_, automation, _ := newBackupAutomationTest(t)
 	secondary := secondaryBackupTestDirectory(t, automation)
 	automation.deployment.SecondaryDirectory = secondary
-	if _, err := automation.ValidateSecondaryDestination(t.Context()); err != nil {
+	if _, err := automation.validateSecondaryDestination(t.Context(), nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := automation.Tick(t.Context(), true); err != nil {
@@ -486,7 +640,7 @@ func TestSecondaryPublicationReleasesAdmissionAndRecoversAfterLastSyncFailure(t 
 	_, automation, now := newBackupAutomationTest(t)
 	secondary := secondaryBackupTestDirectory(t, automation)
 	automation.deployment.SecondaryDirectory = secondary
-	if _, err := automation.ValidateSecondaryDestination(t.Context()); err != nil {
+	if _, err := automation.validateSecondaryDestination(t.Context(), nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := automation.Tick(t.Context(), true); err != nil {
@@ -578,7 +732,7 @@ func TestSecondaryRetentionRetriesUnreadableOwnedCopy(t *testing.T) {
 	if _, err := automation.Configure(t.Context(), config); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := automation.ValidateSecondaryDestination(t.Context()); err != nil {
+	if _, err := automation.validateSecondaryDestination(t.Context(), nil); err != nil {
 		t.Fatal(err)
 	}
 	for range 2 {
@@ -617,7 +771,7 @@ func TestSecondaryPublicationRejectsChangedFinalContentWithOriginalTimeAndSize(t
 	_, automation, _ := newBackupAutomationTest(t)
 	secondary := secondaryBackupTestDirectory(t, automation)
 	automation.deployment.SecondaryDirectory = secondary
-	if _, err := automation.ValidateSecondaryDestination(t.Context()); err != nil {
+	if _, err := automation.validateSecondaryDestination(t.Context(), nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := automation.Tick(t.Context(), true); err != nil {

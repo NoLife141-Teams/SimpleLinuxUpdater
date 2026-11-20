@@ -80,10 +80,21 @@ func TestRestoredAPTProofFencesAdmissionUntilFreshResume(t *testing.T) {
 			t.Fatalf("probe = %d, %s", res.Code, res.Body.String())
 		}
 		if index == 1 {
-			clock.Add(int64(restoreAPTProofLifetime/time.Second) + 1)
+			clock.Add(int64(restoreAPTProofLifetime/time.Second) - 1)
 		}
 	}
-	res := identityRequest(app, "POST", restoreIsolationResumeRoute, admin, "", gin.H{"confirmation": "RESUME"})
+	preview := reviewRestoreResumption(t, app, admin)
+	if len(preview.Impact.Hosts) != 2 || !preview.Impact.Hosts[0].Allowed || !preview.Impact.Hosts[1].Allowed {
+		t.Fatalf("preview omitted an eligible host: %+v", preview.Impact.Hosts)
+	}
+	clock.Add(2)
+	stale := identityRequest(app, "POST", restoreIsolationResumeRoute, admin, "",
+		gin.H{"confirmation": "RESUME", "preview_token": preview.Token})
+	if stale.Code != http.StatusConflict || !strings.Contains(stale.Body.String(), `"reason":"expired"`) ||
+		!app.Deps.RestoreIsolation.BlocksExternalWork() || len(dials) != 2 {
+		t.Fatalf("stale proof confirmation = %d %s, SSH checks = %v", stale.Code, stale.Body.String(), dials)
+	}
+	res := identityRequest(app, "POST", restoreIsolationResumeRoute, admin, "", confirmReviewedRestoration(t, app, admin))
 	if res.Code != 200 {
 		t.Fatalf("resume = %d, %s", res.Code, res.Body.String())
 	}
@@ -480,7 +491,7 @@ func TestRestoredAPTBatchChecksSelectedHostsWithBoundedConcurrency(t *testing.T)
 	if strings.Contains(rec.Body.String(), "SHA256:") {
 		t.Fatal("batch response exposed host key evidence")
 	}
-	if rec := identityRequest(app, "POST", restoreIsolationResumeRoute, admin, "", gin.H{"confirmation": "RESUME"}); rec.Code != http.StatusOK {
+	if rec := identityRequest(app, "POST", restoreIsolationResumeRoute, admin, "", confirmReviewedRestoration(t, app, admin)); rec.Code != http.StatusOK {
 		t.Fatalf("explicit resume after batch: %d, %s", rec.Code, rec.Body)
 	}
 	for index, server := range servers {

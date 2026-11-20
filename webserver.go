@@ -2039,6 +2039,7 @@ func registerProtectedAuthAndSettingsRoutes(r *gin.Engine, deps AppDeps) {
 	r.POST("/api/backup/restore", requireRecentAuthentication(), func(c *gin.Context) {
 		handleBackupRestoreWithDeps(c, deps)
 	})
+	r.GET(restoreResumePreviewRoute, func(c *gin.Context) { handleRestoreResumePreview(c, deps) })
 	r.POST(restoreIsolationResumeRoute, requireRecentAuthentication(), func(c *gin.Context) {
 		handleRestoreIsolationResume(c, deps)
 	})

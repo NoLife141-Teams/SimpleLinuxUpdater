@@ -52,7 +52,7 @@ func requestBodyBudgetMiddleware() gin.HandlerFunc {
 			limit = packageDeferralMaxRequestBytes
 		case path == restoreAPTValidationRoute:
 			limit = 48 * 1024
-		case path == "/api/backup/automation" || path == backupSecondaryValidateRoute || strings.HasPrefix(path, "/api/backup/archives/"):
+		case path == "/api/backup/automation" || path == backupSecondaryValidateRoute || path == restoreIsolationResumeRoute || strings.HasPrefix(path, "/api/backup/archives/"):
 			limit = 4096
 		case path == "/api/backup/export":
 			limit = backupMaxExportRequestBytes

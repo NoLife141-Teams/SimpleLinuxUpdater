@@ -43,6 +43,8 @@
                 }
                 const error = new Error(data.error || `Request failed (${response.status})`);
                 error.reauthenticationRequired = Boolean(data.reauthentication_required);
+                error.code = data.code;
+                error.preview = data.preview;
                 throw error;
             }
             return data;

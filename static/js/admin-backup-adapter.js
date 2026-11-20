@@ -5,6 +5,8 @@
         const lifecycle = root.BrowserEffects.create();
         const fetch = lifecycle.fetch;
         let reauthentication;
+        let resumePreview = null;
+        let resumeBusy = false;
         const aptSelection = new Map();
         const aptResults = new Map();
         const aptBatchLimit = 12;
@@ -366,7 +368,16 @@
                 if (button) void operateBackupArchive(button.dataset.backupArchive, button.dataset.backupOperation);
             });
             const resume = document.getElementById("restore-isolation-resume");
-            lifecycle.listen(resume, "click", () => void resumeExternalWork(resume));
+            const review = document.getElementById("restore-isolation-review");
+            if (review && resume) {
+                lifecycle.listen(resume, "click", () => void resumeExternalWork());
+                lifecycle.listen(review, "click", () => void reviewResumption());
+                lifecycle.own(() => {
+                    resumeBusy = false;
+                    renderResumption(null);
+                    document.getElementById("restore-isolation-feedback").textContent = "";
+                });
+            }
             const aptPanel = document.getElementById("restore-apt-validation");
             lifecycle.listen(aptPanel, "click", event => {
                 const button = event.target.closest("button[data-restore-apt-name]");
@@ -506,11 +517,67 @@
             }
         }
 
-        async function resumeExternalWork(button) {
-            if (button.disabled) return;
+        function renderResumption(preview) {
+            resumePreview = preview;
+            const panel = document.getElementById("restore-isolation-impact");
+            panel.hidden = !preview;
+            const review = document.getElementById("restore-isolation-review");
+            review.disabled = resumeBusy;
+            review.setAttribute("aria-expanded", String(Boolean(preview)));
+            document.getElementById("restore-isolation-resume").disabled = resumeBusy || !preview;
+            if (!preview) return;
+            const {hosts, schedules, notifications} = preview.impact;
+            const renderList = (id, entries, empty) => {
+                const lines = entries === null ? ["Unavailable"] : entries.length ? entries : [empty];
+                document.getElementById(id).replaceChildren(...lines.map(line => {
+                    const item = document.createElement("li");
+                    item.textContent = line;
+                    return item;
+                }));
+            };
+            const aptReason = {disabled: "Server disabled", no_validation_required: "No APT check required"};
+            renderList("restore-impact-hosts", hosts?.map(host =>
+                `${host.name} · ${host.allowed ? "Can resume" : "Stays blocked"} · ${aptReason[host.reason] || describeRestoreAPTState(host.reason)}`) ?? null,
+            "No servers");
+            renderList("restore-impact-schedules", schedules?.map(run =>
+                `${run.server} · ${run.policy} · ${formatSessionTime(run.at)}`) ?? null,
+            "No upcoming scheduled runs");
+            const names = {webhook: "Webhook", discord: "Discord", telegram: "Telegram"};
+            renderList("restore-impact-notifications", notifications?.map(queue => {
+                const cooldown = queue.rate_limited_until ? ` · paused until ${formatSessionTime(queue.rate_limited_until)}` : "";
+                return `${names[queue.destination]} · ${queue.configured ? "Configured" : "Configuration required"} · ${queue.pending} pending, ${queue.retrying} retrying, ${queue.claimed} claimed${cooldown}`;
+            }) ?? null, "No enabled destinations");
+        }
+
+        async function reviewResumption() {
+            if (resumeBusy) return;
             const lifetime = lifecycle.capture();
             const feedback = document.getElementById("restore-isolation-feedback");
-            button.disabled = true;
+            resumeBusy = true;
+            renderResumption(null);
+            feedback.textContent = "Loading resumption impact…";
+            try {
+                const preview = await reauthentication.request("/api/backup/restore-isolation/resume-preview");
+                if (!lifecycle.isCurrent(lifetime)) return;
+                renderResumption(preview);
+                feedback.textContent = "Review this impact before confirming.";
+            } catch (error) {
+                if (lifecycle.isCurrent(lifetime) && error.name !== "AbortError") feedback.textContent = error.message;
+            } finally {
+                if (lifecycle.isCurrent(lifetime)) {
+                    resumeBusy = false;
+                    renderResumption(resumePreview);
+                }
+            }
+        }
+
+        async function resumeExternalWork() {
+            if (resumeBusy || !resumePreview) return;
+            const lifetime = lifecycle.capture();
+            const feedback = document.getElementById("restore-isolation-feedback");
+            const {token} = resumePreview;
+            resumeBusy = true;
+            renderResumption(resumePreview);
             feedback.textContent = "";
             try {
                 const confirmed = await window.confirmTypedAction(
@@ -527,16 +594,26 @@
                 if (!confirmed || !lifecycle.isCurrent(lifetime)) return;
                 await reauthentication.sensitive(
                     "/api/backup/restore-isolation/resume",
-                    {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({confirmation: "RESUME"})},
+                    {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({confirmation: "RESUME", preview_token: token})},
                     "Resume external work",
                 );
                 if (!lifecycle.isCurrent(lifetime)) return;
+                renderResumption(null);
                 window.notifyApp("Restore isolation lifted.");
                 await refreshInstallation();
             } catch (error) {
-                if (lifecycle.isCurrent(lifetime)) feedback.textContent = error.message || "Could not resume external work.";
+                if (!lifecycle.isCurrent(lifetime) || error.name === "AbortError") return;
+                if (error.code === "restore_resume_preview_changed") {
+                    renderResumption(error.preview || null);
+                    feedback.textContent = "The preview changed or expired. Review the updated impact before confirming again.";
+                } else {
+                    feedback.textContent = error.message || "Could not resume external work.";
+                }
             } finally {
-                if (lifecycle.isCurrent(lifetime)) button.disabled = false;
+                if (lifecycle.isCurrent(lifetime)) {
+                    resumeBusy = false;
+                    renderResumption(resumePreview);
+                }
             }
         }
 

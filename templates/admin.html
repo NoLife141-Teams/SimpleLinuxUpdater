@@ -1125,7 +1125,23 @@
                 <div id="restore-isolation-controls" hidden>
                     <div class="backup-review-section">
                         <p>Review SSH trust, scheduled policies and notification destinations before resuming SSH and queued deliveries.</p>
-                        <div><button class="btn-danger" type="button" id="restore-isolation-resume">Resume External Work</button></div>
+                        <div><button class="btn-ghost" type="button" id="restore-isolation-review" aria-controls="restore-isolation-impact" aria-expanded="false">Review resumption impact</button></div>
+                        <section class="backup-restore-review" id="restore-isolation-impact" aria-label="Resumption impact" hidden>
+                            <div class="backup-review-section">
+                                <h5>Package maintenance by server</h5>
+                                <ul id="restore-impact-hosts"></ul>
+                            </div>
+                            <div class="backup-review-section">
+                                <h5>Upcoming scheduled runs</h5>
+                                <ul id="restore-impact-schedules"></ul>
+                            </div>
+                            <div class="backup-review-section">
+                                <h5>Paused notification queues</h5>
+                                <ul id="restore-impact-notifications"></ul>
+                            </div>
+                            <p class="muted">Queued work still follows the current policy and destination settings when it runs.</p>
+                        </section>
+                        <div><button class="btn-danger" type="button" id="restore-isolation-resume" disabled>Resume External Work</button></div>
                         <p id="restore-isolation-feedback" class="muted" role="status" aria-live="polite"></p>
                     </div>
                 </div>

@@ -238,7 +238,8 @@ def qualify(source, work, report):
     require(origin.cli(binary, *verify).get("archive_verified"), "native offline verification failed")
     report["steps"]["verify"] = "passed"
     checked(["icacls.exe", str(secret_path), "/grant", USERS_SID + ":(R)"], "grant fixture read access")
-    require(not origin.cli(binary, *verify, success=False).get("archive_verified"), "overbroad passphrase ACL was accepted")
+    denied = origin.cli(binary, *verify, success=False)
+    require(denied.get("status") == "passphrase_unavailable", "verification did not reject the overbroad passphrase ACL")
     report["steps"]["private_passphrase"] = "passed"
 
     with target.running(binary) as api:

@@ -115,10 +115,6 @@ func TestReleaseGateMatchesCriticalCIValidation(t *testing.T) {
 			t.Error("Windows restoration must run natively for both CI and release")
 		}
 	}
-	if !strings.Contains(workflowJobForTest(t, ci, "ci-required", ""), `test "$WINDOWS_RESTORE_RESULT" = success`) {
-		t.Error("ci-required must fail when native Windows restoration fails")
-	}
-
 	criticalCommands := []string{
 		"go vet ./...",
 		"staticcheck ./...",

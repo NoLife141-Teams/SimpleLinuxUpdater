@@ -16,6 +16,55 @@ import run
 
 
 class HarnessSafetyTests(unittest.TestCase):
+    def test_secondary_outage_control_retries_only_a_deferral_without_publication(self):
+        harness = object.__new__(run.Harness)
+        harness.api = mock.Mock()
+        harness.api.request.side_effect = [{"state": "deferred"}, {"state": "succeeded"}]
+        record = {}
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(run.time, "sleep"):
+            archives = Path(directory)
+            (archives / "existing.slubkp").touch()
+            harness.control_backup_during_secondary_outage(record, archives, {"existing.slubkp"})
+        self.assertEqual(harness.api.request.call_args_list, [
+            mock.call("POST", "/api/backup/automation/run"),
+            mock.call("POST", "/api/backup/automation/run"),
+        ])
+        self.assertEqual(record["secondary_outage_control"], {"attempts": 2, "state": "succeeded"})
+
+    def test_secondary_outage_control_fails_closed_and_records_the_state(self):
+        cases = [
+            ({"state": "failed", "message": "private fixture value"}, False, "failed", "control state failed"),
+            ({"state": "private fixture value"}, False, "unexpected", "control state unexpected"),
+            ({"state": "deferred"}, True, "deferred", "deferred control changed the primary archives"),
+        ]
+        for response, published, state, message in cases:
+            with self.subTest(state=state), tempfile.TemporaryDirectory() as directory:
+                harness = object.__new__(run.Harness)
+                harness.api = mock.Mock()
+                harness.api.request.return_value = response
+                archives = Path(directory)
+                if published:
+                    (archives / "unexpected.slubkp").touch()
+                record = {}
+                with mock.patch.object(run.time, "sleep") as sleep, self.assertRaisesRegex(AssertionError, message):
+                    harness.control_backup_during_secondary_outage(record, archives, set())
+                harness.api.request.assert_called_once_with("POST", "/api/backup/automation/run")
+                sleep.assert_not_called()
+                self.assertEqual(record["secondary_outage_control"], {"attempts": 1, "state": state})
+
+    def test_secondary_outage_control_persistent_deferral_has_a_deadline(self):
+        harness = object.__new__(run.Harness)
+        harness.api = mock.Mock()
+        harness.api.request.return_value = {"state": "deferred"}
+        record = {}
+        clock = [0.0]
+        with tempfile.TemporaryDirectory() as directory, \
+                mock.patch.object(run.time, "monotonic", side_effect=lambda: clock[0]), \
+                mock.patch.object(run.time, "sleep", side_effect=lambda _: clock.__setitem__(0, clock[0] + 1)):
+            with self.assertRaisesRegex(AssertionError, "control remained deferred"):
+                harness.control_backup_during_secondary_outage(record, Path(directory), set())
+        self.assertEqual(record["secondary_outage_control"], {"attempts": 3, "state": "deferred"})
+
     def test_vm_entry_point_starts_with_its_packaged_files(self):
         with tempfile.TemporaryDirectory() as directory:
             installed = Path(directory) / "tools/ci/ssh-apt"

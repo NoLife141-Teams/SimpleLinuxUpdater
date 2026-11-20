@@ -1329,6 +1329,31 @@ assert trust.read_bytes() == b'fixture trust' and marker.read_bytes() == b'fixtu
                     "--entrypoint", "/usr/bin/python3", self.image, "-c", runner, timeout=65)
         record["verified_offline_archive_with_constrained_workspace"] = True
 
+    def control_backup_during_secondary_outage(self, record, primary_archives, before_export):
+        # This fixture disables scheduled backups. A manual control deferred for
+        # shared admission is retried automatically only after five minutes.
+        # Allow a short second admission chance without awaiting that follow-up,
+        # but never retry an error or a response that may have published.
+        control = {"attempts": 0, "state": "not_started"}
+        record["secondary_outage_control"] = control
+
+        def run_control():
+            control["attempts"] += 1
+            response = self.api.request("POST", "/api/backup/automation/run")
+            state = response.get("state") if isinstance(response, dict) else None
+            control["state"] = state if state in (
+                "succeeded", "deferred", "failed", "running", "suspended", "disabled", "configured"
+            ) else "unexpected"
+            if state == "deferred":
+                current = {file.name for file in primary_archives.glob("*.slubkp")}
+                require(current == before_export, "deferred control changed the primary archives")
+                return False
+            require(state == "succeeded",
+                    "unavailable secondary storage affected primary publication: control state " + control["state"])
+            return True
+
+        until(run_control, "primary control remained deferred while secondary storage was unavailable", seconds=3)
+
     def verified_secondary_archive(self, record, credentials):
         record["checkpoint"] = "secondary-validation"
         self.api.request("POST", "/api/auth/reauthenticate", {"password": self.password})
@@ -1349,9 +1374,9 @@ assert trust.read_bytes() == b'fixture trust' and marker.read_bytes() == b'fixtu
         directory.mkdir(mode=0o700)
         try:
             record["checkpoint"] = "secondary-mount-unavailable"
-            control = self.api.request("POST", "/api/backup/automation/run")
-            require(control["state"] == "succeeded", "unavailable secondary storage affected primary publication")
-            new_names = {file.name for file in (primary / "archives").glob("*.slubkp")} - before_export
+            primary_archives = primary / "archives"
+            self.control_backup_during_secondary_outage(record, primary_archives, before_export)
+            new_names = {file.name for file in primary_archives.glob("*.slubkp")} - before_export
             require(len(new_names) == 1, "fixture did not publish exactly one new source archive")
             new_name = next(iter(new_names))
 

@@ -2850,14 +2850,17 @@ test("admin checks selected restored hosts and can retry only the failed entries
         {name: "outside-selection", identity: "3", state: "pending"},
     ];
     const submissions = [];
-    let finish, releaseRefresh, rejectHealthRefresh = false;
+    let finish, releaseRefresh, rejectHealthRefresh = false, omitAPTHosts = false;
     const deferredRefresh = new Promise(resolve => { releaseRefresh = resolve; });
     await page.route("**/api/installation/health", async route => {
         if (rejectHealthRefresh) {
             await deferredRefresh;
             return route.fulfill({status: 503});
         }
-        return fulfillJson(route, {state: "ready", restore_isolation: "active", restore_apt_hosts: hosts});
+        return fulfillJson(route, {
+            state: "ready", restore_isolation: "active",
+            restore_apt_hosts: omitAPTHosts ? undefined : hosts,
+        });
     });
     await page.route("**/api/backup/restore-isolation/apt-check", async route => {
         const { targets } = route.request().postDataJSON();
@@ -2889,6 +2892,10 @@ test("admin checks selected restored hosts and can retry only the failed entries
     await expect(panel.getByRole("row", {name: /healthy-host/})).toContainText("Checking…");
     await expect(panel.getByRole("row", {name: /offline-host/})).toContainText("Waiting to check…");
     await expect(submit).toBeDisabled();
+    omitAPTHosts = true;
+    await expect(panel.getByText("The APT host list could not be refreshed.", {exact: true})).toBeVisible();
+    await expect(healthy).toBeChecked();
+    await expect(offline).toBeChecked();
     finish();
     await expect(panel.getByRole("row", {name: /healthy-host/})).toContainText("Last submitted check · Validated");
     await expect(panel.getByRole("status")).toContainText("Checks finished for 2 servers. 1 needs attention.");
@@ -2903,6 +2910,7 @@ test("admin checks selected restored hosts and can retry only the failed entries
 
     await panel.getByRole("checkbox", {name: "Select outside-selection for APT check"}).check();
     hosts[2].name = "renamed-host";
+    omitAPTHosts = false;
     rejectHealthRefresh = false;
     await installation.getByRole("button", {name: "Refresh", exact: true}).click();
     await expect(panel.getByRole("checkbox", {name: "Select renamed-host for APT check"})).not.toBeChecked();
@@ -2914,6 +2922,9 @@ test("admin checks selected restored hosts and can retry only the failed entries
         [{name: "offline-host", identity: "2", target_revision: "two"}],
     ]);
     await expect(page.locator("#restore-isolation-resume")).toBeVisible();
+    hosts.length = 0;
+    await installation.getByRole("button", {name: "Refresh", exact: true}).click();
+    await expect(panel).toBeHidden();
 });
 
 test("admin typed confirmations gate restore and policy deletion", async ({

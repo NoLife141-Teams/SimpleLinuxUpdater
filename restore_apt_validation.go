@@ -265,12 +265,15 @@ func (v *restoreAPTValidation) all(ctx context.Context) (map[string]restoreAPTOb
 
 func (v *restoreAPTValidation) hostFacts(ctx context.Context, state *serverpkg.State, now time.Time, isolated bool) []restoreAPTHostFacts {
 	observations, err := v.all(ctx)
-	if err != nil || len(observations) == 0 {
+	if err != nil {
 		return nil
+	}
+	facts := make([]restoreAPTHostFacts, 0, len(observations))
+	if len(observations) == 0 {
+		return facts
 	}
 	state.Lock()
 	defer state.Unlock()
-	var facts []restoreAPTHostFacts
 	for _, server := range state.Servers() {
 		if observation, required := observations[server.Identity]; required {
 			status := state.StatusMap()[server.Name]

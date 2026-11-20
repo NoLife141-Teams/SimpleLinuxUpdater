@@ -685,6 +685,7 @@
             document.getElementById("restore-isolation-controls").hidden = !["active", "unavailable"].includes(view.restoreIsolation);
             const aptPanel = document.getElementById("restore-apt-validation");
             aptPanel.hidden = view.restoreAPTHosts.length === 0;
+            aptPanel.querySelector("[data-restore-apt-unavailable]").hidden = view.restoreAPTHostsAvailable;
             aptPanel.querySelector("tbody").replaceChildren(...view.restoreAPTHosts.map(host => {
                 const row = document.createElement("tr");
                 const selection = document.createElement("td");

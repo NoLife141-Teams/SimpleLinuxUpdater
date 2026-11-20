@@ -163,7 +163,7 @@ type installationDiagnostics struct {
 	BackupArchives           backupArchiveCoverage                           `json:"backup_archives"`
 	Notifications            installationNotificationFacts                   `json:"notifications"`
 	Storage                  installationStorage                             `json:"storage"`
-	RestoreAPTHosts          []restoreAPTHostFacts                           `json:"restore_apt_hosts,omitempty"`
+	RestoreAPTHosts          []restoreAPTHostFacts                           `json:"restore_apt_hosts"`
 }
 
 func installationSnapshot(ctx context.Context, deps AppDeps) installationDiagnostics {

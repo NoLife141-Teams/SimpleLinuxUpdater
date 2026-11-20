@@ -390,7 +390,8 @@
             const panel = document.getElementById("restore-apt-validation");
             if (!panel) return;
             const view = adminPageView();
-            const freshness = view.streams?.installation?.freshness;
+            const aptSnapshotCurrent = view.installation?.restoreAPTHostsAvailable &&
+                view.streams?.installation?.freshness === "fresh";
             const hosts = new Map((view.installation?.restoreAPTHosts || []).map(host => [host.identity, host]));
             for (const [identity, selected] of aptSelection) {
                 const host = hosts.get(identity);
@@ -416,7 +417,7 @@
                 const snapshotTime = Date.parse(host.checkedAt) || 0;
                 const showResult = result?.state && result.target_revision === (host.targetRevision || undefined) &&
                     (resultTime > snapshotTime ||
-                        (freshness !== "fresh" && resultTime === snapshotTime && result.state !== host.state));
+                        (!aptSnapshotCurrent && resultTime === snapshotTime && result.state !== host.state));
                 if (completed) finished++;
                 row.querySelector("[data-restore-apt-progress]").textContent =
                     result?.error ? result.error :

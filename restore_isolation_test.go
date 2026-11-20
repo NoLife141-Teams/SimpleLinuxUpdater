@@ -80,7 +80,12 @@ func TestRestoreIsolationResumeRequiresAdminConfirmationAndReauthentication(t *t
 	if rec := identityRequest(app, "POST", "/api/auth/reauthenticate", admin, "", gin.H{"password": testPasswordStrong}); rec.Code != 200 {
 		t.Fatalf("reauthentication = %d %s", rec.Code, rec.Body.String())
 	}
-	confirmation = confirmReviewedRestoration(t, app, admin)
+	empty := reviewRestoreResumption(t, app, admin)
+	if !empty.Complete || empty.Impact.Hosts == nil || empty.Impact.Schedules == nil || empty.Impact.Notifications == nil ||
+		len(empty.Impact.Hosts)+len(empty.Impact.Schedules)+len(empty.Impact.Notifications) != 0 {
+		t.Fatalf("empty inputs were not reviewable: %+v", empty)
+	}
+	confirmation = gin.H{"confirmation": "RESUME", "preview_token": empty.Token}
 	if rec := identityRequest(app, "POST", restoreIsolationResumeRoute, admin, "", confirmation); rec.Code != 200 || !strings.Contains(rec.Body.String(), `"restore_isolation":"inactive"`) {
 		t.Fatalf("resumption = %d %s", rec.Code, rec.Body.String())
 	}
@@ -154,11 +159,6 @@ func TestRestoreResumptionRequiresCompleteInputsAndInvalidatesOldReview(t *testi
 			if err := app.Deps.RestoreIsolation.Activate(); err != nil {
 				t.Fatal(err)
 			}
-			empty := reviewRestoreResumption(t, app, admin)
-			if !empty.Complete || empty.Impact.Hosts == nil || empty.Impact.Schedules == nil || empty.Impact.Notifications == nil ||
-				len(empty.Impact.Hosts)+len(empty.Impact.Schedules)+len(empty.Impact.Notifications) != 0 {
-				t.Fatalf("empty inputs were not reviewable: %+v", empty)
-			}
 			server, err := app.Deps.ServerInventoryService.Create(Server{Name: "fixture-host", Host: "fixture.example.test", User: "root"})
 			if err != nil {
 				t.Fatal(err)
@@ -177,14 +177,20 @@ func TestRestoreResumptionRequiresCompleteInputsAndInvalidatesOldReview(t *testi
 			if err := watermark.SaveSchedulerWatermark(before); err != nil {
 				t.Fatal(err)
 			}
-			complete := reviewRestoreResumption(t, app, admin)
+			var failRead, restoreRead string
+			var args []any
 			switch section {
 			case "hosts":
-				exec("ALTER TABLE restore_apt_validation RENAME TO unavailable_apt")
+				failRead = "ALTER TABLE restore_apt_validation RENAME TO unavailable_apt"
+				restoreRead = "ALTER TABLE unavailable_apt RENAME TO restore_apt_validation"
 			case "schedules":
-				exec("ALTER TABLE update_policies RENAME TO unavailable_policies")
+				failRead = "ALTER TABLE update_policies RENAME TO unavailable_policies"
+				restoreRead = "ALTER TABLE unavailable_policies RENAME TO update_policies"
 			case "notifications":
-				exec("INSERT OR REPLACE INTO settings(key,value) VALUES(?,?)", notificationpkg.SettingsKey, "corrupted-settings")
+				// A stored empty value is invalid JSON. An absent row is valid.
+				failRead = "INSERT OR REPLACE INTO settings(key,value) VALUES(?, '')"
+				restoreRead = "DELETE FROM settings WHERE key=?"
+				args = []any{notificationpkg.SettingsKey}
 			}
 			assertIncomplete := func(preview restoreResumePreview) {
 				t.Helper()
@@ -196,19 +202,31 @@ func TestRestoreResumptionRequiresCompleteInputsAndInvalidatesOldReview(t *testi
 					t.Fatalf("invalid partial preview for %s: %+v", section, preview)
 				}
 			}
-			for range 2 {
-				rec := identityRequest(app, "GET", restoreResumePreviewRoute, admin, "", nil)
-				var preview restoreResumePreview
-				if err := json.Unmarshal(rec.Body.Bytes(), &preview); err != nil || rec.Code != http.StatusOK {
-					t.Fatalf("partial review = %d %s", rec.Code, rec.Body.String())
-				}
-				assertIncomplete(preview)
-			}
 			send := func(token string) *httptest.ResponseRecorder {
 				t.Helper()
 				return identityRequest(app, "POST", restoreIsolationResumeRoute, admin, "",
 					gin.H{"confirmation": "RESUME", "preview_token": token})
 			}
+			assertStale := func(token string) {
+				t.Helper()
+				if stale := send(token); stale.Code != http.StatusConflict ||
+					!strings.Contains(stale.Body.String(), "restore_resume_preview_changed") {
+					t.Fatalf("old preview accepted after recovery: %d %s", stale.Code, stale.Body.String())
+				}
+			}
+			complete := reviewRestoreResumption(t, app, admin)
+			exec(failRead, args...)
+			rec := identityRequest(app, "GET", restoreResumePreviewRoute, admin, "", nil)
+			var preview restoreResumePreview
+			if err := json.Unmarshal(rec.Body.Bytes(), &preview); err != nil || rec.Code != http.StatusOK {
+				t.Fatalf("partial review = %d %s", rec.Code, rec.Body.String())
+			}
+			assertIncomplete(preview)
+			exec(restoreRead, args...)
+			assertStale(complete.Token)
+
+			complete = reviewRestoreResumption(t, app, admin)
+			exec(failRead, args...)
 			blocked := send(complete.Token)
 			var response struct {
 				Code    string               `json:"code"`
@@ -220,14 +238,8 @@ func TestRestoreResumptionRequiresCompleteInputsAndInvalidatesOldReview(t *testi
 				t.Fatalf("confirmation during outage = %d %s", blocked.Code, blocked.Body.String())
 			}
 			assertIncomplete(response.Preview)
-			switch section {
-			case "hosts":
-				exec("ALTER TABLE unavailable_apt RENAME TO restore_apt_validation")
-			case "schedules":
-				exec("ALTER TABLE unavailable_policies RENAME TO update_policies")
-			case "notifications":
-				exec("DELETE FROM settings WHERE key=?", notificationpkg.SettingsKey)
-			}
+			exec(restoreRead, args...)
+			assertStale(complete.Token)
 			if got, found, err := watermark.LoadSchedulerWatermark(); err != nil || !found || !got.Equal(before) {
 				t.Fatalf("watermark changed during outage: %v, %v, %v", got, found, err)
 			}
@@ -237,10 +249,6 @@ func TestRestoreResumptionRequiresCompleteInputsAndInvalidatesOldReview(t *testi
 			}
 			if err := db.QueryRow("SELECT count(*) FROM audit_events WHERE action='backup.restore_isolation.resume'").Scan(&audits); err != nil || audits != 0 {
 				t.Fatalf("rejected preview recorded a resumption decision: %d, %v", audits, err)
-			}
-			if stale := send(complete.Token); stale.Code != http.StatusConflict ||
-				!strings.Contains(stale.Body.String(), "restore_resume_preview_changed") {
-				t.Fatalf("old preview accepted after recovery: %d %s", stale.Code, stale.Body.String())
 			}
 			if fresh := send(reviewRestoreResumption(t, app, admin).Token); fresh.Code != http.StatusOK ||
 				app.Deps.RestoreIsolation.BlocksExternalWork() {

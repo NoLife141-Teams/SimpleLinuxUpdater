@@ -40,7 +40,7 @@ func (s *Service) RestoreDeliveryResumption(ctx context.Context, now time.Time) 
 		return nil, "", err
 	}
 	var settings persistedSettings
-	if raw != "" {
+	if err == nil {
 		if err := json.Unmarshal([]byte(raw), &settings); err != nil {
 			return nil, "", err
 		}

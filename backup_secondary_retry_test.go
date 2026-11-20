@@ -1,12 +1,16 @@
 package main
 
 import (
+	"context"
+	"database/sql"
 	"errors"
 	"net/http"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
+
+	maintenancepkg "debian-updater/internal/maintenance"
 
 	"github.com/gin-gonic/gin"
 )
@@ -39,6 +43,28 @@ func TestSecondaryCatchUpSurvivesRestartAndNewMountApproval(t *testing.T) {
 	if err := restarted.copyNextSecondaryBackup(t.Context()); err != nil {
 		t.Fatal(err)
 	}
+	offline := secondary + ".offline"
+	if err := os.Rename(secondary, offline); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(offline) })
+	if err := restarted.copyNextSecondaryBackup(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(offline, archive.Name)); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(offline, secondary); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if err := restarted.copyNextSecondaryBackup(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(secondary, archive.Name)); err != nil {
+		t.Fatalf("returning mount did not catch up the missing registered copy: %v", err)
+	}
 	previous := secondary + ".previous"
 	if err := os.Rename(secondary, previous); err != nil {
 		t.Fatal(err)
@@ -68,6 +94,174 @@ func TestSecondaryCatchUpSurvivesRestartAndNewMountApproval(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(previous, archive.Name)); err != nil {
 		t.Fatalf("old mount was changed after validating its replacement: %v", err)
+	}
+}
+
+func TestSecondaryCatchUpAdmitsNewestSkippedCopyWhenSlotOpens(t *testing.T) {
+	_, automation, now := newBackupAutomationTest(t)
+	secondary := secondaryBackupTestDirectory(t, automation)
+	automation.deployment.SecondaryDirectory = secondary
+	if _, err := automation.validateSecondaryDestination(t.Context(), nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := automation.Tick(t.Context(), true); err != nil {
+		t.Fatal(err)
+	}
+	state := backupAutomationStateForTest(t, automation)
+	// The next export finds a full queue. Only the first copy is due when
+	// the approved mount returns and releases an admission slot.
+	for len(state.Secondary.Copies) < backupSecondaryQueueLimit {
+		id, err := newBackupArchiveID()
+		if err != nil {
+			t.Fatal(err)
+		}
+		future := state.Archives[0]
+		future.ID = id
+		state.Secondary.Copies = append(state.Secondary.Copies, backupSecondaryCopy{
+			Archive: future, RetryAt: backupStamp(now.Add(time.Hour)),
+		})
+	}
+	if err := automation.save(t.Context(), state); err != nil {
+		t.Fatal(err)
+	}
+	*now = now.Add(time.Minute)
+	if err := automation.Tick(t.Context(), true); err != nil {
+		t.Fatal(err)
+	}
+	state = backupAutomationStateForTest(t, automation)
+	newest := state.Archives[len(state.Archives)-1]
+	if state.Secondary.Copies[len(state.Secondary.Copies)-1].Failure != "queue_full" {
+		t.Fatal("fixture did not produce a skipped copy")
+	}
+	offline := secondary + ".offline"
+	if err := os.Rename(secondary, offline); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(offline) })
+	if err := automation.copyNextSecondaryBackup(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(offline, secondary); err != nil {
+		t.Fatal(err)
+	}
+	*now = now.Add(backupSecondaryRetryBase)
+	if err := automation.copyNextSecondaryBackup(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	state = backupAutomationStateForTest(t, automation)
+	if !automation.secondaryProtectsSource(state.Secondary, newest.ID) {
+		t.Fatal("newest skipped archive did not get the first available queue slot")
+	}
+}
+
+func TestSecondaryCatchUpBudgetSurvivesFailedHistoryPruning(t *testing.T) {
+	automation := backupAutomation{deployment: backupAutomationDeployment{SecondaryDirectory: "/backups"}}
+	binding := backupSecondaryBinding{Path: backupStorageBinding("/backups"), Owner: "owner"}
+	oldest := ownedBackupArchive{ID: "registered", Owner: binding.Owner}
+	state := backupAutomationState{
+		Archives: []ownedBackupArchive{oldest},
+		Secondary: backupSecondaryState{Approved: true, Binding: binding, Copies: []backupSecondaryCopy{
+			{Archive: oldest, Attempts: 2 * backupSecondaryMaxAttempts, Retried: true, Failure: "copy_failed"},
+		}},
+	}
+	for range backupSecondaryQueueLimit {
+		state.Secondary.Copies = append(state.Secondary.Copies, backupSecondaryCopy{Failure: "queue_full"})
+	}
+	automation.queueSecondaryCopy(&state, ownedBackupArchive{ID: "new", Owner: binding.Owner})
+	automation.queueSecondaryCopy(&state, oldest)
+	for _, copy := range state.Secondary.Copies {
+		if copy.Archive.ID == oldest.ID && !copy.pending() && !copy.retryable() {
+			return
+		}
+	}
+	t.Fatal("pruned terminal outcome reset the budget of an archive still in the primary catalog")
+}
+
+func TestSecondaryLateMountFailureBeforeTransferPreservesBudget(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("requires filesystem traversal permissions to be enforced")
+	}
+	_, automation, now := newBackupAutomationTest(t)
+	secondary := secondaryBackupTestDirectory(t, automation)
+	t.Cleanup(func() { _ = os.Chmod(secondary, 0700) })
+	automation.deployment.SecondaryDirectory = secondary
+	if _, err := automation.validateSecondaryDestination(t.Context(), nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := automation.Tick(t.Context(), true); err != nil {
+		t.Fatal(err)
+	}
+	if err := automation.copyNextSecondaryBackup(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	published := backupAutomationStateForTest(t, automation).Secondary.Copies[0]
+	if err := os.Remove(filepath.Join(secondary, published.Archive.Name)); err != nil {
+		t.Fatal(err)
+	}
+	*now = now.Add(time.Minute)
+	if err := automation.Tick(t.Context(), true); err != nil {
+		t.Fatal(err)
+	}
+	getDB := automation.deps.DB
+	calls := 0
+	automation.deps.DB = func() *sql.DB {
+		calls++
+		if calls == 2 {
+			// The worker already opened and observed the secondary mount.
+			// Remove access just before it starts the new transfer.
+			if err := os.Chmod(secondary, 0600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return getDB()
+	}
+	if err := automation.copyNextSecondaryBackup(t.Context()); err == nil {
+		t.Fatal("late mount failure did not defer the transfer")
+	}
+	automation.deps.DB = getDB
+	state := backupAutomationStateForTest(t, automation)
+	if copy := state.Secondary.Copies[1]; copy.Attempts != 0 || copy.Failure != "storage_unavailable" {
+		t.Fatalf("late mount failure spent a transfer attempt: %+v", copy)
+	}
+}
+
+func TestSecondaryRetryRegistersRestoreCancellationBeforeReleasingAdmission(t *testing.T) {
+	_, automation, _ := newBackupAutomationTest(t)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	id, err := newBackupArchiveID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	coordinator := automation.deps.MaintenanceCoordinator
+	admission, decision := coordinator.TryShared(maintenancepkg.WorkInteractive)
+	if !decision.Allowed {
+		t.Fatal("retry fixture could not obtain authenticated admission")
+	}
+	defer admission.Close()
+	automation.secondaryCancelMu.Lock()
+	result := make(chan error, 1)
+	go func() { result <- automation.retrySecondaryCopy(ctx, admission, id) }()
+	for automation.secondaryMu.TryLock() {
+		automation.secondaryMu.Unlock()
+		if ctx.Err() != nil {
+			automation.secondaryCancelMu.Unlock()
+			t.Fatal("retry did not reach the restore cancellation boundary")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	restore, restoreDecision := coordinator.TryExclusive(maintenancepkg.OperationBackupRestore)
+	if restore != nil {
+		restore.Close()
+	}
+	automation.secondaryCancelMu.Unlock()
+	select {
+	case <-result:
+	case <-ctx.Done():
+		t.Fatal("retry remained blocked after cancellation registration")
+	}
+	if restoreDecision.Allowed {
+		t.Fatal("restore could start after authentication but before the retry registered cancellation")
 	}
 }
 

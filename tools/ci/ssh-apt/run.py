@@ -1336,6 +1336,14 @@ assert trust.read_bytes() == b'fixture trust' and marker.read_bytes() == b'fixtu
         primary = self.work / "archive-mount-probe"
         secondary = self.secondary_work
         directory = secondary / "archives"
+        def secondary_verified():
+            status = self.api.request("GET", "/api/backup/automation")["secondary"]
+            return status["state"] == "verified" and status.get("captured_at") and status["pending"] == 0
+
+        until(secondary_verified, "secondary validation did not catch up an existing archive")
+        caught_up = {file.name for file in directory.glob("*.slubkp")}
+        before_export = {file.name for file in (primary / "archives").glob("*.slubkp")}
+        require(len(caught_up) == 1 and caught_up <= before_export, "catch-up did not publish a registered archive")
         saved = secondary / "removed-mount"
         directory.rename(saved)
         directory.mkdir(mode=0o700)
@@ -1343,6 +1351,9 @@ assert trust.read_bytes() == b'fixture trust' and marker.read_bytes() == b'fixtu
             record["checkpoint"] = "secondary-mount-unavailable"
             control = self.api.request("POST", "/api/backup/automation/run")
             require(control["state"] == "succeeded", "unavailable secondary storage affected primary publication")
+            new_names = {file.name for file in (primary / "archives").glob("*.slubkp")} - before_export
+            require(len(new_names) == 1, "fixture did not publish exactly one new source archive")
+            new_name = next(iter(new_names))
 
             def mount_failure():
                 status = self.api.request("GET", "/api/backup/automation")
@@ -1358,27 +1369,24 @@ assert trust.read_bytes() == b'fixture trust' and marker.read_bytes() == b'fixtu
         record["checkpoint"] = "secondary-copy-interrupted"
         until((self.work / "secondary-copy-interrupted").is_file, "partial copy checkpoint was not reached")
         self.kill_app()
-        require(not list(directory.glob("*.slubkp")), "interrupted copy was published")
+        require(not (directory / new_name).exists(), "interrupted copy was published")
         require(len(list(directory.glob(".slu-secondary-*.tmp"))) == 1, "expected one incomplete copy")
         self.docker("start", self.app_name)
         self.connect_app()
         self.api.request("POST", "/api/auth/login", credentials)
 
         record["checkpoint"] = "secondary-copy-verified"
-        def secondary_verified():
-            status = self.api.request("GET", "/api/backup/automation")["secondary"]
-            return status["state"] == "verified" and status.get("captured_at") and status["pending"] == 0
-
         until(secondary_verified, "secondary copy did not recover after restart")
-        copies = list(directory.glob("*.slubkp"))
-        require(len(copies) == 1, "restarted copy published duplicates")
-        primary_archive = primary / "archives" / copies[0].name
-        archive = copies[0].read_bytes()
+        require({file.name for file in directory.glob("*.slubkp")} == caught_up | new_names,
+                "restart did not preserve exactly the caught-up and interrupted archives")
+        primary_archive = primary / "archives" / new_name
+        archive = (directory / new_name).read_bytes()
         require(archive == primary_archive.read_bytes(), "secondary archive changed the original encrypted bytes")
         (primary / "archives").rename(primary / "primary-unavailable-for-cold-restore")
         require(not primary_archive.exists(), "cold restoration still has access to the primary archive")
         passphrase = (primary / "passphrase").read_text().strip()
         record.update(verified_secondary_mount_guard=True, verified_secondary_interrupted_copy=True,
+                      verified_secondary_catch_up=True,
                       secondary_archive_used_with_primary_unavailable=True)
         return archive, passphrase
 

@@ -63,40 +63,49 @@ func secondaryPendingCount(state backupSecondaryState) int {
 }
 
 // A catch-up is scoped to the approved mount and admits at most one archive.
-// Exhausted and queue-full registrations stay eligible for explicit retry.
+// An exhausted transfer needs explicit retry. A skipped archive can still use
+// its first budget, and a completed copy can be replaced if its name is absent.
 func (a *backupAutomation) catchUpSecondaryCopy(ctx context.Context, root *os.Root, binding backupSecondaryBinding) error {
 	var candidates []ownedBackupArchive
+	copies := make(map[string]backupSecondaryCopy)
 	err := a.withSecondaryState(ctx, func(state *backupAutomationState) (bool, error) {
 		if !a.secondaryConfigured(state.Secondary) || state.Secondary.Binding != binding ||
 			secondaryPendingCount(state.Secondary) >= backupSecondaryQueueLimit {
 			return false, nil
 		}
-		copies := make(map[string]bool, len(state.Secondary.Copies))
 		for _, copy := range state.Secondary.Copies {
-			copies[copy.Archive.ID] = true
+			copies[copy.Archive.ID] = copy
 		}
 		for _, archive := range state.Archives {
-			if !copies[archive.ID] && secondaryPrimaryEligible(archive, binding.Owner) {
+			copy, exists := copies[archive.ID]
+			if (!exists || copy.Failure == "queue_full" || copy.VerifiedAt != "") &&
+				secondaryPrimaryEligible(archive, binding.Owner) {
 				candidates = append(candidates, archive)
 			}
 		}
-		if len(candidates) == 0 && state.Secondary.CatchUp {
-			state.Secondary.CatchUp = false
-			return true, nil
-		}
 		return false, nil
 	})
-	if err != nil || len(candidates) == 0 {
+	if err != nil {
 		return err
 	}
 	sort.SliceStable(candidates, func(i, j int) bool {
 		return parseBackupStamp(candidates[i].CapturedAt).After(parseBackupStamp(candidates[j].CapturedAt))
 	})
+	unavailable := false
 	for _, candidate := range candidates {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
+		if _, err := root.Lstat(candidate.Name); !errors.Is(err, os.ErrNotExist) {
+			unavailable = unavailable || err != nil
+			continue
+		}
 		if a.scanArchiveIntegrity(ctx, candidate) != backupIntegrityMatched {
+			unavailable = true
+			continue
+		}
+		if _, err := root.Lstat(candidate.Name); !errors.Is(err, os.ErrNotExist) {
+			unavailable = unavailable || err != nil
 			continue
 		}
 		if !backupArchiveMountAvailable(root.Name(), binding.Directory) {
@@ -111,8 +120,30 @@ func (a *backupAutomation) catchUpSecondaryCopy(ctx context.Context, root *os.Ro
 			if !ok || !sameBackupIntegrityRegistration(current, candidate) {
 				return false, nil
 			}
+			replacement := backupSecondaryCopy{Archive: current}
+			existing, exists := copies[candidate.ID]
+			if exists {
+				for i := range state.Secondary.Copies {
+					if copy := &state.Secondary.Copies[i]; copy.Archive.ID == candidate.ID &&
+						copy.VerifiedAt == existing.VerifiedAt && copy.Failure == existing.Failure {
+						*copy = replacement
+						state.Secondary.CatchUp = false
+						return true, nil
+					}
+				}
+				return false, nil
+			}
 			a.queueSecondaryCopy(state, current)
 			state.Secondary.CatchUp = false
+			return true, nil
+		})
+	}
+	if !unavailable && backupArchiveMountAvailable(root.Name(), binding.Directory) {
+		return a.updateCurrentSecondary(ctx, binding, "", func(state *backupSecondaryState, _ *backupSecondaryCopy) (bool, error) {
+			if secondaryPendingCount(*state) >= backupSecondaryQueueLimit || !state.CatchUp {
+				return false, nil
+			}
+			state.CatchUp = false
 			return true, nil
 		})
 	}
@@ -120,9 +151,6 @@ func (a *backupAutomation) catchUpSecondaryCopy(ctx context.Context, root *os.Ro
 }
 
 func (a *backupAutomation) retrySecondaryCopy(parent context.Context, admission *maintenancepkg.SharedLease, id string) error {
-	if admission != nil {
-		admission.Close()
-	}
 	if !validBackupArchiveID(id) {
 		return errSecondaryRetryUnavailable
 	}
@@ -130,12 +158,22 @@ func (a *backupAutomation) retrySecondaryCopy(parent context.Context, admission 
 		return errBackupSecondaryDeferred
 	}
 	defer a.secondaryMu.Unlock()
+	if admission == nil {
+		lease, decision := a.deps.MaintenanceCoordinator.TryShared(maintenancepkg.WorkInteractive)
+		if !decision.Allowed {
+			return errBackupSecondaryDeferred
+		}
+		admission = lease
+	}
 	ctx, cancel := context.WithTimeout(parent, backupSecondaryCopyTimeout)
 	a.setSecondaryCancellation(cancel)
 	defer func() {
 		cancel()
 		a.setSecondaryCancellation(nil)
 	}()
+	// Register cancellation before releasing the authenticated admission, so
+	// this request cannot cross a restore between authentication and inspection.
+	admission.Close()
 	var source ownedBackupArchive
 	var binding backupSecondaryBinding
 	err := a.withSecondaryState(ctx, func(state *backupAutomationState) (bool, error) {

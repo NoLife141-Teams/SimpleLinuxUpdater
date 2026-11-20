@@ -142,11 +142,6 @@ func (a *backupAutomation) copyNextSecondaryBackup(parent context.Context) error
 		return a.recordSecondaryFailure(failureCtx, binding, pending.Archive.ID, "storage_unavailable")
 	}
 	defer root.Close()
-	if catchUp && pending.Archive.ID == "" {
-		if err := a.catchUpSecondaryCopy(ctx, root, binding); err != nil {
-			return err
-		}
-	}
 	if err := a.observeSecondaryCopies(ctx, root, binding, verifiedCopies); err != nil {
 		return err
 	}
@@ -179,7 +174,9 @@ func (a *backupAutomation) copyNextSecondaryBackup(parent context.Context) error
 			return copyErr
 		}
 		reason := "copy_failed"
-		if errors.Is(copyErr, errBackupSecondaryPublicationPending) {
+		if !backupArchiveMountAvailable(root.Name(), binding.Directory) {
+			reason = "storage_unavailable"
+		} else if errors.Is(copyErr, errBackupSecondaryPublicationPending) {
 			reason = "publication_pending"
 		}
 		recordCtx, cancelRecord := context.WithTimeout(workCtx, backupArchiveObservationBudget)
@@ -194,7 +191,11 @@ func (a *backupAutomation) copyNextSecondaryBackup(parent context.Context) error
 	stopTimeout()
 	checkCtx, stopCheck := context.WithTimeout(workCtx, backupSecondaryCopyTimeout)
 	defer stopCheck()
-	if err := errors.Join(copyErr, a.checkSecondaryIntegrity(checkCtx, root, binding, verifiedCopies)); err != nil {
+	checkErr := a.checkSecondaryIntegrity(checkCtx, root, binding, verifiedCopies)
+	if checkErr == nil && catchUp {
+		checkErr = a.catchUpSecondaryCopy(checkCtx, root, binding)
+	}
+	if err := errors.Join(copyErr, checkErr); err != nil {
 		return err
 	}
 	return a.keepSecondaryRetention(checkCtx, root, binding)

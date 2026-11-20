@@ -164,6 +164,9 @@ func TestSecondaryQueueOverflowRemainsVisibleAfterSuccessfulCopy(t *testing.T) {
 	if _, err := automation.validateSecondaryDestination(t.Context(), nil); err != nil {
 		t.Fatal(err)
 	}
+	if err := automation.copyNextSecondaryBackup(t.Context()); err != nil {
+		t.Fatal(err)
+	}
 	if err := automation.Tick(t.Context(), true); err != nil {
 		t.Fatal(err)
 	}

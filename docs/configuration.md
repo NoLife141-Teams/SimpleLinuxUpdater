@@ -220,7 +220,8 @@ primary export outcome.
 
 An unavailable mount defers the transfer without charging an attempt. When
 the approved mount returns or a replacement is approved, the worker queues
-the newest eligible registered primary archive that has no copy on that mount.
+the newest eligible registered primary archive whose copy is missing from
+that mount. This includes archives previously skipped by a full queue.
 This catch-up uses the same bounded queue and holds its source against
 retention. Admin distinguishes waiting for the mount, transferring and failed
 copies. Use **Retry copy** after administrator reauthentication for an

@@ -191,10 +191,14 @@ func (a *backupAutomation) queueSecondaryCopy(state *backupAutomationState, arch
 	state.Secondary.Copies = append(state.Secondary.Copies, copy)
 	// Bound historical failures alongside the pending source pins. Temp
 	// registrations remain until the worker can safely clean the approved mount.
+	sources := make(map[string]bool, len(state.Archives))
+	for _, archive := range state.Archives {
+		sources[archive.ID] = true
+	}
 	failed := 0
 	for i := len(state.Secondary.Copies) - 1; i >= 0; i-- {
 		copy := state.Secondary.Copies[i]
-		if copy.VerifiedAt == "" && !copy.pending() && copy.Temporary == "" {
+		if copy.VerifiedAt == "" && !copy.pending() && copy.Temporary == "" && !sources[copy.Archive.ID] {
 			failed++
 			if failed > backupSecondaryQueueLimit {
 				state.Secondary.Copies = slices.Delete(state.Secondary.Copies, i, i+1)

@@ -114,6 +114,11 @@ func handleRestoreIsolationResume(c *gin.Context, deps AppDeps) {
 	snapshot := collectRestoreResumeSnapshot(ctx, deps, activation, now)
 	deadline := snapshot.confirmationDeadline(confirmed.PreviewToken, now)
 	reviewChanged := func(snapshot restoreResumeSnapshot, now time.Time) {
+		if !snapshot.Impact.complete() {
+			c.JSON(http.StatusConflict, gin.H{"error": "Some resumption information is unavailable. External work stays paused.",
+				"code": "restore_resume_preview_incomplete", "preview": snapshot.preview(now)})
+			return
+		}
 		c.JSON(http.StatusConflict, gin.H{"error": "Review the current resumption impact before confirming.",
 			"code": "restore_resume_preview_changed", "preview": snapshot.preview(now)})
 	}

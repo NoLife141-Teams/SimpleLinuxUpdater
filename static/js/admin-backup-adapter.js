@@ -7,6 +7,7 @@
         let reauthentication;
         let resumePreview = null;
         let resumeBusy = false;
+        const incompleteResumption = "Some resumption information is unavailable. Refresh the preview before confirming.";
         let retryingSecondary = false;
         const aptSelection = new Map();
         const aptResults = new Map();
@@ -526,6 +527,10 @@
             }
         }
 
+        function canConfirmResumption(preview) {
+            return preview?.complete === true && typeof preview.token === "string" && preview.token.length > 0;
+        }
+
         function renderResumption(preview) {
             resumePreview = preview;
             const panel = document.getElementById("restore-isolation-impact");
@@ -533,7 +538,7 @@
             const review = document.getElementById("restore-isolation-review");
             review.disabled = resumeBusy;
             review.setAttribute("aria-expanded", String(Boolean(preview)));
-            document.getElementById("restore-isolation-resume").disabled = resumeBusy || !preview;
+            document.getElementById("restore-isolation-resume").disabled = resumeBusy || !canConfirmResumption(preview);
             if (!preview) return;
             const {hosts, schedules, notifications} = preview.impact;
             const renderList = (id, entries, empty) => {
@@ -575,7 +580,7 @@
                 const preview = await reauthentication.request("/api/backup/restore-isolation/resume-preview");
                 if (!lifecycle.isCurrent(lifetime)) return;
                 renderResumption(preview);
-                feedback.textContent = "Review this impact before confirming.";
+                feedback.textContent = canConfirmResumption(preview) ? "Review this impact before confirming." : incompleteResumption;
             } catch (error) {
                 if (lifecycle.isCurrent(lifetime) && error.name !== "AbortError") feedback.textContent = error.message;
             } finally {
@@ -587,7 +592,7 @@
         }
 
         async function resumeExternalWork() {
-            if (resumeBusy || !resumePreview) return;
+            if (resumeBusy || !canConfirmResumption(resumePreview)) return;
             const lifetime = lifecycle.capture();
             const feedback = document.getElementById("restore-isolation-feedback");
             const {token} = resumePreview;
@@ -618,9 +623,11 @@
                 await refreshInstallation();
             } catch (error) {
                 if (!lifecycle.isCurrent(lifetime) || error.name === "AbortError") return;
-                if (error.code === "restore_resume_preview_changed") {
+                if (error.code === "restore_resume_preview_changed" || error.code === "restore_resume_preview_incomplete") {
                     renderResumption(error.preview || null);
-                    feedback.textContent = "The preview changed or expired. Review the updated impact before confirming again.";
+                    feedback.textContent = canConfirmResumption(error.preview)
+                        ? "The preview changed or expired. Review the updated impact before confirming again."
+                        : incompleteResumption;
                 } else {
                     feedback.textContent = error.message || "Could not resume external work.";
                 }

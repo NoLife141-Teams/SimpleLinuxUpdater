@@ -2875,6 +2875,7 @@ test("admin restore isolation is selectable and resumption requires typed confir
     let resumptionCount = 0;
     let aptState = "pending";
     let probes = 0;
+    let unavailable = "notifications";
     const impact = {
         hosts: [
             {name: "healthy-host", allowed: true, reason: "healthy"},
@@ -2901,17 +2902,24 @@ test("admin restore isolation is selectable and resumption requires typed confir
         aptState = "healthy";
         return fulfillJson(route, {state: aptState});
     });
-    await page.route("**/api/backup/restore-isolation/resume-preview", route =>
-        fulfillJson(route, {impact, token: "initial-preview"}));
+    await page.route("**/api/backup/restore-isolation/resume-preview", route => {
+        if (unavailable) return fulfillJson(route, {impact: {...impact, [unavailable]: null}, complete: false});
+        const recovered = resumptionCount > 0;
+        return fulfillJson(route, {
+            impact: recovered ? {...impact, schedules: []} : impact,
+            complete: true, token: recovered ? "updated-preview" : "initial-preview",
+        });
+    });
     await page.route("**/api/backup/restore-isolation/resume", route => {
         const originalReview = ++resumptionCount === 1;
         expect(route.request().postDataJSON()).toEqual({
             confirmation: "RESUME", preview_token: originalReview ? "initial-preview" : "updated-preview",
         });
         if (originalReview) {
+            unavailable = "schedules";
             return route.fulfill({status: 409, json: {
-                code: "restore_resume_preview_changed",
-                preview: {impact: {...impact, schedules: null}, token: "updated-preview"},
+                code: "restore_resume_preview_incomplete",
+                preview: {impact: {...impact, schedules: null}, complete: false},
             }});
         }
         isolation = "inactive";
@@ -2939,8 +2947,16 @@ test("admin restore isolation is selectable and resumption requires typed confir
     await checkAPT.click();
     await expect(page.locator("#restore-apt-validation").getByRole("row", {name: /healthy-host/})).toContainText("Validated");
     const resume = page.locator("#restore-isolation-resume");
+    const review = page.getByRole("button", {name: "Review resumption impact"});
+    const feedback = page.locator("#restore-isolation-feedback");
     await expect(resume).toBeDisabled();
-    await page.getByRole("button", {name: "Review resumption impact"}).click();
+    await review.click();
+    await expect(page.locator("#restore-impact-notifications")).toHaveText("Unavailable");
+    await expect(feedback).toContainText("Refresh the preview before confirming");
+    await expect(resume).toBeDisabled();
+    expect(resumptionCount).toBe(0);
+    unavailable = "";
+    await review.click();
     await expect(page.locator("#restore-impact-hosts")).toContainText("offline-host · Stays blocked");
     await expect(page.locator("#restore-impact-schedules")).toContainText("Nightly");
     await expect(page.locator("#restore-impact-schedules")).toContainText("Waiting for preceding batch success");
@@ -2948,9 +2964,13 @@ test("admin restore isolation is selectable and resumption requires typed confir
     await dismissTypedConfirm(page, resume);
     expect(resumptionCount).toBe(0);
     await acceptTypedConfirm(page, resume, "RESUME");
-    await expect(page.locator("#restore-isolation-feedback")).toContainText("Review the updated impact");
+    await expect(feedback).toContainText("Refresh the preview before confirming");
     await expect(page.locator("#restore-impact-schedules")).toHaveText("Unavailable");
+    await expect(resume).toBeDisabled();
     expect(resumptionCount).toBe(1);
+    unavailable = "";
+    await review.click();
+    await expect(page.locator("#restore-impact-schedules")).toHaveText("No upcoming scheduled runs");
     await acceptTypedConfirm(page, resume, "RESUME");
     await expect(page.locator("#installation-restore-isolation")).toHaveText("Inactive");
     await expect(resume).toBeHidden();

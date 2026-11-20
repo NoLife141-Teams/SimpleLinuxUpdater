@@ -350,7 +350,7 @@ func TestRestoredAPTBatchChecksSelectedHostsWithBoundedConcurrency(t *testing.T)
 	}
 	var selected []restoreAPTCheckTarget
 	var servers []Server
-	for _, name := range []string{"healthy", "offline", "changed-key", "locked", "later", "stale", "not-selected"} {
+	for _, name := range []string{"healthy", "offline", "changed-key", "locked", "moved", "later", "stale", "not-selected"} {
 		server, err := app.Deps.ServerInventoryService.Create(Server{Name: name, Host: name + ".example.test", User: "root"})
 		if err != nil {
 			t.Fatal(err)
@@ -360,7 +360,7 @@ func TestRestoredAPTBatchChecksSelectedHostsWithBoundedConcurrency(t *testing.T)
 			selected = append(selected, restoreAPTCheckTarget{Name: name, Identity: server.Identity})
 		}
 	}
-	selected[5].Identity = "older-identity"
+	selected[6].Identity = "older-identity"
 	validation := app.Deps.RestoreAPTValidation
 	if _, err := validation.prepare(t.Context(), app.Deps.DB(), true); err != nil {
 		t.Fatal(err)
@@ -428,7 +428,11 @@ func TestRestoredAPTBatchChecksSelectedHostsWithBoundedConcurrency(t *testing.T)
 		}
 	}
 	var inProgress int
+	var displayedTargetRevision string
 	for _, fact := range validation.hostFacts(t.Context(), app.Deps.ServerState, validation.now(), true) {
+		if fact.Name == "moved" {
+			displayedTargetRevision = fact.TargetRevision
+		}
 		if fact.Checking {
 			inProgress++
 		}
@@ -436,9 +440,19 @@ func TestRestoredAPTBatchChecksSelectedHostsWithBoundedConcurrency(t *testing.T)
 	if inProgress != restoreAPTCheckConcurrency {
 		t.Errorf("reported %d active checks", inProgress)
 	}
+	if displayedTargetRevision == "" {
+		t.Fatal("installation health did not expose the selection's target revision")
+	}
 	if rec := identityRequest(app, "POST", restoreIsolationResumeRoute, admin, "", gin.H{"confirmation": "RESUME"}); rec.Code != http.StatusServiceUnavailable {
 		t.Errorf("resume during active batch: %d, %s", rec.Code, rec.Body)
 	}
+	moved := servers[4]
+	moved.Host = "new-target.example.test"
+	updated, err := app.Deps.ServerInventoryService.Update(moved.Name, moved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	servers[4] = updated
 	close(unblock)
 	rec := <-responses
 	var response struct{ Results []restoreAPTCheckResult }
@@ -448,11 +462,16 @@ func TestRestoredAPTBatchChecksSelectedHostsWithBoundedConcurrency(t *testing.T)
 	if peak.Load() != restoreAPTCheckConcurrency || len(entered) != 1 {
 		t.Fatalf("dialed outside selection or concurrency limit: peak %d, extra dials %d", peak.Load(), len(entered))
 	}
-	for i, expected := range []string{"healthy", "unreachable", "host_key_unverified", "locks_unverified", "healthy", ""} {
+	for i, expected := range []string{"healthy", "unreachable", "host_key_unverified", "locks_unverified", "", "healthy", ""} {
 		got := response.Results[i]
 		if got.Name != selected[i].Name || got.Identity != selected[i].Identity || got.State != expected || (got.Error != "") != (expected == "") {
 			t.Errorf("result %d = %+v, want state %q", i, got, expected)
 		}
+	}
+	stale := restoreAPTCheckTarget{Name: updated.Name, Identity: updated.Identity, TargetRevision: displayedTargetRevision}
+	staleResponse := post(admin, []restoreAPTCheckTarget{stale})
+	if staleResponse.Code != http.StatusOK || !strings.Contains(staleResponse.Body.String(), "SSH target changed") || len(entered) != 1 {
+		t.Fatalf("stale displayed target could be probed: %d, %s", staleResponse.Code, staleResponse.Body)
 	}
 	if strings.Contains(rec.Body.String(), "SHA256:") {
 		t.Fatal("batch response exposed host key evidence")
@@ -462,7 +481,7 @@ func TestRestoredAPTBatchChecksSelectedHostsWithBoundedConcurrency(t *testing.T)
 	}
 	for index, server := range servers {
 		_, err := validation.authorize(t.Context(), server)
-		if (err == nil) != (index == 0 || index == 4) {
+		if (err == nil) != (index == 0 || index == 5) {
 			t.Errorf("post-resume admission for %s = %v", server.Name, err)
 		}
 	}

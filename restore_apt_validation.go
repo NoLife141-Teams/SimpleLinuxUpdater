@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"net/http"
 	"sync"
@@ -44,12 +46,21 @@ type restoreAPTObservation struct {
 }
 
 type restoreAPTHostFacts struct {
-	Name      string     `json:"name"`
-	Identity  string     `json:"identity"`
-	Disabled  bool       `json:"disabled"`
-	Checking  bool       `json:"checking,omitempty"`
-	State     string     `json:"state"`
-	CheckedAt *time.Time `json:"checked_at,omitempty"`
+	Name           string     `json:"name"`
+	Identity       string     `json:"identity"`
+	TargetRevision string     `json:"target_revision,omitempty"`
+	Disabled       bool       `json:"disabled"`
+	Checking       bool       `json:"checking,omitempty"`
+	State          string     `json:"state"`
+	CheckedAt      *time.Time `json:"checked_at,omitempty"`
+}
+
+func restoreAPTTargetRevision(target string) string {
+	if target == "" {
+		return ""
+	}
+	digest := sha256.Sum256([]byte(target))
+	return hex.EncodeToString(digest[:])
 }
 
 func ensureRestoreAPTValidationSchema(db *sql.DB) error {
@@ -178,11 +189,15 @@ func (v *restoreAPTValidation) observe(ctx context.Context, server Server) (rest
 }
 
 func (observation restoreAPTObservation) facts(server Server, now time.Time, isolated, needsReconciliation bool) restoreAPTHostFacts {
-	facts := restoreAPTHostFacts{Name: server.Name, Identity: server.Identity, Disabled: server.Disabled, State: observation.result}
+	target := server.APTTarget()
+	facts := restoreAPTHostFacts{
+		Name: server.Name, Identity: server.Identity, Disabled: server.Disabled,
+		TargetRevision: restoreAPTTargetRevision(target), State: observation.result,
+	}
 	if needsReconciliation {
 		facts.State = "reconciliation_required"
 	}
-	if observation.target != "" && observation.target != server.APTTarget() {
+	if observation.target != "" && observation.target != target {
 		if !needsReconciliation {
 			facts.State = "target_changed"
 		}
@@ -348,8 +363,10 @@ func (v *restoreAPTValidation) probe(ctx context.Context, server Server) restore
 }
 
 type restoreAPTCheckTarget struct {
-	Name     string `json:"name"`
-	Identity string `json:"identity"`
+	Name           string `json:"name"`
+	Identity       string `json:"identity"`
+	TargetRevision string `json:"target_revision,omitempty"`
+	target         string
 }
 
 type restoreAPTCheckResult struct {
@@ -398,6 +415,8 @@ func handleRestoreAPTValidation(c *gin.Context, deps AppDeps) {
 		names[target.Name], identities[target.Identity] = true, true
 	}
 
+	bindRestoreAPTCheckTargets(deps.ServerState, targets)
+
 	ctx, cancel := context.WithTimeout(c.Request.Context(), restoreAPTCheckBatchTimeout)
 	defer cancel()
 	actor, ip := actorFromContext(c), clientIPFromContext(c)
@@ -434,7 +453,29 @@ func handleRestoreAPTValidation(c *gin.Context, deps AppDeps) {
 	}
 }
 
+// Bind the current SSH endpoint at admission so an inventory edit while a
+// target waits for a slot cannot redirect the check to a different host.
+func bindRestoreAPTCheckTargets(state *serverpkg.State, targets []restoreAPTCheckTarget) {
+	state.Lock()
+	defer state.Unlock()
+	for i := range targets {
+		selection := &targets[i]
+		if server, ok := state.FindByNameLocked(selection.Name); ok && server.Identity == selection.Identity && !server.Disabled {
+			selection.target = server.APTTarget()
+		}
+	}
+}
+
 func (v *restoreAPTValidation) check(ctx context.Context, deps AppDeps, target restoreAPTCheckTarget, actor, ip string) restoreAPTCheckResult {
+	if target.target == "" {
+		return target.failure(http.StatusConflict, "Select the current enabled restored server.")
+	}
+	targetChanged := func() restoreAPTCheckResult {
+		return target.failure(http.StatusConflict, "The server's SSH target changed. Select the server again.")
+	}
+	if target.TargetRevision != "" && target.TargetRevision != restoreAPTTargetRevision(target.target) {
+		return targetChanged()
+	}
 	cancelled := func() restoreAPTCheckResult {
 		return target.failure(http.StatusRequestTimeout, "The APT check did not finish. Select the server to try again.")
 	}
@@ -464,6 +505,9 @@ func (v *restoreAPTValidation) check(ctx context.Context, deps AppDeps, target r
 			deps.NotifyDashboardEvent("restore-apt-checked")
 		}
 	}()
+	if server.APTTarget() != target.target {
+		return targetChanged()
+	}
 	previous, required, err := v.observe(ctx, server)
 	if err != nil || !required {
 		return target.failure(http.StatusConflict, "This server has no pending restore validation.")

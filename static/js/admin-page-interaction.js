@@ -350,7 +350,8 @@
         const restoreAPTHosts = (Array.isArray(data.restore_apt_hosts) ? data.restore_apt_hosts : [])
             .filter(host => host && typeof host.name === "string" && typeof host.identity === "string")
             .map(host => ({ name: host.name, identity: host.identity, disabled: Boolean(host.disabled),
-                state: String(host.state || "pending"), checkedAt: timestamp(host.checked_at), checking: Boolean(host.checking) }));
+                state: String(host.state || "pending"), checkedAt: timestamp(host.checked_at),
+                checking: Boolean(host.checking), targetRevision: String(host.target_revision || "") }));
         const archives = data.backup_archives || {};
         const point = archives.recovery_point || {};
         return { state: String(data.state || "unavailable"), checkedAt: timestamp(data.checked_at), maintenance: Boolean(data.maintenance), restoreIsolation, restoreAPTHosts, workers,

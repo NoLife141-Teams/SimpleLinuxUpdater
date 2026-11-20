@@ -2845,26 +2845,29 @@ test("admin checks selected restored hosts and can retry only the failed entries
     await ensureAuthenticatedSession(page);
     await stubAdminApi(page, {});
     const hosts = [
-        {name: "healthy-host", identity: "1", state: "pending"},
-        {name: "offline-host", identity: "2", state: "pending"},
+        {name: "healthy-host", identity: "1", target_revision: "one", state: "unreachable", checked_at: "2026-11-19T12:00:00Z"},
+        {name: "offline-host", identity: "2", target_revision: "two", state: "pending", checking: true},
         {name: "outside-selection", identity: "3", state: "pending"},
     ];
     const submissions = [];
-    let finish;
-    await page.route("**/api/installation/health", route => fulfillJson(route, {
-        state: "ready", restore_isolation: "active", restore_apt_hosts: hosts,
-    }));
+    let finish, rejectHealthRefresh = false;
+    await page.route("**/api/installation/health", route => rejectHealthRefresh
+        ? route.fulfill({status: 503})
+        : fulfillJson(route, {state: "ready", restore_isolation: "active", restore_apt_hosts: hosts}));
     await page.route("**/api/backup/restore-isolation/apt-check", async route => {
         const { targets } = route.request().postDataJSON();
         submissions.push(targets);
         if (submissions.length === 1) {
             hosts[0].checking = true;
+            delete hosts[1].checking;
             await new Promise(resolve => { finish = resolve; });
             delete hosts[0].checking;
             hosts[0].state = "healthy";
             hosts[0].checked_at = "2026-11-19T12:00:00Z";
+            rejectHealthRefresh = true;
             return fulfillJson(route, {results: [hosts[0], {...hosts[1], error: "Wait for current server work to finish before checking APT."}]});
         }
+        rejectHealthRefresh = false;
         hosts[1].state = "unreachable";
         hosts[1].checked_at = "2026-11-19T12:01:00Z";
         return fulfillJson(route, {results: [hosts[1]]});
@@ -2882,15 +2885,23 @@ test("admin checks selected restored hosts and can retry only the failed entries
     await expect(panel.getByRole("row", {name: /offline-host/})).toContainText("Waiting to check…");
     await expect(submit).toBeDisabled();
     finish();
-    await expect(panel.getByRole("row", {name: /healthy-host/})).toContainText("Validated");
+    await expect(panel.getByRole("row", {name: /healthy-host/})).toContainText("Last submitted check · Validated");
+    await expect(panel.getByRole("status")).toContainText("Checks finished for 2 servers. 1 needs attention.");
     await expect(panel.getByRole("row", {name: /offline-host/})).toContainText("Wait for current server work");
     await expect(healthy).not.toBeChecked();
     await expect(offline).toBeChecked();
+
+    await panel.getByRole("checkbox", {name: "Select outside-selection for APT check"}).check();
+    hosts[2].name = "renamed-host";
+    rejectHealthRefresh = false;
+    await page.locator("#admin-section-installation").getByRole("button", {name: "Refresh", exact: true}).click();
+    await expect(panel.getByRole("checkbox", {name: "Select renamed-host for APT check"})).not.toBeChecked();
+    await expect(submit).toHaveText("Check selected (1)");
     await submit.click();
     await expect(panel.getByRole("row", {name: /offline-host/})).toContainText("Unreachable");
     expect(submissions).toEqual([
-        [{name: "healthy-host", identity: "1"}, {name: "offline-host", identity: "2"}],
-        [{name: "offline-host", identity: "2"}],
+        [{name: "healthy-host", identity: "1", target_revision: "one"}, {name: "offline-host", identity: "2", target_revision: "two"}],
+        [{name: "offline-host", identity: "2", target_revision: "two"}],
     ]);
     await expect(page.locator("#restore-isolation-resume")).toBeVisible();
 });

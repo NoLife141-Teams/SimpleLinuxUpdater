@@ -760,7 +760,19 @@ func readRawJSONValue(reader *bufio.Reader, maxBytes int64) ([]byte, error) {
 	return append([]byte(nil), value...), nil
 }
 
-func parseEnvelopePath(path, tempDir string, extractPayload bool) (Envelope, TemporaryFile, error) {
+type archiveContextReader struct {
+	ctx    context.Context
+	reader io.Reader
+}
+
+func (r archiveContextReader) Read(p []byte) (int, error) {
+	if err := r.ctx.Err(); err != nil {
+		return 0, err
+	}
+	return r.reader.Read(p)
+}
+
+func parseEnvelopePath(ctx context.Context, path, tempDir string, extractPayload bool) (Envelope, TemporaryFile, error) {
 	info, err := os.Stat(path)
 	if err != nil {
 		return Envelope{}, TemporaryFile{}, err
@@ -773,7 +785,7 @@ func parseEnvelopePath(path, tempDir string, extractPayload bool) (Envelope, Tem
 		return Envelope{}, TemporaryFile{}, err
 	}
 	defer file.Close()
-	reader := bufio.NewReaderSize(file, 64*1024)
+	reader := bufio.NewReaderSize(archiveContextReader{ctx, file}, 64*1024)
 	if err := skipJSONWhitespace(reader); err != nil {
 		return Envelope{}, TemporaryFile{}, ErrMalformed
 	}
@@ -927,7 +939,7 @@ func parseEnvelopePath(path, tempDir string, extractPayload bool) (Envelope, Tem
 		return Envelope{}, TemporaryFile{}, err
 	}
 	cipherPath := ciphertext.Name()
-	decoder := base64.NewDecoder(base64.StdEncoding, encodedInput)
+	decoder := base64.NewDecoder(base64.StdEncoding, archiveContextReader{ctx, encodedInput})
 	written, copyErr := copyFileBounded(ciphertext, decoder, maxCiphertextBytes)
 	if copyErr != nil || written == 0 {
 		_ = ciphertext.Close()
@@ -946,12 +958,17 @@ func parseEnvelopePath(path, tempDir string, extractPayload bool) (Envelope, Tem
 }
 
 func InspectEnvelopeFile(path string) (Envelope, error) {
-	env, _, err := parseEnvelopePath(path, os.TempDir(), false)
+	env, _, err := parseEnvelopePath(context.Background(), path, "", false)
 	return env, err
 }
 
-func (s *Service) decryptFile(path, passphrase string) (TemporaryFile, error) {
-	env, ciphertextFile, err := parseEnvelopePath(path, s.deps.TempDir(), true)
+func (s *Service) decryptFile(ctx context.Context, path, passphrase string) (TemporaryFile, error) {
+	env, ciphertextFile, err := parseEnvelopePath(ctx, path, s.deps.TempDir(), true)
+	if ctx.Err() != nil {
+		// The parser can finish creating its ciphertext after cancellation.
+		_ = ciphertextFile.Remove()
+		return TemporaryFile{}, ctx.Err()
+	}
 	if err != nil {
 		return TemporaryFile{}, err
 	}
@@ -991,6 +1008,9 @@ func (s *Service) decryptFile(path, passphrase string) (TemporaryFile, error) {
 	if int64(len(plain)) > MaxArchiveBytes {
 		return TemporaryFile{}, ErrMalformed
 	}
+	if err := ctx.Err(); err != nil {
+		return TemporaryFile{}, err
+	}
 	out, err := createTemporaryFile(s.deps.TempDir(), "slu-backup-plain-*.tar.gz")
 	if err != nil {
 		return TemporaryFile{}, err
@@ -1006,6 +1026,10 @@ func (s *Service) decryptFile(path, passphrase string) (TemporaryFile, error) {
 }
 
 func InspectTarGzFileWithLimits(path, tempRoot string, maxFileBytes, maxTotalBytes int64) (ArchiveFileInspection, error) {
+	return inspectTarGzFileWithLimits(context.Background(), path, tempRoot, maxFileBytes, maxTotalBytes)
+}
+
+func inspectTarGzFileWithLimits(ctx context.Context, path, tempRoot string, maxFileBytes, maxTotalBytes int64) (ArchiveFileInspection, error) {
 	extractDir, err := os.MkdirTemp(tempRoot, "slu-backup-extract-*")
 	if err != nil {
 		return ArchiveFileInspection{}, err
@@ -1020,14 +1044,14 @@ func InspectTarGzFileWithLimits(path, tempRoot string, maxFileBytes, maxTotalByt
 		return ArchiveFileInspection{}, err
 	}
 	actual := make(map[string]ManifestFile, 4)
-	err = walkTarGzFile(path, maxFileBytes, maxTotalBytes, func(name string, size int64, data io.Reader) error {
+	err = walkTarGzFile(ctx, path, maxFileBytes, maxTotalBytes, func(name string, size int64, data io.Reader) error {
 		targetPath := filepath.Join(extractDir, name)
 		target, err := os.OpenFile(targetPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
 		if err != nil {
 			return err
 		}
 		hash := sha256.New()
-		written, copyErr := io.Copy(io.MultiWriter(target, hash), data)
+		written, copyErr := io.Copy(io.MultiWriter(target, hash), archiveContextReader{ctx, data})
 		if err := errors.Join(copyErr, target.Close()); err != nil {
 			return err
 		}
@@ -1093,20 +1117,20 @@ func InspectTarGzFileWithLimits(path, tempRoot string, maxFileBytes, maxTotalByt
 
 func measureTarGzFile(ctx context.Context, path string) (map[string]uint64, error) {
 	sizes := make(map[string]uint64, 4)
-	err := walkTarGzFile(path, MaxExtractedBytes, MaxExtractedBytes, func(name string, size int64, _ io.Reader) error {
+	err := walkTarGzFile(ctx, path, MaxExtractedBytes, MaxExtractedBytes, func(name string, size int64, _ io.Reader) error {
 		sizes[name] = uint64(size)
 		return ctx.Err()
 	})
 	return sizes, err
 }
 
-func walkTarGzFile(path string, maxFileBytes, maxTotalBytes int64, visit func(string, int64, io.Reader) error) error {
+func walkTarGzFile(ctx context.Context, path string, maxFileBytes, maxTotalBytes int64, visit func(string, int64, io.Reader) error) error {
 	archive, err := os.Open(path)
 	if err != nil {
 		return err
 	}
 	defer archive.Close()
-	gz, err := gzip.NewReader(archive)
+	gz, err := gzip.NewReader(archiveContextReader{ctx, archive})
 	if err != nil {
 		return err
 	}

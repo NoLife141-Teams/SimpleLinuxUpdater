@@ -155,7 +155,8 @@ func classifyOfflineArchiveVerification(result internalbackup.VerifyResult, err 
 		report.Status, report.Message = "archive_authentication_failed", "The passphrase is incorrect or the encrypted archive is corrupted."
 		return report, offlineVerifyInvalidArchive
 	case err != nil:
-		if errors.Is(err, os.ErrPermission) || errors.Is(err, os.ErrNotExist) {
+		var pathErr *os.PathError
+		if errors.As(err, &pathErr) {
 			report.Status, report.Message = "verification_io_error", "The archive or workspace could not be accessed."
 			return report, offlineVerifyError
 		}

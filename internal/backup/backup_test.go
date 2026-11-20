@@ -312,7 +312,7 @@ func TestFilePipelineReadsLegacyEnvelopeAndCleansArtifacts(t *testing.T) {
 		t.Fatalf("write legacy envelope: %v", err)
 	}
 	service := NewService(ServiceDeps{TempDir: func() string { return workDir }, Logf: func(string, ...any) {}})
-	plain, err := service.decryptFile(legacyPath, testPassphrase)
+	plain, err := service.decryptFile(t.Context(), legacyPath, testPassphrase)
 	if err != nil {
 		t.Fatalf("decryptFile(legacy envelope) error = %v", err)
 	}
@@ -387,7 +387,7 @@ func TestFileCipherAllocationGrowthStaysNearPayloadGrowth(t *testing.T) {
 		runtime.GC()
 		var before, after runtime.MemStats
 		runtime.ReadMemStats(&before)
-		result, err := service.decryptFile(path, testPassphrase)
+		result, err := service.decryptFile(t.Context(), path, testPassphrase)
 		if err != nil {
 			t.Fatalf("decryptFile(%s): %v", filepath.Base(path), err)
 		}
@@ -454,7 +454,7 @@ func TestFilePipelineReadsJSONEscapedLegacyPayload(t *testing.T) {
 	}
 	workDir := t.TempDir()
 	service := NewService(ServiceDeps{TempDir: func() string { return workDir }, Logf: func(string, ...any) {}})
-	plain, err := service.decryptFile(path, testPassphrase)
+	plain, err := service.decryptFile(t.Context(), path, testPassphrase)
 	if err != nil {
 		t.Fatalf("decryptFile(escaped legacy payload) error = %v", err)
 	}
@@ -501,7 +501,7 @@ func TestDecryptFileCleansIntermediateArtifactsOnWrongPassphrase(t *testing.T) {
 		t.Fatalf("write encrypted fixture: %v", err)
 	}
 	service := NewService(ServiceDeps{TempDir: func() string { return workDir }, Logf: func(string, ...any) {}})
-	if _, err := service.decryptFile(path, "wrong-passphrase"); err == nil {
+	if _, err := service.decryptFile(t.Context(), path, "wrong-passphrase"); err == nil {
 		t.Fatalf("decryptFile() error = nil, want authentication failure")
 	}
 	entries, err := os.ReadDir(workDir)

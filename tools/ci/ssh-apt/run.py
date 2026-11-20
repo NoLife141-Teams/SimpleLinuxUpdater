@@ -1279,17 +1279,22 @@ assert low['status'] == 'insufficient_storage' and not low['archive_verified']
 assert any(v['roles'] == ['preparation'] and v['state'] == 'insufficient'
            and v['required_bytes'] > v['available_bytes'] for v in low['storage'])
 assert set(os.listdir('/small')) == {'pressure'} and not list(target.parent.iterdir())
+read_only = subprocess.run([*args, '/input'], capture_output=True, text=True, timeout=30)
+assert read_only.returncode == 1
+assert json.loads(read_only.stdout)['status'] == 'verification_io_error'
 target.write_bytes(b'unreadable fixture database')
 trust = target.with_name('known_hosts')
 trust.write_bytes(b'fixture trust')
 marker = target.with_suffix('.db.restore-recovery')
 marker.write_bytes(b'fixture recovery lock')
-checked = subprocess.run([*args, '/ample'], capture_output=True, text=True, timeout=30)
+workspace = Path('/ample/review?workspace')
+workspace.mkdir()
+checked = subprocess.run([*args, str(workspace)], capture_output=True, text=True, timeout=30)
 assert checked.returncode == 0, checked.stdout
 good = json.loads(checked.stdout)
 assert good['archive_verified'] and good['target_status'] == 'not_inspected'
 assert all(v['roles'] == ['preparation'] for v in good['storage'])
-assert not list(Path('/ample').iterdir())
+assert not list(workspace.iterdir())
 assert set(target.parent.iterdir()) == {target, trust, marker}
 assert target.read_bytes() == b'unreadable fixture database'
 assert trust.read_bytes() == b'fixture trust' and marker.read_bytes() == b'fixture recovery lock'

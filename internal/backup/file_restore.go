@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"mime/multipart"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -21,7 +22,11 @@ import (
 var errArchivedNotifications = errors.New("archived notification state is unreadable or incompatible")
 
 func (s *Service) ValidateDatabaseFile(ctx context.Context, path string, encryptionKey []byte) error {
-	db, err := sql.Open("sqlite", path)
+	return s.validateDatabaseFile(ctx, path, encryptionKey, false)
+}
+
+func (s *Service) validateDatabaseFile(ctx context.Context, path string, encryptionKey []byte, offline bool) error {
+	db, err := openStagedArchiveDatabase(path, offline)
 	if err != nil {
 		return fmt.Errorf("open restored database: %w", err)
 	}
@@ -89,8 +94,28 @@ func (s *Service) ValidateDatabaseFile(ctx context.Context, path string, encrypt
 	return nil
 }
 
+func openStagedArchiveDatabase(path string, offline bool) (*sql.DB, error) {
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		return nil, err
+	}
+	uriPath := filepath.ToSlash(absolute)
+	if !strings.HasPrefix(uriPath, "/") {
+		uriPath = "/" + uriPath
+	}
+	dsn := url.URL{Scheme: "file", Path: uriPath}
+	query := url.Values{"mode": {"rw"}}
+	if offline {
+		// A legacy archive can require SQLite index rebuilds. Keep transient
+		// sorting in memory so SQLite cannot spill onto the system temp volume.
+		query.Set("_pragma", "temp_store(MEMORY)")
+	}
+	dsn.RawQuery = query.Encode()
+	return sql.Open("sqlite", dsn.String())
+}
+
 func InspectDatabaseSafeCountsFile(ctx context.Context, path string) (SafeCounts, error) {
-	db, err := sql.Open("sqlite", path)
+	db, err := openStagedArchiveDatabase(path, false)
 	if err != nil {
 		return SafeCounts{}, fmt.Errorf("open restored database for safe counts: %w", err)
 	}
@@ -715,7 +740,10 @@ func (s *Service) verifyArchiveFile(ctx context.Context, encrypted TemporaryFile
 	if err := ValidatePassphrase(passphrase); err != nil {
 		return VerifyResult{}, err
 	}
-	envelope, err := InspectEnvelopeFile(encrypted.Path)
+	envelope, _, err := parseEnvelopePath(ctx, encrypted.Path, "", false)
+	if err := ctx.Err(); err != nil {
+		return VerifyResult{}, err
+	}
 	if err != nil {
 		return VerifyResult{}, &RestoreError{Stage: RestoreStageDecrypt, Err: err}
 	}
@@ -739,7 +767,7 @@ func (s *Service) verifyArchiveFile(ctx context.Context, encrypted TemporaryFile
 			return result.withStorageFailure(err), nil
 		}
 	}
-	plain, err := s.decryptFile(encrypted.Path, passphrase)
+	plain, err := s.decryptFile(ctx, encrypted.Path, passphrase)
 	if err != nil {
 		if errors.Is(err, ErrUnsupportedFormat) {
 			result.Blockers = append(result.Blockers, ReadinessIssue{Code: "unsupported_encryption", Message: "The backup uses encryption settings that this application does not support."})
@@ -766,7 +794,7 @@ func (s *Service) verifyArchiveFile(ctx context.Context, encrypted TemporaryFile
 	if err := ctx.Err(); err != nil {
 		return VerifyResult{}, err
 	}
-	inspection, err := InspectTarGzFileWithLimits(plain.Path, s.deps.TempDir(), MaxExtractedBytes, MaxExtractedBytes)
+	inspection, err := inspectTarGzFileWithLimits(ctx, plain.Path, s.deps.TempDir(), MaxExtractedBytes, MaxExtractedBytes)
 	if err != nil {
 		if assessStorage && IsStorageFull(err) {
 			return result.withStorageFailure(err), nil
@@ -803,7 +831,7 @@ func (s *Service) verifyArchiveFile(ctx context.Context, encrypted TemporaryFile
 		return result, nil
 	}
 	result.ConfigValid = true
-	if err := s.ValidateDatabaseFile(ctx, inspection.Files["servers.db"], backupKey); err != nil {
+	if err := s.validateDatabaseFile(ctx, inspection.Files["servers.db"], backupKey, mode == verifyWorkspaceStorage); err != nil {
 		if assessStorage && IsStorageFull(err) {
 			return result.withStorageFailure(err), nil
 		}
@@ -841,7 +869,7 @@ func (s *Service) verifyArchiveFile(ctx context.Context, encrypted TemporaryFile
 	}
 	result.RestoreReady = true
 	if review != nil {
-		db, err := sql.Open("sqlite", inspection.Files["servers.db"])
+		db, err := openStagedArchiveDatabase(inspection.Files["servers.db"], false)
 		if err == nil {
 			defer db.Close()
 			db.SetMaxOpenConns(1)
@@ -862,7 +890,7 @@ func (s *Service) RestoreArchiveFileWithOptions(ctx context.Context, encrypted T
 	if err := storageBlocker(s.decryptStorage(encrypted.Path)); err != nil {
 		return RestoreResult{}, &RestoreError{Stage: RestoreStageApply, Err: err}
 	}
-	plain, err := s.decryptFile(encrypted.Path, passphrase)
+	plain, err := s.decryptFile(ctx, encrypted.Path, passphrase)
 	if err != nil {
 		return RestoreResult{}, &RestoreError{Stage: RestoreStageDecrypt, Err: err}
 	}
@@ -875,7 +903,7 @@ func (s *Service) RestoreArchiveFileWithOptions(ctx context.Context, encrypted T
 	if err := storageBlocker(volumes); err != nil {
 		return RestoreResult{}, &RestoreError{Stage: RestoreStageApply, Err: err}
 	}
-	inspection, err := InspectTarGzFileWithLimits(plain.Path, s.deps.TempDir(), MaxExtractedBytes, MaxExtractedBytes)
+	inspection, err := inspectTarGzFileWithLimits(ctx, plain.Path, s.deps.TempDir(), MaxExtractedBytes, MaxExtractedBytes)
 	if err != nil {
 		return RestoreResult{}, &RestoreError{Stage: RestoreStageArchive, Err: err}
 	}

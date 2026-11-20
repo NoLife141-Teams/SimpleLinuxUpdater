@@ -198,13 +198,24 @@ func (s *Service) OfflineRestoreRecovery(ctx context.Context, selection string, 
 			chosen.ID = id
 		}
 		staged, stagedHosts, setErr := s.prepareOfflineRecoverySet(ctx, filepath.Join(dir, id), setWork, targets, hosts, key, live, mergeJobs, chosen, &set, diagnosisTargets)
-		report.Sets = append(report.Sets, set)
 		if selection == "" {
+			if setErr == nil {
+				// Evidence can grow the staged database. Check its actual
+				// size after the staging connections have closed.
+				stagedBytes, _ := sizeOnDisk(staged)
+				hostsPath := recoveryHostReplacementPath(hosts, stagedHosts, true)
+				remaining := s.estimateRestoreStorage(s.recoveryReplacementNeeds(database, hosts, hostsPath, stagedBytes, diagnosisTargets)...)
+				if err := storageBlocker(remaining); err != nil {
+					set.storageFailure(err, "")
+				}
+			}
+			report.Sets = append(report.Sets, set)
 			if err := os.RemoveAll(setWork); err != nil {
 				return report, errors.New("could not remove temporary recovery files")
 			}
 			continue
 		}
+		report.Sets = append(report.Sets, set)
 		if setErr != nil {
 			if set.Blocker == offlineRecoveryStorageBlocker {
 				return report, setErr
@@ -325,33 +336,25 @@ func (s *Service) prepareOfflineRecoverySet(ctx context.Context, rootPath, work 
 	if err != nil {
 		return fail("invalid_manifest", nil)
 	}
-	var inputs []string
-	for _, entry := range indexed {
-		if entry == nil || !entry.Exists {
+	var inputs, databaseInputs []string
+	for i, entry := range indexed {
+		if entry == nil || !entry.Exists || (i == 2 && !sealed) {
 			continue
 		}
 		inputs = append(inputs, entry.BackupPath)
+		if i < 2 {
+			databaseInputs = append(databaseInputs, entry.BackupPath)
+		}
 	}
 	hostsPath := recoveryHostReplacementPath(hosts, indexed[len(targets)], sealed)
 	preparation := recoveryFileNeed(work, restoreStoragePreparation, inputs...)
 	// The reconstructed database, SQLite's working files and VACUUM INTO
-	// output can coexist. The live clone is already charged to this volume.
-	databaseInputs := recoveryFileNeed(work, restoreStoragePreparation, indexed[0].BackupPath)
-	for _, entry := range indexed[1:3] {
-		if entry != nil && entry.Exists {
-			sidecar := recoveryFileNeed(work, restoreStoragePreparation, entry.BackupPath)
-			databaseInputs.bytes = storageSum(databaseInputs.bytes, sidecar.bytes)
-			databaseInputs.incomplete = databaseInputs.incomplete || sidecar.incomplete
-		}
-	}
-	databaseBytes := databaseInputs.bytes
-	if live != nil {
-		liveInputs := recoveryFileNeed(work, restoreStoragePreparation, targets[:len(targets)-1]...)
-		databaseBytes = storageSum(databaseBytes, liveInputs.bytes)
-		preparation.incomplete = preparation.incomplete || liveInputs.incomplete
-	}
+	// output can coexist. The live clone already consumes space, and only
+	// its APT and delivery evidence can grow the reconstructed database.
+	database := recoveryFileNeed(work, restoreStoragePreparation, databaseInputs...)
+	databaseBytes := database.bytes
 	preparation.bytes = storageSum(preparation.bytes, storageSum(databaseBytes, databaseBytes))
-	preparation.incomplete = preparation.incomplete || databaseInputs.incomplete
+	preparation.incomplete = preparation.incomplete || database.incomplete
 	needs := s.recoveryReplacementNeeds(targets[0], hosts, hostsPath, databaseBytes, diagnosis)
 	result.Storage = s.estimateRestoreStorage(append([]restoreStorageNeed{preparation}, needs...)...)
 	if err := storageBlocker(result.Storage); err != nil {

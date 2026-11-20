@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -576,4 +577,54 @@ func TestOfflineRecoveryRechecksCapacityAfterCopyingDiagnosis(t *testing.T) {
 		t.Fatalf("blocked attempt retained provisional diagnosis: %v, %v", diagnoses, err)
 	}
 	requireDurableRestoreState(t, f.db, f.hosts, archivedRestoreServer, archivedRestoreTrust, true)
+}
+
+func TestOfflineRecoveryBudgetsOnlyStagedEvidenceAfterCopyingLiveDatabase(t *testing.T) {
+	f, _, id := interruptedRecoveryFixture(t, true)
+	live, err := openRecoveryCopy(t.Context(), f.db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The installed database can contain large tables that do not participate
+	// in APT and delivery evidence reconciliation.
+	_, writeErr := live.Exec("CREATE TABLE omitted_history (data BLOB); INSERT INTO omitted_history VALUES (zeroblob(12*1024*1024))")
+	if err := errors.Join(writeErr, live.Close()); err != nil {
+		t.Fatal(err)
+	}
+	tempDir := t.TempDir()
+	f.service.deps.TempDir = func() string { return tempDir }
+	f.service.deps.ProbeRestoreStorage = func(dir string) installationhealth.VolumeCapacity {
+		if dir != tempDir && !strings.HasPrefix(dir, tempDir+string(filepath.Separator)) {
+			free := uint64(128 << 20)
+			return installationhealth.VolumeCapacity{Device: 1, Identified: true, AvailableBytes: &free}
+		}
+		free := uint64(28 << 20)
+		err := filepath.WalkDir(tempDir, func(path string, entry fs.DirEntry, err error) error {
+			if err != nil || entry.IsDir() {
+				return err
+			}
+			bytes, _ := sizeOnDisk(path)
+			free -= min(free, bytes)
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return installationhealth.VolumeCapacity{Device: 2, Identified: true, AvailableBytes: &free}
+	}
+	checkEvidence := func(ctx context.Context, live, staged *sql.DB) error {
+		var bytes int
+		if err := live.QueryRowContext(ctx, "SELECT length(data) FROM omitted_history").Scan(&bytes); err != nil || bytes != 12<<20 {
+			t.Fatalf("installed history was not readable: %d, %v", bytes, err)
+		}
+		return nil
+	}
+	preview, err := f.service.OfflineRestoreRecovery(t.Context(), "", checkEvidence)
+	if err != nil || len(preview.Sets) != 1 || !preview.Sets[0].Ready || preview.Sets[0].EvidenceSource != "live_database" {
+		t.Fatalf("preview with sufficient staging space: %+v, %v", preview, err)
+	}
+	report, err := f.service.OfflineRestoreRecovery(t.Context(), id, checkEvidence)
+	if err != nil || report.Applied != id || report.RecoveryRequired {
+		t.Fatalf("apply with sufficient staging space: %+v, %v", report, err)
+	}
 }

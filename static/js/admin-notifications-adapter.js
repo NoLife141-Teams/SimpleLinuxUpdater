@@ -88,6 +88,21 @@
                 "notification-diagnostics-error",
             );
             if (refresh) refresh.disabled = stream.status === "loading";
+            const pauses = document.getElementById("notification-diagnostics-rate-limits");
+            if (pauses) {
+                const labels = { webhook: "Webhook", discord: "Discord", telegram: "Telegram" };
+                const entries = (diagnostics.rateLimitedDestinations || []).map(({destination, until}) => {
+                    const row = document.createElement("div");
+                    const label = document.createElement("dt");
+                    label.textContent = `${labels[destination]} queue paused`;
+                    const deadline = document.createElement("dd");
+                    deadline.textContent = `HTTP 429 · Next eligible at ${formatAdminRefreshTime(until)}`;
+                    row.append(label, deadline);
+                    return row;
+                });
+                pauses.replaceChildren(...entries);
+                pauses.hidden = entries.length === 0;
+            }
             if (!status) {
                 if (facts) facts.hidden = true;
                 if (message) {
@@ -897,6 +912,7 @@
                         "Notification settings saved.",
                     "",
                 );
+                void fetchNotificationDeliveryDiagnostics();
             } catch (err) {
                 if (
                     !lifecycle.isCurrent(lifetime) ||

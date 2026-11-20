@@ -55,11 +55,12 @@ type destinationManualTest struct {
 }
 
 type destinationHealthEvidence struct {
-	destination string
-	fingerprint string
-	successAt   string
-	attemptAt   string
-	state       string
+	destination      string
+	fingerprint      string
+	successAt        string
+	attemptAt        string
+	state            string
+	rateLimitedUntil string
 }
 
 func ensureDestinationHealthSchema(ctx context.Context, db *sql.DB) error {
@@ -75,7 +76,20 @@ func ensureDestinationHealthSchema(ctx context.Context, db *sql.DB) error {
 		return err
 	}
 	if exists {
-		return nil
+		var hasRateLimit bool
+		if err := tx.QueryRowContext(ctx, `SELECT EXISTS (
+			SELECT 1 FROM pragma_table_info('notification_destination_health') WHERE name='rate_limited_until'
+		)`).Scan(&hasRateLimit); err != nil {
+			return err
+		}
+		if hasRateLimit {
+			return nil
+		}
+		if _, err := tx.ExecContext(ctx, `ALTER TABLE notification_destination_health
+			ADD COLUMN rate_limited_until TEXT NOT NULL DEFAULT ''`); err != nil {
+			return err
+		}
+		return tx.Commit()
 	}
 	// Older completions were recorded to the second. When distinct outcomes
 	// share a timestamp, keep any confirmed success and leave their order unknown.
@@ -87,6 +101,7 @@ func ensureDestinationHealthSchema(ctx context.Context, db *sql.DB) error {
 			last_success_at TEXT NOT NULL,
 			last_attempt_at TEXT NOT NULL,
 			last_attempt_state TEXT NOT NULL CHECK(last_attempt_state IN ('succeeded', 'retrying', 'failed', 'unknown')),
+			rate_limited_until TEXT NOT NULL DEFAULT '',
 			PRIMARY KEY (destination, fingerprint)
 		);
 		INSERT INTO notification_destination_health
@@ -119,9 +134,11 @@ func persistDestinationHealth(ctx context.Context, tx *sql.Tx, event destination
 	// A restore can tie two independent observations with conflicting outcomes.
 	_, err := tx.ExecContext(ctx, `
 		INSERT INTO notification_destination_health
-			(destination, fingerprint, last_success_at, last_attempt_at, last_attempt_state)
-		VALUES (?, ?, ?, ?, ?)
+			(destination, fingerprint, last_success_at, last_attempt_at, last_attempt_state, rate_limited_until)
+		VALUES (?, ?, ?, ?, ?, ?)
 		ON CONFLICT(destination, fingerprint) DO UPDATE SET
+			rate_limited_until=CASE WHEN rtrim(excluded.rate_limited_until, 'Z') > rtrim(rate_limited_until, 'Z')
+				THEN excluded.rate_limited_until ELSE rate_limited_until END,
 			last_success_at=CASE WHEN rtrim(excluded.last_success_at, 'Z') > rtrim(last_success_at, 'Z')
 				THEN excluded.last_success_at ELSE last_success_at END,
 			last_attempt_state=CASE
@@ -131,13 +148,13 @@ func persistDestinationHealth(ctx context.Context, tx *sql.Tx, event destination
 				ELSE last_attempt_state END,
 			last_attempt_at=CASE WHEN rtrim(excluded.last_attempt_at, 'Z') >= rtrim(last_attempt_at, 'Z')
 				THEN excluded.last_attempt_at ELSE last_attempt_at END
-	`, event.destination, event.fingerprint, event.successAt, event.attemptAt, event.state, ordered)
+	`, event.destination, event.fingerprint, event.successAt, event.attemptAt, event.state, event.rateLimitedUntil, ordered)
 	return err
 }
 
 func loadDestinationHealthEvidence(ctx context.Context, db *sql.DB) ([]destinationHealthEvidence, error) {
 	rows, err := db.QueryContext(ctx, `
-		SELECT destination, fingerprint, last_success_at, last_attempt_at, last_attempt_state
+		SELECT destination, fingerprint, last_success_at, last_attempt_at, last_attempt_state, rate_limited_until
 		FROM notification_destination_health
 	`)
 	if err != nil {
@@ -147,7 +164,7 @@ func loadDestinationHealthEvidence(ctx context.Context, db *sql.DB) ([]destinati
 	var observations []destinationHealthEvidence
 	for rows.Next() {
 		var event destinationHealthEvidence
-		if err := rows.Scan(&event.destination, &event.fingerprint, &event.successAt, &event.attemptAt, &event.state); err != nil {
+		if err := rows.Scan(&event.destination, &event.fingerprint, &event.successAt, &event.attemptAt, &event.state, &event.rateLimitedUntil); err != nil {
 			return nil, err
 		}
 		observations = append(observations, event)

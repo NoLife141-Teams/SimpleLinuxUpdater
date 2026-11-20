@@ -200,10 +200,11 @@ type DeliveryStatus struct {
 }
 
 type DeliveryDiagnostics struct {
-	LastAttempt   *DeliveryStatus            `json:"last_attempt,omitempty"`
-	LastAttempts  map[string]*DeliveryStatus `json:"last_attempts,omitempty"`
-	PendingCount  int                        `json:"pending_count,omitempty"`
-	RetryingCount int                        `json:"retrying_count,omitempty"`
+	LastAttempt      *DeliveryStatus            `json:"last_attempt,omitempty"`
+	LastAttempts     map[string]*DeliveryStatus `json:"last_attempts,omitempty"`
+	PendingCount     int                        `json:"pending_count,omitempty"`
+	RetryingCount    int                        `json:"retrying_count,omitempty"`
+	RateLimitedUntil map[string]time.Time       `json:"rate_limited_until,omitempty"`
 }
 
 type DeliveryIntent struct {
@@ -726,6 +727,7 @@ func (s *Service) processOutboxRow(ctx context.Context, row outboxRow) bool {
 		s.releaseClaim(row, s.deps.PollInterval, eligibilityErr.Error())
 		return false
 	}
+	fingerprint := destinationConfigFingerprint(settings, row.Destination)
 	var skipReason string
 	switch {
 	case eligibility == conditionIneligible:
@@ -734,7 +736,7 @@ func (s *Service) processOutboxRow(ctx context.Context, row outboxRow) bool {
 		skipReason = outboxSkipDestinationDisabled
 	case !destinationConfigured(settings, row.Destination):
 		skipReason = outboxSkipDestinationUnconfigured
-	case row.DestinationFingerprint != "" && row.DestinationFingerprint != destinationConfigFingerprint(settings, row.Destination):
+	case row.DestinationFingerprint != "" && row.DestinationFingerprint != fingerprint:
 		skipReason = outboxSkipDestinationChanged
 	case eligibility == reminderSuperseded:
 		skipReason = outboxSkipConditionIneligible
@@ -759,11 +761,22 @@ func (s *Service) processOutboxRow(ctx context.Context, row outboxRow) bool {
 		return err == nil
 	}
 
+	// Settings can change between the scheduling query and revalidation.
+	// Check the fingerprint of the actual request, including legacy unbound rows.
+	until, err := destinationRateLimit(ctx, s.database(), row.Destination, fingerprint)
+	if err != nil {
+		s.health.Error(s.deps.Now())
+		s.releaseClaim(row, s.deps.PollInterval, "destination retry deadline could not be loaded")
+		return false
+	}
+	if delay := until.Sub(s.deps.Now()); delay > 0 {
+		return s.releaseClaim(row, delay, "destination is rate limited")
+	}
 	if s.queuedDeliveryBlocked(ctx) {
 		return s.releaseClaim(row, 0, "delivery suspended")
 	}
 	attemptCtx, cancelAttempt := context.WithTimeout(ctx, s.deps.DeliveryTimeout)
-	status, deliveryErr := s.attemptOutboxDestination(attemptCtx, settings, row)
+	status, retryAfter, deliveryErr := s.attemptOutboxDestination(attemptCtx, settings, row)
 	if deliveryErr != nil {
 		s.health.Error(s.deps.Now())
 	}
@@ -775,17 +788,23 @@ func (s *Service) processOutboxRow(ctx context.Context, row outboxRow) bool {
 		StatusCode:             status.StatusCode,
 		Error:                  status.Error,
 		DurationMS:             status.DurationMS,
-		DestinationFingerprint: destinationConfigFingerprint(settings, row.Destination),
+		DestinationFingerprint: fingerprint,
+	}
+	var nextRetry time.Time
+	if deliveryErr != nil && (status.Attempts < defaultAttempts || status.StatusCode == http.StatusTooManyRequests) {
+		nextRetry = retryAfter
+		if nextRetry.IsZero() {
+			nextRetry = s.deps.Now().UTC().Add(max(0, s.deps.Backoff(status.Attempts)))
+		}
+		if status.StatusCode == http.StatusTooManyRequests {
+			outcome.RateLimitedUntil = nextRetry.Format(time.RFC3339Nano)
+		}
 	}
 	if deliveryErr == nil {
 		outcome.State = outboxStateSucceeded
 	} else if status.Attempts < defaultAttempts {
-		delay := s.deps.Backoff(status.Attempts)
-		if delay < 0 {
-			delay = 0
-		}
 		outcome.State = outboxStateRetrying
-		outcome.NextAttemptAt = s.deps.Now().UTC().Add(delay).Format(time.RFC3339Nano)
+		outcome.NextAttemptAt = nextRetry.Format(time.RFC3339Nano)
 		status.Outcome = DeliveryOutcomeRetrying
 		status.NextRetryAt = outcome.NextAttemptAt
 	} else {
@@ -811,7 +830,7 @@ func (s *Service) processOutboxRow(ctx context.Context, row outboxRow) bool {
 	return err == nil
 }
 
-func (s *Service) attemptOutboxDestination(ctx context.Context, settings Settings, row outboxRow) (DeliveryStatus, error) {
+func (s *Service) attemptOutboxDestination(ctx context.Context, settings Settings, row outboxRow) (DeliveryStatus, time.Time, error) {
 	status := DeliveryStatus{
 		Destination: row.Destination,
 		EventType:   row.EventType,
@@ -823,11 +842,13 @@ func (s *Service) attemptOutboxDestination(ctx context.Context, settings Setting
 	status.AttemptedAt = attemptedAt.Format(time.RFC3339Nano)
 	payload, err := buildPayload(row.EventType, row.Intent)
 	if err != nil {
-		return failedDeliveryStatus(status, attemptedAt, s.deps.Now().UTC(), err)
+		status, err := failedDeliveryStatus(status, attemptedAt, s.deps.Now().UTC(), err)
+		return status, time.Time{}, err
 	}
 	endpoint, body, err := destinationRequest(settings, row.Destination, payload)
 	if err != nil {
-		return failedDeliveryStatus(status, attemptedAt, s.deps.Now().UTC(), err)
+		status, err := failedDeliveryStatus(status, attemptedAt, s.deps.Now().UTC(), err)
+		return status, time.Time{}, err
 	}
 	if previous := safeDeliveryStatus(settings.LastDeliveries[row.Destination]); previous != nil {
 		status.ConsecutiveFailures = previous.ConsecutiveFailures
@@ -836,6 +857,7 @@ func (s *Service) attemptOutboxDestination(ctx context.Context, settings Setting
 			status.ConsecutiveFailures = previous.ConsecutiveFailures
 		}
 	}
+	var retryAfter time.Time
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
 		err = errors.New("webhook request could not be created")
@@ -847,6 +869,9 @@ func (s *Service) attemptOutboxDestination(ctx context.Context, settings Setting
 			err = safeWebhookRequestError(doErr)
 		} else {
 			status.StatusCode = resp.StatusCode
+			if resp.StatusCode == http.StatusTooManyRequests {
+				retryAfter = retryAfterDeadline(resp.Header.Values("Retry-After"), s.deps.Now().UTC())
+			}
 			_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1024))
 			_ = resp.Body.Close()
 			if resp.StatusCode >= 200 && resp.StatusCode < 300 {
@@ -864,12 +889,12 @@ func (s *Service) attemptOutboxDestination(ctx context.Context, settings Setting
 		status.Success = true
 		status.Outcome = DeliveryOutcomeSucceeded
 		status.ConsecutiveFailures = 0
-		return status, nil
+		return status, retryAfter, nil
 	}
 	status.Success = false
 	status.Error = safeDeliveryError(err)
 	status.ConsecutiveFailures++
-	return status, err
+	return status, retryAfter, err
 }
 
 func failedDeliveryStatus(status DeliveryStatus, attemptedAt, completedAt time.Time, err error) (DeliveryStatus, error) {
@@ -1069,6 +1094,19 @@ func (s *Service) SaveSettings(update SettingsUpdate) (SettingsResponse, error) 
 	if err := s.saveSettings(settings); err != nil {
 		return SettingsResponse{}, err
 	}
+	// Rotation can release pending rows that were waiting solely on the old
+	// destination's pause. Wake their revalidation without a new delivery.
+	for _, destination := range healthDestinations {
+		previous := destinationConfigFingerprint(current, destination)
+		if previous == "" || previous == destinationConfigFingerprint(settings, destination) {
+			continue
+		}
+		until, err := destinationRateLimit(context.Background(), s.database(), destination, previous)
+		if err != nil || (!until.IsZero() && until.After(s.deps.Now())) {
+			s.signalWorker()
+			break
+		}
+	}
 	return settingsResponse(settings, intent, discordIntent, telegramIntent), nil
 }
 
@@ -1085,19 +1123,38 @@ func (s *Service) DeliveryDiagnostics() (DeliveryDiagnostics, error) {
 		return DeliveryDiagnostics{}, err
 	}
 	var counts outboxCounts
+	rateLimits := make(map[string]time.Time)
 	err = s.retrySQLiteContention(func() error {
+		clear(rateLimits)
+		ctx := context.Background()
+		db := s.database()
 		var err error
-		counts, err = loadOutboxCounts(context.Background(), s.database())
-		return err
+		counts, err = loadOutboxCounts(ctx, db)
+		if err != nil {
+			return err
+		}
+		now := s.deps.Now()
+		for _, destination := range enabledDestinations(settings) {
+			fingerprint := destinationConfigFingerprint(settings, destination)
+			until, err := destinationRateLimit(ctx, db, destination, fingerprint)
+			if err != nil {
+				return err
+			}
+			if until.After(now) {
+				rateLimits[destination] = until
+			}
+		}
+		return nil
 	})
 	if err != nil {
 		return DeliveryDiagnostics{}, err
 	}
 	return DeliveryDiagnostics{
-		LastAttempt:   latestDeliveryStatus(settings),
-		LastAttempts:  cloneDeliveryStatuses(settings.LastDeliveries),
-		PendingCount:  counts.Pending,
-		RetryingCount: counts.Retrying,
+		LastAttempt:      latestDeliveryStatus(settings),
+		LastAttempts:     cloneDeliveryStatuses(settings.LastDeliveries),
+		PendingCount:     counts.Pending,
+		RetryingCount:    counts.Retrying,
+		RateLimitedUntil: rateLimits,
 	}, nil
 }
 

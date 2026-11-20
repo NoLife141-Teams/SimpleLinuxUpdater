@@ -36,7 +36,7 @@ func TestAPTAlertsAreOptInAndRevalidateBeforeRetry(t *testing.T) {
 		t.Fatal("expected one APT notification per destination")
 	}
 	h.client.fail = true
-	row, err := claimNextOutboxRow(t.Context(), h.db, h.now)
+	row, err := claimNextOutboxRow(t.Context(), h.db, h.now, outboxDeliveries{})
 	if err != nil || row == nil {
 		t.Fatal(row, err)
 	}
@@ -138,7 +138,7 @@ func TestAPTRestorePreservesArchivedDeliveryProgress(t *testing.T) {
 			archive.reconcile(t)
 			archive.client.fail = tc.archiveState != outboxStateSucceeded
 			for range tc.archiveAttempts {
-				row, err := claimNextOutboxRow(ctx, archive.db, archive.now)
+				row, err := claimNextOutboxRow(ctx, archive.db, archive.now, outboxDeliveries{})
 				if err != nil || row == nil {
 					t.Fatal(row, err)
 				}

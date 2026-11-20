@@ -7,8 +7,10 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"net/url"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -37,21 +39,10 @@ func (c *capturingNotificationClient) Do(req *http.Request) (*http.Response, err
 	}, nil
 }
 
-type firstDestinationTimeoutClient struct {
-	successes chan string
-}
+type notificationHTTPFunc func(*http.Request) (*http.Response, error)
 
-func (c *firstDestinationTimeoutClient) Do(req *http.Request) (*http.Response, error) {
-	if req.URL.Hostname() == "hooks.example.test" {
-		<-req.Context().Done()
-		return nil, req.Context().Err()
-	}
-	c.successes <- req.URL.Hostname()
-	return &http.Response{
-		StatusCode: http.StatusNoContent,
-		Body:       io.NopCloser(bytes.NewReader(nil)),
-		Header:     make(http.Header),
-	}, nil
+func (f notificationHTTPFunc) Do(req *http.Request) (*http.Response, error) {
+	return f(req)
 }
 
 func openNativeIntegrationTestDB(t *testing.T, name string) *sql.DB {
@@ -143,17 +134,21 @@ func TestNativeIntegrationsConfigureFanOutAndProtectCredentials(t *testing.T) {
 		t.Fatalf("Accept() = %+v, want admitted", admission)
 	}
 
-	requests := make([]capturedNotificationRequest, 0, 2)
+	requests := make(map[string]capturedNotificationRequest, 2)
 	for len(requests) < 2 {
 		select {
 		case request := <-client.requests:
-			requests = append(requests, request)
+			parsed, err := url.Parse(request.URL)
+			if err != nil {
+				t.Fatal(err)
+			}
+			requests[parsed.Hostname()] = request
 		case <-time.After(time.Second):
 			t.Fatal("timed out waiting for native integration delivery")
 		}
 	}
-	if !strings.Contains(requests[0].URL, "discord.com/api/webhooks/") || !strings.Contains(requests[0].URL, "wait=true") {
-		t.Fatalf("Discord request URL = %q", requests[0].URL)
+	if !strings.Contains(requests["discord.com"].URL, "discord.com/api/webhooks/") || !strings.Contains(requests["discord.com"].URL, "wait=true") {
+		t.Fatalf("Discord request URL = %q", requests["discord.com"].URL)
 	}
 	var discordBody struct {
 		Embeds          []json.RawMessage `json:"embeds"`
@@ -161,17 +156,17 @@ func TestNativeIntegrationsConfigureFanOutAndProtectCredentials(t *testing.T) {
 			Parse []string `json:"parse"`
 		} `json:"allowed_mentions"`
 	}
-	if err := json.Unmarshal(requests[0].Body, &discordBody); err != nil {
+	if err := json.Unmarshal(requests["discord.com"].Body, &discordBody); err != nil {
 		t.Fatalf("decode Discord body: %v", err)
 	}
 	if len(discordBody.Embeds) != 1 || discordBody.AllowedMentions.Parse == nil || len(discordBody.AllowedMentions.Parse) != 0 {
-		t.Fatalf("Discord body = %s, want one embed and disabled mentions", requests[0].Body)
+		t.Fatalf("Discord body = %s, want one embed and disabled mentions", requests["discord.com"].Body)
 	}
-	if !strings.Contains(requests[1].URL, "api.telegram.org/bot"+telegramToken+"/sendMessage") {
-		t.Fatalf("Telegram request URL = %q", requests[1].URL)
+	if !strings.Contains(requests["api.telegram.org"].URL, "api.telegram.org/bot"+telegramToken+"/sendMessage") {
+		t.Fatalf("Telegram request URL = %q", requests["api.telegram.org"].URL)
 	}
 	var telegramBody telegramMessageBody
-	if err := json.Unmarshal(requests[1].Body, &telegramBody); err != nil {
+	if err := json.Unmarshal(requests["api.telegram.org"].Body, &telegramBody); err != nil {
 		t.Fatalf("decode Telegram body: %v", err)
 	}
 	if telegramBody.ChatID != telegramChat || !strings.Contains(telegramBody.Text, "srv-native") {
@@ -196,25 +191,50 @@ func TestNativeIntegrationsConfigureFanOutAndProtectCredentials(t *testing.T) {
 	}
 }
 
-func TestNativeIntegrationFanOutUsesIndependentDestinationTimeouts(t *testing.T) {
-	db := openNativeIntegrationTestDB(t, "native-integration-timeouts.db")
-	client := &firstDestinationTimeoutClient{successes: make(chan string, 2)}
+func TestQueuedDestinationsAndConditionsProgressDuringTelegramTimeout(t *testing.T) {
+	db := openNativeIntegrationTestDB(t, "parallel-destinations.db")
+	telegramStarted := make(chan struct{})
+	telegramTimedOut := make(chan struct{})
+	telegramDeliveries := make(chan string, 4)
+	var telegramAttempts atomic.Int32
+	client := notificationHTTPFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.Hostname() == "api.telegram.org" {
+			if telegramAttempts.Add(1) == 1 {
+				close(telegramStarted)
+				<-req.Context().Done()
+				close(telegramTimedOut)
+				return nil, req.Context().Err()
+			}
+			var payload telegramMessageBody
+			if err := json.NewDecoder(req.Body).Decode(&payload); err != nil {
+				return nil, err
+			}
+			telegramDeliveries <- payload.Text
+		}
+		return &http.Response{
+			StatusCode: http.StatusNoContent,
+			Body:       io.NopCloser(bytes.NewReader(nil)),
+		}, nil
+	})
+	start := time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC)
+	var elapsed atomic.Int64
 	encrypt, decrypt := testWebhookCodec()
 	svc := NewService(ServiceDeps{
-		DB:              func() *sql.DB { return db },
-		HTTPClient:      client,
-		EncryptSecret:   encrypt,
-		DecryptSecret:   decrypt,
-		Backoff:         func(int) time.Duration { return 0 },
-		DeliveryTimeout: 10 * time.Millisecond,
-		Logf:            func(string, ...any) {},
+		DB:                    func() *sql.DB { return db },
+		HTTPClient:            client,
+		EncryptSecret:         encrypt,
+		DecryptSecret:         decrypt,
+		Now:                   func() time.Time { return start.Add(time.Duration(elapsed.Load())) },
+		Backoff:               func(int) time.Duration { return time.Minute },
+		DeliveryTimeout:       3 * time.Second,
+		ClaimTTL:              100 * time.Millisecond,
+		ConditionPollInterval: 10 * time.Millisecond,
+		ReadConditions: func(context.Context, string, []Condition) (ConditionBatch, error) {
+			return ConditionBatch{}, nil
+		},
+		Logf: func(string, ...any) {},
 	})
-	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-		defer cancel()
-		_ = svc.Close(ctx)
-	})
-
+	t.Cleanup(func() { closeOutboxService(t, svc) })
 	if _, err := svc.SaveSettings(SettingsUpdate{
 		Enabled:          true,
 		WebhookURL:       "https://hooks.example.test/notify",
@@ -234,30 +254,89 @@ func TestNativeIntegrationFanOutUsesIndependentDestinationTimeouts(t *testing.T)
 	}); err != nil {
 		t.Fatalf("SaveSettings() error = %v", err)
 	}
+	svc.StartConditionMonitoring()
 
-	if admission := svc.Accept(DeliveryIntent{
-		CreatedAt:  "2026-07-30T12:00:00Z",
-		Action:     EventUpdateComplete,
-		Status:     "success",
-		TargetType: "server",
-		TargetName: "srv-timeout",
-		Message:    "Update completed",
-		MetaJSON:   `{}`,
-	}); admission.State != AdmissionAdmitted {
-		t.Fatalf("Accept() = %+v, want admitted", admission)
-	}
-
-	got := map[string]bool{}
-	for len(got) < 2 {
-		select {
-		case host := <-client.successes:
-			got[host] = true
-		case <-time.After(time.Second):
-			t.Fatalf("successful destinations = %v, want Discord and Telegram after webhook timeout", got)
+	accept := func(id string) {
+		t.Helper()
+		if result := svc.Accept(DeliveryIntent{
+			ID: id, TargetName: id, Action: EventUpdateComplete, Status: "success",
+			TargetType: "server", Message: "Update completed", MetaJSON: `{}`,
+		}); result.State != AdmissionAdmitted {
+			t.Fatalf("Accept(%q) = %+v, want admitted", id, result)
 		}
 	}
-	if !got["discord.com"] || !got["api.telegram.org"] {
-		t.Fatalf("successful destinations = %v, want Discord and Telegram", got)
+	accept("first")
+	select {
+	case <-telegramStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Telegram did not start")
+	}
+	accept("second")
+	// Advance the clock past claim expiry while the first HTTP request is active.
+	// This must update condition health without recovering the worker's own claim.
+	elapsed.Store(int64(time.Second))
+	waitForFacts := func(match func(InstallationHealthFacts) bool, until <-chan struct{}) InstallationHealthFacts {
+		t.Helper()
+		deadline := time.NewTimer(5 * time.Second)
+		defer deadline.Stop()
+		tick := time.NewTicker(5 * time.Millisecond)
+		defer tick.Stop()
+		for {
+			_, facts, err := svc.InstallationHealth(t.Context())
+			if err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case <-until:
+				t.Fatalf("Telegram timed out before the other destinations and conditions progressed: %+v", facts)
+			default:
+			}
+			if match(facts) {
+				return facts
+			}
+			select {
+			case <-deadline.C:
+				t.Fatalf("notification health did not converge: %+v", facts)
+			case <-tick.C:
+			}
+		}
+	}
+	waitForFacts(func(facts InstallationHealthFacts) bool {
+		return facts.LastConditionEvaluationAt != nil && facts.LastConditionEvaluationAt.Equal(start.Add(time.Second)) &&
+			facts.Destinations[DestinationWebhook].OldestPendingAgeSeconds == nil && facts.Destinations[DestinationWebhook].LastSuccessfulDeliveryAt != nil &&
+			facts.Destinations[DestinationDiscord].OldestPendingAgeSeconds == nil && facts.Destinations[DestinationDiscord].LastSuccessfulDeliveryAt != nil &&
+			facts.Pending == 2 && facts.Retrying == 0
+	}, telegramTimedOut)
+	if attempts := telegramAttempts.Load(); attempts != 1 {
+		t.Fatalf("Telegram attempts before the first request finished = %d, want 1", attempts)
+	}
+
+	awaitTelegram := func(target string) {
+		t.Helper()
+		select {
+		case message := <-telegramDeliveries:
+			if !strings.Contains(message, "\nTarget: "+target+"\n") {
+				t.Fatalf("Telegram delivery = %q, want target %q", message, target)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("Telegram did not deliver %q", target)
+		}
+	}
+	// The second row is due before the first row's retry.
+	awaitTelegram("second")
+	waitForFacts(func(facts InstallationHealthFacts) bool {
+		telegram := facts.Destinations[DestinationTelegram]
+		return facts.Retrying == 1 && facts.Pending == 0 && telegram.LastSuccessfulDeliveryAt != nil
+	}, nil)
+	elapsed.Store(int64(61 * time.Second))
+	svc.signalWorker()
+	awaitTelegram("first")
+	waitForFacts(func(facts InstallationHealthFacts) bool {
+		return facts.Retrying == 0 && facts.LastSuccessfulDeliveryAt != nil &&
+			facts.LastSuccessfulDeliveryAt.Equal(start.Add(61*time.Second))
+	}, nil)
+	if attempts := telegramAttempts.Load(); attempts != 3 {
+		t.Fatalf("Telegram attempts after retry = %d, want 3", attempts)
 	}
 }
 

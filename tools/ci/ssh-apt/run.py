@@ -103,19 +103,19 @@ def qualification_overlay(work):
     # Refresh the proof after condition reconciliation and outbox draining.
     # Record which destination was eligible, since an idle worker alone cannot
     # establish that the restored configuration still allows this delivery.
-    anchor = '\t\tif s.conditionMonitoringStarted() {\n\t\t\tif conditionTicker == nil {'
+    anchor = '\t\tif evaluate && s.conditionMonitoringStarted() {\n\t\t\tif conditionTicker == nil {'
     failure = '\t\t\t\ts.deps.Logf("notification condition reconciliation failed: %v", err)\n\t\t\t}'
-    finish = '\t\tif !scheduled {'
-    instrument("internal/notifications/service.go", [
-        ('\n\t"net/url"\n', '\n\t"net/url"\n\t"os"\n'),
-        ('\t\tif s.deps.RestoreDeliveryBlocked != nil && s.deps.RestoreDeliveryBlocked() {\n',
-         '\t\tif s.deps.RestoreDeliveryBlocked != nil && s.deps.RestoreDeliveryBlocked() {\n'
+    finish = '\n\t\tif active == (outboxDeliveries{}) {\n\t\t\tif cycleOK {'
+    instrument("internal/notifications/outbox_worker.go", [
+        ('\n\t"context"\n', '\n\t"context"\n\t"os"\n'),
+        ('\t\tif s.restoreDeliveryBlocked() {\n',
+         '\t\tif s.restoreDeliveryBlocked() {\n'
          '\t\t\tif _, err := os.Stat("/work/observe-notifications"); err == nil {\n'
          '\t\t\t\t_ = os.WriteFile("/work/notification-restore-paused", nil, 0600)\n\t\t\t}\n'),
         (anchor, '\t\tqualificationReconciled := false\n' + anchor),
         (failure, failure + ' else {\n\t\t\t\tqualificationReconciled = true\n\t\t\t}'),
-        (finish, """\
-\t\tif qualificationReconciled && cycleOK {
+        (finish, """
+\t\tif qualificationReconciled && cycleOK && active == (outboxDeliveries{}) {
 \t\t\tif _, err := os.Stat("/work/observe-notifications"); err == nil {
 \t\t\t\tfingerprint := ""
 \t\t\t\tif settings, err := s.currentSettings(); err == nil && destinationEnabled(settings, DestinationWebhook) &&
@@ -129,6 +129,16 @@ def qualification_overlay(work):
 \t\t\t}
 \t\t}
 """ + finish),
+    ])
+    # Keep native destination payloads and queue identities, but route them to
+    # the same private receiver as Webhook in this disposable qualification.
+    encode_body = '\tencoded, err := json.Marshal(body)'
+    instrument("internal/notifications/integrations.go", [
+        (encode_body, """\
+\tif destination == DestinationDiscord || destination == DestinationTelegram {
+\t\tendpoint = strings.TrimRight(settings.WebhookURL, "/") + "/" + destination
+\t}
+""" + encode_body),
     ])
     overlay = work / "qualification-overlay.json"
     overlay.write_text(json.dumps({"Replace": replacements}))
@@ -918,6 +928,10 @@ class Harness:
         self.api.include_error_body = False
         self.api.request("PUT", "/api/notifications/settings", {
             "enabled": True, "webhook_url_intent": "preserve", "event_types": ["backup.restore"],
+            "discord": {"enabled": True, "webhook_url_intent": "replace",
+                        "webhook_url": "https://discord.com/api/webhooks/123456/slu-fixture"},
+            "telegram": {"enabled": True, "credentials_intent": "replace",
+                         "bot_token": "123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi", "chat_id": "-1001234567890"},
         })
         # Get a current facts observation so a refresh already under admission
         # cannot race the start of exclusive backup work.
@@ -965,10 +979,12 @@ class Harness:
         self.api.request("POST", "/api/auth/login", credentials)
         until(paused.is_file, "notification pause was lost during restart")
         require(ssh_connections() == baseline_ssh and receipts() == baseline_receipts,
-                "SSH or webhook traffic left the isolated installation")
+                "SSH or notification traffic left the isolated installation")
         queued = self.api.request("GET", "/api/notifications/delivery-history")["items"]
-        require(any(row["event_type"] == "backup.restore" and row["state"] == "pending" for row in queued),
-                "the receipt fixture never had an eligible delivery queued")
+        destinations = {"webhook", "discord", "telegram"}
+        require({row["destination"] for row in queued
+                 if row["event_type"] == "backup.restore" and row["state"] == "pending"} == destinations,
+                "the receipt fixture never had an eligible delivery queued for every destination")
 
         record["checkpoint"] = "explicit-resumption"
         route = "/api/backup/restore-isolation/resume"
@@ -980,10 +996,12 @@ class Harness:
                 "authorized resumption did not lift isolation")
         self.api.request("POST", "/api/hostkeys/scan", {"host": self.ssh_host, "port": self.ssh_port})
         require(ssh_connections() > baseline_ssh, "authorized SSH did not return after resumption")
-        until(lambda: any(row[0] == "backup.restore" for row in receipts()[len(baseline_receipts):]),
-              "queued notification did not return after resumption")
+        until(lambda: {row[3] if len(row) == 4 else "webhook"
+                       for row in receipts()[len(baseline_receipts):] if row[0] == "backup.restore"} == destinations,
+              "queued notifications did not return to every destination after resumption")
         record.update(verified_restart=True, verified_subsequent_restore=True, isolated_ssh_connections=0,
-                      isolated_webhook_deliveries=0, authorized_work_resumed=True)
+                      isolated_webhook_deliveries=0, isolated_native_deliveries=0,
+                      resumed_notification_destinations=sorted(destinations), authorized_work_resumed=True)
         del record["checkpoint"]
 
     def qualify_cold_restore_apt_validation(self, record):

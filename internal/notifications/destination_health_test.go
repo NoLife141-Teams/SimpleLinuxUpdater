@@ -47,7 +47,7 @@ func TestDestinationHealthSeparatesQueueAttemptsRotationAndManualTests(t *testin
 	}
 	queuedAt := h.now
 	for range 2 {
-		row, err := claimNextOutboxRow(t.Context(), h.db, h.now)
+		row, err := claimNextOutboxRow(t.Context(), h.db, h.now, outboxDeliveries{})
 		if err != nil || row == nil {
 			t.Fatalf("claim = %v, %v", row, err)
 		}
@@ -172,7 +172,7 @@ func TestDestinationHealthMigrationRecoversCompletedAttemptFromClaimedRetry(t *t
 	// Emulate an older process stopping after claiming the retry but before
 	// sending it. The row still contains the preceding completed attempt.
 	h.now = h.now.Add(time.Hour)
-	if row, err := claimNextOutboxRow(t.Context(), h.db, h.now); err != nil || row == nil || row.Attempts != 1 {
+	if row, err := claimNextOutboxRow(t.Context(), h.db, h.now, outboxDeliveries{}); err != nil || row == nil || row.Attempts != 1 {
 		t.Fatalf("retry claim = %+v, %v", row, err)
 	}
 	if _, err := h.db.Exec(`DROP TABLE notification_destination_health`); err != nil {
@@ -308,7 +308,7 @@ func TestDestinationHealthPersistsAtomicallyWithCompletion(t *testing.T) {
 	h := newConditionHarness(t)
 	now := h.now.Format(time.RFC3339Nano)
 	id := insertPendingOutboxIntent(t, h.db, DeliveryIntent{ID: "atomic-destination-success", Action: EventUpdateComplete}, h.now)
-	if row, err := claimNextOutboxRow(t.Context(), h.db, h.now); err != nil || row == nil || row.ID != id {
+	if row, err := claimNextOutboxRow(t.Context(), h.db, h.now, outboxDeliveries{}); err != nil || row == nil || row.ID != id {
 		t.Fatalf("claim = %v, %v", row, err)
 	}
 	if _, err := h.db.Exec(`CREATE TRIGGER block_destination_health BEFORE INSERT ON notification_destination_health

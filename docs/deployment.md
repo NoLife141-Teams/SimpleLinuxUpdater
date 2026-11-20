@@ -203,8 +203,13 @@ is degraded and available observations such as APT incidents can still be
 admitted and delivered. The evaluation starts unobserved after startup or
 persistence reload. The latest persisted HTTP success for a queued delivery survives
 process restarts and outbox history pruning. Manual test deliveries use their
-own diagnostics. The oldest queued delivery age includes pending, claimed and
-retrying rows. An empty queue has no age. Worker tick and progress timestamps
+own diagnostics. The queue runs at most one attempt per destination type and
+three attempts total. Eligible entries stay in queue order within each type,
+and retries wait for their scheduled time. A slow request leaves the other
+destination types and condition evaluation free to progress. Persistence
+replacement waits for all admitted deliveries to finish and write their
+outcomes. Restore isolation suspends all destination types until resumed.
+The oldest queued delivery age includes pending, claimed and retrying rows. An empty queue has no age. Worker tick and progress timestamps
 remain separate observations.
 A completed empty worker sweep is progress, not proof of a successful Server
 operation. Disabled configuration is expected. Never observed/unavailable is

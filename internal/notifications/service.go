@@ -285,7 +285,7 @@ type ServiceDeps struct {
 	Retention              time.Duration
 	PruneInterval          time.Duration
 	NewID                  func() string
-	NextOutboxWake         func(context.Context, *sql.DB, time.Duration) (time.Time, bool, error)
+	NextOutboxWake         func(context.Context, *sql.DB, time.Duration, outboxDeliveries) (time.Time, bool, error)
 }
 
 type Service struct {
@@ -295,6 +295,7 @@ type Service struct {
 
 	settingsMu            sync.Mutex
 	lifecycleMu           sync.Mutex
+	replacementMu         sync.Mutex
 	persistenceMu         sync.Mutex
 	persistencePaused     bool
 	persistenceActive     int
@@ -365,7 +366,7 @@ func NewService(deps ServiceDeps) *Service {
 		s.initErr = EnsureSchema(db)
 		if s.initErr == nil {
 			s.backfillDestinationFingerprints(ctx, db)
-			s.initErr = recoverExpiredOutboxClaims(ctx, db, deps.Now(), deps.ClaimTTL)
+			s.initErr = recoverExpiredOutboxClaims(ctx, db, deps.Now(), deps.ClaimTTL, outboxDeliveries{})
 		}
 		if s.initErr == nil {
 			_, s.initErr = pruneOutbox(ctx, db, deps.Now(), deps.Retention)
@@ -383,180 +384,10 @@ func NewService(deps ServiceDeps) *Service {
 	return s
 }
 
-func (s *Service) run(ctx context.Context) {
-	defer s.health.Stop()
-	defer close(s.done)
-	pruneTicker := time.NewTicker(s.deps.PruneInterval)
-	defer pruneTicker.Stop()
-	var conditionC <-chan time.Time
-	var conditionTicker *time.Ticker
-	defer func() {
-		if conditionTicker != nil {
-			conditionTicker.Stop()
-		}
-	}()
-	var retryTimer *time.Timer
-	var retryC <-chan time.Time
-	waitForRestore := func() bool {
-		if s.deps.RestoreDeliveryBlocked != nil && s.deps.RestoreDeliveryBlocked() {
-			// A durable rollback set represents the complete delivery
-			// evidence only while a marked restore cannot send new work.
-			s.endPersistence()
-			s.health.Stop()
-			if retryTimer == nil {
-				retryTimer = time.NewTimer(s.deps.PollInterval)
-				retryC = retryTimer.C
-			}
-			return true
-		}
-		return false
-	}
-cycle:
-	for {
-		prune := false
-		select {
-		case <-ctx.Done():
-			if retryTimer != nil {
-				retryTimer.Stop()
-			}
-			return
-		case <-conditionC:
-		case <-s.wake:
-			if retryTimer != nil {
-				retryTimer.Stop()
-				retryTimer = nil
-				retryC = nil
-			}
-		case <-retryC:
-			retryTimer = nil
-			retryC = nil
-		case <-pruneTicker.C:
-			prune = true
-		}
-		if s.isClosing() || !s.beginPersistence(ctx) {
-			return
-		}
-		if waitForRestore() {
-			continue
-		}
-		s.health.Tick(s.deps.Now())
-		cycleOK := true
-		if s.conditionMonitoringStarted() {
-			if conditionTicker == nil {
-				conditionTicker = time.NewTicker(s.deps.ConditionPollInterval)
-				conditionC = conditionTicker.C
-			}
-			if err := s.reconcileConditions(ctx); err != nil {
-				cycleOK = false
-				s.health.Error(s.deps.Now())
-				s.deps.Logf("notification condition reconciliation failed: %v", err)
-			}
-			cycleOK = cycleOK && !s.conditionHealth.degraded()
-		}
-		if prune {
-			if _, err := pruneOutbox(ctx, s.database(), s.deps.Now(), s.deps.Retention); err != nil {
-				cycleOK = false
-				s.health.Error(s.deps.Now())
-				s.deps.Logf("notification outbox pruning failed: %v", err)
-			}
-		}
-		if err := recoverExpiredOutboxClaims(ctx, s.database(), s.deps.Now(), s.deps.ClaimTTL); err != nil {
-			cycleOK = false
-			s.health.Error(s.deps.Now())
-			s.deps.Logf("notification outbox claim recovery failed: %v", err)
-		}
-		claimFailed := false
-		for ctx.Err() == nil {
-			if s.isClosing() {
-				s.endPersistence()
-				return
-			}
-			row, err := claimNextOutboxRow(ctx, s.database(), s.deps.Now())
-			if err != nil {
-				s.health.Error(s.deps.Now())
-				s.deps.Logf("notification outbox claim failed: %v", err)
-				claimFailed = true
-				break
-			}
-			if row == nil {
-				if s.isClosing() {
-					s.endPersistence()
-					return
-				}
-				break
-			}
-			if !s.processOutboxRow(ctx, *row) || s.conditionHealth.degraded() {
-				cycleOK = false
-			}
-			s.endPersistence()
-			if !s.beginPersistence(ctx) {
-				return
-			}
-			if waitForRestore() {
-				continue cycle
-			}
-		}
-		if claimFailed && s.isClosing() {
-			s.endPersistence()
-			return
-		}
-		if claimFailed {
-			s.health.Stop()
-			s.endPersistence()
-			delay := s.deps.PollInterval
-			if delay <= 0 {
-				delay = defaultOutboxPollInterval
-			}
-			retryTimer = time.NewTimer(delay)
-			retryC = retryTimer.C
-			continue
-		}
-		if ctx.Err() != nil {
-			s.endPersistence()
-			continue
-		}
-		nextAt, scheduled, err := s.deps.NextOutboxWake(ctx, s.database(), s.deps.ClaimTTL)
-		s.endPersistence()
-		if err != nil {
-			s.health.Error(s.deps.Now())
-			s.health.Stop()
-			s.deps.Logf("notification outbox wake scheduling failed: %v", err)
-			delay := s.deps.PollInterval
-			if delay <= 0 {
-				delay = defaultOutboxPollInterval
-			}
-			retryTimer = time.NewTimer(delay)
-			retryC = retryTimer.C
-			continue
-		}
-		if cycleOK {
-			s.health.Finish(s.deps.Now(), nil)
-		} else {
-			s.health.Stop()
-		}
-		if !scheduled {
-			continue
-		}
-		delay := nextAt.Sub(s.deps.Now().UTC())
-		if delay < 0 {
-			delay = 0
-		}
-		retryTimer = time.NewTimer(delay)
-		retryC = retryTimer.C
-	}
-}
-
 func (s *Service) beginPersistence(ctx context.Context) bool {
-	for {
-		s.persistenceMu.Lock()
-		if !s.persistencePaused {
-			s.persistenceActive++
-			s.persistenceMu.Unlock()
+	for ctx.Err() == nil && !s.isClosing() {
+		if s.tryBeginPersistence() {
 			return true
-		}
-		s.persistenceMu.Unlock()
-		if s.isClosing() {
-			return false
 		}
 		timer := time.NewTimer(2 * time.Millisecond)
 		select {
@@ -566,6 +397,17 @@ func (s *Service) beginPersistence(ctx context.Context) bool {
 		case <-timer.C:
 		}
 	}
+	return false
+}
+
+func (s *Service) tryBeginPersistence() bool {
+	s.persistenceMu.Lock()
+	defer s.persistenceMu.Unlock()
+	if s.persistencePaused {
+		return false
+	}
+	s.persistenceActive++
+	return true
 }
 
 func (s *Service) endPersistence() {
@@ -610,6 +452,8 @@ func (s *Service) PreparePersistenceReplacement(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	s.replacementMu.Lock()
+	defer s.replacementMu.Unlock()
 	if err := s.pausePersistence(ctx); err != nil {
 		return err
 	}
@@ -673,13 +517,21 @@ func (s *Service) ReloadPersistence(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	s.replacementMu.Lock()
+	defer s.replacementMu.Unlock()
+	if s.isClosing() {
+		return errors.New("notification delivery lifecycle is closing")
+	}
+	// An admitted delivery may need the lifecycle lock to verify that its
+	// condition source is running. Drain leases before taking that lock.
+	if err := s.pausePersistence(ctx); err != nil {
+		return err
+	}
 	s.lifecycleMu.Lock()
 	defer s.lifecycleMu.Unlock()
 	if s.closing {
+		s.resumePersistence()
 		return errors.New("notification delivery lifecycle is closing")
-	}
-	if err := s.pausePersistence(ctx); err != nil {
-		return err
 	}
 	db := s.database()
 	if db == nil {
@@ -692,7 +544,7 @@ func (s *Service) ReloadPersistence(ctx context.Context) error {
 	if _, err := loadAndMigrateConditionState(ctx, db); err != nil {
 		return fmt.Errorf("read restored notification conditions: %w", err)
 	}
-	if err := recoverExpiredOutboxClaims(ctx, db, s.deps.Now(), s.deps.ClaimTTL); err != nil {
+	if err := recoverExpiredOutboxClaims(ctx, db, s.deps.Now(), s.deps.ClaimTTL, outboxDeliveries{}); err != nil {
 		return err
 	}
 	s.persistenceMu.Lock()
@@ -836,6 +688,9 @@ func (s *Service) isClosing() bool {
 // processOutboxRow reports whether the worker could process the claim,
 // including persisting a retry or failure after an HTTP attempt.
 func (s *Service) processOutboxRow(ctx context.Context, row outboxRow) bool {
+	if s.queuedDeliveryBlocked(ctx) {
+		return s.releaseClaim(row, 0, "delivery suspended")
+	}
 	settings, err := s.currentSettings()
 	if err != nil {
 		s.health.Error(s.deps.Now())
@@ -881,6 +736,9 @@ func (s *Service) processOutboxRow(ctx context.Context, row outboxRow) bool {
 		return err == nil
 	}
 
+	if s.queuedDeliveryBlocked(ctx) {
+		return s.releaseClaim(row, 0, "delivery suspended")
+	}
 	attemptCtx, cancelAttempt := context.WithTimeout(ctx, s.deps.DeliveryTimeout)
 	status, deliveryErr := s.attemptOutboxDestination(attemptCtx, settings, row)
 	if deliveryErr != nil {
@@ -926,9 +784,6 @@ func (s *Service) processOutboxRow(ctx context.Context, row outboxRow) bool {
 	if err != nil {
 		s.health.Error(s.deps.Now())
 		s.deps.Logf("notification diagnostic persistence failed for %q: %v", row.ID, err)
-	}
-	if outcome.State == outboxStateRetrying {
-		s.signalWorker()
 	}
 	return err == nil
 }

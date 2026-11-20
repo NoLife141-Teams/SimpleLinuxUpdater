@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -239,42 +240,82 @@ func TestNotificationOutboxDuplicateWakeupsDoNotDuplicateDelivery(t *testing.T) 
 	}
 }
 
-func TestNotificationOutboxPersistenceReplacementPausesBetweenRows(t *testing.T) {
-	db := openOutboxTestDB(t, "replacement-pause.db")
-	firstStarted := make(chan struct{})
-	releaseFirst := make(chan struct{})
-	secondStarted := make(chan struct{})
-	var requests int32
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		switch atomic.AddInt32(&requests, 1) {
-		case 1:
-			close(firstStarted)
-			<-releaseFirst
-		case 2:
-			close(secondStarted)
+func TestNotificationOutboxPersistenceReplacementDrainsEveryDestination(t *testing.T) {
+	db := openNativeIntegrationTestDB(t, "replacement-pause.db")
+	webhookStarted := make(chan struct{})
+	discordStarted := make(chan struct{})
+	releaseWebhook := make(chan struct{})
+	releaseDiscord := make(chan struct{})
+	var webhookRequests, discordRequests atomic.Int32
+	deps := outboxTestDeps(db, 5*time.Millisecond)
+	deps.HTTPClient = notificationHTTPFunc(func(req *http.Request) (*http.Response, error) {
+		switch req.URL.Hostname() {
+		case "hooks.example.test":
+			if webhookRequests.Add(1) == 1 {
+				close(webhookStarted)
+				select {
+				case <-releaseWebhook:
+				case <-req.Context().Done():
+					return nil, req.Context().Err()
+				}
+			}
+		case "discord.com":
+			if discordRequests.Add(1) == 1 {
+				close(discordStarted)
+				select {
+				case <-releaseDiscord:
+				case <-req.Context().Done():
+					return nil, req.Context().Err()
+				}
+			}
 		}
-		w.WriteHeader(http.StatusNoContent)
-	}))
-	t.Cleanup(server.Close)
-	prepareOutboxSettings(t, db, server.URL, true)
-	now := time.Now().UTC()
-	insertPendingOutboxIntent(t, db, DeliveryIntent{ID: "replacement-first", Action: EventUpdateComplete, TargetName: "srv-first", MetaJSON: `{}`}, now)
-	insertPendingOutboxIntent(t, db, DeliveryIntent{ID: "replacement-second", Action: EventUpdateComplete, TargetName: "srv-second", MetaJSON: `{}`}, now)
-	svc := NewService(outboxTestDeps(db, 5*time.Millisecond))
+		return &http.Response{StatusCode: http.StatusNoContent, Body: io.NopCloser(strings.NewReader(""))}, nil
+	})
+	svc := NewService(deps)
 	t.Cleanup(func() { closeOutboxService(t, svc) })
-
-	select {
-	case <-firstStarted:
-	case <-time.After(time.Second):
-		t.Fatal("first notification delivery did not start")
+	update := SettingsUpdate{
+		Enabled:          true,
+		EventTypes:       []string{EventUpdateComplete},
+		WebhookURL:       "https://hooks.example.test/notify",
+		WebhookURLIntent: WebhookURLReplace,
+		Discord: &DiscordUpdate{
+			Enabled:          true,
+			WebhookURL:       "https://discord.com/api/webhooks/123456/old-secret",
+			WebhookURLIntent: WebhookURLReplace,
+		},
+	}
+	if _, err := svc.SaveSettings(update); err != nil {
+		t.Fatal(err)
+	}
+	accept := func(target string) {
+		t.Helper()
+		result := svc.Accept(DeliveryIntent{ID: target, Action: EventUpdateComplete, TargetName: target, MetaJSON: `{}`})
+		if result.State != AdmissionAdmitted {
+			t.Fatalf("Accept(%q) = %+v", target, result)
+		}
+	}
+	accept("replacement-first")
+	for _, started := range []<-chan struct{}{webhookStarted, discordStarted} {
+		select {
+		case <-started:
+		case <-time.After(5 * time.Second):
+			t.Fatal("both destinations did not start before either could finish")
+		}
+	}
+	accept("replacement-second")
+	update.WebhookURL = ""
+	update.WebhookURLIntent = WebhookURLPreserve
+	update.Discord.WebhookURL = "https://discord.com/api/webhooks/123456/new-secret"
+	if _, err := svc.SaveSettings(update); err != nil {
+		t.Fatal(err)
 	}
 	prepareDone := make(chan error, 1)
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 		defer cancel()
 		prepareDone <- svc.PreparePersistenceReplacement(ctx)
 	}()
-	deadline := time.Now().Add(time.Second)
+	deadline := time.Now().Add(5 * time.Second)
 	for {
 		svc.persistenceMu.Lock()
 		paused := svc.persistencePaused
@@ -287,22 +328,47 @@ func TestNotificationOutboxPersistenceReplacementPausesBetweenRows(t *testing.T)
 		}
 		time.Sleep(time.Millisecond)
 	}
-	close(releaseFirst)
-	if err := <-prepareDone; err != nil {
-		t.Fatalf("PreparePersistenceReplacement() error=%v", err)
+	close(releaseWebhook)
+	waitForRows := func(target, webhookState, discordState string) {
+		t.Helper()
+		for deadline := time.Now().Add(5 * time.Second); ; {
+			var webhook, discord string
+			err := db.QueryRow(`
+				SELECT MAX(CASE WHEN destination = 'webhook' THEN state END),
+				       MAX(CASE WHEN destination = 'discord' THEN state END)
+				  FROM notification_outbox WHERE target_name = ?
+			`, target).Scan(&webhook, &discord)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if webhook == webhookState && discord == discordState {
+				return
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("rows for %q = (%s, %s), want (%s, %s)", target, webhook, discord, webhookState, discordState)
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
 	}
+	waitForRows("replacement-first", outboxStateSucceeded, outboxStateClaimed)
 	select {
-	case <-secondStarted:
-		t.Fatal("worker claimed a second row while persistence replacement was waiting")
-	default:
+	case err := <-prepareDone:
+		t.Fatalf("replacement finished with Discord still active: %v", err)
+	case <-time.After(20 * time.Millisecond):
 	}
-	if got := atomic.LoadInt32(&requests); got != 1 {
-		t.Fatalf("requests=%d, want only the in-flight delivery before replacement", got)
+	close(releaseDiscord)
+	if err := <-prepareDone; err != nil {
+		t.Fatalf("PreparePersistenceReplacement() error = %v", err)
 	}
-	if err := svc.ReloadPersistence(context.Background()); err != nil {
-		t.Fatalf("ReloadPersistence() error=%v", err)
+	waitForRows("replacement-first", outboxStateSucceeded, outboxStateSucceeded)
+	waitForRows("replacement-second", outboxStatePending, outboxStatePending)
+	if err := svc.ReloadPersistence(t.Context()); err != nil {
+		t.Fatalf("ReloadPersistence() error = %v", err)
 	}
-	waitForLatestOutboxState(t, db, outboxStateSucceeded)
+	waitForRows("replacement-second", outboxStateSucceeded, outboxStateSkipped)
+	if webhookRequests.Load() != 2 || discordRequests.Load() != 1 {
+		t.Fatalf("requests = (webhook %d, Discord %d), want (2, 1) after rotation", webhookRequests.Load(), discordRequests.Load())
+	}
 }
 
 func TestNotificationOutboxCloseLeavesQueuedRowsDurable(t *testing.T) {
@@ -427,7 +493,7 @@ func TestNotificationOutboxKeepsPollingAfterWakeSchedulingFailure(t *testing.T) 
 	var wakeCalls int32
 	retryStarted := make(chan struct{})
 	allowRetrySchedule := make(chan struct{})
-	deps.NextOutboxWake = func(ctx context.Context, db *sql.DB, ttl time.Duration) (time.Time, bool, error) {
+	deps.NextOutboxWake = func(ctx context.Context, db *sql.DB, ttl time.Duration, active outboxDeliveries) (time.Time, bool, error) {
 		switch atomic.AddInt32(&wakeCalls, 1) {
 		case 1:
 			return time.Time{}, false, errors.New("temporary wake query failure")
@@ -439,7 +505,7 @@ func TestNotificationOutboxKeepsPollingAfterWakeSchedulingFailure(t *testing.T) 
 			case <-allowRetrySchedule:
 			}
 		}
-		return nextOutboxWake(ctx, db, ttl)
+		return nextOutboxWake(ctx, db, ttl, active)
 	}
 	svc := NewService(deps)
 	t.Cleanup(func() { closeOutboxService(t, svc) })

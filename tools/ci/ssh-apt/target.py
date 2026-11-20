@@ -19,7 +19,7 @@ WEBHOOK_PORT = 18081
 
 class WebhookReceiver(BaseHTTPRequestHandler):
     def do_POST(self):
-        if self.path != "/receive":
+        if self.path not in ("/receive", "/receive/discord", "/receive/telegram"):
             self.send_error(404)
             return
         try:
@@ -27,12 +27,19 @@ class WebhookReceiver(BaseHTTPRequestHandler):
             if not 0 < size <= 64 * 1024:
                 raise ValueError("invalid receipt size")
             payload = json.loads(self.rfile.read(size))
-            event = payload["event_type"]
-            job = payload.get("meta", {}).get("job_id")
-            if event == "apt.reconciliation.required" and not job:
-                raise ValueError("missing APT job identity")
-            receipt = [event, payload["target_name"], job]
-        except (ValueError, KeyError, TypeError):
+            if self.path == "/receive/discord":
+                fields = {field["name"]: field["value"] for field in payload["embeds"][0]["fields"]}
+                receipt = [fields["Event"], fields["Target"], None, "discord"]
+            elif self.path == "/receive/telegram":
+                fields = dict(line.split(": ", 1) for line in payload["text"].splitlines()[1:4])
+                receipt = [fields["Event"], fields["Target"], None, "telegram"]
+            else:
+                event = payload["event_type"]
+                job = payload.get("meta", {}).get("job_id")
+                if event == "apt.reconciliation.required" and not job:
+                    raise ValueError("missing APT job identity")
+                receipt = [event, payload["target_name"], job]
+        except (ValueError, KeyError, TypeError, IndexError):
             self.send_error(400)
             return
         with (STATE / "webhook-receipts").open("a") as log:

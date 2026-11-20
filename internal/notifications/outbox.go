@@ -502,7 +502,7 @@ func insertOutboxRowsTx(ctx context.Context, tx *sql.Tx, rows []outboxRow, now s
 	return nil
 }
 
-func recoverExpiredOutboxClaims(ctx context.Context, db *sql.DB, now time.Time, claimTTL time.Duration) error {
+func recoverExpiredOutboxClaims(ctx context.Context, db *sql.DB, now time.Time, claimTTL time.Duration, active outboxDeliveries) error {
 	if db == nil {
 		return nil
 	}
@@ -511,12 +511,13 @@ func recoverExpiredOutboxClaims(ctx context.Context, db *sql.DB, now time.Time, 
 	_, err := db.ExecContext(ctx, `
 		UPDATE notification_outbox
 		   SET state = ?, claimed_at = '', next_attempt_at = ?, updated_at = ?
-		 WHERE state = ? AND claimed_at <= ?
-	`, outboxStateRetrying, nowText, nowText, outboxStateClaimed, cutoff)
+		 WHERE state = ? AND rtrim(claimed_at, 'Z') <= rtrim(?, 'Z')
+		   AND destination IS NOT ? AND destination IS NOT ? AND destination IS NOT ?
+	`, outboxStateRetrying, nowText, nowText, outboxStateClaimed, cutoff, active[0], active[1], active[2])
 	return err
 }
 
-func claimNextOutboxRow(ctx context.Context, db *sql.DB, now time.Time) (*outboxRow, error) {
+func claimNextOutboxRow(ctx context.Context, db *sql.DB, now time.Time, active outboxDeliveries) (*outboxRow, error) {
 	if db == nil {
 		return nil, nil
 	}
@@ -532,10 +533,11 @@ func claimNextOutboxRow(ctx context.Context, db *sql.DB, now time.Time) (*outbox
 		       event_created_at, actor, client_ip, meta_json, destination_fingerprint, state, attempts,
 		       next_attempt_at, claimed_at
 		  FROM notification_outbox
-		 WHERE state IN (?, ?) AND (next_attempt_at = '' OR next_attempt_at <= ?)
+		 WHERE state IN (?, ?) AND (next_attempt_at = '' OR rtrim(next_attempt_at, 'Z') <= rtrim(?, 'Z'))
+		   AND destination IS NOT ? AND destination IS NOT ? AND destination IS NOT ?
 		 ORDER BY rowid
 		 LIMIT 1
-	`, outboxStatePending, outboxStateRetrying, nowText).Scan(
+	`, outboxStatePending, outboxStateRetrying, nowText, active[0], active[1], active[2]).Scan(
 		&row.ID, &row.Destination, &row.EventType, &row.Intent.Action, &row.Intent.TargetType,
 		&row.Intent.TargetName, &row.Intent.Status, &row.Intent.Message, &row.Intent.CreatedAt,
 		&row.Intent.Actor, &row.Intent.ClientIP, &row.Intent.MetaJSON, &row.DestinationFingerprint,
@@ -635,17 +637,18 @@ func loadOutboxCounts(ctx context.Context, db *sql.DB) (outboxCounts, error) {
 	return counts, err
 }
 
-func nextOutboxWake(ctx context.Context, db *sql.DB, claimTTL time.Duration) (time.Time, bool, error) {
+func nextOutboxWake(ctx context.Context, db *sql.DB, claimTTL time.Duration, active outboxDeliveries) (time.Time, bool, error) {
 	if db == nil {
 		return time.Time{}, false, nil
 	}
 	var nextAttempt, oldestClaim string
 	err := db.QueryRowContext(ctx, `
 		SELECT
-			COALESCE(MIN(CASE WHEN state = ? AND next_attempt_at != '' THEN next_attempt_at END), ''),
-			COALESCE(MIN(CASE WHEN state = ? AND claimed_at != '' THEN claimed_at END), '')
+			COALESCE(MIN(CASE WHEN state = ? AND next_attempt_at != '' THEN rtrim(next_attempt_at, 'Z') END) || 'Z', ''),
+			COALESCE(MIN(CASE WHEN state = ? AND claimed_at != '' THEN rtrim(claimed_at, 'Z') END) || 'Z', '')
 		  FROM notification_outbox
-	`, outboxStateRetrying, outboxStateClaimed).Scan(&nextAttempt, &oldestClaim)
+		 WHERE destination IS NOT ? AND destination IS NOT ? AND destination IS NOT ?
+	`, outboxStateRetrying, outboxStateClaimed, active[0], active[1], active[2]).Scan(&nextAttempt, &oldestClaim)
 	if err != nil {
 		return time.Time{}, false, err
 	}

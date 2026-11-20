@@ -231,7 +231,7 @@ func TestInstallationHealthPersistsOnlySuccessfulHTTPDelivery(t *testing.T) {
 	h.facts = []ConditionFact{rebootFact(true)}
 	h.reconcile(t)
 	h.client.fail = true
-	row, err := claimNextOutboxRow(ctx, h.db, h.now)
+	row, err := claimNextOutboxRow(ctx, h.db, h.now, outboxDeliveries{})
 	if err != nil || row == nil {
 		t.Fatalf("claim = %v, %v", row, err)
 	}
@@ -325,7 +325,7 @@ func TestInstallationHealthDeliveryAndSuccessTimestampCommitTogether(t *testing.
 	h := newConditionHarness(t)
 	now := h.now.Format(time.RFC3339Nano)
 	id := insertPendingOutboxIntent(t, h.db, DeliveryIntent{ID: "atomic-success", Action: EventUpdateComplete}, h.now)
-	if row, err := claimNextOutboxRow(t.Context(), h.db, h.now); err != nil || row == nil || row.ID != id {
+	if row, err := claimNextOutboxRow(t.Context(), h.db, h.now, outboxDeliveries{}); err != nil || row == nil || row.ID != id {
 		t.Fatalf("claim = %v, %v", row, err)
 	}
 	if _, err := h.db.Exec(`CREATE TRIGGER block_success BEFORE UPDATE ON notification_delivery_health

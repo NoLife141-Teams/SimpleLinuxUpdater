@@ -74,7 +74,7 @@ func (h *conditionHarness) count(t *testing.T, event string) int {
 func (h *conditionHarness) drain(t *testing.T) {
 	t.Helper()
 	for i := 0; i < 30; i++ {
-		row, err := claimNextOutboxRow(context.Background(), h.db, h.now)
+		row, err := claimNextOutboxRow(context.Background(), h.db, h.now, outboxDeliveries{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -103,7 +103,7 @@ func TestSuspendedConditionDefersDeliveryAndPreservesAdmission(t *testing.T) {
 	h.facts = []ConditionFact{{ID: "backup/coverage/missing", EventType: event, Active: true, Message: "No verified local backup is available."}}
 	h.client.fail = true
 	h.reconcile(t)
-	row, err := claimNextOutboxRow(t.Context(), h.db, h.now)
+	row, err := claimNextOutboxRow(t.Context(), h.db, h.now, outboxDeliveries{})
 	if err != nil || row == nil {
 		t.Fatalf("claim initial alert = %+v, %v", row, err)
 	}
@@ -442,7 +442,7 @@ func TestConditionDeliveryRevalidatesEachDestinationAndUnavailableFacts(t *testi
 	h.facts = []ConditionFact{rebootFact(true)}
 	h.reconcile(t)
 	h.sourceErr = errors.New("facts unavailable")
-	row, err := claimNextOutboxRow(context.Background(), h.db, h.now)
+	row, err := claimNextOutboxRow(context.Background(), h.db, h.now, outboxDeliveries{})
 	if err != nil || row == nil {
 		t.Fatal(err)
 	}
@@ -612,7 +612,7 @@ func TestConditionMonitoringStartGatesRestoredPendingDelivery(t *testing.T) {
 	h.facts = []ConditionFact{rebootFact(true)}
 	h.reconcile(t)
 	h.service.monitoringStarted = false
-	row, err := claimNextOutboxRow(context.Background(), h.db, h.now)
+	row, err := claimNextOutboxRow(context.Background(), h.db, h.now, outboxDeliveries{})
 	if err != nil || row == nil {
 		t.Fatal(err)
 	}

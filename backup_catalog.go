@@ -234,6 +234,7 @@ func (r backupCatalogReader) Read(p []byte) (int, error) {
 
 var errBackupCatalogUnavailable = errors.New("registered backup is unavailable or failed validation")
 var errBackupCatalogDigestMismatch = errors.New("registered backup SHA-256 mismatch")
+var errBackupCatalogVersionChanged = errors.New("registered backup changed while being read")
 
 type backupCatalogSnapshot struct {
 	file internalbackup.TemporaryFile
@@ -260,14 +261,22 @@ func snapshotBackupArchive(ctx context.Context, root *os.Root, archive ownedBack
 	}
 	defer src.Close()
 	opened, err := src.Stat()
-	if err != nil || !sameBackupIntegrityFile(before, opened) ||
-		(archive.FileIdentity != "" && archive.FileIdentity != backupCatalogFileIdentity(opened)) ||
+	if err != nil {
+		return empty, noop, errBackupCatalogUnavailable
+	}
+	if !sameBackupIntegrityFile(before, opened) {
+		return empty, noop, errBackupCatalogVersionChanged
+	}
+	if (archive.FileIdentity != "" && archive.FileIdentity != backupCatalogFileIdentity(opened)) ||
 		(archive.SizeBytes != nil && *archive.SizeBytes != opened.Size()) {
 		return empty, noop, errBackupCatalogUnavailable
 	}
 	after, err := root.Lstat(archive.Name)
-	if err != nil || !sameBackupIntegrityFile(opened, after) {
+	if err != nil {
 		return empty, noop, errBackupCatalogUnavailable
+	}
+	if !sameBackupIntegrityFile(opened, after) {
+		return empty, noop, errBackupCatalogVersionChanged
 	}
 	directory, err := os.MkdirTemp("", "slu-backup-catalog-*")
 	if err != nil {
@@ -284,9 +293,12 @@ func snapshotBackupArchive(ctx context.Context, root *os.Root, archive ownedBack
 	closeErr := dst.Close()
 	current, statErr := src.Stat()
 	named, nameErr := root.Lstat(archive.Name)
+	if statErr == nil && nameErr == nil && (!sameBackupIntegrityFile(opened, current) || !sameBackupIntegrityFile(current, named)) {
+		cleanup()
+		return empty, noop, errBackupCatalogVersionChanged
+	}
 	if copyErr != nil || closeErr != nil || statErr != nil || nameErr != nil || size <= 0 || size > internalbackup.MaxUploadBytes ||
-		size != opened.Size() || !sameBackupIntegrityFile(opened, current) || !sameBackupIntegrityFile(current, named) ||
-		!backupCatalogMountAvailable(root, directoryIdentity) || ctx.Err() != nil {
+		size != opened.Size() || !backupCatalogMountAvailable(root, directoryIdentity) || ctx.Err() != nil {
 		cleanup()
 		return empty, noop, errBackupCatalogUnavailable
 	}
@@ -300,6 +312,41 @@ func snapshotBackupArchive(ctx context.Context, root *os.Root, archive ownedBack
 func backupCatalogMountAvailable(root *os.Root, identity string) bool {
 	info, err := os.Lstat(root.Name())
 	return err == nil && backupArchiveDirectoryAccessible(info) && backupCatalogFileIdentity(info) == identity
+}
+
+func (a *backupAutomation) saveBackupCatalogSnapshotFailure(ctx context.Context, s backupAutomationState, index int, root *os.Root, directory, actor, ip string, snapshot backupCatalogSnapshot, snapshotErr error) error {
+	digestMismatch := errors.Is(snapshotErr, errBackupCatalogDigestMismatch)
+	versionChanged := errors.Is(snapshotErr, errBackupCatalogVersionChanged)
+	if ctx.Err() != nil || (!digestMismatch && !versionChanged && !errors.Is(snapshotErr, errBackupCatalogUnavailable)) ||
+		!backupCatalogMountAvailable(root, directory) {
+		return nil
+	}
+	archive := &s.Archives[index]
+	availability, _ := backupArchiveAvailabilityAt(root, *archive, archive.Owner, directory)
+	if digestMismatch {
+		named, err := root.Lstat(archive.Name)
+		digestMismatch = err == nil && sameBackupIntegrityFile(snapshot.info, named)
+		versionChanged = !digestMismatch
+	}
+	s.Observation = newBackupArchiveObservation(a.now(), "available", archive.Owner, directory)
+	at := s.Observation.CheckedAt
+	var event *AuditEvent
+	switch {
+	case digestMismatch:
+		event = a.observeArchiveIntegrity(archive, backupIntegrityMismatch, at, actor, ip)
+	case archiveAvailabilityLost(availability):
+		event = a.observeArchive(archive, availability, at, actor, ip)
+	case versionChanged && archive.Integrity.State != backupIntegrityMismatch:
+		// The metadata probe may still see the registered inode and mtime.
+		// Coverage stays uncertain until a digest confirms its current bytes.
+		a.observeArchiveIntegrity(archive, backupIntegrityUnavailable, at, actor, ip)
+	default:
+		return nil
+	}
+	if event != nil {
+		return a.save(ctx, s, *event)
+	}
+	return a.save(ctx, s)
 }
 
 func handleBackupCatalog(c *gin.Context, a *backupAutomation) {
@@ -368,32 +415,9 @@ func handleBackupCatalogOperation(c *gin.Context, a *backupAutomation, verify bo
 	snapshot, cleanup, err := snapshotBackupArchive(ctx, root, *archive, owner, directory)
 	defer cleanup()
 	if err != nil {
-		digestMismatch := errors.Is(err, errBackupCatalogDigestMismatch)
-		if ctx.Err() == nil && (digestMismatch || errors.Is(err, errBackupCatalogUnavailable)) && backupCatalogMountAvailable(root, directory) {
-			availability, _ := backupArchiveAvailabilityAt(root, *archive, owner, directory)
-			if digestMismatch {
-				named, err := root.Lstat(archive.Name)
-				digestMismatch = err == nil && sameBackupIntegrityFile(snapshot.info, named)
-			}
-			if digestMismatch || archiveAvailabilityLost(availability) {
-				observation := newBackupArchiveObservation(a.now(), "available", owner, directory)
-				actor, ip := actorFromContext(c), clientIPFromContext(c)
-				var event *AuditEvent
-				if digestMismatch {
-					event = a.observeArchiveIntegrity(archive, backupIntegrityMismatch, observation.CheckedAt, actor, ip)
-				} else {
-					event = a.observeArchive(archive, availability, observation.CheckedAt, actor, ip)
-				}
-				s.Observation = observation
-				var events []AuditEvent
-				if event != nil {
-					events = append(events, *event)
-				}
-				if err := a.save(ctx, s, events...); err != nil {
-					c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Backup verification evidence could not be saved."})
-					return
-				}
-			}
+		if err := a.saveBackupCatalogSnapshotFailure(ctx, s, index, root, directory, actorFromContext(c), clientIPFromContext(c), snapshot, err); err != nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Backup verification evidence could not be saved."})
+			return
 		}
 		c.JSON(http.StatusConflict, gin.H{"error": errBackupCatalogUnavailable.Error()})
 		return

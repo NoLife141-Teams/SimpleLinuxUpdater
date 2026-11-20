@@ -29,6 +29,7 @@ type AppDeps struct {
 	BackupAutomation     *backupAutomation
 	RestoreIsolation     *internalbackup.RestoreIsolation
 	RestoreAPTValidation *restoreAPTValidation
+	restoreResumeReview  *restoreResumeReview
 	VulnerabilityScans   *vulnerabilityScanLifecycle
 	DB                   func() *sql.DB
 	DBPath               func() string

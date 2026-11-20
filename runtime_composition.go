@@ -256,6 +256,9 @@ func (c *runtimeComposition) Compose() AppDeps {
 	if deps.RestoreIsolation == nil {
 		deps.RestoreIsolation = internalbackup.NewRestoreIsolation(deps.DBPath)
 	}
+	if deps.restoreResumeReview == nil {
+		deps.restoreResumeReview = &restoreResumeReview{}
+	}
 	if deps.ApplicationTime == nil {
 		deps.ApplicationTime = apptimepkg.New(apptimepkg.Deps{Store: appTimeSQLiteStore{}, Detector: appTimeSystemDetector{}})
 	}

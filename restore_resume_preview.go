@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	notificationpkg "debian-updater/internal/notifications"
@@ -23,6 +24,10 @@ const restoreResumePreviewRoute = "/api/backup/restore-isolation/resume-preview"
 const restoreResumePreviewLifetime = 5 * time.Minute
 
 var restoreResumePreviewKey = []byte(rand.Text())
+
+type restoreResumeReview struct {
+	revision atomic.Uint64
+}
 
 type restoreResumeHost struct {
 	Name      string     `json:"name"`
@@ -47,8 +52,9 @@ type restoreResumeImpact struct {
 
 type restoreResumePreview struct {
 	Impact    restoreResumeImpact `json:"impact"`
-	Token     string              `json:"token"`
-	ExpiresAt time.Time           `json:"expires_at"`
+	Complete  bool                `json:"complete"`
+	Token     string              `json:"token,omitempty"`
+	ExpiresAt time.Time           `json:"expires_at,omitzero"`
 }
 
 type restoreResumeSnapshot struct {
@@ -57,6 +63,7 @@ type restoreResumeSnapshot struct {
 	Inventory            []restoreResumeHostBinding
 	PolicyFingerprint    string
 	NotificationRevision string
+	ReviewRevision       uint64
 }
 
 type restoreResumeHostBinding struct {
@@ -64,7 +71,7 @@ type restoreResumeHostBinding struct {
 }
 
 func collectRestoreResumeSnapshot(ctx context.Context, deps AppDeps, activation string, now time.Time) restoreResumeSnapshot {
-	snapshot := restoreResumeSnapshot{Activation: activation}
+	snapshot := restoreResumeSnapshot{Activation: activation, ReviewRevision: deps.restoreResumeReview.revision.Load()}
 	observations, aptErr := deps.RestoreAPTValidation.all(ctx)
 	state := deps.ServerState
 	state.Lock()
@@ -112,7 +119,16 @@ func collectRestoreResumeSnapshot(ctx context.Context, deps AppDeps, activation 
 			snapshot.Impact.Notifications, snapshot.NotificationRevision = queues, revision
 		}
 	}
+	if !snapshot.Impact.complete() {
+		// A recovered snapshot may be identical to one issued before a read
+		// failure. Require a fresh review even when all the values return.
+		deps.restoreResumeReview.revision.Add(1)
+	}
 	return snapshot
+}
+
+func (impact restoreResumeImpact) complete() bool {
+	return impact.Hosts != nil && impact.Schedules != nil && impact.Notifications != nil
 }
 
 func restoreResumeSchedules(deps AppDeps, servers []Server, nextTick time.Time) ([]restoreResumeSchedule, string) {
@@ -146,15 +162,21 @@ func (s restoreResumeSnapshot) signature(expires string) []byte {
 }
 
 func (s restoreResumeSnapshot) preview(now time.Time) restoreResumePreview {
+	if !s.Impact.complete() {
+		return restoreResumePreview{Impact: s.Impact}
+	}
 	expires := now.Add(restoreResumePreviewLifetime).Truncate(time.Second)
 	stamp := strconv.FormatInt(expires.Unix(), 10)
 	return restoreResumePreview{
-		Impact: s.Impact, ExpiresAt: expires,
+		Impact: s.Impact, Complete: true, ExpiresAt: expires,
 		Token: stamp + "." + hex.EncodeToString(s.signature(stamp)),
 	}
 }
 
 func (s restoreResumeSnapshot) confirmationDeadline(token string, now time.Time) time.Time {
+	if !s.Impact.complete() {
+		return time.Time{}
+	}
 	stamp, signature, found := strings.Cut(token, ".")
 	seconds, err := strconv.ParseInt(stamp, 10, 64)
 	if !found || err != nil || seconds <= now.Unix() || len(signature) != 2*sha256.Size {

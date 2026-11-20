@@ -39,25 +39,26 @@ type backupScheduleConfig struct {
 }
 
 type ownedBackupArchive struct {
-	ID                 string `json:"id,omitempty"`
-	Name               string `json:"name"`
-	SHA256             string `json:"sha256"`
-	Owner              string `json:"owner"`
-	PublishedAt        string `json:"published_at,omitempty"`
-	CapturedAt         string `json:"captured_at,omitempty"`
-	SizeBytes          *int64 `json:"size_bytes,omitempty"`
-	KnownHostsIncluded *bool  `json:"known_hosts_included,omitempty"`
-	LastVerifiedAt     string `json:"last_verified_at,omitempty"`
-	Verification       string `json:"verification,omitempty"`
-	Availability       string `json:"availability,omitempty"`
-	FileIdentity       string `json:"file_identity,omitempty"`
-	FileModifiedAt     string `json:"file_modified_at,omitempty"`
-	DirectoryIdentity  string `json:"directory_identity,omitempty"`
-	ObservedAt         string `json:"observed_at,omitempty"`
-	ObservationProcess string `json:"observation_process,omitempty"`
-	LossEpisode        uint64 `json:"loss_episode,omitempty"`
-	LossActive         bool   `json:"loss_active,omitempty"`
-	JobID              string `json:"job_id,omitempty"`
+	ID                 string                 `json:"id,omitempty"`
+	Name               string                 `json:"name"`
+	SHA256             string                 `json:"sha256"`
+	Owner              string                 `json:"owner"`
+	PublishedAt        string                 `json:"published_at,omitempty"`
+	CapturedAt         string                 `json:"captured_at,omitempty"`
+	SizeBytes          *int64                 `json:"size_bytes,omitempty"`
+	KnownHostsIncluded *bool                  `json:"known_hosts_included,omitempty"`
+	LastVerifiedAt     string                 `json:"last_verified_at,omitempty"`
+	Verification       string                 `json:"verification,omitempty"`
+	Availability       string                 `json:"availability,omitempty"`
+	FileIdentity       string                 `json:"file_identity,omitempty"`
+	FileModifiedAt     string                 `json:"file_modified_at,omitempty"`
+	DirectoryIdentity  string                 `json:"directory_identity,omitempty"`
+	ObservedAt         string                 `json:"observed_at,omitempty"`
+	ObservationProcess string                 `json:"observation_process,omitempty"`
+	LossEpisode        uint64                 `json:"loss_episode,omitempty"`
+	Integrity          backupArchiveIntegrity `json:"integrity,omitzero"`
+	LossActive         bool                   `json:"loss_active,omitempty"`
+	JobID              string                 `json:"job_id,omitempty"`
 }
 
 type backupAutomationState struct {
@@ -98,6 +99,7 @@ type backupAutomation struct {
 	copyArchive func(io.Writer, io.Reader) (int64, error)
 	mu          sync.Mutex
 	scanMu      sync.Mutex
+	integrityMu sync.Mutex
 	wg          sync.WaitGroup
 	deps        AppDeps
 	deployment  backupAutomationDeployment
@@ -965,6 +967,7 @@ func (a *backupAutomation) publish(ctx context.Context, root *os.Root, source in
 	archive.PublishedAt = backupStamp(a.now())
 	archive.CapturedAt = verifiedBackupCapture(result.Manifest, parseBackupStamp(archive.PublishedAt))
 	archive.LastVerifiedAt = archive.PublishedAt
+	archive.Integrity = confirmedBackupIntegrity(archive.PublishedAt)
 	archive.ObservedAt = archive.PublishedAt
 	archive.ObservationProcess = backupArchiveObservationProcess
 	archive.SizeBytes = &written
@@ -1042,6 +1045,7 @@ func (a *backupAutomation) retain(root *os.Root, s *backupAutomationState) error
 func (a *backupAutomation) Start(ctx context.Context) {
 	if a.deployment.Directory != "" {
 		a.wg.Go(func() { a.monitorArchiveAvailability(ctx) })
+		a.wg.Go(func() { a.monitorArchiveIntegrity(ctx) })
 	}
 	a.wg.Add(1)
 	go func() {

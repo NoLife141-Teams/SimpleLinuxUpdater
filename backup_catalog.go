@@ -88,17 +88,18 @@ type backupArchiveCatalog struct {
 }
 
 type backupArchiveView struct {
-	ID                 string `json:"id"`
-	PublishedAt        string `json:"published_at,omitempty"`
-	CapturedAt         string `json:"captured_at,omitempty"`
-	SizeBytes          *int64 `json:"size_bytes"`
-	KnownHostsIncluded *bool  `json:"known_hosts_included"`
-	SHA256             string `json:"sha256"`
-	LastVerifiedAt     string `json:"last_verified_at,omitempty"`
-	Verification       string `json:"verification"`
-	Availability       string `json:"availability"`
-	ReverifyPossible   bool   `json:"reverify_possible"`
-	JobID              string `json:"job_id,omitempty"`
+	ID                 string                 `json:"id"`
+	PublishedAt        string                 `json:"published_at,omitempty"`
+	CapturedAt         string                 `json:"captured_at,omitempty"`
+	SizeBytes          *int64                 `json:"size_bytes"`
+	KnownHostsIncluded *bool                  `json:"known_hosts_included"`
+	SHA256             string                 `json:"sha256"`
+	LastVerifiedAt     string                 `json:"last_verified_at,omitempty"`
+	Integrity          backupArchiveIntegrity `json:"integrity,omitzero"`
+	Verification       string                 `json:"verification"`
+	Availability       string                 `json:"availability"`
+	ReverifyPossible   bool                   `json:"reverify_possible"`
+	JobID              string                 `json:"job_id,omitempty"`
 }
 
 func backupArchiveOwned(archive ownedBackupArchive, owner string) bool {
@@ -173,6 +174,9 @@ func (a *backupAutomation) catalogLocked(ctx context.Context, s *backupAutomatio
 			}
 			changed = true
 		}
+		if availability == "present" && archive.Integrity.State == backupIntegrityMismatch {
+			availability = "corrupt"
+		}
 		verification := archive.Verification
 		if verification == "" {
 			verification = "unknown"
@@ -180,7 +184,7 @@ func (a *backupAutomation) catalogLocked(ctx context.Context, s *backupAutomatio
 		catalog.Archives = append(catalog.Archives, backupArchiveView{
 			ID: archive.ID, PublishedAt: archive.PublishedAt, CapturedAt: archive.CapturedAt, SizeBytes: archive.SizeBytes,
 			KnownHostsIncluded: archive.KnownHostsIncluded, SHA256: archive.SHA256, LastVerifiedAt: archive.LastVerifiedAt,
-			Verification: verification, Availability: availability, ReverifyPossible: reverifyPossible, JobID: archive.JobID,
+			Verification: verification, Integrity: archive.Integrity, Availability: availability, ReverifyPossible: reverifyPossible, JobID: archive.JobID,
 		})
 	}
 	if changed {
@@ -363,7 +367,7 @@ func handleBackupCatalogOperation(c *gin.Context, a *backupAutomation, verify bo
 				if event := a.observeArchive(archive, availability, s.Observation.CheckedAt, actorFromContext(c), clientIPFromContext(c)); event != nil {
 					events = append(events, *event)
 				}
-			} else if availability == "present" {
+			} else if availability == "present" && archive.Integrity.State != backupIntegrityMismatch {
 				archive.Verification = "failed"
 				evidenceErr = a.catalogAudit(actorFromContext(c), clientIPFromContext(c), "backup.verify", *archive, false)
 			}
@@ -435,6 +439,7 @@ func handleBackupCatalogOperation(c *gin.Context, a *backupAutomation, verify bo
 		archive.ObservationProcess = backupArchiveObservationProcess
 		if ready {
 			archive.LastVerifiedAt = archive.ObservedAt
+			archive.Integrity = confirmedBackupIntegrity(archive.ObservedAt)
 		}
 		// Recovery health and notifications consume the audit, so never report
 		// a completed review or persist its marker without that shared evidence.

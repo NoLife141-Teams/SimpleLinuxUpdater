@@ -210,6 +210,11 @@ unchanged. Presence is a local filesystem observation, not a fresh
 integrity or restore-readiness check. Last verified publication remains historical
 when a later file is missing, replaced or corrupt.
 
+The catalog shows the outcome of the latest content integrity attempt and
+the last completed check timestamp. A SHA-256 mismatch excludes that archive from local coverage.
+This digest check uses the registered encrypted file. **Reverify** checks
+full restore readiness with the deployment passphrase.
+
 **Download encrypted** retrieves an existing archive without creating a new
 export. **Reverify** reads it through the normal manifest, decryption and restore
 readiness pipeline with the currently configured deployment passphrase. It shows

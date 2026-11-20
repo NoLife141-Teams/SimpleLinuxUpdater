@@ -19,6 +19,7 @@ test('Admin catalog publishes, downloads encrypted bytes and reverifies with exp
     await expect(catalog.locator('article')).toHaveCount(1);
     await expect(catalog).toContainText('Local availability: present');
     await expect(catalog).toContainText('Latest review: verified');
+    await expect(catalog).toContainText('Content integrity: SHA-256 matched');
     await expect(catalog.getByRole('link', { name: 'View publication job' })).toHaveCount(1);
     const jobLink = await catalog.getByRole('link', { name: 'View publication job' }).getAttribute('href');
     expect((await page.request.get(jobLink)).status()).toBe(200);

@@ -99,7 +99,8 @@ func (s backupAutomationState) archiveCoverage(now time.Time) backupArchiveCover
 		verified := parseBackupStamp(archive.LastVerifiedAt)
 		switch {
 		case archive.ObservationProcess != observation.Process || archive.DirectoryIdentity != observation.DirectoryIdentity ||
-			observed.IsZero() || now.Sub(observed) > 2*backupArchiveObservationInterval || archive.Availability == "unavailable":
+			observed.IsZero() || now.Sub(observed) > 2*backupArchiveObservationInterval || archive.Availability == "unavailable" ||
+			(archive.Availability == "present" && archive.Integrity.State == backupIntegrityUnavailable && !archive.LossActive):
 			facts.Unknown++
 		case archive.Availability == "present" && archive.Verification == "verified" && !archive.LossActive && !verified.IsZero():
 			facts.Verified++
@@ -284,6 +285,9 @@ func (a *backupAutomation) scanBackupArchives(ctx context.Context, archives []ow
 			// the catalog recorded file metadata.
 			value = "unavailable"
 		}
+		if value == "present" && archive.Integrity.State == backupIntegrityMismatch {
+			value = "corrupt"
+		}
 		if value != "unavailable" {
 			comparable++
 		}
@@ -297,7 +301,7 @@ func (a *backupAutomation) scanBackupArchives(ctx context.Context, archives []ow
 }
 
 func archiveAvailabilityLost(availability string) bool {
-	return availability == "missing" || availability == "changed" || availability == "invalid"
+	return availability == "missing" || availability == "changed" || availability == "invalid" || availability == "corrupt"
 }
 
 func backupArchiveDirectoryIdentity(root *os.Root) string {

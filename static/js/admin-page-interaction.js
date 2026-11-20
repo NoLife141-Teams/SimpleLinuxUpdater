@@ -195,6 +195,10 @@
                     knownHostsIncluded: item.known_hosts_included == null ? null : Boolean(item.known_hosts_included),
                     sha256: String(item.sha256 || ""), lastVerifiedAt: String(item.last_verified_at || ""),
                     verification: String(item.verification || "unknown"), availability: String(item.availability || "unavailable"),
+                    integrity: {
+                        state: String(item.integrity?.state || "unknown"),
+                        checkedAt: String(item.integrity?.checked_at || ""),
+                    },
                     reverifyPossible: item.reverify_possible ?? item.availability === "present", jobID: String(item.job_id || "")
                 })),
                 truncated: Boolean(data.catalog?.truncated)

@@ -2,32 +2,53 @@ package backup
 
 import (
 	"errors"
-	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
 
 func TestWindowsRestoreTargetIdentity(t *testing.T) {
-	dir := t.TempDir()
-	database := filepath.Join(dir, "fixture.sqlite")
-	if err := os.WriteFile(database, []byte("database fixture"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	service := &Service{}
-	for _, target := range []string{database, database + "-wal", RestoreRecoveryMarkerPath(database)} {
-		variant := filepath.Join(dir, strings.ToUpper(filepath.Base(target)))
-		if err := service.validateRestoreHostTarget(database, variant, true, true); !errors.Is(err, ErrRestoreHostTarget) {
-			t.Errorf("reserved restore destination was accepted: %v", err)
+	t.Run("verification and restore reject the conflicting destination", func(t *testing.T) {
+		f := newDurabilityFixture(t, t.TempDir(), testRestoredRuntime{prepare: func() {
+			t.Fatal("restore proceeded beyond target validation")
+		}})
+		archive := restoreStorageFixtureArchive(t, f)
+		f.service.deps.KnownHostsWritePath = func() (string, error) {
+			return capitalizedRestorePath(RestoreRecoveryMarkerPath(f.db)), nil
 		}
-		if same, err := sameRestoreEntry(target, variant); err != nil || !same {
-			t.Errorf("recovery path identity did not survive capitalization: %v, %v", same, err)
+		review, err := f.service.VerifyArchiveFileWithReview(t.Context(), archive, testPassphrase, nil)
+		if err != nil || review.RestoreReady || !slices.ContainsFunc(review.Blockers, func(issue ReadinessIssue) bool {
+			return issue.Code == "known_hosts_target_conflict"
+		}) {
+			t.Fatalf("restore verification did not report the host-trust conflict: ready=%v blockers=%+v err=%v",
+				review.RestoreReady, review.Blockers, err)
 		}
-	}
-	if err := service.validateRestoreHostTarget(database, filepath.Join(dir, "host-trust"), true, true); err != nil {
-		t.Fatalf("separate destination was rejected: %v", err)
-	}
-	if data, err := os.ReadFile(database); err != nil || string(data) != "database fixture" {
-		t.Fatalf("target validation changed the existing fixture: %v", err)
-	}
+		if err := f.service.applyArchiveFiles(t.Context(), f.files, RestoreOptions{}); !errors.Is(err, ErrRestoreHostTarget) {
+			t.Fatalf("restore did not reject the host-trust conflict: %v", err)
+		}
+		requireDurableRestoreState(t, f.db, f.hosts, originalRestoreServer, originalRestoreTrust, false)
+	})
+
+	t.Run("offline inspection refuses a conflict and accepts alternate spelling", func(t *testing.T) {
+		f, _, id := interruptedRecoveryFixture(t, true)
+		f.service.deps.KnownHostsWritePath = func() (string, error) {
+			return capitalizedRestorePath(f.db), nil
+		}
+		blocked, err := f.service.OfflineRestoreRecovery(t.Context(), "", offlineRecoveryMergeFixtureJobs)
+		if !errors.Is(err, ErrRestoreHostTarget) || !blocked.RecoveryRequired || blocked.Blocker != "known_hosts_target_conflict" {
+			t.Fatalf("offline inspection did not report the host-trust conflict: report=%+v err=%v", blocked, err)
+		}
+		f.service.deps.KnownHostsWritePath = func() (string, error) {
+			return capitalizedRestorePath(f.hosts), nil
+		}
+		review, err := f.service.OfflineRestoreRecovery(t.Context(), "", offlineRecoveryMergeFixtureJobs)
+		if err != nil || !review.RecoveryRequired || len(review.Sets) != 1 || !review.Sets[0].Ready || review.Sets[0].ID != id {
+			t.Fatalf("offline inspection rejected the intact recovery set: report=%+v err=%v", review, err)
+		}
+	})
+}
+
+func capitalizedRestorePath(path string) string {
+	return filepath.Join(filepath.Dir(path), strings.ToUpper(filepath.Base(path)))
 }

@@ -2496,6 +2496,24 @@ test("admin validates optional secondary backups and reports their availability 
     await expect(panel).toContainText("A secondary copy failed its integrity check");
     await expect(page.locator("#backup-secondary-integrity")).toContainText("Digest mismatch ·");
     await expect(page.locator("#backup-automation-status")).toContainText("Verified encrypted backup");
+
+    const archiveID = "a".repeat(64);
+    automation.secondary = {
+        state: "degraded", pending: 0, failed: 1, failure: "copy_failed",
+        retry_candidates: [{archive_id: archiveID, captured_at: "2026-11-20T05:00:00Z"}],
+    };
+    await page.route("**/api/backup/automation/secondary/retry", route => {
+        expect(route.request().method()).toBe("POST");
+        expect(route.request().postDataJSON()).toEqual({archive_id: archiveID});
+        automation.secondary = {state: "pending", pending: 1, transferring: 1, failed: 0};
+        return fulfillJson(route, {state: "pending"}, 202);
+    });
+    await panel.getByRole("button", {name: "Refresh secondary status"}).click();
+    const retry = panel.getByRole("button", {name: /Retry copy captured/});
+    await retry.click();
+    await expect(panel).toContainText("Secondary copy queued.");
+    await expect(panel).toContainText("1 transferring");
+    await expect(retry).toHaveCount(0);
 });
 
 test("automated backups validate configuration and display suspended, deferred and failed results", async ({

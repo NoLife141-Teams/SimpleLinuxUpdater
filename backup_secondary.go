@@ -16,6 +16,8 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+const backupSecondaryRetryRoute = "/api/backup/automation/secondary/retry"
+
 const (
 	backupSecondaryMaxAttempts   = 5
 	backupSecondaryQueueLimit    = 16
@@ -27,6 +29,10 @@ type backupSecondaryBinding struct {
 	Path      string `json:"path_binding,omitempty"`
 	Directory string `json:"directory_identity,omitempty"`
 	Owner     string `json:"owner,omitempty"`
+}
+
+func (binding backupSecondaryBinding) sameMount(other backupSecondaryBinding) bool {
+	return binding.Directory != "" && binding.Directory == other.Directory && binding.Owner == other.Owner
 }
 
 type backupSecondaryCopy struct {
@@ -42,27 +48,46 @@ type backupSecondaryCopy struct {
 	VerifiedAt   string                 `json:"verified_at,omitempty"`
 	Unavailable  bool                   `json:"unavailable,omitempty"`
 	Integrity    backupArchiveIntegrity `json:"integrity,omitzero"`
+	Retried      bool                   `json:"retried,omitempty"`
 }
 
 func (copy backupSecondaryCopy) pending() bool {
-	return copy.VerifiedAt == "" && (copy.Transferring || copy.Attempts < backupSecondaryMaxAttempts)
+	return copy.VerifiedAt == "" && copy.Failure != "queue_full" &&
+		(copy.Transferring || copy.Attempts < copy.attemptLimit())
+}
+
+func (copy backupSecondaryCopy) attemptLimit() int {
+	if copy.Retried {
+		return 2 * backupSecondaryMaxAttempts
+	}
+	return backupSecondaryMaxAttempts
+}
+
+func (copy backupSecondaryCopy) retryable() bool {
+	return copy.VerifiedAt == "" && !copy.Retried && !copy.pending()
 }
 
 type backupSecondaryState struct {
-	Binding     backupSecondaryBinding `json:"binding,omitzero"`
-	Approved    bool                   `json:"approved"`
-	Copies      []backupSecondaryCopy  `json:"copies,omitempty"`
-	LastFailure string                 `json:"last_failure,omitempty"`
+	Binding          backupSecondaryBinding `json:"binding,omitzero"`
+	Approved         bool                   `json:"approved"`
+	Copies           []backupSecondaryCopy  `json:"copies,omitempty"`
+	LastFailure      string                 `json:"last_failure,omitempty"`
+	MountUnavailable bool                   `json:"mount_unavailable,omitempty"`
+	CatchUp          bool                   `json:"catch_up,omitempty"`
+	Retired          []string               `json:"retired,omitempty"`
 }
 
 type backupSecondaryStatus struct {
-	State      string                 `json:"state"`
-	Pending    int                    `json:"pending"`
-	Failed     int                    `json:"failed"`
-	Failure    string                 `json:"failure,omitempty"`
-	CapturedAt string                 `json:"captured_at,omitempty"`
-	VerifiedAt string                 `json:"verified_at,omitempty"`
-	Integrity  backupArchiveIntegrity `json:"integrity,omitzero"`
+	State           string                          `json:"state"`
+	Pending         int                             `json:"pending"`
+	Failed          int                             `json:"failed"`
+	Failure         string                          `json:"failure,omitempty"`
+	CapturedAt      string                          `json:"captured_at,omitempty"`
+	VerifiedAt      string                          `json:"verified_at,omitempty"`
+	Integrity       backupArchiveIntegrity          `json:"integrity,omitzero"`
+	Transferring    int                             `json:"transferring"`
+	WaitingForMount bool                            `json:"waiting_for_mount"`
+	RetryCandidates []backupSecondaryRetryCandidate `json:"retry_candidates,omitempty"`
 }
 
 func (a *backupAutomation) secondaryConfigured(state backupSecondaryState) bool {
@@ -70,7 +95,52 @@ func (a *backupAutomation) secondaryConfigured(state backupSecondaryState) bool 
 		state.Binding.Path == backupStorageBinding(a.deployment.SecondaryDirectory)
 }
 
-func (a *backupAutomation) secondaryStatus(state backupSecondaryState) *backupSecondaryStatus {
+func (state *backupAutomationState) selectSecondaryDestination(binding backupSecondaryBinding) {
+	if state.Secondary.Binding == binding {
+		return
+	}
+	current := state.Secondary
+	next := current
+	if !current.Binding.sameMount(binding) {
+		next = backupSecondaryState{Binding: binding}
+		for i, previous := range state.SecondaryHistory {
+			if previous.Binding.sameMount(binding) {
+				next = previous
+				state.SecondaryHistory = slices.Delete(state.SecondaryHistory, i, i+1)
+				break
+			}
+		}
+		if current.Binding.Directory != "" && (len(current.Copies) > 0 || len(current.Retired) > 0) {
+			// Keep the catalog and spent attempts with their original directory.
+			current.Approved = false
+			state.SecondaryHistory = append(state.SecondaryHistory, current)
+		}
+	}
+	for i := range next.Copies {
+		if next.Copies[i].VerifiedAt != "" {
+			next.Copies[i].Unavailable = true
+		}
+	}
+	next.Binding = binding
+	next.Approved = false
+	state.Secondary = next
+}
+
+func (state *backupAutomationState) recordSecondaryRetirement(id string) bool {
+	if slices.Contains(state.Secondary.Retired, id) {
+		return false
+	}
+	for _, source := range state.Archives {
+		if source.ID == id {
+			state.Secondary.Retired = append(state.Secondary.Retired, id)
+			return true
+		}
+	}
+	return false
+}
+
+func (a *backupAutomation) secondaryStatus(current backupAutomationState) *backupSecondaryStatus {
+	state := current.Secondary
 	if a.deployment.SecondaryDirectory == "" {
 		return nil
 	}
@@ -101,15 +171,20 @@ func (a *backupAutomation) secondaryStatus(state backupSecondaryState) *backupSe
 			}
 		} else if copy.pending() {
 			status.Pending++
+			if copy.Transferring && copy.Failure != "storage_unavailable" && copy.Failure != "publication_pending" {
+				status.Transferring++
+			}
 		} else if copy.VerifiedAt == "" {
 			status.Failed++
 			hasSkippedCopies = hasSkippedCopies || copy.Failure == "queue_full"
 		}
 	}
 	if a.secondaryConfigured(state) {
+		status.WaitingForMount = state.MountUnavailable
+		status.RetryCandidates = secondaryRetryCandidates(current)
 		status.Integrity = latestPublished.Integrity
 		switch {
-		case state.LastFailure == "storage_unavailable":
+		case status.WaitingForMount:
 			status.Integrity.State = backupIntegrityUnavailable
 		case latestPublished.Unavailable && status.Integrity.State != backupIntegrityMismatch:
 			status.Integrity.State = backupIntegrityUnavailable
@@ -126,6 +201,9 @@ func (a *backupAutomation) secondaryStatus(state backupSecondaryState) *backupSe
 		}
 		if status.Failure == "" && hasSkippedCopies {
 			status.Failure = "queue_full"
+		}
+		if status.Failure == "" && status.WaitingForMount {
+			status.Failure = "storage_unavailable"
 		}
 		switch {
 		case status.Failure != "" || status.Failed > 0:
@@ -144,7 +222,8 @@ func (a *backupAutomation) secondaryStatus(state backupSecondaryState) *backupSe
 }
 
 func (a *backupAutomation) queueSecondaryCopy(state *backupAutomationState, archive ownedBackupArchive) {
-	if !a.secondaryConfigured(state.Secondary) || archive.Owner != state.Secondary.Binding.Owner {
+	if !a.secondaryConfigured(state.Secondary) || archive.Owner != state.Secondary.Binding.Owner ||
+		slices.Contains(state.Secondary.Retired, archive.ID) {
 		return
 	}
 	pending := 0
@@ -160,17 +239,23 @@ func (a *backupAutomation) queueSecondaryCopy(state *backupAutomationState, arch
 	if pending >= backupSecondaryQueueLimit {
 		// Record the uncovered archive without increasing the queue or pinning
 		// its primary source. A successful transfer can clear LastFailure.
-		copy.Attempts = backupSecondaryMaxAttempts
 		copy.Failure = "queue_full"
 		state.Secondary.LastFailure = copy.Failure
 	}
 	state.Secondary.Copies = append(state.Secondary.Copies, copy)
 	// Bound historical failures alongside the pending source pins. Temp
 	// registrations remain until the worker can safely clean the approved mount.
+	sources := make(map[string]bool, len(state.Archives))
+	for _, archive := range state.Archives {
+		sources[archive.ID] = true
+	}
+	state.Secondary.Retired = slices.DeleteFunc(state.Secondary.Retired, func(id string) bool {
+		return !sources[id]
+	})
 	failed := 0
 	for i := len(state.Secondary.Copies) - 1; i >= 0; i-- {
 		copy := state.Secondary.Copies[i]
-		if copy.VerifiedAt == "" && !copy.pending() && copy.Temporary == "" {
+		if copy.VerifiedAt == "" && !copy.pending() && copy.Temporary == "" && !sources[copy.Archive.ID] {
 			failed++
 			if failed > backupSecondaryQueueLimit {
 				state.Secondary.Copies = slices.Delete(state.Secondary.Copies, i, i+1)
@@ -303,15 +388,15 @@ func (a *backupAutomation) validateSecondaryDestination(ctx context.Context, adm
 	if err != nil {
 		return nil, errors.New("secondary backup settings are unavailable")
 	}
-	if state.Secondary.Binding != binding {
-		// A different mount grants no authority over files from the old one.
-		state.Secondary = backupSecondaryState{Binding: binding}
+	state.selectSecondaryDestination(binding)
+	if !state.Secondary.Approved {
+		state.Secondary.CatchUp = true
 	}
 	state.Secondary.Approved = true
 	if err := a.save(ctx, state); err != nil {
 		return nil, errors.New("secondary backup validation could not be saved")
 	}
-	return a.secondaryStatus(state.Secondary), nil
+	return a.secondaryStatus(state), nil
 }
 
 func (a *backupAutomation) probeSecondaryPublication(ctx context.Context, root *os.Root) error {

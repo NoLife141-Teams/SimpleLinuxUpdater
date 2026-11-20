@@ -218,6 +218,22 @@ The queue holds up to 16 pending copies. Pending sources are eligible for local 
 their copy finishes or exhausts its retries. Secondary failures do not change the
 primary export outcome.
 
+An unavailable mount defers the transfer without charging an attempt. When
+the approved mount returns or a replacement is approved, the worker queues
+the newest eligible registered primary archive whose copy is missing from
+that mount. This includes archives previously skipped by a full queue.
+This catch-up uses the same bounded queue and holds its source against
+retention. A missing copy keeps its spent attempt budget on the same mount.
+Copies retired on that mount stay retired during catch-up, including after
+an interruption during removal. Reapproving a previous mount restores its
+copy catalog and attempt budgets even if its configured path has changed.
+Admin distinguishes waiting for the mount, transferring and failed
+copies. Use **Retry copy** after administrator reauthentication for an
+eligible archive that was skipped by a full queue or exhausted its attempts.
+The worker checks the registered source digest and mount before admitting the
+request. A skipped archive can use its original budget. An exhausted archive
+can receive one additional budget of five attempts on that mount.
+
 The secondary destination uses the configured archive retention count and
 preserves files that do not match a registered copy. Admin shows the queue
 and the capture time of the latest copy known to be verified. If the mount is

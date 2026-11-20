@@ -9,6 +9,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
+	"sort"
 	"strings"
 	"time"
 
@@ -24,6 +26,7 @@ const (
 var errBackupSecondaryDeferred = errors.New("secondary backup waiting for installation maintenance")
 var errBackupSecondaryMismatch = errors.New("secondary archive does not match its registered file and digest")
 var errBackupSecondaryPublicationPending = errors.New("secondary backup publication could not be confirmed")
+var errBackupSecondaryStorageUnavailable = errors.New("secondary backup storage is unavailable for a new transfer")
 
 func (a *backupAutomation) cancelSecondaryTransfer() {
 	a.secondaryCancelMu.Lock()
@@ -102,6 +105,7 @@ func (a *backupAutomation) copyNextSecondaryBackup(parent context.Context) error
 	}()
 
 	var pending, cleanup backupSecondaryCopy
+	var catchUp, waitingForMount bool
 	var verifiedCopies []backupSecondaryCopy
 	var binding backupSecondaryBinding
 	err := a.withSecondaryState(ctx, func(state *backupAutomationState) (bool, error) {
@@ -109,9 +113,11 @@ func (a *backupAutomation) copyNextSecondaryBackup(parent context.Context) error
 			return false, nil
 		}
 		binding = state.Secondary.Binding
+		catchUp = state.Secondary.CatchUp || state.Secondary.MountUnavailable
 		a.setSecondaryCancellation(cancel)
 		now := a.now()
 		for _, item := range state.Secondary.Copies {
+			waitingForMount = waitingForMount || (item.pending() && item.Failure == "storage_unavailable")
 			if item.VerifiedAt != "" {
 				verifiedCopies = append(verifiedCopies, item)
 			}
@@ -154,10 +160,12 @@ func (a *backupAutomation) copyNextSecondaryBackup(parent context.Context) error
 		}
 	}
 	var copyErr error
-	if pending.Archive.ID == "" {
+	if pending.Archive.ID != "" {
+		copyErr = a.stageAndPublishSecondary(ctx, root, binding, pending)
+	} else if !waitingForMount {
 		err := a.updateCurrentSecondary(ctx, binding, "", func(state *backupSecondaryState, _ *backupSecondaryCopy) (bool, error) {
-			if state.LastFailure == "storage_unavailable" {
-				state.LastFailure = ""
+			if state.MountUnavailable {
+				state.MountUnavailable = false
 				return true, nil
 			}
 			return false, nil
@@ -165,12 +173,15 @@ func (a *backupAutomation) copyNextSecondaryBackup(parent context.Context) error
 		if err != nil {
 			return err
 		}
-	} else if copyErr = a.stageAndPublishSecondary(ctx, root, binding, pending); copyErr != nil {
+	}
+	if copyErr != nil {
 		if errors.Is(copyErr, errBackupSecondaryDeferred) || workCtx.Err() != nil {
 			return copyErr
 		}
 		reason := "copy_failed"
-		if errors.Is(copyErr, errBackupSecondaryPublicationPending) {
+		if errors.Is(copyErr, errBackupSecondaryStorageUnavailable) || !backupArchiveMountAvailable(root.Name(), binding.Directory) {
+			reason = "storage_unavailable"
+		} else if errors.Is(copyErr, errBackupSecondaryPublicationPending) {
 			reason = "publication_pending"
 		}
 		recordCtx, cancelRecord := context.WithTimeout(workCtx, backupArchiveObservationBudget)
@@ -185,7 +196,11 @@ func (a *backupAutomation) copyNextSecondaryBackup(parent context.Context) error
 	stopTimeout()
 	checkCtx, stopCheck := context.WithTimeout(workCtx, backupSecondaryCopyTimeout)
 	defer stopCheck()
-	if err := errors.Join(copyErr, a.checkSecondaryIntegrity(checkCtx, root, binding, verifiedCopies)); err != nil {
+	checkErr := a.checkSecondaryIntegrity(checkCtx, root, binding, verifiedCopies)
+	if checkErr == nil && catchUp {
+		checkErr = a.catchUpSecondaryCopy(checkCtx, root, binding)
+	}
+	if err := errors.Join(copyErr, checkErr); err != nil {
 		return err
 	}
 	return a.keepSecondaryRetention(checkCtx, root, binding)
@@ -228,12 +243,20 @@ func (a *backupAutomation) updateCurrentSecondary(ctx context.Context, binding b
 
 func (a *backupAutomation) recordSecondaryFailure(ctx context.Context, binding backupSecondaryBinding, id, reason string) error {
 	return a.updateCurrentSecondary(ctx, binding, id, func(state *backupSecondaryState, copy *backupSecondaryCopy) (bool, error) {
-		if copy == nil && state.LastFailure == reason {
-			return false, nil
+		if reason == "storage_unavailable" {
+			if copy == nil && state.MountUnavailable && state.CatchUp {
+				return false, nil
+			}
+			state.MountUnavailable = true
+			state.CatchUp = true
+		} else {
+			if copy == nil && state.LastFailure == reason {
+				return false, nil
+			}
+			state.LastFailure = reason
 		}
-		state.LastFailure = reason
 		if copy != nil && copy.pending() {
-			if !copy.Transferring {
+			if !copy.Transferring && reason != "storage_unavailable" {
 				copy.Attempts++
 			} else if reason != "storage_unavailable" && reason != "publication_pending" {
 				// A lost mount or an unconfirmed publication can leave the
@@ -241,7 +264,8 @@ func (a *backupAutomation) recordSecondaryFailure(ctx context.Context, binding b
 				copy.Transferring = false
 			}
 			copy.Failure = reason
-			copy.RetryAt = backupStamp(a.now().Add(time.Duration(max(1, copy.Attempts)) * backupSecondaryRetryBase))
+			delay := min(backupSecondaryMaxAttempts, max(1, copy.Attempts))
+			copy.RetryAt = backupStamp(a.now().Add(time.Duration(delay) * backupSecondaryRetryBase))
 		}
 		return true, nil
 	})
@@ -330,6 +354,7 @@ func (a *backupAutomation) stageAndPublishSecondary(ctx context.Context, root *o
 		current.Transferring = false
 		current.Temporary, current.RetryAt, current.Failure = "", "", ""
 		state.LastFailure = ""
+		state.MountUnavailable = false
 		return true, nil
 	})
 	if err != nil {
@@ -381,14 +406,14 @@ func (a *backupAutomation) stageSecondaryArchive(ctx context.Context, root *os.R
 }
 
 func (a *backupAutomation) startSecondaryTransfer(ctx context.Context, root *os.Root, binding backupSecondaryBinding, copy *backupSecondaryCopy) (*os.File, error) {
-	if copy.Attempts >= backupSecondaryMaxAttempts {
+	if copy.Attempts >= copy.attemptLimit() {
 		return nil, errors.New("secondary backup attempt budget is exhausted")
 	}
 	if !backupArchiveMountAvailable(root.Name(), binding.Directory) {
-		return nil, errBackupSecondaryDeferred
+		return nil, errBackupSecondaryStorageUnavailable
 	}
 	if !removeOwnedSecondaryTemporary(ctx, root, binding, *copy) {
-		return nil, errors.New("previous secondary backup temporary file could not be removed")
+		return nil, fmt.Errorf("%w: previous secondary backup temporary file could not be removed", errBackupSecondaryStorageUnavailable)
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -396,25 +421,27 @@ func (a *backupAutomation) startSecondaryTransfer(ctx context.Context, root *os.
 	temporary := ".slu-secondary-" + rand.Text() + ".tmp"
 	destination, err := root.OpenFile(temporary, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: create secondary backup temporary file: %w", errBackupSecondaryStorageUnavailable, err)
 	}
 	staged, err := destination.Stat()
 	if err != nil {
 		_ = destination.Close()
-		return nil, err
+		return nil, fmt.Errorf("%w: inspect secondary backup temporary file: %w", errBackupSecondaryStorageUnavailable, err)
 	}
 	identity := backupCatalogFileIdentity(staged)
 	if identity == "" {
 		_ = destination.Close()
-		return nil, errors.New("cannot identify secondary backup temporary file")
+		return nil, fmt.Errorf("%w: cannot identify secondary backup temporary file", errBackupSecondaryStorageUnavailable)
 	}
-	err = a.updateCurrentSecondary(ctx, binding, copy.Archive.ID, func(_ *backupSecondaryState, current *backupSecondaryCopy) (bool, error) {
+	err = a.updateCurrentSecondary(ctx, binding, copy.Archive.ID, func(state *backupSecondaryState, current *backupSecondaryCopy) (bool, error) {
 		if !current.pending() || current.Attempts != copy.Attempts || current.FileIdentity != copy.FileIdentity {
 			return false, errBackupSecondaryDeferred
 		}
 		current.Temporary, current.FileIdentity = temporary, identity
 		current.Attempts++
 		current.Transferring = true
+		current.Failure = ""
+		state.MountUnavailable = false
 		return true, nil
 	})
 	if err != nil {
@@ -581,8 +608,10 @@ func (a *backupAutomation) retainSecondaryBackups(ctx context.Context, root *os.
 			return false, errBackupSecondaryDeferred
 		}
 		keep := max(1, state.Config.Retain)
-		for i := len(state.Secondary.Copies) - 1; i >= 0; i-- {
-			item := state.Secondary.Copies[i]
+		ordered := slices.Clone(state.Secondary.Copies)
+		slices.Reverse(ordered)
+		sort.SliceStable(ordered, func(i, j int) bool { return secondaryCapturedAfter(ordered[i], ordered[j]) })
+		for _, item := range ordered {
 			if item.VerifiedAt == "" {
 				continue
 			}
@@ -649,7 +678,9 @@ func (a *backupAutomation) retainSecondaryBackups(ctx context.Context, root *os.
 					return false, errBackupSecondaryDeferred
 				}
 			}
-			return false, nil
+			// Persist the retirement before unlinking so a restart or a
+			// directory sync failure cannot make catch-up republish it.
+			return state.recordSecondaryRetirement(oldest.Archive.ID), nil
 		}); err != nil {
 			return err
 		}
@@ -683,12 +714,16 @@ func (a *backupAutomation) retainSecondaryBackups(ctx context.Context, root *os.
 			return err
 		}
 	}
-	return a.updateCurrentSecondary(ctx, binding, "", func(state *backupSecondaryState, _ *backupSecondaryCopy) (bool, error) {
-		for i := range state.Copies {
-			item := state.Copies[i]
+	return a.withSecondaryState(ctx, func(state *backupAutomationState) (bool, error) {
+		if !a.secondaryConfigured(state.Secondary) || state.Secondary.Binding != binding {
+			return false, errBackupSecondaryDeferred
+		}
+		for i := range state.Secondary.Copies {
+			item := state.Secondary.Copies[i]
 			if item.Archive.ID == oldest.Archive.ID && item.FileIdentity == oldest.FileIdentity {
 				// Missing or non-matching names no longer convey retention authority.
-				state.Copies = append(state.Copies[:i], state.Copies[i+1:]...)
+				state.Secondary.Copies = slices.Delete(state.Secondary.Copies, i, i+1)
+				state.recordSecondaryRetirement(item.Archive.ID)
 				return true, nil
 			}
 		}

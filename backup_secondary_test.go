@@ -164,6 +164,9 @@ func TestSecondaryQueueOverflowRemainsVisibleAfterSuccessfulCopy(t *testing.T) {
 	if _, err := automation.validateSecondaryDestination(t.Context(), nil); err != nil {
 		t.Fatal(err)
 	}
+	if err := automation.copyNextSecondaryBackup(t.Context()); err != nil {
+		t.Fatal(err)
+	}
 	if err := automation.Tick(t.Context(), true); err != nil {
 		t.Fatal(err)
 	}
@@ -228,8 +231,15 @@ func TestVerifiedSecondaryBackupSurvivesPrimaryLossAndRestoresInIsolation(t *tes
 	if err := os.Mkdir(secondary, 0700); err != nil {
 		t.Fatal(err)
 	}
-	if err := automation.copyNextSecondaryBackup(t.Context()); err != nil {
-		t.Fatal(err)
+	for range backupSecondaryMaxAttempts + 2 {
+		if err := automation.copyNextSecondaryBackup(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		copy := backupAutomationStateForTest(t, automation).Secondary.Copies[0]
+		if copy.Attempts != 0 || !copy.pending() {
+			t.Fatalf("mount outage consumed the transfer budget: %+v", copy)
+		}
+		*now = now.Add(backupSecondaryRetryBase)
 	}
 	entries, err := os.ReadDir(secondary)
 	if err != nil || len(entries) != 0 {

@@ -7,6 +7,7 @@
         let reauthentication;
         let resumePreview = null;
         let resumeBusy = false;
+        let retryingSecondary = false;
         const aptSelection = new Map();
         const aptResults = new Map();
         const aptBatchLimit = 12;
@@ -363,6 +364,14 @@
             if (secondary) lifecycle.listen(secondary, "click", () => void validateSecondaryDestination(secondary));
             const secondaryRefresh = document.getElementById("backup-secondary-refresh");
             if (secondaryRefresh) lifecycle.listen(secondaryRefresh, "click", () => void fetchBackupStatus());
+            const secondaryRetries = document.getElementById("backup-secondary-retries");
+            if (secondaryRetries) {
+                lifecycle.listen(secondaryRetries, "click", event => {
+                    const button = event.target.closest("button[data-secondary-retry]");
+                    if (button) void retrySecondaryBackup(button);
+                });
+                lifecycle.own(() => { retryingSecondary = false; });
+            }
             lifecycle.listen(document.getElementById("backup-archive-catalog"), "click", event => {
                 const button = event.target.closest("button[data-backup-archive]");
                 if (button) void operateBackupArchive(button.dataset.backupArchive, button.dataset.backupOperation);
@@ -667,7 +676,9 @@
             };
             document.getElementById("backup-secondary-status").textContent =
                 [state[secondary.state] || "Unavailable", failure[secondary.failure]].filter(Boolean).join(" · ");
-            document.getElementById("backup-secondary-queue").textContent = `${secondary.pending} pending · ${secondary.failed} failed`;
+            const waiting = secondary.waitingForMount ? " · Waiting for the approved mount" : "";
+            document.getElementById("backup-secondary-queue").textContent =
+                `${Math.max(0, secondary.pending - secondary.transferring)} pending · ${secondary.transferring} transferring · ${secondary.failed} failed${waiting}`;
             document.getElementById("backup-secondary-captured").textContent =
                 secondary.capturedAt ? formatSessionTime(secondary.capturedAt) : "Unknown";
             document.getElementById("backup-secondary-verified").textContent =
@@ -679,6 +690,47 @@
             const integrityAt = secondary.integrityAt ? formatSessionTime(secondary.integrityAt) : "";
             document.getElementById("backup-secondary-integrity").textContent =
                 [integrity[secondary.integrityState] || "Not checked", integrityAt].filter(Boolean).join(" · ");
+            const retries = document.getElementById("backup-secondary-retries");
+            retries.hidden = secondary.retryCandidates.length === 0;
+            retries.replaceChildren(...secondary.retryCandidates.map(copy => {
+                const item = document.createElement("li");
+                const time = copy.capturedAt ? formatSessionTime(copy.capturedAt) : "Unknown capture time";
+                const button = document.createElement("button");
+                button.type = "button";
+                button.className = "btn-ghost inline-btn";
+                button.dataset.secondaryRetry = copy.id;
+                button.disabled = retryingSecondary;
+                button.textContent = "Retry copy";
+                button.setAttribute("aria-label", `Retry copy captured ${time}`);
+                item.append(document.createTextNode(time + " "), button);
+                return item;
+            }));
+        }
+
+        async function retrySecondaryBackup(button) {
+            if (button.disabled || retryingSecondary) return;
+            const ticket = lifecycle.capture();
+            const feedback = document.getElementById("backup-secondary-feedback");
+            retryingSecondary = true;
+            button.disabled = true;
+            feedback.textContent = "";
+            try {
+                await reauthentication.sensitive("/api/backup/automation/secondary/retry", {
+                    method: "POST",
+                    headers: {"Content-Type": "application/json"},
+                    body: JSON.stringify({archive_id: button.dataset.secondaryRetry}),
+                }, "Retry secondary backup copy");
+                if (!lifecycle.isCurrent(ticket)) return;
+                feedback.textContent = "Secondary copy queued.";
+                await fetchBackupStatus();
+            } catch (error) {
+                if (lifecycle.isCurrent(ticket) && error.name !== "AbortError") feedback.textContent = error.message;
+            } finally {
+                if (lifecycle.isCurrent(ticket)) {
+                    retryingSecondary = false;
+                    renderSecondaryBackups(adminPageView().backup.automation.secondary);
+                }
+            }
         }
 
         function renderBackupAutomation(updateForm = false) {

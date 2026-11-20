@@ -43,7 +43,7 @@ func TestRestoreCrashBoundariesPreserveMaintenanceEvidence(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, point := range []string{"before_marker", "before_known_hosts", "after_handoff", "after_durable_finalization", "after_marker_removal",
-		"after_rollback_marker_removal", "complete", "marker_write_failed"} {
+		"after_rollback_marker_removal", "complete", "cancel_after_reload", "marker_write_failed"} {
 		t.Run(point, func(t *testing.T) {
 			dir := t.TempDir()
 			caseArchive := archive
@@ -82,7 +82,7 @@ func TestRestoreCrashBoundariesPreserveMaintenanceEvidence(t *testing.T) {
 			cmd := exec.Command(executable, "-test.run=^TestRestoreCrashBoundariesPreserveMaintenanceEvidence$")
 			cmd.Env = append(os.Environ(), "SLU_RESTORE_CRASH_TEST_DIR="+dir, "SLU_RESTORE_CRASH_TEST_POINT="+point)
 			output, err := cmd.CombinedOutput()
-			if point == "complete" || point == "marker_write_failed" {
+			if point == "complete" || point == "cancel_after_reload" || point == "marker_write_failed" {
 				if err != nil {
 					t.Fatalf("restore child failed: %v\n%s", err, output)
 				}
@@ -182,7 +182,8 @@ func (s restoreCrashStore) SaveDurable(ctx context.Context, state maintenancepkg
 
 func runRestoreCrashChild(t *testing.T, dir, point string) {
 	t.Helper()
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	key := []byte("01234567890123456789012345678901")
 	target := filepath.Join(dir, "servers.db")
 	knownHosts := filepath.Join(dir, "known_hosts")
@@ -244,6 +245,9 @@ func runRestoreCrashChild(t *testing.T, dir, point string) {
 					return errors.New("injected forward reload failure")
 				}
 				jm = newJobManagerWithRuntime(getDB(), nil, newServerState(), func() bool { return false })
+				if point == "cancel_after_reload" {
+					cancel()
+				}
 				return nil
 			},
 		},

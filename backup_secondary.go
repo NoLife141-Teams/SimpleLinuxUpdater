@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -28,15 +29,19 @@ type backupSecondaryBinding struct {
 type backupSecondaryCopy struct {
 	Archive      ownedBackupArchive `json:"archive"`
 	Attempts     int                `json:"attempts"`
+	Transferring bool               `json:"transferring,omitempty"`
 	RetryAt      string             `json:"retry_at,omitempty"`
 	Failure      string             `json:"failure,omitempty"`
 	Temporary    string             `json:"temporary,omitempty"`
 	FileIdentity string             `json:"file_identity,omitempty"`
+	ModifiedAt   string             `json:"modified_at,omitempty"`
+	ChangedAt    string             `json:"changed_at,omitempty"`
 	VerifiedAt   string             `json:"verified_at,omitempty"`
+	Unavailable  bool               `json:"unavailable,omitempty"`
 }
 
 func (copy backupSecondaryCopy) pending() bool {
-	return copy.VerifiedAt == "" && copy.Attempts < backupSecondaryMaxAttempts
+	return copy.VerifiedAt == "" && (copy.Transferring || copy.Attempts < backupSecondaryMaxAttempts)
 }
 
 type backupSecondaryState struct {
@@ -69,8 +74,12 @@ func (a *backupAutomation) secondaryStatus(state backupSecondaryState) *backupSe
 		return status
 	}
 	var latestVerified, latestCapture time.Time
+	hasUnavailableCopies := false
 	for _, copy := range state.Copies {
-		if at := parseBackupStamp(copy.VerifiedAt); !at.IsZero() {
+		if copy.Unavailable {
+			hasUnavailableCopies = true
+			status.Failed++
+		} else if at := parseBackupStamp(copy.VerifiedAt); !at.IsZero() {
 			captured := parseBackupStamp(copy.Archive.CapturedAt)
 			if latestVerified.IsZero() || captured.After(latestCapture) || (captured.Equal(latestCapture) && at.After(latestVerified)) {
 				status.CapturedAt, status.VerifiedAt = copy.Archive.CapturedAt, copy.VerifiedAt
@@ -84,8 +93,11 @@ func (a *backupAutomation) secondaryStatus(state backupSecondaryState) *backupSe
 	}
 	if a.secondaryConfigured(state) {
 		status.Failure = state.LastFailure
+		if status.Failure == "" && hasUnavailableCopies {
+			status.Failure = "copy_unavailable"
+		}
 		switch {
-		case state.LastFailure != "" || status.Failed > 0:
+		case status.Failure != "" || status.Failed > 0:
 			status.State = "degraded"
 		case status.Pending > 0:
 			status.State = "pending"
@@ -153,9 +165,11 @@ func (a *backupAutomation) openSecondaryDestination() (*os.Root, backupSecondary
 	}
 	primary := filepath.Clean(a.deployment.Directory)
 	paths := a.deps.BackupService.Status()
+	dataPaths := []string{primary, string(filepath.Separator)}
 	protected := []string{primary, filepath.Dir(a.deployment.SecretFile)}
 	for _, path := range []string{paths.DBPath, paths.ConfigPath, paths.KnownHostsPath} {
 		if path != "" {
+			dataPaths = append(dataPaths, filepath.Dir(path))
 			protected = append(protected, filepath.Dir(path))
 		}
 	}
@@ -183,7 +197,18 @@ func (a *backupAutomation) openSecondaryDestination() (*os.Root, backupSecondary
 			return nil, binding, errors.New("secondary backup storage aliases another application directory")
 		}
 	}
+	for _, path := range dataPaths {
+		if info, err := os.Stat(path); err == nil && backupFilesystemDevice(backupCatalogFileIdentity(info)) == backupFilesystemDevice(identity) {
+			_ = root.Close()
+			return nil, binding, errors.New("secondary backup storage must be mounted separately from the primary archives and application data")
+		}
+	}
 	return root, backupSecondaryBinding{Path: backupStorageBinding(directory), Directory: identity, Owner: owner}, nil
+}
+
+func backupFilesystemDevice(identity string) string {
+	device, _, _ := strings.Cut(identity, ":")
+	return device
 }
 
 func (a *backupAutomation) ValidateSecondaryDestination(ctx context.Context) (*backupSecondaryStatus, error) {

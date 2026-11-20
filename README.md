@@ -113,6 +113,7 @@ Backup/restore flow:
 - Optional automated backups are disabled by default. Set `DEBIAN_UPDATER_BACKUP_DIR` to an absolute, dedicated archive directory and `DEBIAN_UPDATER_BACKUP_PASSPHRASE_FILE` to an absolute private secret file outside that directory. Both must be provided together. The directory must be separate from active app data; symlinks are rejected. In Admin, save and validate a daily/weekly schedule and retention (1–100 archives), or run a control backup with scheduling disabled.
 - Automated archives are verified before atomic publication; retention only removes recorded, unchanged archives owned by this installation after a new verified publication. Keep the passphrase file in a separate, recoverable secret store: it is never included in backups. Restoring settings suspends automation until local revalidation. See [automated backup configuration](docs/configuration.md#automated-backups).
 - Admin can inspect registered automated archives, download their existing encrypted bytes and reverify restore readiness without replacing active data. See the [archive catalog guide](docs/configuration.md#registered-automated-archive-catalog); retain backup passphrase files separately.
+- Set `DEBIAN_UPDATER_BACKUP_SECONDARY_DIR` to an absolute directory on a separately mounted off-host filesystem and validate it in Admin for verified secondary copies. See [secondary backup configuration](docs/configuration.md#secondary-backup-copies).
 
 Environment variables for auth/session:
 

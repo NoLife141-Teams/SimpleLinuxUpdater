@@ -575,8 +575,11 @@
                 validation_required: "Validation required", waiting: "Waiting for a verified primary backup",
                 pending: "Copy pending", degraded: "Needs attention", verified: "Copy verified",
             };
-            const failure = {storage_unavailable: "Mount unavailable or replaced", copy_failed: "Copy could not be verified",
-                retention_failed: "Retention could not finish", queue_full: "Copy queue is full"};
+            const failure = {
+                storage_unavailable: "Mount unavailable or replaced", copy_failed: "Copy could not be verified",
+                copy_unavailable: "A verified copy is missing or changed", retention_failed: "Retention could not finish",
+                queue_full: "Copy queue is full",
+            };
             document.getElementById("backup-secondary-status").textContent =
                 [state[secondary.state] || "Unavailable", failure[secondary.failure]].filter(Boolean).join(" · ");
             document.getElementById("backup-secondary-queue").textContent = `${secondary.pending} pending · ${secondary.failed} failed`;

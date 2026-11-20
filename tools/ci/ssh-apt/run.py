@@ -339,6 +339,7 @@ class Harness:
         self.image = self.name + ":target"
         self.container = None
         self.work = Path(tempfile.mkdtemp(prefix=self.name + "-"))
+        self.secondary_work = None
         self.password = secrets.token_urlsafe(24) + "!Aa7"
         # The primary credential is always masked; this list holds extra secrets.
         self.redactions = []
@@ -421,8 +422,12 @@ class Harness:
         passphrase_file.write_text("slu-public-backup-qualification-fixture", encoding="utf-8")
         container_env["DEBIAN_UPDATER_BACKUP_DIR"] = "/fixture-backups/archives"
         container_env["DEBIAN_UPDATER_BACKUP_PASSPHRASE_FILE"] = "/fixture-backups/passphrase"
-        secondary_mount = self.work / "secondary-archive-probe"
-        (secondary_mount / "archives").mkdir(parents=True, mode=0o700)
+        primary_device = self.work.stat().st_dev
+        secondary_parent = next((path for path in (Path("/dev/shm"), Path("/tmp"), Path("/var/tmp"))
+                                 if path.is_dir() and path.stat().st_dev != primary_device and os.access(path, os.W_OK)), None)
+        require(secondary_parent is not None, "secondary archive fixture requires a separate writable filesystem")
+        self.secondary_work = Path(tempfile.mkdtemp(prefix=self.name + "-secondary-", dir=secondary_parent))
+        (self.secondary_work / "archives").mkdir(mode=0o700)
         container_env["DEBIAN_UPDATER_BACKUP_SECONDARY_DIR"] = "/fixture-secondary/archives"
         for key, value in container_env.items():
             env_args.extend(["--env", key + "=" + value])
@@ -431,7 +436,7 @@ class Harness:
             "--pids-limit", "256", "--memory", "512m", "-p", "127.0.0.1::8080",
             "--tmpfs", "/restore-temp:rw,nosuid,nodev,size=32m,mode=1777",
             "--mount", f"type=bind,src={archive_mount},dst=/fixture-backups",
-            "--mount", f"type=bind,src={secondary_mount},dst=/fixture-secondary",
+            "--mount", f"type=bind,src={self.secondary_work},dst=/fixture-secondary",
             "--mount", f"type=bind,src={self.work},dst=/work", "--workdir", "/work",
             "--entrypoint", "/work/webserver", *env_args, self.image)
         self.connect_app()
@@ -1240,7 +1245,7 @@ finally:
         self.api.request("POST", "/api/auth/reauthenticate", {"password": self.password})
         self.api.request("POST", "/api/backup/automation/secondary/validate")
         primary = self.work / "archive-mount-probe"
-        secondary = self.work / "secondary-archive-probe"
+        secondary = self.secondary_work
         directory = secondary / "archives"
         saved = secondary / "removed-mount"
         directory.rename(saved)
@@ -1703,6 +1708,9 @@ print(json.dumps([inspect_code, inspection, apply_code, blocked, unchanged, retr
             except Exception as error: self.cleanup_errors.append(str(error))
         try: shutil.rmtree(self.work)
         except OSError as error: self.cleanup_errors.append(str(error))
+        if self.secondary_work is not None:
+            try: shutil.rmtree(self.secondary_work)
+            except OSError as error: self.cleanup_errors.append(str(error))
 
     def report(self):
         recorded = {record["scenario"] for record in self.records}

@@ -23,6 +23,14 @@ const (
 
 var errBackupSecondaryDeferred = errors.New("secondary backup waiting for installation maintenance")
 
+func (a *backupAutomation) cancelSecondaryTransfer() {
+	a.secondaryCancelMu.Lock()
+	defer a.secondaryCancelMu.Unlock()
+	if a.secondaryCancel != nil {
+		a.secondaryCancel()
+	}
+}
+
 func (a *backupAutomation) monitorSecondaryBackups(ctx context.Context) {
 	ticker := time.NewTicker(backupSecondaryPollInterval)
 	defer ticker.Stop()
@@ -78,17 +86,29 @@ func (a *backupAutomation) copyNextSecondaryBackup(parent context.Context) error
 	}
 	defer a.secondaryMu.Unlock()
 	ctx, cancel := context.WithTimeout(parent, backupSecondaryCopyTimeout)
-	defer cancel()
+	defer func() {
+		cancel()
+		a.secondaryCancelMu.Lock()
+		a.secondaryCancel = nil
+		a.secondaryCancelMu.Unlock()
+	}()
 
 	var pending, cleanup backupSecondaryCopy
+	var verifiedCopies []backupSecondaryCopy
 	var binding backupSecondaryBinding
 	err := a.withSecondaryState(ctx, func(state *backupAutomationState) (bool, error) {
 		if !a.secondaryConfigured(state.Secondary) {
 			return false, nil
 		}
 		binding = state.Secondary.Binding
+		a.secondaryCancelMu.Lock()
+		a.secondaryCancel = cancel
+		a.secondaryCancelMu.Unlock()
 		now := a.now()
 		for _, item := range state.Secondary.Copies {
+			if item.VerifiedAt != "" {
+				verifiedCopies = append(verifiedCopies, item)
+			}
 			if pending.Archive.ID == "" && item.pending() && !parseBackupStamp(item.RetryAt).After(now) {
 				pending = item
 			}
@@ -112,10 +132,16 @@ func (a *backupAutomation) copyNextSecondaryBackup(parent context.Context) error
 		return a.recordSecondaryFailure(failureCtx, binding, pending.Archive.ID, "storage_unavailable")
 	}
 	defer root.Close()
-	if cleanup.Archive.ID != "" && removeOwnedSecondaryTemporary(root, binding, cleanup) {
+	if err := a.observeSecondaryCopies(ctx, root, binding, verifiedCopies); err != nil {
+		return err
+	}
+	if cleanup.Archive.ID != "" {
 		err := a.updateCurrentSecondary(ctx, binding, cleanup.Archive.ID, func(_ *backupSecondaryState, current *backupSecondaryCopy) (bool, error) {
 			if current.Temporary != cleanup.Temporary || current.FileIdentity != cleanup.FileIdentity {
 				return false, errBackupSecondaryDeferred
+			}
+			if !removeOwnedSecondaryTemporary(root, binding, cleanup) {
+				return false, nil
 			}
 			current.Temporary = ""
 			return true, nil
@@ -139,7 +165,7 @@ func (a *backupAutomation) copyNextSecondaryBackup(parent context.Context) error
 	}
 	err = a.stageAndPublishSecondary(ctx, root, binding, pending)
 	if err != nil {
-		if errors.Is(err, errBackupSecondaryDeferred) || parent.Err() != nil {
+		if errors.Is(err, errBackupSecondaryDeferred) || errors.Is(ctx.Err(), context.Canceled) || parent.Err() != nil {
 			return err
 		}
 		recordCtx, cancelRecord := context.WithTimeout(parent, backupArchiveObservationBudget)
@@ -194,9 +220,15 @@ func (a *backupAutomation) recordSecondaryFailure(ctx context.Context, binding b
 		}
 		state.LastFailure = reason
 		if copy != nil && copy.pending() {
-			copy.Attempts++
+			if !copy.Transferring {
+				copy.Attempts++
+			} else if reason != "storage_unavailable" {
+				// A lost mount does not settle an interrupted attempt whose final
+				// link might be present when the mount returns.
+				copy.Transferring = false
+			}
 			copy.Failure = reason
-			copy.RetryAt = backupStamp(a.now().Add(time.Duration(copy.Attempts) * backupSecondaryRetryBase))
+			copy.RetryAt = backupStamp(a.now().Add(time.Duration(max(1, copy.Attempts)) * backupSecondaryRetryBase))
 		}
 		return true, nil
 	})
@@ -230,6 +262,7 @@ func (a *backupAutomation) stageAndPublishSecondary(ctx context.Context, root *o
 	if err != nil {
 		return err
 	}
+	publishedOnDisk := false
 	err = a.updateCurrentSecondary(ctx, binding, copy.Archive.ID, func(state *backupSecondaryState, current *backupSecondaryCopy) (bool, error) {
 		if !current.pending() || current.FileIdentity != copy.FileIdentity || !backupArchiveMountAvailable(root.Name(), binding.Directory) {
 			return false, errBackupSecondaryDeferred
@@ -243,16 +276,34 @@ func (a *backupAutomation) stageAndPublishSecondary(ctx context.Context, root *o
 				return false, err
 			}
 		}
+		if !removeOwnedSecondaryTemporary(root, binding, copy) {
+			return false, errors.New("secondary backup temporary link could not be removed")
+		}
+		published, err := root.Lstat(copy.Archive.Name)
+		if err != nil || !published.Mode().IsRegular() || !os.SameFile(verified, published) ||
+			published.Size() != verified.Size() || !published.ModTime().Equal(verified.ModTime()) {
+			return false, errors.New("secondary backup changed during publication")
+		}
 		if err := syncSecondaryDirectory(root); err != nil {
 			return false, err
 		}
+		named, err := root.Lstat(copy.Archive.Name)
+		if err != nil || !sameBackupIntegrityFile(published, named) || !backupArchiveMountAvailable(root.Name(), binding.Directory) {
+			return false, errors.New("secondary backup was withdrawn during publication")
+		}
+		publishedOnDisk = true
 		current.VerifiedAt = backupStamp(a.now())
-		current.RetryAt, current.Failure = "", ""
+		current.ModifiedAt = backupStamp(published.ModTime())
+		current.ChangedAt = backupStamp(backupIntegrityChangeTime(published))
+		current.Transferring = false
+		current.Temporary, current.RetryAt, current.Failure = "", "", ""
 		state.LastFailure = ""
 		return true, nil
 	})
-	if err == nil {
-		removeOwnedSecondaryTemporary(root, binding, copy)
+	if err != nil && publishedOnDisk {
+		// A catalog write failure must not exhaust the recovery of a complete
+		// file whose final link and staging checkpoint are already durable.
+		return fmt.Errorf("%w: register published secondary archive: %w", errBackupSecondaryDeferred, err)
 	}
 	return err
 }
@@ -276,48 +327,71 @@ func (a *backupAutomation) stageSecondaryArchive(ctx context.Context, root *os.R
 	if err != nil || !secondarySourceMatches(sourceRoot, copy.Archive, info) {
 		return errors.New("secondary backup source no longer matches its verified archive")
 	}
-	if !backupArchiveMountAvailable(root.Name(), binding.Directory) {
-		return errors.New("secondary archive mount changed before staging")
-	}
-	if !removeOwnedSecondaryTemporary(root, binding, *copy) {
-		return errors.New("previous secondary backup temporary file could not be removed")
-	}
-	temporary := ".slu-secondary-" + rand.Text() + ".tmp"
-	destination, err := root.OpenFile(temporary, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	destination, err := a.startSecondaryTransfer(ctx, root, binding, copy)
 	if err != nil {
 		return err
 	}
 	defer destination.Close()
-	staged, err := destination.Stat()
-	if err != nil {
-		return err
-	}
-	copy.Temporary, copy.FileIdentity = temporary, backupCatalogFileIdentity(staged)
-	if copy.FileIdentity == "" {
-		return errors.New("cannot identify secondary backup temporary file")
-	}
-	if err := a.updateCurrentSecondary(ctx, binding, copy.Archive.ID, func(_ *backupSecondaryState, current *backupSecondaryCopy) (bool, error) {
-		if !current.pending() {
-			return false, errBackupSecondaryDeferred
-		}
-		current.Temporary, current.FileIdentity = copy.Temporary, copy.FileIdentity
-		return true, nil
-	}); err != nil {
-		removeOwnedSecondaryTemporary(root, binding, *copy)
-		return err
-	}
 	reader := secondaryArchiveReader{ctx: ctx, src: source}
-	written, err := a.copyArchive(destination, io.LimitReader(reader, internalbackup.MaxUploadBytes+1))
+	writer := secondaryArchiveWriter{ctx: ctx, dst: destination}
+	written, err := a.copyArchive(writer, io.LimitReader(reader, internalbackup.MaxUploadBytes+1))
 	if err != nil {
 		return err
 	}
 	if written != info.Size() {
 		return errors.New("secondary copy does not match the source size")
 	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if err := destination.Sync(); err != nil {
 		return err
 	}
 	return destination.Close()
+}
+
+func (a *backupAutomation) startSecondaryTransfer(ctx context.Context, root *os.Root, binding backupSecondaryBinding, copy *backupSecondaryCopy) (*os.File, error) {
+	var destination *os.File
+	var created backupSecondaryCopy
+	err := a.updateCurrentSecondary(ctx, binding, copy.Archive.ID, func(_ *backupSecondaryState, current *backupSecondaryCopy) (bool, error) {
+		if !current.pending() || !backupArchiveMountAvailable(root.Name(), binding.Directory) {
+			return false, errBackupSecondaryDeferred
+		}
+		if current.Attempts >= backupSecondaryMaxAttempts {
+			return false, errors.New("secondary backup attempt budget is exhausted")
+		}
+		if !removeOwnedSecondaryTemporary(root, binding, *copy) {
+			return false, errors.New("previous secondary backup temporary file could not be removed")
+		}
+		temporary := ".slu-secondary-" + rand.Text() + ".tmp"
+		var err error
+		destination, err = root.OpenFile(temporary, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+		if err != nil {
+			return false, err
+		}
+		staged, err := destination.Stat()
+		if err != nil {
+			return false, err
+		}
+		created.Temporary, created.FileIdentity = temporary, backupCatalogFileIdentity(staged)
+		if created.FileIdentity == "" {
+			return false, errors.New("cannot identify secondary backup temporary file")
+		}
+		current.Temporary, current.FileIdentity = created.Temporary, created.FileIdentity
+		current.Attempts++
+		current.Transferring = true
+		return true, nil
+	})
+	if err != nil && destination != nil {
+		_ = destination.Close()
+		// The only new temporary file this call can remove is the one it
+		// created and identified before writing any archive bytes.
+		removeOwnedSecondaryTemporary(root, binding, created)
+	}
+	if err == nil {
+		copy.Temporary, copy.FileIdentity = created.Temporary, created.FileIdentity
+	}
+	return destination, err
 }
 
 type secondaryArchiveReader struct {
@@ -330,6 +404,18 @@ func (r secondaryArchiveReader) Read(p []byte) (int, error) {
 		return 0, err
 	}
 	return r.src.Read(p)
+}
+
+type secondaryArchiveWriter struct {
+	ctx context.Context
+	dst io.Writer
+}
+
+func (w secondaryArchiveWriter) Write(p []byte) (int, error) {
+	if err := w.ctx.Err(); err != nil {
+		return 0, err
+	}
+	return w.dst.Write(p)
 }
 
 func secondarySourceMatches(root *os.Root, archive ownedBackupArchive, info os.FileInfo) bool {
@@ -391,8 +477,54 @@ func removeOwnedSecondaryTemporary(root *os.Root, binding backupSecondaryBinding
 	return root.Remove(copy.Temporary) == nil
 }
 
+func secondaryCopyMatches(info os.FileInfo, copy backupSecondaryCopy) bool {
+	return info.Mode().IsRegular() && info.Mode().Perm()&0444 != 0 && copy.Archive.SizeBytes != nil &&
+		info.Size() == *copy.Archive.SizeBytes && backupCatalogFileIdentity(info) == copy.FileIdentity &&
+		info.ModTime().Equal(parseBackupStamp(copy.ModifiedAt)) &&
+		backupIntegrityChangeTime(info).Equal(parseBackupStamp(copy.ChangedAt))
+}
+
+func (a *backupAutomation) observeSecondaryCopies(ctx context.Context, root *os.Root, binding backupSecondaryBinding, copies []backupSecondaryCopy) error {
+	if len(copies) == 0 {
+		return nil
+	}
+	changes := make(map[string]bool)
+	for _, copy := range copies {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		unavailable := true
+		if backupArchiveOwned(copy.Archive, binding.Owner) {
+			info, err := root.Lstat(copy.Archive.Name)
+			unavailable = err != nil || !secondaryCopyMatches(info, copy)
+		}
+		if unavailable != copy.Unavailable {
+			changes[copy.Archive.ID] = unavailable
+		}
+	}
+	if !backupArchiveMountAvailable(root.Name(), binding.Directory) {
+		if err := a.recordSecondaryFailure(ctx, binding, "", "storage_unavailable"); err != nil {
+			return err
+		}
+		return errBackupSecondaryDeferred
+	}
+	if len(changes) == 0 {
+		return nil
+	}
+	return a.updateCurrentSecondary(ctx, binding, "", func(state *backupSecondaryState, _ *backupSecondaryCopy) (bool, error) {
+		for i := range state.Copies {
+			copy := &state.Copies[i]
+			if unavailable, ok := changes[copy.Archive.ID]; ok && copy.VerifiedAt != "" {
+				copy.Unavailable = unavailable
+			}
+		}
+		return true, nil
+	})
+}
+
 func (a *backupAutomation) retainSecondaryBackups(ctx context.Context, root *os.Root, binding backupSecondaryBinding) error {
-	var oldest, newest backupSecondaryCopy
+	var oldest backupSecondaryCopy
+	var keepers []backupSecondaryCopy
 	err := a.withSecondaryState(ctx, func(state *backupAutomationState) (bool, error) {
 		if !a.secondaryConfigured(state.Secondary) || state.Secondary.Binding != binding {
 			return false, errBackupSecondaryDeferred
@@ -403,14 +535,12 @@ func (a *backupAutomation) retainSecondaryBackups(ctx context.Context, root *os.
 			if item.VerifiedAt == "" {
 				continue
 			}
-			if newest.Archive.ID == "" {
-				newest = item
-			}
-			if keep > 0 {
-				keep--
-			} else {
+			if len(keepers) == keep {
 				oldest = item
 				break
+			}
+			if !item.Unavailable {
+				keepers = append(keepers, item)
 			}
 		}
 		return false, nil
@@ -418,13 +548,8 @@ func (a *backupAutomation) retainSecondaryBackups(ctx context.Context, root *os.
 	if err != nil || oldest.Archive.ID == "" {
 		return err
 	}
-	if !backupArchiveOwned(oldest.Archive, binding.Owner) || oldest.FileIdentity == "" ||
-		!backupArchiveOwned(newest.Archive, binding.Owner) || newest.FileIdentity == "" {
+	if !backupArchiveOwned(oldest.Archive, binding.Owner) || oldest.FileIdentity == "" {
 		return errors.New("secondary archive has no installation ownership proof")
-	}
-	keeper, err := verifySecondaryFile(ctx, root, newest.Archive.Name, newest.FileIdentity, newest.Archive)
-	if err != nil {
-		return errors.New("secondary retention could not verify the newest copy")
 	}
 	checked, err := verifySecondaryFile(ctx, root, oldest.Archive.Name, oldest.FileIdentity, oldest.Archive)
 	if ctx.Err() != nil {
@@ -435,21 +560,22 @@ func (a *backupAutomation) retainSecondaryBackups(ctx context.Context, root *os.
 			!backupArchiveMountAvailable(root.Name(), binding.Directory) {
 			return false, errBackupSecondaryDeferred
 		}
-		newerVerified := 0
+		if len(keepers) < max(1, state.Config.Retain) {
+			return false, nil
+		}
+		for _, keeper := range keepers {
+			keeperInfo, keeperErr := root.Lstat(keeper.Archive.Name)
+			if keeperErr != nil || !secondaryCopyMatches(keeperInfo, keeper) {
+				return false, errors.New("retained secondary copy changed during retention")
+			}
+		}
 		for i := len(state.Secondary.Copies) - 1; i >= 0; i-- {
 			item := state.Secondary.Copies[i]
 			if item.Archive.ID != oldest.Archive.ID {
-				if item.VerifiedAt != "" {
-					newerVerified++
-				}
 				continue
 			}
-			if item.FileIdentity != oldest.FileIdentity || newerVerified < max(1, state.Config.Retain) {
+			if item.FileIdentity != oldest.FileIdentity {
 				return false, nil
-			}
-			keeperInfo, keeperErr := root.Lstat(newest.Archive.Name)
-			if keeperErr != nil || !sameBackupIntegrityFile(keeper, keeperInfo) {
-				return false, errors.New("newest secondary copy changed during retention")
 			}
 			if err == nil {
 				info, err := root.Lstat(item.Archive.Name)

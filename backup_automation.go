@@ -97,17 +97,19 @@ type backupAutomationStatus struct {
 type backupAutomationDeployment struct{ Directory, SecretFile, SecondaryDirectory string }
 
 type backupAutomation struct {
-	health      installationhealthpkg.Worker
-	copyArchive func(io.Writer, io.Reader) (int64, error)
-	mu          sync.Mutex
-	scanMu      sync.Mutex
-	integrityMu sync.Mutex
-	secondaryMu sync.Mutex
-	wg          sync.WaitGroup
-	deps        AppDeps
-	deployment  backupAutomationDeployment
-	export      func(context.Context, backupExportCommand) backupOperationOutcome
-	verify      func(context.Context, internalbackup.TemporaryFile, string) (internalbackup.VerifyResult, error)
+	health            installationhealthpkg.Worker
+	copyArchive       func(io.Writer, io.Reader) (int64, error)
+	mu                sync.Mutex
+	scanMu            sync.Mutex
+	integrityMu       sync.Mutex
+	secondaryMu       sync.Mutex
+	secondaryCancelMu sync.Mutex
+	secondaryCancel   context.CancelFunc
+	wg                sync.WaitGroup
+	deps              AppDeps
+	deployment        backupAutomationDeployment
+	export            func(context.Context, backupExportCommand) backupOperationOutcome
+	verify            func(context.Context, internalbackup.TemporaryFile, string) (internalbackup.VerifyResult, error)
 }
 
 func loadBackupAutomationDeployment() (backupAutomationDeployment, error) {
@@ -558,6 +560,7 @@ func (a *backupAutomation) Configure(ctx context.Context, c backupScheduleConfig
 func (a *backupAutomation) SuspendAfterRestore(ctx context.Context) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	a.cancelSecondaryTransfer()
 	s, err := a.load(ctx)
 	if err != nil {
 		return err

@@ -196,9 +196,10 @@ Restoration preserves historical configuration and results but clears local appr
 
 Set `DEBIAN_UPDATER_BACKUP_SECONDARY_DIR` to the absolute path of a dedicated
 archive directory on a filesystem mounted from another host. The deployer
-provides and secures the mount. Keep the secondary mount separate from the
-primary archive, passphrase and application data directories. The mount must
-support private files, atomic no-overwrite hard links and directory fsync.
+provides and secures the mount. The secondary directory must be on a different
+filesystem from the system root, primary archives and application data. Keep
+the passphrase outside that directory. The mount must support private files,
+atomic no-overwrite hard links and directory fsync.
 
 In Admin → Backup & Restore, validate the primary settings and then use
 **Validate secondary destination**. Validation pins the identity of the
@@ -209,15 +210,19 @@ secondary copies until the destination is revalidated.
 New verified primary archives enter the secondary copy queue. The worker copies
 the existing encrypted bytes after the primary export releases exclusive
 admission and verifies the SHA-256 before publication. It resumes interrupted
-work after restart and allows up to five attempts per copy. The queue holds up to
-16 pending copies. Pending sources are eligible for local retention again when
+work after restart and allows up to five attempts per copy. A started transfer
+counts even if interrupted. If an interrupted attempt already linked the final
+file, the worker can verify and register it without transferring it again.
+The queue holds up to 16 pending copies. Pending sources are eligible for local retention again when
 their copy finishes or exhausts its retries. Secondary failures do not change the
 primary export outcome.
 
 The secondary destination uses the configured archive retention count and
 preserves files that do not match a registered copy. Admin shows the queue
-and the capture time of its latest verified copy. To recover without the
-primary host, obtain a copy from the secondary mount and use the normal archive
+and the capture time of the latest copy known to be verified. If the mount is
+available, a missing copy or one whose file identity or metadata changed is
+reported separately and excluded from the count of verified copies.
+To recover without the primary host, obtain a copy from the secondary mount and use the normal archive
 restore workflow in isolation on the new installation. Keep the original
 passphrase in a separate secret store.
 

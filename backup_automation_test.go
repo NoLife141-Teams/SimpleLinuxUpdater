@@ -663,7 +663,7 @@ func TestBackupAutomationArchiveRestoresOnDistinctInstance(t *testing.T) {
 }
 
 func TestBackupAutomationMidWriteAndCancellationFailures(t *testing.T) {
-	for _, failure := range []string{"full disk", "permission", "cancelled", "not restore ready", "staged archive replaced", "unreadable archived notifications"} {
+	for _, failure := range []string{"full disk", "permission", "cancelled", "not restore ready", "staged archive replaced", "staged archive modified in place", "unreadable archived notifications"} {
 		t.Run(failure, func(t *testing.T) {
 			app, a, now := newBackupAutomationTest(t)
 			s := backupAutomationStateForTest(t, a)
@@ -709,18 +709,31 @@ func TestBackupAutomationMidWriteAndCancellationFailures(t *testing.T) {
 					return internalbackup.VerifyResult{RestoreReady: false}, nil
 				}
 			}
-			if failure == "staged archive replaced" {
+			if failure == "staged archive replaced" || failure == "staged archive modified in place" {
 				verify := a.verify
 				a.verify = func(ctx context.Context, file internalbackup.TemporaryFile, pass string) (internalbackup.VerifyResult, error) {
 					result, err := verify(ctx, file, pass)
 					if err != nil || !result.RestoreReady {
-						t.Fatalf("staged archive failed verification before the replacement: %+v %v", result, err)
+						t.Fatalf("staged archive failed verification before the modification: %+v %v", result, err)
 					}
 					body, err := os.ReadFile(file.Path)
 					if err != nil {
 						t.Fatal(err)
 					}
 					body[len(body)/2] ^= 1
+					if failure == "staged archive modified in place" {
+						info, err := os.Stat(file.Path)
+						if err != nil {
+							t.Fatal(err)
+						}
+						if err := os.WriteFile(file.Path, body, 0600); err != nil {
+							t.Fatal(err)
+						}
+						if err := os.Chtimes(file.Path, info.ModTime(), info.ModTime()); err != nil {
+							t.Fatal(err)
+						}
+						return result, nil
+					}
 					replacement := file.Path + ".replacement"
 					if err = os.WriteFile(replacement, body, 0600); err != nil {
 						t.Fatal(err)

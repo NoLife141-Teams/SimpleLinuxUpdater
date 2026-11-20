@@ -939,11 +939,9 @@ func (a *backupAutomation) publish(ctx context.Context, root *os.Root, source in
 	if err = ctx.Err(); err != nil {
 		return archive, err
 	}
-	// Keep the file identity and mtime of the bytes we wrote and verified.
-	// A later replacement at the published name must not set their baseline.
+	// Publish only the file version whose bytes we wrote and verified.
 	current, err := root.Lstat(temp)
-	if err != nil || !current.Mode().IsRegular() || !os.SameFile(staged, current) ||
-		current.Size() != staged.Size() || !current.ModTime().Equal(staged.ModTime()) {
+	if err != nil || !sameBackupIntegrityFile(staged, current) {
 		return archive, errors.New("automated archive changed during restore readiness verification")
 	}
 	// Link provides atomic no-replace publication on the same filesystem. Unlike

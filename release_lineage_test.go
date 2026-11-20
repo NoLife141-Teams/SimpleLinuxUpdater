@@ -22,6 +22,7 @@ func runGitForReleaseLineageTest(t *testing.T, dir string, args ...string) strin
 }
 
 func TestReleaseLineageAcceptsMainAndRejectsUnmergedCommit(t *testing.T) {
+	const script = "tools/release/verify-tag-on-main.sh"
 	bash := "bash"
 	if runtime.GOOS == "windows" {
 		bash = os.Getenv("SLU_RELEASE_LINEAGE_BASH")
@@ -31,9 +32,17 @@ func TestReleaseLineageAcceptsMainAndRejectsUnmergedCommit(t *testing.T) {
 		if runtime.GOARCH != "amd64" {
 			t.Fatalf("Windows release lineage qualification requires amd64, got %s", runtime.GOARCH)
 		}
+	} else {
+		// The release workflow invokes the checkout script directly.
+		info, err := os.Stat(script)
+		if err != nil {
+			t.Fatalf("stat checkout script: %v", err)
+		}
+		if info.Mode().Perm()&0o100 == 0 {
+			t.Fatalf("checkout script %s must be executable", script)
+		}
 	}
 
-	const script = "tools/release/verify-tag-on-main.sh"
 	testRoot := t.TempDir()
 	origin := filepath.Join(testRoot, "origin.git")
 	work := filepath.Join(testRoot, "work")

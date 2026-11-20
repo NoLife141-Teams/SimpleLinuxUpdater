@@ -31,7 +31,7 @@ type durabilityFixture struct {
 	hosts   string
 }
 
-func newDurabilityFixture(t *testing.T, root string, runtime testRestoredRuntime) durabilityFixture {
+func newDurabilityFixture(t *testing.T, root string, runtime RestoredRuntime) durabilityFixture {
 	t.Helper()
 	archive := filepath.Join(root, "incoming")
 	trust := filepath.Join(root, "ssh")

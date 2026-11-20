@@ -254,6 +254,10 @@ type PersistenceReplacementPreparer interface {
 	PreparePersistenceReplacement(context.Context) error
 }
 
+type OriginalPersistenceResumer interface {
+	ResumeOriginalPersistence(context.Context) error
+}
+
 type WebhookPayload struct {
 	EventType  string         `json:"event_type"`
 	Action     string         `json:"action"`
@@ -472,6 +476,25 @@ func (s *Service) PreparePersistenceReplacement(ctx context.Context) error {
 	s.replacementRows = &rows
 	s.replacementConditions = &conditions
 	s.persistenceMu.Unlock()
+	return nil
+}
+
+// ResumeOriginalPersistence releases a completed preparation when the original
+// database remains in use. Its outbox already contains the captured state.
+func (s *Service) ResumeOriginalPersistence(ctx context.Context) error {
+	s.replacementMu.Lock()
+	defer s.replacementMu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if s.isClosing() {
+		return errors.New("notification delivery lifecycle is closing")
+	}
+	s.persistenceMu.Lock()
+	s.replacementRows = nil
+	s.replacementConditions = nil
+	s.persistenceMu.Unlock()
+	s.resumePersistence()
 	return nil
 }
 

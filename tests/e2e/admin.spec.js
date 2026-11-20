@@ -2743,6 +2743,43 @@ test("restore review separates archive compatibility from installation APT confl
     await expect(page.locator("#backup-restore-btn")).toBeEnabled();
 });
 
+test("restore storage review groups volumes and blocks known shortages", async ({ page }) => {
+    const state = { verifyResponse: {
+        valid: false, compatible: true, restore_ready: false,
+        storage: [
+            { roles: ["preparation"], state: "unknown", required_bytes: 10 * 1024 ** 2, available_bytes: null },
+            { roles: ["sqlite_replacement", "rollback_snapshots"], state: "insufficient",
+                required_bytes: 64 * 1024 ** 2, available_bytes: 32 * 1024 ** 2 },
+        ],
+        blockers: [{ code: "insufficient_storage", message: "Free space for SQLite replacement and rollback snapshots." }],
+    } };
+    await ensureAuthenticatedSession(page);
+    await stubAdminApi(page, state);
+    await page.goto("/admin#admin-section-backup");
+    await page.locator("#backup-restore-file").setInputFiles({
+        name: "backup.slubkp", mimeType: "application/octet-stream", buffer: Buffer.from("fixture"),
+    });
+    await page.locator("#backup-restore-passphrase").fill("LongPassphrase123");
+    await page.locator("#backup-verify-btn").click();
+    const storage = page.locator("#backup-review-storage");
+    await expect(storage.getByRole("listitem").nth(0)).toContainText("Available capacity unknown");
+    await expect(storage.getByRole("listitem").nth(1)).toContainText(
+        "SQLite replacement, Rollback snapshots · About 64 MB required · 32 MB available · Insufficient space",
+    );
+    await expect(page.locator("#backup-review-readiness")).toHaveText("Blocked");
+    await expect(page.locator("#backup-restore-btn")).toBeDisabled();
+
+    state.verifyResponse.valid = true;
+    state.verifyResponse.restore_ready = true;
+    state.verifyResponse.storage[1].available_bytes = 96 * 1024 ** 2;
+    state.verifyResponse.storage[1].state = "ready";
+    state.verifyResponse.blockers = [];
+    await page.locator("#backup-verify-btn").click();
+    await expect(storage.getByRole("listitem").nth(1)).toContainText("96 MB available");
+    await expect(page.locator("#backup-review-readiness")).toHaveText("Ready for confirmation");
+    await expect(page.locator("#backup-restore-btn")).toBeEnabled();
+});
+
 test("admin restore isolation is selectable and resumption requires typed confirmation", async ({page}) => {
     const state = {};
     let isolation = "active";

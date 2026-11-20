@@ -848,6 +848,9 @@ func parseEnvelopePath(path, tempDir string, extractPayload bool) (Envelope, Tem
 				target = encoded
 			}
 			if _, err := readJSONString(reader, target, maxEncodedPayloadBytes); err != nil {
+				if IsStorageFull(err) {
+					return Envelope{}, TemporaryFile{}, err
+				}
 				return Envelope{}, TemporaryFile{}, ErrMalformed
 			}
 		} else {
@@ -929,6 +932,9 @@ func parseEnvelopePath(path, tempDir string, extractPayload bool) (Envelope, Tem
 	if copyErr != nil || written == 0 {
 		_ = ciphertext.Close()
 		_ = os.Remove(cipherPath)
+		if IsStorageFull(copyErr) {
+			return Envelope{}, TemporaryFile{}, copyErr
+		}
 		return Envelope{}, TemporaryFile{}, ErrMalformed
 	}
 	artifact, err := closeTemporaryFile(ciphertext)
@@ -1013,55 +1019,27 @@ func InspectTarGzFileWithLimits(path, tempRoot string, maxFileBytes, maxTotalByt
 		_ = inspection.Remove()
 		return ArchiveFileInspection{}, err
 	}
-	archive, err := os.Open(path)
-	if err != nil {
-		return fail(err)
-	}
-	defer archive.Close()
-	gz, err := gzip.NewReader(archive)
-	if err != nil {
-		return fail(err)
-	}
-	defer gz.Close()
-	tr := tar.NewReader(gz)
-	seen := make(map[string]struct{}, 4)
 	actual := make(map[string]ManifestFile, 4)
-	var total int64
-	for {
-		hdr, err := tr.Next()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return fail(err)
-		}
-		name, err := validateArchiveEntryHeader(hdr, seen)
-		if err != nil {
-			return fail(err)
-		}
-		if hdr.Size < 0 || hdr.Size > maxFileBytes || total+hdr.Size > maxTotalBytes {
-			return fail(fmt.Errorf("%w: backup payload is too large", ErrMalformed))
-		}
+	err = walkTarGzFile(path, maxFileBytes, maxTotalBytes, func(name string, size int64, data io.Reader) error {
 		targetPath := filepath.Join(extractDir, name)
 		target, err := os.OpenFile(targetPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
 		if err != nil {
-			return fail(err)
+			return err
 		}
 		hash := sha256.New()
-		written, copyErr := io.Copy(io.MultiWriter(target, hash), io.LimitReader(tr, hdr.Size+1))
-		closeErr := target.Close()
-		if copyErr != nil {
-			return fail(copyErr)
+		written, copyErr := io.Copy(io.MultiWriter(target, hash), data)
+		if err := errors.Join(copyErr, target.Close()); err != nil {
+			return err
 		}
-		if closeErr != nil {
-			return fail(closeErr)
+		if written != size {
+			return ErrMalformed
 		}
-		if written != hdr.Size {
-			return fail(ErrMalformed)
-		}
-		total += written
 		inspection.Files[name] = targetPath
 		actual[name] = ManifestFile{Size: written, SHA256: hex.EncodeToString(hash.Sum(nil))}
+		return nil
+	})
+	if err != nil {
+		return fail(err)
 	}
 	manifestPath, ok := inspection.Files["manifest.json"]
 	if !ok {
@@ -1111,4 +1089,49 @@ func InspectTarGzFileWithLimits(path, tempRoot string, maxFileBytes, maxTotalByt
 	inspection.Compatible = manifest.Format == FormatName && manifest.Version == FormatVersion
 	inspection.MissingResources = compactStrings(missing)
 	return inspection, nil
+}
+
+func measureTarGzFile(ctx context.Context, path string) (map[string]uint64, error) {
+	sizes := make(map[string]uint64, 4)
+	err := walkTarGzFile(path, MaxExtractedBytes, MaxExtractedBytes, func(name string, size int64, _ io.Reader) error {
+		sizes[name] = uint64(size)
+		return ctx.Err()
+	})
+	return sizes, err
+}
+
+func walkTarGzFile(path string, maxFileBytes, maxTotalBytes int64, visit func(string, int64, io.Reader) error) error {
+	archive, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer archive.Close()
+	gz, err := gzip.NewReader(archive)
+	if err != nil {
+		return err
+	}
+	defer gz.Close()
+	tr := tar.NewReader(gz)
+	seen := make(map[string]struct{}, 4)
+	var total int64
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		name, err := validateArchiveEntryHeader(hdr, seen)
+		if err != nil {
+			return err
+		}
+		if hdr.Size < 0 || hdr.Size > maxFileBytes || hdr.Size > maxTotalBytes-total {
+			return fmt.Errorf("%w: backup payload is too large", ErrMalformed)
+		}
+		total += hdr.Size
+		if err := visit(name, hdr.Size, tr); err != nil {
+			return err
+		}
+	}
 }

@@ -383,11 +383,13 @@ class Harness:
         container_env = app_environment(Path("/work"), 8080)
         container_env["DEBIAN_UPDATER_LISTEN_ADDR"] = ":8080"
         container_env["DEBIAN_UPDATER_HOST_FACTS_AUTO_REFRESH_ENABLED"] = "true"
+        container_env["TMPDIR"] = "/restore-temp"
         for key, value in container_env.items():
             env_args.extend(["--env", key + "=" + value])
         self.docker("run", "-d", "--name", self.app_name, "--network", self.network,
             "--label", LABEL + "=" + self.owner, "--user", f"{os.getuid()}:{os.getgid()}",
             "--pids-limit", "256", "--memory", "512m", "-p", "127.0.0.1::8080",
+            "--tmpfs", "/restore-temp:rw,nosuid,nodev,size=32m,mode=1777",
             "--mount", f"type=bind,src={self.work},dst=/work", "--workdir", "/work",
             "--entrypoint", "/work/webserver", *env_args, self.image)
         self.connect_app()
@@ -938,6 +940,53 @@ class Harness:
         self.api.request("POST", f"/api/servers/{name}/facts/refresh", allowed=(200, 409))
         until(lambda: self.api.server(name)["status"] != "facts_refresh", "pre-restore facts did not settle")
         archive = self.api.request("POST", "/api/backup/export", {"passphrase": passphrase}, binary=True)
+        record["checkpoint"] = "constrained-restore-storage"
+        known_hosts = self.work / "known_hosts"
+        original_trust = known_hosts.read_bytes()
+        current_trust = original_trust + b"\n# storage qualification marker\n"
+        known_hosts.write_bytes(current_trust)
+        marker_key = "qualification_restore_storage"
+        db_path = self.work / "servers.db"
+        with closing(sqlite3.connect(db_path)) as db, db:
+            db.execute("INSERT INTO settings(key,value) VALUES (?, 'current')", (marker_key,))
+
+        def current_marker():
+            with closing(sqlite3.connect(db_path)) as db:
+                require(db.execute("PRAGMA quick_check").fetchall() == [("ok",)], "restore storage damaged SQLite")
+                return db.execute("SELECT value FROM settings WHERE key=?", (marker_key,)).fetchone()
+
+        preview = self.api.backup_archive("verify", archive, passphrase)
+        require(preview["restore_ready"] and all(volume["state"] == "ready" for volume in preview["storage"])
+                and any(volume["roles"] == ["preparation"] for volume in preview["storage"]),
+                "adequate storage was not independently measured for preparation")
+        require(self.owned("container", self.app_name), "application ownership mismatch")
+        fill = """
+import os
+root = '/restore-temp'
+stats = os.statvfs(root)
+assert os.stat(root).st_dev != os.stat('/work').st_dev
+assert 0 < stats.f_blocks * stats.f_frsize <= 32 * 1024 * 1024
+fd = os.open(root + '/pressure', os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+try:
+    os.posix_fallocate(fd, 0, stats.f_bavail * stats.f_frsize - 4 * 1024 * 1024)
+finally:
+    os.close(fd)
+"""
+        try:
+            self.docker("exec", self.app_name, "python3", "-c", fill)
+            low = self.api.backup_archive("verify", archive, passphrase)
+            require(not low["restore_ready"] and any(issue["code"] == "insufficient_storage" for issue in low["blockers"]),
+                    "preview missed known insufficient preparation space")
+            rejected = self.api.backup_archive("restore", archive, passphrase, isolate=True, allowed=(507,))
+            require(rejected["code"] == "insufficient_storage"
+                    and any(v["roles"] == ["preparation"] and v["required_bytes"] > v["available_bytes"]
+                            for v in rejected["storage"]), "restore did not report measured shortage")
+            require(current_marker() == ("current",) and known_hosts.read_bytes() == current_trust
+                    and self.api.request("GET", "/api/installation/health")["restore_isolation"] == "inactive"
+                    and not (self.work / "servers.db.restore-recovery").exists(),
+                    "space rejection changed SQLite, host trust or the recovery state")
+        finally:
+            self.docker("exec", self.app_name, "rm", "-f", "/restore-temp/pressure")
         paused = self.work / "notification-restore-paused"
         paused.unlink(missing_ok=True)
         record["checkpoint"] = "isolated-restore"
@@ -953,6 +1002,9 @@ class Harness:
         require(baseline_ssh > 0, "SSH fixture did not instrument connections")
         restored = self.api.backup_archive("restore", archive, passphrase, isolate=True)
         require(restored["restore_isolated"], "restore did not enter isolation")
+        require(current_marker() is None and known_hosts.read_bytes() == original_trust,
+                "restore did not replace SQLite data and host trust after space was released")
+        record["verified_storage_shortage_and_retry"] = True
         self.api.request("POST", "/api/auth/login", credentials)
         require(self.api.request("GET", "/api/installation/health")["restore_isolation"] == "active"
                 and self.api.server(name)["name"] == name,

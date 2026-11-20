@@ -62,8 +62,15 @@ func (a *backupAutomation) checkSecondaryIntegrity(ctx context.Context, root *os
 
 func (a *backupAutomation) verifyAndRecordSecondaryIntegrity(ctx context.Context, root *os.Root, binding backupSecondaryBinding, copy backupSecondaryCopy) (backupSecondaryCopy, error) {
 	state, info := inspectSecondaryIntegrity(ctx, root, binding, copy)
+	at := backupStamp(a.now())
 	if err := ctx.Err(); err != nil {
 		return backupSecondaryCopy{}, err
+	}
+	if info != nil {
+		named, err := root.Lstat(copy.Archive.Name)
+		if err != nil || !sameBackupIntegrityFile(info, named) {
+			state, info = backupIntegrityUnavailable, nil
+		}
 	}
 	if !backupArchiveMountAvailable(root.Name(), binding.Directory) {
 		return backupSecondaryCopy{}, errBackupSecondaryDeferred
@@ -75,7 +82,6 @@ func (a *backupAutomation) verifyAndRecordSecondaryIntegrity(ctx context.Context
 			current.Integrity != copy.Integrity {
 			return false, errBackupSecondaryDeferred
 		}
-		at := backupStamp(a.now())
 		current.Integrity.State = state
 		current.Integrity.AttemptedAt = at
 		if info != nil {
@@ -105,8 +111,7 @@ func inspectSecondaryIntegrity(ctx context.Context, root *os.Root, binding backu
 	if checked == nil || (err != nil && !errors.Is(err, errBackupSecondaryMismatch)) {
 		return backupIntegrityUnavailable, nil
 	}
-	after, statErr := root.Lstat(copy.Archive.Name)
-	if statErr != nil || !sameBackupIntegrityFile(before, checked) || !sameBackupIntegrityFile(checked, after) {
+	if !sameBackupIntegrityFile(before, checked) {
 		return backupIntegrityUnavailable, nil
 	}
 	if err != nil {

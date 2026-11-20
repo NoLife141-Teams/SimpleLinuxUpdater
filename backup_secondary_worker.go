@@ -153,6 +153,7 @@ func (a *backupAutomation) copyNextSecondaryBackup(parent context.Context) error
 			return err
 		}
 	}
+	var copyErr error
 	if pending.Archive.ID == "" {
 		err := a.updateCurrentSecondary(ctx, binding, "", func(state *backupSecondaryState, _ *backupSecondaryCopy) (bool, error) {
 			if state.LastFailure == "storage_unavailable" {
@@ -164,24 +165,30 @@ func (a *backupAutomation) copyNextSecondaryBackup(parent context.Context) error
 		if err != nil {
 			return err
 		}
-	} else if err := a.stageAndPublishSecondary(ctx, root, binding, pending); err != nil {
-		if !errors.Is(err, errBackupSecondaryDeferred) && !errors.Is(ctx.Err(), context.Canceled) && parent.Err() == nil {
-			reason := "copy_failed"
-			if errors.Is(err, errBackupSecondaryPublicationPending) {
-				reason = "publication_pending"
-			}
-			recordCtx, cancelRecord := context.WithTimeout(workCtx, backupArchiveObservationBudget)
-			defer cancelRecord()
-			if recordErr := a.recordSecondaryFailure(recordCtx, binding, pending.Archive.ID, reason); recordErr != nil {
-				return recordErr
-			}
+	} else if copyErr = a.stageAndPublishSecondary(ctx, root, binding, pending); copyErr != nil {
+		if errors.Is(copyErr, errBackupSecondaryDeferred) || workCtx.Err() != nil {
+			return copyErr
 		}
+		reason := "copy_failed"
+		if errors.Is(copyErr, errBackupSecondaryPublicationPending) {
+			reason = "publication_pending"
+		}
+		recordCtx, cancelRecord := context.WithTimeout(workCtx, backupArchiveObservationBudget)
+		recordErr := a.recordSecondaryFailure(recordCtx, binding, pending.Archive.ID, reason)
+		cancelRecord()
+		if recordErr != nil {
+			return errors.Join(copyErr, recordErr)
+		}
+	}
+	// A failed or slow transfer must not consume the time budget for checking
+	// already published copies. Both phases still share restore cancellation.
+	stopTimeout()
+	checkCtx, stopCheck := context.WithTimeout(workCtx, backupSecondaryCopyTimeout)
+	defer stopCheck()
+	if err := errors.Join(copyErr, a.checkSecondaryIntegrity(checkCtx, root, binding, verifiedCopies)); err != nil {
 		return err
 	}
-	if err := a.checkSecondaryIntegrity(ctx, root, binding, verifiedCopies); err != nil {
-		return err
-	}
-	return a.keepSecondaryRetention(ctx, root, binding)
+	return a.keepSecondaryRetention(checkCtx, root, binding)
 }
 
 func (a *backupAutomation) keepSecondaryRetention(ctx context.Context, root *os.Root, binding backupSecondaryBinding) error {
@@ -628,12 +635,6 @@ func (a *backupAutomation) retainSecondaryBackups(ctx context.Context, root *os.
 		}
 		keepers[i] = verified
 	}
-	for _, keeper := range keepers {
-		keeperInfo, keeperErr := root.Lstat(keeper.Archive.Name)
-		if keeperErr != nil || !secondaryCopyMatches(keeperInfo, keeper) {
-			return errors.New("retained secondary copy changed during retention")
-		}
-	}
 	if checked != nil {
 		if err := a.withSecondaryState(ctx, func(state *backupAutomationState) (bool, error) {
 			if !a.secondaryConfigured(state.Secondary) || state.Secondary.Binding != binding ||
@@ -648,6 +649,15 @@ func (a *backupAutomation) retainSecondaryBackups(ctx context.Context, root *os.
 			return false, nil
 		}); err != nil {
 			return err
+		}
+		for _, keeper := range keepers {
+			keeperInfo, keeperErr := root.Lstat(keeper.Archive.Name)
+			if keeperErr != nil || !secondaryCopyMatches(keeperInfo, keeper) {
+				return errors.New("retained secondary copy changed during retention")
+			}
+		}
+		if !backupArchiveMountAvailable(root.Name(), binding.Directory) {
+			return errBackupSecondaryDeferred
 		}
 		info, err := root.Lstat(oldest.Archive.Name)
 		if err != nil || !sameBackupIntegrityFile(checked, info) {

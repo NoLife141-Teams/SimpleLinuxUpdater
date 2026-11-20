@@ -11,11 +11,11 @@ import (
 )
 
 func restoreNamesMayMatch(first, second string) bool {
-	return strings.EqualFold(strings.TrimRight(first, " ."), strings.TrimRight(second, " ."))
+	return strings.EqualFold(first, second)
 }
 
 func sameRestoreName(directory, first, second string) (bool, error) {
-	if strings.TrimRight(first, " .") == strings.TrimRight(second, " .") {
+	if first == second {
 		return true, nil
 	}
 	dir, err := os.Open(directory)
@@ -28,6 +28,12 @@ func sameRestoreName(directory, first, second string) (bool, error) {
 		(*byte)(unsafe.Pointer(&flags)), uint32(unsafe.Sizeof(flags)))
 	const caseSensitive = 1
 	return err == nil && flags&caseSensitive == 0, err
+}
+
+func restoreHostNameUnambiguous(name string) bool {
+	// The extended paths used for replacement can preserve trailing
+	// punctuation that conventional Win32 paths normalize when opened.
+	return name == strings.TrimRight(name, " .")
 }
 
 func openRestoreSyncPath(path string) (*os.File, error) {

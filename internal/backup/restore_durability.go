@@ -194,6 +194,9 @@ func (s *Service) validateRestoreHostTarget(database, hosts string, replacesHost
 			reserved = append(reserved, s.deps.ConfigPath())
 		}
 	}
+	if len(reserved) != 0 && !restoreHostNameUnambiguous(filepath.Base(hosts)) {
+		return ErrRestoreHostTarget
+	}
 	for _, path := range reserved {
 		same, err := sameRestoreEntry(path, hosts)
 		if err != nil || same {

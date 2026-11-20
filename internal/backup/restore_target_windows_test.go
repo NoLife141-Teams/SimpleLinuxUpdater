@@ -9,6 +9,14 @@ import (
 )
 
 func TestWindowsRestoreTargetIdentity(t *testing.T) {
+	t.Run("a recovery path with trailing punctuation is distinct", func(t *testing.T) {
+		target := filepath.Join(t.TempDir(), "trust-fixture")
+		same, err := sameRestoreEntry(target, target+".")
+		if err != nil || same {
+			t.Fatalf("distinct recovery names compare equal: same=%v err=%v", same, err)
+		}
+	})
+
 	t.Run("verification and restore reject the conflicting destination", func(t *testing.T) {
 		f := newDurabilityFixture(t, t.TempDir(), testRestoredRuntime{prepare: func() {
 			t.Fatal("restore proceeded beyond target validation")

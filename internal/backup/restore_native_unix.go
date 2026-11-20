@@ -13,3 +13,5 @@ func publishRestoreMarker(from, to string) error { return os.Link(from, to) }
 func restoreNamesMayMatch(first, second string) bool { return first == second }
 
 func sameRestoreName(_ string, first, second string) (bool, error) { return first == second, nil }
+
+func restoreHostNameUnambiguous(_ string) bool { return true }

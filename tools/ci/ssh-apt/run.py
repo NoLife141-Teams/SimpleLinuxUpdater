@@ -394,10 +394,11 @@ class Harness:
         container_env["TMPDIR"] = "/restore-temp"
         archive_mount = self.work / "archive-mount-probe"
         (archive_mount / "archives").mkdir(parents=True, mode=0o700)
-        secret = secrets.token_urlsafe(24)
-        self.redactions.append(secret)
-        (archive_mount / "passphrase").write_text(secret)
-        (archive_mount / "passphrase").chmod(0o600)
+        # The generated archives contain only disposable fixture data. A public
+        # test value lets us exercise the required private passphrase file.
+        passphrase_file = archive_mount / "passphrase"
+        passphrase_file.touch(mode=0o600, exist_ok=False)
+        passphrase_file.write_text("slu-public-backup-qualification-fixture", encoding="utf-8")
         container_env["DEBIAN_UPDATER_BACKUP_DIR"] = "/fixture-backups/archives"
         container_env["DEBIAN_UPDATER_BACKUP_PASSPHRASE_FILE"] = "/fixture-backups/passphrase"
         for key, value in container_env.items():

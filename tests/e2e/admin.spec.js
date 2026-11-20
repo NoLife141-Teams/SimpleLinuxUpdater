@@ -2430,9 +2430,26 @@ test("notification delivery health exposes safe retry diagnostics and independen
         page.locator("#notification-diagnostics-error-row"),
     ).toBeHidden();
     await expect(queuePause).toBeVisible();
-    state.notificationRateLimits = {};
-    await page.locator("#notification-diagnostics-retry").click();
-    await expect(queuePause).toBeHidden();
+
+    // The concurrent test response replaces the last attempt. A new
+    // diagnostics response must still be accepted for the pause.
+    let releaseDiagnostics;
+    const delayedDiagnostics = new Promise(resolve => { releaseDiagnostics = resolve; });
+    let diagnosticsRequests = 0;
+    await page.route("**/api/notifications/delivery-diagnostics", async route => {
+        diagnosticsRequests++;
+        if (diagnosticsRequests === 1) await delayedDiagnostics;
+        return route.fallback();
+    });
+    try {
+        state.notificationRateLimits = {};
+        await page.locator("#notification-diagnostics-retry").click();
+        await expect.poll(() => diagnosticsRequests).toBe(1);
+        await page.locator("#notification-test").click();
+        await expect(queuePause).toBeHidden();
+    } finally {
+        releaseDiagnostics();
+    }
 });
 
 test("automated backups validate configuration and display suspended, deferred and failed results", async ({

@@ -955,6 +955,7 @@
                 if (!lifecycle.isCurrent(lifetime)) return;
                 const payload = await res.json().catch(() => ({}));
                 if (!lifecycle.isCurrent(lifetime)) return;
+                const refreshInterrupted = adminPageView().streams.notificationDiagnostics.status === "loading";
                 if (!res.ok) {
                     finishAdminCommand(
                         plan,
@@ -963,6 +964,7 @@
                         true,
                     );
                     renderNotificationDiagnostics();
+                    if (refreshInterrupted) void fetchNotificationDeliveryDiagnostics();
                     const message = await parseErrorResponse(
                         res,
                         "Notification test failed.",
@@ -977,6 +979,7 @@
                     "Notification test delivered.",
                 );
                 renderNotificationDiagnostics();
+                if (refreshInterrupted) void fetchNotificationDeliveryDiagnostics();
                 const destinationLabel =
                     destination.charAt(0).toUpperCase() + destination.slice(1);
                 setNotificationFeedback(

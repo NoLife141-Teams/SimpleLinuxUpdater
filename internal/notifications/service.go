@@ -307,6 +307,7 @@ type Service struct {
 	replacementRows       *outboxReplacement
 	replacementConditions *conditionState
 	conditionMu           sync.Mutex
+	rateLimitCompletions  failedRateLimitCompletions
 	monitoringStarted     bool
 	wake                  chan struct{}
 	closing               bool
@@ -761,6 +762,11 @@ func (s *Service) processOutboxRow(ctx context.Context, row outboxRow) bool {
 		return err == nil
 	}
 
+	key := rateLimitKey{row.Destination, fingerprint}
+	if handled, ok := s.recoverRateLimitCompletion(row, key); handled {
+		return ok
+	}
+
 	// Settings can change between the scheduling query and revalidation.
 	// Check the fingerprint of the actual request, including legacy unbound rows.
 	until, err := destinationRateLimit(ctx, s.database(), row.Destination, fingerprint)
@@ -812,13 +818,12 @@ func (s *Service) processOutboxRow(ctx context.Context, row outboxRow) bool {
 		status.Outcome = DeliveryOutcomeFailed
 		status.NextRetryAt = ""
 	}
-	persistCtx, cancelPersist := context.WithTimeout(context.Background(), 2*time.Second)
-	err = s.retrySQLiteContention(func() error {
-		return completeOutboxRow(persistCtx, s.database(), row.ID, outcome, s.deps.Now().UTC().Format(time.RFC3339Nano))
-	})
-	cancelPersist()
-	if err != nil {
-		s.health.Error(s.deps.Now())
+	if err := s.persistOutboxCompletion(row.ID, outcome); err != nil {
+		now := s.deps.Now()
+		if outcome.RateLimitedUntil != "" && nextRetry.After(now) {
+			s.rateLimitCompletions.remember(key, failedRateLimitCompletion{rowID: row.ID, outcome: outcome, deadline: nextRetry}, now)
+		}
+		s.health.Error(now)
 		s.deps.Logf("notification outbox outcome persistence failed for %q: %v", row.ID, err)
 		return false
 	}
@@ -828,6 +833,14 @@ func (s *Service) processOutboxRow(ctx context.Context, row outboxRow) bool {
 		s.deps.Logf("notification diagnostic persistence failed for %q: %v", row.ID, err)
 	}
 	return err == nil
+}
+
+func (s *Service) persistOutboxCompletion(id string, outcome outboxOutcome) error {
+	persistCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	return s.retrySQLiteContention(func() error {
+		return completeOutboxRow(persistCtx, s.database(), id, outcome, s.deps.Now().UTC().Format(time.RFC3339Nano))
+	})
 }
 
 func (s *Service) attemptOutboxDestination(ctx context.Context, settings Settings, row outboxRow) (DeliveryStatus, time.Time, error) {

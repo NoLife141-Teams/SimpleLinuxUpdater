@@ -362,6 +362,10 @@
     margin: 14px 0 0;
 }
 
+.notification-diagnostics-facts[hidden] {
+    display: none;
+}
+
 .notification-diagnostics-facts > div {
     min-width: 0;
     padding: 11px 12px;

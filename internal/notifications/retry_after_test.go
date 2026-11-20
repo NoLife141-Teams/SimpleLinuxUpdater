@@ -245,6 +245,58 @@ func TestTerminalRateLimitUsesBackoffAndSurvivesOfflineRecovery(t *testing.T) {
 	}
 }
 
+func TestRateLimitedLaneRepairsFailedCompletionBeforeNextDelivery(t *testing.T) {
+	h := newConditionHarness(t)
+	h.service.deps.DeliveryTimeout = time.Second
+	h.service.deps.HTTPClient = notificationHTTPFunc(func(*http.Request) (*http.Response, error) {
+		h.client.calls++
+		resp := &http.Response{StatusCode: http.StatusNoContent, Body: io.NopCloser(strings.NewReader("")), Header: make(http.Header)}
+		if h.client.calls == 1 {
+			resp.StatusCode = http.StatusTooManyRequests
+			resp.Header.Set("Retry-After", "90")
+		}
+		return resp, nil
+	})
+
+	first := insertPendingOutboxIntent(t, h.db, DeliveryIntent{ID: "first-rate-limited", Action: EventUpdateComplete}, h.now)
+	next := insertPendingOutboxIntent(t, h.db, DeliveryIntent{ID: "next-while-paused", Action: EventUpdateComplete}, h.now)
+	if _, err := h.db.Exec(`CREATE TRIGGER reject_rate_limit_completion BEFORE UPDATE OF status_code ON notification_outbox
+		WHEN new.status_code=429 BEGIN SELECT RAISE(ABORT, 'temporary persistence failure'); END`); err != nil {
+		t.Fatal(err)
+	}
+	claim := func(want string) outboxRow {
+		t.Helper()
+		row, err := claimNextOutboxRow(t.Context(), h.db, h.now, outboxDeliveries{})
+		if err != nil || row == nil || row.ID != want {
+			t.Fatalf("claim = %+v, %v, want %s", row, err, want)
+		}
+		return *row
+	}
+	if h.service.processOutboxRow(t.Context(), claim(first)) {
+		t.Fatal("completion succeeded while persistence rejected it")
+	}
+
+	if _, err := h.db.Exec("DROP TRIGGER reject_rate_limit_completion"); err != nil {
+		t.Fatal(err)
+	}
+	h.service.processOutboxRow(t.Context(), claim(next))
+	if h.client.calls != 1 {
+		t.Fatalf("same destination sent %d requests before its deadline, want 1", h.client.calls)
+	}
+	var state string
+	var attempts int
+	if err := h.db.QueryRow("SELECT state, attempts FROM notification_outbox WHERE id=?", first).Scan(&state, &attempts); err != nil ||
+		state != outboxStateRetrying || attempts != 1 {
+		t.Fatalf("recovered response = %q with %d attempts, %v", state, attempts, err)
+	}
+
+	h.now = h.now.Add(90 * time.Second)
+	h.drain(t)
+	if h.client.calls != 3 {
+		t.Fatalf("queued deliveries did not resume at the persisted deadline, got %d calls", h.client.calls)
+	}
+}
+
 func waitForRateLimitRow(t *testing.T, db *sql.DB, intent, destination, want string) {
 	t.Helper()
 	deadline := time.Now().Add(3 * time.Second)

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -53,4 +54,70 @@ func destinationRateLimit(ctx context.Context, db *sql.DB, destination, fingerpr
 		return time.Time{}, err
 	}
 	return time.Parse(time.RFC3339Nano, deadline)
+}
+
+type rateLimitKey struct {
+	destination string
+	fingerprint string
+}
+
+type failedRateLimitCompletion struct {
+	rowID    string
+	outcome  outboxOutcome
+	deadline time.Time
+}
+
+type failedRateLimitCompletions struct {
+	mu    sync.Mutex
+	items map[rateLimitKey]failedRateLimitCompletion
+}
+
+func (c *failedRateLimitCompletions) remember(key rateLimitKey, failed failedRateLimitCompletion, now time.Time) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.items == nil {
+		c.items = make(map[rateLimitKey]failedRateLimitCompletion)
+	}
+	for key, item := range c.items {
+		if !item.deadline.After(now) {
+			delete(c.items, key)
+		}
+	}
+	c.items[key] = failed
+}
+
+func (c *failedRateLimitCompletions) get(key rateLimitKey) (failedRateLimitCompletion, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	completion, ok := c.items[key]
+	return completion, ok
+}
+
+func (c *failedRateLimitCompletions) forget(key rateLimitKey) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.items, key)
+}
+
+// A failed transaction leaves the claim in SQLite. Retry completing it before
+// sending again on this configuration. Until it can be saved, the running
+// worker still honors the provider's deadline without holding other lanes.
+func (s *Service) recoverRateLimitCompletion(row outboxRow, key rateLimitKey) (handled, ok bool) {
+	pending, exists := s.rateLimitCompletions.get(key)
+	if !exists {
+		return false, false
+	}
+
+	if err := s.persistOutboxCompletion(pending.rowID, pending.outcome); err == nil {
+		s.rateLimitCompletions.forget(key)
+		return row.ID == pending.rowID, true
+	}
+	delay := pending.deadline.Sub(s.deps.Now())
+	if delay <= 0 {
+		s.rateLimitCompletions.forget(key)
+		return false, false
+	}
+	retryDelay := min(delay, max(s.deps.PollInterval, defaultOutboxPollInterval))
+	s.releaseClaim(row, retryDelay, "destination retry deadline could not be persisted")
+	return true, false
 }

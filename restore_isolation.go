@@ -87,14 +87,21 @@ func requiresExternalWork(route string) bool {
 }
 
 func handleRestoreIsolationResume(c *gin.Context, deps AppDeps) {
+	setNoStoreHeaders(c)
 	var confirmed struct {
 		Confirmation string `json:"confirmation"`
+		PreviewToken string `json:"preview_token"`
 	}
 	if c.ShouldBindJSON(&confirmed) != nil || confirmed.Confirmation != "RESUME" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Confirm with RESUME before allowing external work."})
 		return
 	}
-	if !deps.RestoreIsolation.BlocksExternalWork() {
+	activation, active, err := deps.RestoreIsolation.Activation()
+	if err != nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Restore isolation state is unavailable."})
+		return
+	}
+	if !active {
 		c.JSON(http.StatusOK, gin.H{"restore_isolation": "inactive"})
 		return
 	}
@@ -103,15 +110,23 @@ func handleRestoreIsolationResume(c *gin.Context, deps AppDeps) {
 		return
 	}
 	ctx := c.Request.Context()
-	minute := deps.Now().UTC().Truncate(time.Minute)
-	if err := prepareRestoreIsolationResume(deps, minute); err != nil {
-		log.Printf("restore isolation scheduler rebase failed: %v", err)
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Scheduling could not be safely rebased. External work stays paused."})
+	now := deps.Now().UTC()
+	snapshot := collectRestoreResumeSnapshot(ctx, deps, activation, now)
+	deadline := snapshot.confirmationDeadline(confirmed.PreviewToken, now)
+	reviewChanged := func(snapshot restoreResumeSnapshot, now time.Time) {
+		c.JSON(http.StatusConflict, gin.H{"error": "Review the current resumption impact before confirming.",
+			"code": "restore_resume_preview_changed", "preview": snapshot.preview(now)})
+	}
+	if deadline.IsZero() {
+		reviewChanged(snapshot, now)
 		return
 	}
-	if err := deps.AuditService.Record(actorFromContext(c), clientIPFromContext(c), "backup.restore_isolation.resume",
-		"backup", "state", "success", "Approved explicit resumption of external work after isolated restore",
-		nil); err != nil {
+	actor, ip := actorFromContext(c), clientIPFromContext(c)
+	const action = "backup.restore_isolation.resume"
+	// Keep the administrator's approval durable before releasing the gate.
+	// A reviewed attempt can still expire before the release takes effect.
+	if err := deps.AuditService.Record(actor, ip, action, "backup", "state", "approved",
+		"Administrator approved the reviewed impact of resuming external work", nil); err != nil {
 		log.Printf("restore isolation resumption audit failed: %v", err)
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "The resumption decision could not be recorded. External work stays paused."})
 		return
@@ -119,16 +134,35 @@ func handleRestoreIsolationResume(c *gin.Context, deps AppDeps) {
 	if err := ctx.Err(); err != nil {
 		return
 	}
+	approvalAt := deps.Now().UTC()
+	if !approvalAt.Before(deadline) {
+		reviewChanged(collectRestoreResumeSnapshot(ctx, deps, activation, approvalAt), approvalAt)
+		return
+	}
+	if err := prepareRestoreIsolationResume(deps, now.Truncate(time.Minute)); err != nil {
+		log.Printf("restore isolation scheduler rebase failed: %v", err)
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Scheduling could not be safely rebased. External work stays paused."})
+		return
+	}
 	if deps.RestoreAPTValidation != nil {
-		if err := deps.RestoreAPTValidation.approve(ctx, deps.Now()); err != nil {
+		if err := deps.RestoreAPTValidation.approve(ctx, approvalAt); err != nil {
 			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "APT validation could not be recorded. External work stays paused."})
 			return
 		}
 	}
-	if err := deps.RestoreIsolation.Reactivate(deps.Now); err != nil {
+	if err := deps.RestoreIsolation.Reactivate(deps.Now, deadline); err != nil {
+		if errors.Is(err, internalbackup.ErrRestoreResumptionExpired) {
+			changedAt := deps.Now().UTC()
+			reviewChanged(collectRestoreResumeSnapshot(ctx, deps, activation, changedAt), changedAt)
+			return
+		}
 		log.Printf("restore isolation release failed: %v", err)
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "The resumption decision could not be applied. Retry in Admin."})
 		return
+	}
+	if err := deps.AuditService.Record(actor, ip, action, "backup", "state", "success",
+		"Released restore isolation for external work", nil); err != nil {
+		log.Printf("restore isolation resumption outcome audit failed: %v", err)
 	}
 	deps.NotifyDashboardEvent("restore-isolation-resumed")
 	c.JSON(http.StatusOK, gin.H{"restore_isolation": "inactive"})

@@ -50,7 +50,7 @@ func buildRoutePermissions() map[string]routePermission {
 	add("settings:write", false, "POST", "/api/metrics/token", "/api/notifications/test", "/api/audit-events/prune", "/api/auth/accounts")
 	add("settings:write", false, "PUT", "/api/notifications/settings", "/api/app-settings/timezone", "/api/auth/accounts/:id")
 	add("settings:write", false, "DELETE", "/api/metrics/token")
-	add("backup:write", false, "GET", "/api/backup/automation", "/api/backup/status", "/api/backup/archives")
+	add("backup:write", false, "GET", "/api/backup/automation", "/api/backup/status", "/api/backup/archives", restoreResumePreviewRoute)
 	add("backup:write", false, "PUT", "/api/backup/automation")
 	add("backup:write", false, "POST", "/api/backup/automation/run", backupSecondaryValidateRoute, "/api/backup/export", "/api/backup/restore", "/api/backup/verify", "/api/backup/archives/:id/download", "/api/backup/archives/:id/verify", restoreIsolationResumeRoute, restoreAPTValidationRoute)
 	add("self", false, "GET", "/api/auth/sessions", "/api/auth/identity", "/api/auth/tokens")

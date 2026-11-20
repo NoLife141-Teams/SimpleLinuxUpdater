@@ -593,8 +593,9 @@ HTTPServer(("127.0.0.1", int(port)), Receiver).serve_forever()
         blocked = isolated.request("POST", BATCH_PATH, fixture.retry, allowed=(409,))
         require(blocked.get("code") == "restore_isolated", "restore isolation did not block the batch route")
         isolated.request("POST", "/api/auth/reauthenticate", {"password": credentials["password"]})
+        preview = isolated.request("GET", "/api/backup/restore-isolation/resume-preview")
         require(isolated.request("POST", "/api/backup/restore-isolation/resume",
-                                 {"confirmation": "RESUME"})["restore_isolation"] == "inactive",
+                                 {"confirmation": "RESUME", "preview_token": preview["token"]})["restore_isolation"] == "inactive",
                 "recovery did not resume external work")
         # This peer only counts connections. It cannot produce an APT proof.
         # Verify that replaying history works while fresh package work remains gated.

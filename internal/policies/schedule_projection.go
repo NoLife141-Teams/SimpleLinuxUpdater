@@ -22,6 +22,24 @@ type projectedScheduleCandidate struct {
 	reason         string
 }
 
+// ProjectRestoreResumption binds the projection to the matching configuration
+// read for this review. Scheduler recovery initializes its own revision schema.
+func (s *Service) ProjectRestoreResumption(req ScheduleProjectionRequest) (ScheduleProjection, string, error) {
+	if req.Servers == nil {
+		req.Servers = []servers.Server{}
+	}
+	snapshot, err := s.captureSchedulerRecoverySnapshot(req.Servers)
+	if err != nil {
+		return ScheduleProjection{}, "", err
+	}
+	fingerprint, err := snapshot.fingerprint()
+	if err != nil {
+		return ScheduleProjection{}, "", err
+	}
+	projection, err := snapshot.bind(s).ProjectSchedule(req)
+	return projection, fingerprint, err
+}
+
 func (s *Service) ProjectSchedule(req ScheduleProjectionRequest) (ScheduleProjection, error) {
 	deps := s.EnsureDeps()
 	now := req.Now

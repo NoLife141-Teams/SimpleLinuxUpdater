@@ -56,14 +56,14 @@ func TestRestoreIsolationRetainsActiveStateOnFailedResumeSync(t *testing.T) {
 		return file.Sync()
 	}
 	now := func() time.Time { return time.Date(2026, 11, 19, 12, 0, 43, 0, time.UTC) }
-	if err := isolation.Reactivate(now); !errors.Is(err, syscall.EIO) {
+	if err := isolation.Reactivate(now, time.Time{}); !errors.Is(err, syscall.EIO) {
 		t.Fatalf("release with a directory synchronization error = %v", err)
 	}
 	fresh := NewRestoreIsolation(isolation.databasePath)
 	if active, err := fresh.State(); err != nil || !active {
 		t.Fatalf("isolation after a failed resumption and restart = %v, %v", active, err)
 	}
-	if err := fresh.Reactivate(now); err != nil {
+	if err := fresh.Reactivate(now, time.Time{}); err != nil {
 		t.Fatal(err)
 	}
 	fresh = NewRestoreIsolation(isolation.databasePath)
@@ -89,6 +89,33 @@ func TestIsolatedDatabaseRestorePreservesConflictingHostTrust(t *testing.T) {
 	requireDurableRestoreState(t, fixture.db, path, originalRestoreServer, originalRestoreTrust, false)
 }
 
+func TestRestoreIsolationRetainsGateWhenReviewExpiresBeforeRelease(t *testing.T) {
+	database := filepath.Join(t.TempDir(), "servers.db")
+	isolation := NewRestoreIsolation(func() string { return database })
+	if err := isolation.Activate(); err != nil {
+		t.Fatal(err)
+	}
+	at := time.Date(2026, 11, 19, 12, 0, 40, 0, time.UTC)
+	deadline := at.Add(time.Second)
+	isolation.files.sync = func(file *os.File) error {
+		if state, err := loadRestoreIsolationState(RestoreIsolationPath(database)); err == nil && !state.Active {
+			at = deadline
+		}
+		return file.Sync()
+	}
+	clock := func() time.Time { return at }
+	if err := isolation.Reactivate(clock, deadline); !errors.Is(err, ErrRestoreResumptionExpired) {
+		t.Fatalf("release with an expired review = %v", err)
+	}
+	fresh := NewRestoreIsolation(isolation.databasePath)
+	if !fresh.BlocksExternalWork() {
+		t.Fatal("release opened an expired review after a restart")
+	}
+	if err := fresh.Reactivate(clock, at.Add(time.Second)); err != nil || fresh.BlocksExternalWork() {
+		t.Fatalf("could not release with a fresh review: %v", err)
+	}
+}
+
 func TestRestoreIsolationStaysActiveIfResumeSpansScheduleBoundary(t *testing.T) {
 	dir := t.TempDir()
 	database := filepath.Join(dir, "servers.db")
@@ -107,14 +134,14 @@ func TestRestoreIsolationStaysActiveIfResumeSpansScheduleBoundary(t *testing.T) 
 		}
 		return file.Sync()
 	}
-	if err := isolation.Reactivate(clock); err == nil {
+	if err := isolation.Reactivate(clock, time.Time{}); err == nil {
 		t.Fatal("resumption crossed its schedule boundary and still released isolation")
 	}
 	fresh := NewRestoreIsolation(isolation.databasePath)
 	if _, blocked := fresh.ScheduledWork(now); !blocked {
 		t.Fatal("interrupted resumption allowed the missed slot after restart")
 	}
-	if err := fresh.Reactivate(clock); err != nil {
+	if err := fresh.Reactivate(clock, time.Time{}); err != nil {
 		t.Fatal(err)
 	}
 	want := time.Date(2026, 11, 19, 12, 2, 0, 0, time.UTC)

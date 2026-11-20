@@ -1,6 +1,7 @@
 package backup
 
 import (
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"os"
@@ -13,8 +14,11 @@ import (
 
 type restoreIsolationState struct {
 	Active          bool      `json:"active"`
+	Activation      string    `json:"activation,omitempty"`
 	ResumeSchedules time.Time `json:"resume_schedules,omitzero"`
 }
+
+var ErrRestoreResumptionExpired = errors.New("restore resumption review expired")
 
 // RestoreIsolation belongs to the local installation. Archive application can
 // replace SQLite and host trust while this file continues to govern outbound work.
@@ -39,6 +43,14 @@ func (s *RestoreIsolation) State() (bool, error) {
 	defer s.mu.RUnlock()
 	state, err := s.read()
 	return state.Active || err != nil, err
+}
+
+// Activation identifies the current isolation episode without changing it.
+func (s *RestoreIsolation) Activation() (string, bool, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	state, err := s.read()
+	return state.Activation, state.Active || err != nil, err
 }
 
 func (s *RestoreIsolation) BlocksExternalWork() bool {
@@ -67,7 +79,10 @@ func (s *RestoreIsolation) read() (restoreIsolationState, error) {
 		if !info.IsDir() {
 			return restoreIsolationState{}, errors.New("invalid restore isolation resumption marker")
 		}
-		return restoreIsolationState{Active: true}, nil
+		// The pending gate takes precedence over the schedule boundary. Keep
+		// the activation identity if the underlying marker can be read.
+		state, _ := loadRestoreIsolationState(RestoreIsolationPath(database))
+		return restoreIsolationState{Active: true, Activation: state.Activation}, nil
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return restoreIsolationState{}, err
 	}
@@ -96,10 +111,10 @@ func (s *RestoreIsolation) Activate() error {
 	if err != nil {
 		return err
 	}
-	return s.replaceState(RestoreIsolationPath(database), restoreIsolationState{Active: true})
+	return s.replaceState(RestoreIsolationPath(database), restoreIsolationState{Active: true, Activation: rand.Text()})
 }
 
-func (s *RestoreIsolation) Reactivate(now func() time.Time) error {
+func (s *RestoreIsolation) Reactivate(now func() time.Time, reviewDeadline time.Time) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	database, err := s.resolveDatabaseForWrite()
@@ -109,6 +124,7 @@ func (s *RestoreIsolation) Reactivate(now func() time.Time) error {
 	// Keep a durable gate across restarts until the new schedule boundary is
 	// committed. A temporary file already renamed into place can be visible
 	// after a sync error.
+	state, _ := s.read()
 	pending := restoreIsolationPendingPath(database)
 	if err := os.Mkdir(pending, 0700); err != nil {
 		if !errors.Is(err, os.ErrExist) {
@@ -123,10 +139,14 @@ func (s *RestoreIsolation) Reactivate(now func() time.Time) error {
 		return err
 	}
 	resumeAt := now().UTC().Truncate(time.Minute).Add(time.Minute)
-	if err := s.replaceState(RestoreIsolationPath(database), restoreIsolationState{ResumeSchedules: resumeAt}); err != nil {
+	if err := s.replaceState(RestoreIsolationPath(database), restoreIsolationState{ResumeSchedules: resumeAt, Activation: state.Activation}); err != nil {
 		return err
 	}
-	if !now().Before(resumeAt) {
+	at := now()
+	if !reviewDeadline.IsZero() && !at.Before(reviewDeadline) {
+		return ErrRestoreResumptionExpired
+	}
+	if !at.Before(resumeAt) {
 		return errors.New("restore isolation schedule boundary elapsed during resumption")
 	}
 	if err := os.Remove(pending); err != nil {

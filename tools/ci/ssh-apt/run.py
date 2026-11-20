@@ -1098,7 +1098,13 @@ finally:
         anonymous.request("POST", route, {"confirmation": "RESUME"}, allowed=(401,))
         self.api.request("POST", route, {"confirmation": ""}, allowed=(400,))
         self.api.request("POST", "/api/auth/reauthenticate", {"password": self.password})
-        require(self.api.request("POST", route, {"confirmation": "RESUME"})["restore_isolation"] == "inactive",
+        preview = self.api.request("GET", route + "-preview")
+        require({queue["destination"] for queue in preview["impact"]["notifications"]
+                 if queue["pending"] > 0} == destinations, "the preview omitted paused delivery queues")
+        require(ssh_connections() == baseline_ssh and len(receipts()) == len(baseline_receipts),
+                "the preview initiated external work")
+        require(self.api.request("POST", route, {"confirmation": "RESUME",
+                                                "preview_token": preview["token"]})["restore_isolation"] == "inactive",
                 "authorized resumption did not lift isolation")
         self.api.request("POST", "/api/hostkeys/scan", {"host": self.ssh_host, "port": self.ssh_port})
         require(ssh_connections() > baseline_ssh, "authorized SSH did not return after resumption")
@@ -1209,7 +1215,12 @@ finally:
         ], "the validation batch did not report distinct results in selection order")
         require(all(package_state(name) == digest for name, digest in initial.items()), "a validation probe changed package state")
         record["checkpoint"] = "resume-and-run-batch"
-        api.request("POST", "/api/backup/restore-isolation/resume", {"confirmation": "RESUME"})
+        preview = api.request("GET", "/api/backup/restore-isolation/resume-preview")
+        impact = {host["name"]: host for host in preview["impact"]["hosts"]}
+        require(impact[healthy]["allowed"] and not impact[incomplete]["allowed"] and not impact[unreachable]["allowed"],
+                "the resumption preview did not distinguish verified and blocked hosts")
+        api.request("POST", "/api/backup/restore-isolation/resume",
+                    {"confirmation": "RESUME", "preview_token": preview["token"]})
         for name in (incomplete, unreachable):
             fail = api.request("POST", f"/api/autoremove/{name}", allowed=(409,))
             require(fail["reason_code"] == "restore_apt_validation_required", "recovery released an unverified host")

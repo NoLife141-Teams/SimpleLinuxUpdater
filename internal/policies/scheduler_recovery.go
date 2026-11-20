@@ -272,7 +272,7 @@ func (s *Service) ProcessDueWithRecovery(now time.Time, store SchedulerWatermark
 
 func (s *Service) captureSchedulerState(store SchedulerWatermarkStore) (schedulerRecoverySnapshot, int64, error) {
 	if store.LoadStateRevision == nil {
-		snapshot, err := s.captureSchedulerRecoverySnapshot()
+		snapshot, err := s.captureSchedulerRecoverySnapshot(nil)
 		return snapshot, 0, err
 	}
 	for range 3 {
@@ -280,7 +280,7 @@ func (s *Service) captureSchedulerState(store SchedulerWatermarkStore) (schedule
 		if err != nil {
 			return schedulerRecoverySnapshot{}, 0, fmt.Errorf("load policy scheduler state revision: %w", err)
 		}
-		snapshot, err := s.captureSchedulerRecoverySnapshot()
+		snapshot, err := s.captureSchedulerRecoverySnapshot(nil)
 		if err != nil {
 			return schedulerRecoverySnapshot{}, 0, fmt.Errorf("capture policy scheduler recovery state: %w", err)
 		}

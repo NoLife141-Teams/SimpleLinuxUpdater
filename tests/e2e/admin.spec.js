@@ -2848,6 +2848,14 @@ test("admin restore isolation is selectable and resumption requires typed confir
     let resumptionCount = 0;
     let aptState = "pending";
     let probes = 0;
+    const impact = {
+        hosts: [
+            {name: "healthy-host", allowed: true, reason: "healthy"},
+            {name: "offline-host", allowed: false, reason: "unreachable"},
+        ],
+        schedules: [{server: "healthy-host", policy: "Nightly", at: "2026-11-20T03:00:00Z", reason: "rollout_waiting"}],
+        notifications: [{destination: "webhook", configured: true, pending: 2, retrying: 1, claimed: 0}],
+    };
     await ensureAuthenticatedSession(page);
     await stubAdminApi(page, state);
     await page.route("**/api/installation/health", route => fulfillJson(route, {
@@ -2866,10 +2874,20 @@ test("admin restore isolation is selectable and resumption requires typed confir
         aptState = "healthy";
         return fulfillJson(route, {state: aptState});
     });
+    await page.route("**/api/backup/restore-isolation/resume-preview", route =>
+        fulfillJson(route, {impact, token: "initial-preview"}));
     await page.route("**/api/backup/restore-isolation/resume", route => {
-        expect(route.request().postDataJSON()).toEqual({confirmation: "RESUME"});
+        const originalReview = ++resumptionCount === 1;
+        expect(route.request().postDataJSON()).toEqual({
+            confirmation: "RESUME", preview_token: originalReview ? "initial-preview" : "updated-preview",
+        });
+        if (originalReview) {
+            return route.fulfill({status: 409, json: {
+                code: "restore_resume_preview_changed",
+                preview: {impact: {...impact, schedules: null}, token: "updated-preview"},
+            }});
+        }
         isolation = "inactive";
-        resumptionCount++;
         return fulfillJson(route, {restore_isolation: isolation});
     });
     await page.goto("/admin#admin-section-backup");
@@ -2894,13 +2912,23 @@ test("admin restore isolation is selectable and resumption requires typed confir
     await checkAPT.click();
     await expect(page.locator("#restore-apt-validation").getByRole("row", {name: /healthy-host/})).toContainText("Validated");
     const resume = page.locator("#restore-isolation-resume");
+    await expect(resume).toBeDisabled();
+    await page.getByRole("button", {name: "Review resumption impact"}).click();
+    await expect(page.locator("#restore-impact-hosts")).toContainText("offline-host · Stays blocked");
+    await expect(page.locator("#restore-impact-schedules")).toContainText("Nightly");
+    await expect(page.locator("#restore-impact-schedules")).toContainText("Waiting for preceding batch success");
+    await expect(page.locator("#restore-impact-notifications")).toContainText("2 pending");
     await dismissTypedConfirm(page, resume);
     expect(resumptionCount).toBe(0);
+    await acceptTypedConfirm(page, resume, "RESUME");
+    await expect(page.locator("#restore-isolation-feedback")).toContainText("Review the updated impact");
+    await expect(page.locator("#restore-impact-schedules")).toHaveText("Unavailable");
+    expect(resumptionCount).toBe(1);
     await acceptTypedConfirm(page, resume, "RESUME");
     await expect(page.locator("#installation-restore-isolation")).toHaveText("Inactive");
     await expect(resume).toBeHidden();
     await expect(page.locator("#restore-apt-validation").getByRole("row", {name: /offline-host/})).toContainText("Unreachable");
-    expect(resumptionCount).toBe(1);
+    expect(resumptionCount).toBe(2);
 });
 
 test("admin checks selected restored hosts and can retry only the failed entries", async ({page}) => {

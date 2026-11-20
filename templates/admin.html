@@ -1125,7 +1125,23 @@
                 <div id="restore-isolation-controls" hidden>
                     <div class="backup-review-section">
                         <p>Review SSH trust, scheduled policies and notification destinations before resuming SSH and queued deliveries.</p>
-                        <div><button class="btn-danger" type="button" id="restore-isolation-resume">Resume External Work</button></div>
+                        <div><button class="btn-ghost" type="button" id="restore-isolation-review" aria-controls="restore-isolation-impact" aria-expanded="false">Review resumption impact</button></div>
+                        <section class="backup-restore-review" id="restore-isolation-impact" aria-label="Resumption impact" hidden>
+                            <div class="backup-review-section">
+                                <h5>Package maintenance by server</h5>
+                                <ul id="restore-impact-hosts"></ul>
+                            </div>
+                            <div class="backup-review-section">
+                                <h5>Next scheduled slots</h5>
+                                <ul id="restore-impact-schedules"></ul>
+                            </div>
+                            <div class="backup-review-section">
+                                <h5>Paused notification queues</h5>
+                                <ul id="restore-impact-notifications"></ul>
+                            </div>
+                            <p class="muted">Queued work still follows the current policy and destination settings when it runs.</p>
+                        </section>
+                        <div><button class="btn-danger" type="button" id="restore-isolation-resume" disabled>Resume External Work</button></div>
                         <p id="restore-isolation-feedback" class="muted" role="status" aria-live="polite"></p>
                     </div>
                 </div>
@@ -1276,7 +1292,7 @@
     <script src="/static/auth.js"></script>
     <script src="/static/js/browser-effects.js?v=frontend-isolation-20261027"></script>
     <script src="/static/js/common.js?v=policy-conflicts-20260728a"></script>
-    <script src="/static/js/reauthentication.js?v=account-ui-516-20261029"></script>
+    <script src="/static/js/reauthentication.js?v=restore-review-667"></script>
     <script src="/static/js/admin-timezones.js?v=frontend-modules-20260626a"></script>
     <script src="/static/js/admin-timezone-picker.js?v=frontend-isolation-20261027"></script>
     <script src="/static/js/scheduled-policy-administration-interaction.js?v=scheduled-autoremove-20261020"></script>
@@ -1288,7 +1304,7 @@
     <script src="/static/js/package-deferrals.js?v=frontend-isolation-20261027"></script>
 <script src="/static/js/admin-notifications-adapter.js?v=notification-apt-reconciliation-619"></script>
 <script src="/static/js/admin-account-adapter.js?v=frontend-isolation-20261027"></script>
-<script src="/static/js/admin-backup-adapter.js?v=backup-recovery-point-650"></script>
+<script src="/static/js/admin-backup-adapter.js?v=restore-review-667"></script>
 <script src="/static/js/admin-policies-adapter.js?v=apt-reconciliation-624"></script>
 <script src="/static/js/admin.js?v=backup-recovery-point-650"></script>
 </body>

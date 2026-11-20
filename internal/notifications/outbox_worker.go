@@ -130,7 +130,7 @@ func (s *Service) pollOutbox(ctx context.Context, active *outboxDeliveries, comp
 		if s.queuedDeliveryBlocked(ctx) || !s.tryBeginPersistence() {
 			// Resuming persistence wakes the worker. A restore may keep
 			// delivery blocked after persistence resumes, so poll the gate.
-			return s.deps.Now().Add(s.deps.PollInterval), true, true
+			return s.deps.Now().Add(s.deps.PollInterval), true, false
 		}
 		row, err := claimNextOutboxRow(ctx, s.database(), s.deps.Now(), *active)
 		if err != nil {

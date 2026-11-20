@@ -221,6 +221,41 @@ func TestNotificationOutboxSchedulesRecoveryForLiveClaim(t *testing.T) {
 	}
 }
 
+func TestNotificationOutboxSchedulesWholeAndFractionalSecondsInOrder(t *testing.T) {
+	db := openNativeIntegrationTestDB(t, "fractional-wake.db")
+	if err := EnsureSchema(db); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC)
+	later := now.Add(250 * time.Millisecond)
+	insertRetry := func(id string, due time.Time) string {
+		t.Helper()
+		rowID := insertPendingOutboxIntent(t, db, DeliveryIntent{ID: id, Action: EventUpdateComplete}, now)
+		if _, err := db.Exec("UPDATE notification_outbox SET state=?, next_attempt_at=? WHERE id=?",
+			outboxStateRetrying, due.Format(time.RFC3339Nano), rowID); err != nil {
+			t.Fatal(err)
+		}
+		return rowID
+	}
+	fractional := insertRetry("fractional-second", later)
+	whole := insertRetry("whole-second", now)
+	assertWake := func(want time.Time) {
+		t.Helper()
+		at, scheduled, err := nextOutboxWake(t.Context(), db, time.Minute, outboxDeliveries{})
+		if err != nil || !scheduled || !at.Equal(want) {
+			t.Fatalf("next wake = %v, scheduled=%v, error=%v, want %v", at, scheduled, err, want)
+		}
+	}
+	assertWake(now)
+	if row, err := claimNextOutboxRow(t.Context(), db, now, outboxDeliveries{}); err != nil || row == nil || row.ID != whole {
+		t.Fatalf("claim at whole second = %+v, %v, want only the whole-second retry to be eligible", row, err)
+	}
+	assertWake(later)
+	if row, err := claimNextOutboxRow(t.Context(), db, later, outboxDeliveries{}); err != nil || row == nil || row.ID != fractional {
+		t.Fatalf("claim at fractional second = %+v, %v, want the fractional-second retry", row, err)
+	}
+}
+
 func TestNotificationOutboxDuplicateWakeupsDoNotDuplicateDelivery(t *testing.T) {
 	db := openOutboxTestDB(t, "duplicate-wake.db")
 	server, requests := newOutboxHTTPServer(t)

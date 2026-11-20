@@ -91,6 +91,50 @@ func TestRestoreDeliveryGateKeepsQueuedNotificationsUntilRelease(t *testing.T) {
 	}
 }
 
+func TestNotificationWorkerWithholdsSweepProgressWhenRestoreBlocksDispatch(t *testing.T) {
+	db := openNativeIntegrationTestDB(t, "restore-during-evaluation.db")
+	started := make(chan struct{})
+	finish := make(chan struct{})
+	var blocked atomic.Bool
+	deps := outboxTestDeps(db, 5*time.Millisecond)
+	deps.RestoreDeliveryBlocked = blocked.Load
+	deps.ReadConditions = func(ctx context.Context, _ string, _ []Condition) (ConditionBatch, error) {
+		close(started)
+		select {
+		case <-finish:
+			return ConditionBatch{}, nil
+		case <-ctx.Done():
+			return ConditionBatch{}, ctx.Err()
+		}
+	}
+	service := NewService(deps)
+	t.Cleanup(func() { closeOutboxService(t, service) })
+	service.StartConditionMonitoring()
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("worker did not begin evaluation")
+	}
+	blocked.Store(true)
+	close(finish)
+	for deadline := time.Now().Add(5 * time.Second); ; {
+		worker, facts, err := service.InstallationHealth(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if facts.LastConditionEvaluationAt != nil && !worker.Running {
+			if !worker.LastProgress.IsZero() {
+				t.Fatalf("restore-interrupted dispatch reported a completed sweep: %+v", worker)
+			}
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("restore-interrupted sweep did not finish: %+v, %+v", worker, facts)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
 func TestNotificationWorkerReportsFailedEvaluationWithoutProgress(t *testing.T) {
 	for _, tc := range []struct {
 		name                string

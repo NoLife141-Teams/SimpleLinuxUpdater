@@ -641,14 +641,18 @@ func nextOutboxWake(ctx context.Context, db *sql.DB, claimTTL time.Duration, act
 	if db == nil {
 		return time.Time{}, false, nil
 	}
+	// Wake scheduling can run after each delivery. Use the state index so a
+	// large retained delivery history does not slow down a draining lane.
 	var nextAttempt, oldestClaim string
 	err := db.QueryRowContext(ctx, `
 		SELECT
 			COALESCE(MIN(CASE WHEN state = ? AND next_attempt_at != '' THEN rtrim(next_attempt_at, 'Z') END) || 'Z', ''),
 			COALESCE(MIN(CASE WHEN state = ? AND claimed_at != '' THEN rtrim(claimed_at, 'Z') END) || 'Z', '')
 		  FROM notification_outbox
-		 WHERE destination IS NOT ? AND destination IS NOT ? AND destination IS NOT ?
-	`, outboxStateRetrying, outboxStateClaimed, active[0], active[1], active[2]).Scan(&nextAttempt, &oldestClaim)
+		 WHERE state IN (?, ?)
+		   AND destination IS NOT ? AND destination IS NOT ? AND destination IS NOT ?
+	`, outboxStateRetrying, outboxStateClaimed, outboxStateRetrying, outboxStateClaimed,
+		active[0], active[1], active[2]).Scan(&nextAttempt, &oldestClaim)
 	if err != nil {
 		return time.Time{}, false, err
 	}

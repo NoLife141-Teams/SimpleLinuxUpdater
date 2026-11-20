@@ -446,6 +446,9 @@ Override search path:
   `C:\Users\Alice\.ssh\known_hosts;D:\ssh\known_hosts` on Windows.
 - The first non-empty configured path is the managed write target; all configured
   paths are considered when reading host-key trust.
+- Use a dedicated managed trust file. Backup restore and offline recovery
+  reject paths that resolve to reserved installation files. On Windows,
+  names that differ only in case can refer to the same entry.
 
 Default behavior:
 

@@ -159,7 +159,8 @@ func (fs restoreFiles) copyAndHashSnapshot(path, sourcePath string) (string, err
 }
 
 func sameRestoreEntry(first, second string) (bool, error) {
-	if filepath.Base(first) != filepath.Base(second) {
+	firstName, secondName := filepath.Base(first), filepath.Base(second)
+	if !restoreNamesMayMatch(firstName, secondName) {
 		return false, nil
 	}
 	if first == second {
@@ -173,7 +174,47 @@ func sameRestoreEntry(first, second string) (bool, error) {
 	if errors.Is(err, os.ErrNotExist) {
 		return false, nil
 	}
-	return err == nil && os.SameFile(left, right), err
+	if err != nil || !os.SameFile(left, right) {
+		return false, err
+	}
+	return sameRestoreName(restoreEntryDirectory(first), firstName, secondName)
+}
+
+var ErrRestoreHostTarget = errors.New("known_hosts restore target conflicts with installation files or could not be verified. Set DEBIAN_UPDATER_KNOWN_HOSTS to a separate file")
+
+func (s *Service) validateRestoreHostTarget(database, hosts string, replacesHosts, isolationPossible bool) error {
+	var reserved []string
+	if replacesHosts || isolationPossible {
+		reserved = append(reserved, RestoreIsolationPath(database), restoreIsolationPendingPath(database))
+	}
+	if replacesHosts {
+		reserved = append(reserved, database, RestoreRecoveryMarkerPath(database), database+".lock")
+		reserved = append(reserved, SQLiteSidecarPaths(database)...)
+		if s.deps.ConfigPath != nil && s.deps.ConfigPath() != "" {
+			reserved = append(reserved, s.deps.ConfigPath())
+		}
+	}
+	if len(reserved) != 0 && !restoreHostNameUnambiguous(filepath.Base(hosts)) {
+		return ErrRestoreHostTarget
+	}
+	for _, path := range reserved {
+		same, err := sameRestoreEntry(path, hosts)
+		if err != nil || same {
+			return errors.Join(ErrRestoreHostTarget, err)
+		}
+		// Existing entries can have another filesystem name in addition
+		// to the spelling used in the configuration.
+		left, leftErr := os.Lstat(path)
+		right, rightErr := os.Lstat(hosts)
+		if (leftErr != nil && !errors.Is(leftErr, os.ErrNotExist)) ||
+			(rightErr != nil && !errors.Is(rightErr, os.ErrNotExist)) {
+			return errors.Join(ErrRestoreHostTarget, leftErr, rightErr)
+		}
+		if leftErr == nil && rightErr == nil && os.SameFile(left, right) {
+			return ErrRestoreHostTarget
+		}
+	}
+	return nil
 }
 
 // Preserve parent traversal through a symlink so directory operations and

@@ -466,25 +466,8 @@ func (s *Service) applyArchiveFiles(ctx context.Context, files map[string]string
 	knownHostsTarget := s.restoreKnownHostsTarget(dbTarget)
 	targets := append([]string{dbTarget}, SQLiteSidecarPaths(dbTarget)...)
 	knownHosts, replacesKnownHosts := files["known_hosts"]
-	var reservedPaths []string
-	if opts.BeforeReplacement != nil || replacesKnownHosts {
-		reservedPaths = append(reservedPaths, RestoreIsolationPath(dbTarget), restoreIsolationPendingPath(dbTarget))
-	}
-	if replacesKnownHosts {
-		reservedPaths = append(reservedPaths, targets...)
-		reservedPaths = append(reservedPaths, markerPath, dbTarget+".lock")
-		if s.deps.ConfigPath != nil {
-			reservedPaths = append(reservedPaths, s.deps.ConfigPath())
-		}
-	}
-	for _, reserved := range reservedPaths {
-		conflict, err := sameRestoreEntry(reserved, knownHostsTarget)
-		if err != nil {
-			return fmt.Errorf("inspect known_hosts restore target: %w", err)
-		}
-		if conflict {
-			return errors.New("known_hosts restore target conflicts with installation files")
-		}
+	if err := s.validateRestoreHostTarget(dbTarget, knownHostsTarget, replacesKnownHosts, opts.BeforeReplacement != nil); err != nil {
+		return err
 	}
 	if replacesKnownHosts {
 		targets = append(targets, knownHostsTarget)
@@ -885,6 +868,15 @@ func (s *Service) verifyArchiveFile(ctx context.Context, encrypted TemporaryFile
 		return VerifyResult{}, &RestoreError{Stage: RestoreStageArchive, Err: err}
 	}
 	result.SafeCounts = counts
+	if mode == verifyInstallationStorage {
+		targets := s.previewRestoreTargets(true)
+		if targets.database != "" {
+			if err := s.validateRestoreHostTarget(targets.database, targets.hosts, result.KnownHostsIncluded, true); err != nil {
+				result.Blockers = append(result.Blockers, ReadinessIssue{Code: "known_hosts_target_conflict", Message: ErrRestoreHostTarget.Error()})
+				return result, nil
+			}
+		}
+	}
 	if !result.KnownHostsIncluded {
 		result.Warnings = append(result.Warnings, ReadinessIssue{Code: "known_hosts_not_included", Message: "known_hosts is not included; the current host-key trust file will remain unchanged."})
 	}

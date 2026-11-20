@@ -2,11 +2,39 @@ package backup
 
 import (
 	"os"
+	"strings"
+	"unsafe"
 
 	"debian-updater/internal/privatefile"
 
 	"golang.org/x/sys/windows"
 )
+
+func restoreNamesMayMatch(first, second string) bool {
+	return strings.EqualFold(first, second)
+}
+
+func sameRestoreName(directory, first, second string) (bool, error) {
+	if first == second {
+		return true, nil
+	}
+	dir, err := os.Open(directory)
+	if err != nil {
+		return false, err
+	}
+	defer dir.Close()
+	var flags uint32
+	err = windows.GetFileInformationByHandleEx(windows.Handle(dir.Fd()), windows.FileCaseSensitiveInfo,
+		(*byte)(unsafe.Pointer(&flags)), uint32(unsafe.Sizeof(flags)))
+	const caseSensitive = 1
+	return err == nil && flags&caseSensitive == 0, err
+}
+
+func restoreHostNameUnambiguous(name string) bool {
+	// The extended paths used for replacement can preserve trailing
+	// punctuation that conventional Win32 paths normalize when opened.
+	return name == strings.TrimRight(name, " .")
+}
 
 func openRestoreSyncPath(path string) (*os.File, error) {
 	name, err := privatefile.WindowsPath(path)

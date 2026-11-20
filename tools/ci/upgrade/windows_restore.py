@@ -24,7 +24,7 @@ ADMINISTRATORS_SID = "*S-1-5-32-544"
 ARCHIVED = "archived-host"
 CURRENT = "pre-restore-host"
 PHASES = (
-    "native_ntfs", "build", "export", "verify", "private_passphrase",
+    "native_ntfs", "restore_target_identity", "build", "export", "verify", "private_passphrase",
     "restore_in_isolation", "restart_after_restore", "interruption", "recovery_acl",
     "offline_recovery", "restart_after_recovery",
 )
@@ -219,6 +219,14 @@ def qualify(source, work, report):
     user = "*" + powershell("[Security.Principal.WindowsIdentity]::GetCurrent().User.Value", "identify fixture user")
     configure_acl(work, user)
     report["steps"]["native_ntfs"] = "passed"
+    test_env = {**os.environ, "GOOS": "windows", "GOARCH": "amd64", "CGO_ENABLED": "0", "TMP": str(work)}
+    destination_test = "TestWindowsRestoreTargetIdentity"
+    events = checked(["go", "test", "-json", "./internal/backup", "-run", f"^{destination_test}$", "-count=1"],
+                     "validate native restore destination identity", cwd=source, env=test_env, timeout=180)
+    require(any(event.get("Test") == destination_test and event.get("Action") == "pass"
+                for event in map(json.loads, events.splitlines())),
+            "native restore destination test did not run")
+    report["steps"]["restore_target_identity"] = "passed"
 
     binary, checkpoint_binary = build(source, work)
     report["steps"]["build"] = "passed"

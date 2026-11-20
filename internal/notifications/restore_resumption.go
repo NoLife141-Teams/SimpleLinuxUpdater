@@ -46,10 +46,21 @@ func (s *Service) RestoreDeliveryResumption(ctx context.Context, now time.Time) 
 		}
 	}
 	revision := sha256.New()
-	// Bind the accepted configuration, including event settings, without
-	// returning either stored credentials or abandoned delivery identities.
-	settings.LastDelivery, settings.LastDeliveries, settings.LastManualTests = nil, nil, nil
-	if err := json.NewEncoder(revision).Encode(settings); err != nil {
+	// Credential fingerprints identify the delivery target across writes
+	// that encrypt the same settings again. Older files without fingerprints
+	// still bind the stored credentials, without decrypting them.
+	configuration := settings
+	configuration.LastDelivery, configuration.LastDeliveries, configuration.LastManualTests = nil, nil, nil
+	if settings.DestinationFingerprints[DestinationWebhook] != "" {
+		configuration.LegacyWebhookURL, configuration.EncryptedWebhookURL = "", ""
+	}
+	if settings.DestinationFingerprints[DestinationDiscord] != "" {
+		configuration.DiscordWebhookURL = ""
+	}
+	if settings.DestinationFingerprints[DestinationTelegram] != "" {
+		configuration.TelegramBotToken, configuration.TelegramChatID = "", ""
+	}
+	if err := json.NewEncoder(revision).Encode(configuration); err != nil {
 		return nil, "", err
 	}
 	queues := make([]RestoreDeliveryQueue, 0, len(healthDestinations))

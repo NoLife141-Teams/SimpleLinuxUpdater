@@ -178,6 +178,11 @@ func TestRestoreResumptionProjectsFromCurrentInventoryWithoutWritingAndRechecksL
 	if _, err := app.Deps.DB().Exec("DROP TABLE IF EXISTS " + policypkg.SchedulerStateRevisionTable); err != nil {
 		t.Fatal(err)
 	}
+	watermark := app.Deps.PolicyRepository.(policySchedulerWatermarkRepository)
+	originalMark := now.Truncate(time.Minute).Add(-time.Hour)
+	if err := watermark.SaveSchedulerWatermark(originalMark); err != nil {
+		t.Fatal(err)
+	}
 	if err := app.Deps.RestoreIsolation.Activate(); err != nil {
 		t.Fatal(err)
 	}
@@ -196,5 +201,17 @@ func TestRestoreResumptionProjectsFromCurrentInventoryWithoutWritingAndRechecksL
 	if rec.Code != http.StatusConflict || !app.Deps.RestoreIsolation.BlocksExternalWork() ||
 		!strings.Contains(rec.Body.String(), nextSlot.AddDate(0, 0, 1).Format(jobTimestampLayout)) {
 		t.Fatalf("resumption across the reviewed slot returned %d %s", rec.Code, rec.Body.String())
+	}
+	if mark, found, err := watermark.LoadSchedulerWatermark(); err != nil || !found || !mark.Equal(originalMark) {
+		t.Fatalf("an expired approval rebased the scheduler: %v, %v, %v", mark, found, err)
+	}
+	rows, err := app.Deps.DB().Query("SELECT status FROM audit_events WHERE action='backup.restore_isolation.resume'")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var status string
+	if !rows.Next() || rows.Scan(&status) != nil || status != "approved" || rows.Next() || rows.Err() != nil {
+		t.Fatalf("an expired approval was recorded as a successful resumption: %q, %v", status, rows.Err())
 	}
 }

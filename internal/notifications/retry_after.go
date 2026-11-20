@@ -101,6 +101,23 @@ func (c *failedRateLimitCompletions) find(rowID string, key rateLimitKey) (rateL
 	return key, completion, ok
 }
 
+func (c *failedRateLimitCompletions) deadline(key rateLimitKey) time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.items[key].deadline
+}
+
+func (s *Service) knownRateLimit(ctx context.Context, db *sql.DB, key rateLimitKey) (time.Time, error) {
+	// Read memory first so a concurrent successful commit cannot disappear
+	// between the two reads when the recovery entry is removed.
+	pending := s.rateLimitCompletions.deadline(key)
+	until, err := destinationRateLimit(ctx, db, key.destination, key.fingerprint)
+	if pending.After(until) {
+		until = pending
+	}
+	return until, err
+}
+
 func (c *failedRateLimitCompletions) snapshot() map[rateLimitKey]failedRateLimitCompletion {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -122,7 +139,7 @@ func (s *Service) recoverRateLimitCompletion(row outboxRow, key rateLimitKey) (h
 		return false, false
 	}
 
-	if err := s.persistOutboxCompletion(context.Background(), pending.rowID, pending.outcome); err == nil {
+	if err := s.persistOutboxCompletion(context.Background(), pending.rowID, pending.outcome, true); err == nil {
 		s.rateLimitCompletions.forget(key)
 		return row.ID == pending.rowID, true
 	}
@@ -140,7 +157,7 @@ func (s *Service) recoverRateLimitCompletion(row outboxRow, key rateLimitKey) (h
 // can keep a known response even when there are no other eligible rows.
 func (s *Service) flushRateLimitCompletions(ctx context.Context) {
 	for key, pending := range s.rateLimitCompletions.snapshot() {
-		if err := s.persistOutboxCompletion(ctx, pending.rowID, pending.outcome); err == nil {
+		if err := s.persistOutboxCompletion(ctx, pending.rowID, pending.outcome, true); err == nil {
 			s.rateLimitCompletions.forget(key)
 		} else {
 			s.deps.Logf("notification rate limit still could not be persisted for %q: %v", pending.rowID, err)

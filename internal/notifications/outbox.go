@@ -604,12 +604,14 @@ func claimNextOutboxRow(ctx context.Context, db *sql.DB, now time.Time, active o
 	return &row, nil
 }
 
-func completeOutboxRow(ctx context.Context, db *sql.DB, id string, outcome outboxOutcome, now string) error {
+func completeOutboxRow(ctx context.Context, db *sql.DB, id string, outcome outboxOutcome, now string, recoverReleased bool) error {
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
+	// Recovery can finish a released claim only while its original attempt
+	// count still matches. A later completion must keep precedence.
 	var destination string
 	err = tx.QueryRowContext(ctx, `
 		UPDATE notification_outbox
@@ -617,11 +619,13 @@ func completeOutboxRow(ctx context.Context, db *sql.DB, id string, outcome outbo
 		       completed_at = ?, status_code = ?, error = ?, duration_ms = ?, updated_at = ?,
 		       destination_fingerprint = CASE WHEN destination_fingerprint='' AND ?<>''
 		           THEN ? ELSE destination_fingerprint END
-		 WHERE id = ? AND state = ?
+		 WHERE id = ? AND (state = ? OR (? AND state = ?))
+		   AND (NOT ? OR attempts = ?)
 		 RETURNING destination
 	`, outcome.State, outcome.Attempts, outcome.NextAttemptAt, outcome.AttemptedAt,
 		outcome.CompletedAt, outcome.StatusCode, outcome.Error, outcome.DurationMS, now,
-		outcome.RateLimitedUntil, outcome.DestinationFingerprint, id, outboxStateClaimed).Scan(&destination)
+		outcome.RateLimitedUntil, outcome.DestinationFingerprint, id, outboxStateClaimed,
+		recoverReleased, outboxStateRetrying, recoverReleased, outcome.Attempts-1).Scan(&destination)
 	if errors.Is(err, sql.ErrNoRows) {
 		return errors.New("notification outbox completion lost its claim")
 	}

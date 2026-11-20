@@ -763,7 +763,7 @@ func (s *Service) processOutboxRow(ctx context.Context, row outboxRow) bool {
 			return completeOutboxRow(persistCtx, s.database(), row.ID, outboxOutcome{
 				State: outboxStateSkipped, Attempts: row.Attempts, CompletedAt: now,
 				Error: skipReason,
-			}, now)
+			}, now, false)
 		})
 		if err != nil {
 			s.health.Error(s.deps.Now())
@@ -825,7 +825,7 @@ func (s *Service) processOutboxRow(ctx context.Context, row outboxRow) bool {
 		status.Outcome = DeliveryOutcomeFailed
 		status.NextRetryAt = ""
 	}
-	if err := s.persistOutboxCompletion(context.Background(), row.ID, outcome); err != nil {
+	if err := s.persistOutboxCompletion(context.Background(), row.ID, outcome, false); err != nil {
 		now := s.deps.Now()
 		if outcome.RateLimitedUntil != "" && nextRetry.After(now) {
 			s.rateLimitCompletions.remember(key, failedRateLimitCompletion{rowID: row.ID, outcome: outcome, deadline: nextRetry}, now)
@@ -842,11 +842,12 @@ func (s *Service) processOutboxRow(ctx context.Context, row outboxRow) bool {
 	return err == nil
 }
 
-func (s *Service) persistOutboxCompletion(ctx context.Context, id string, outcome outboxOutcome) error {
+func (s *Service) persistOutboxCompletion(ctx context.Context, id string, outcome outboxOutcome, recoverReleased bool) error {
 	persistCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
 	return s.retrySQLiteContention(func() error {
-		return completeOutboxRow(persistCtx, s.database(), id, outcome, s.deps.Now().UTC().Format(time.RFC3339Nano))
+		now := s.deps.Now().UTC().Format(time.RFC3339Nano)
+		return completeOutboxRow(persistCtx, s.database(), id, outcome, now, recoverReleased)
 	})
 }
 
@@ -1125,7 +1126,7 @@ func (s *Service) SaveSettings(update SettingsUpdate) (SettingsResponse, error) 
 		if previous == "" || (previous == destinationConfigFingerprint(settings, destination) && !disabled) {
 			continue
 		}
-		until, err := destinationRateLimit(context.Background(), s.database(), destination, previous)
+		until, err := s.knownRateLimit(context.Background(), s.database(), rateLimitKey{destination, previous})
 		if err != nil || (!until.IsZero() && until.After(s.deps.Now())) {
 			s.signalWorker()
 			break
@@ -1160,7 +1161,7 @@ func (s *Service) DeliveryDiagnostics() (DeliveryDiagnostics, error) {
 		now := s.deps.Now()
 		for _, destination := range enabledDestinations(settings) {
 			fingerprint := destinationConfigFingerprint(settings, destination)
-			until, err := destinationRateLimit(ctx, db, destination, fingerprint)
+			until, err := s.knownRateLimit(ctx, db, rateLimitKey{destination, fingerprint})
 			if err != nil {
 				return err
 			}

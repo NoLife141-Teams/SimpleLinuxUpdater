@@ -252,7 +252,7 @@ func TestTerminalRateLimitUsesBackoffAndSurvivesOfflineRecovery(t *testing.T) {
 }
 
 func TestRateLimitedLaneRepairsFailedCompletionBeforeNextDelivery(t *testing.T) {
-	for _, name := range []string{"resume at deadline", "revalidate immediately after rotation", "reclaim original row after rotation"} {
+	for _, name := range []string{"resume at deadline", "revalidate immediately after rotation", "reclaim original row after rotation", "flush after a released claim"} {
 		t.Run(name, func(t *testing.T) {
 			testRateLimitedLaneRepairsFailedCompletion(t, name)
 		})
@@ -296,9 +296,29 @@ func testRateLimitedLaneRepairsFailedCompletion(t *testing.T, scenario string) {
 		t.Fatal("completion succeeded while persistence rejected it")
 	}
 
+	if scenario == "flush after a released claim" {
+		h.now = h.now.Add(defaultOutboxClaimTTL)
+		if err := recoverExpiredOutboxClaims(t.Context(), h.db, h.now, defaultOutboxClaimTTL, outboxDeliveries{}); err != nil {
+			t.Fatal(err)
+		}
+		h.service.processOutboxRow(t.Context(), claim(first))
+	}
 	if _, err := h.db.Exec("DROP TRIGGER reject_rate_limit_completion"); err != nil {
 		t.Fatal(err)
 	}
+	if scenario == "flush after a released claim" {
+		h.service.flushRateLimitCompletions(t.Context())
+		diagnostics, err := h.service.DeliveryDiagnostics()
+		want := h.now.Add(retryAfter - defaultOutboxClaimTTL)
+		if err != nil || !diagnostics.RateLimitedUntil[DestinationWebhook].Equal(want) {
+			t.Fatalf("flush after claim recovery lost the observed deadline: %+v, %v", diagnostics, err)
+		}
+		if row, err := claimNextOutboxRow(t.Context(), h.db, h.now, outboxDeliveries{}); err != nil || row != nil || h.client.calls != 1 {
+			t.Fatalf("a delivery became eligible before the recovered deadline: %+v, %v with %d requests", row, err, h.client.calls)
+		}
+		return
+	}
+
 	rotate := func() {
 		t.Helper()
 		_, err := h.service.SaveSettings(SettingsUpdate{Enabled: true, WebhookURLIntent: WebhookURLReplace,
@@ -383,6 +403,10 @@ func TestGracefulRestartPersistsRateLimitAfterTemporaryWriteFailure(t *testing.T
 	case <-time.After(time.Second):
 		t.Fatal("worker did not report the failed write")
 	}
+	diagnostics, err := first.DeliveryDiagnostics()
+	if err != nil || !diagnostics.RateLimitedUntil[DestinationWebhook].Equal(now.Add(90*time.Second)) {
+		t.Errorf("live diagnostics omitted the known pause during a write failure: %+v, %v", diagnostics, err)
+	}
 	if _, err := db.Exec("DROP TRIGGER reject_rate_limit_completion"); err != nil {
 		t.Fatal(err)
 	}
@@ -390,7 +414,7 @@ func TestGracefulRestartPersistsRateLimitAfterTemporaryWriteFailure(t *testing.T
 
 	reopened := NewService(deps)
 	defer closeOutboxService(t, reopened)
-	diagnostics, err := reopened.DeliveryDiagnostics()
+	diagnostics, err = reopened.DeliveryDiagnostics()
 	if err != nil || !diagnostics.RateLimitedUntil[DestinationWebhook].Equal(now.Add(90*time.Second)) {
 		t.Fatalf("reopened delivery diagnostics lost observed pause: %+v, %v", diagnostics, err)
 	}

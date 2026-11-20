@@ -224,9 +224,10 @@ and the capture time of the latest copy known to be verified. If the mount is
 available, a missing copy or one whose file identity or metadata changed is
 reported separately and excluded from the count of verified copies.
 The worker also checks the encrypted SHA-256 on the approved mount, with
-at most one periodic digest read per 30-second cycle. It checks the newest
-published copy hourly and other copies daily, with an earlier retry for
-unavailable results. Periodic checks have their own deadline after the
+at most one periodic digest read per 30-second cycle. It gives the latest
+confirmed recovery point hourly priority and also checks the newest publication
+hourly. Other copies are checked daily, with an earlier retry for unavailable
+results. Periodic checks have their own deadline after the
 transfer attempt. Admin separates publication verification from integrity
 observations. Before removing an older copy, the worker checks the digests
 and file metadata of the copies it will keep in that same retention attempt.

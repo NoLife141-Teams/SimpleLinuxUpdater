@@ -22,16 +22,22 @@ func secondaryIntegrityFresh(copy backupSecondaryCopy, now time.Time) bool {
 }
 
 func secondaryIntegrityCandidate(copies []backupSecondaryCopy, now time.Time) (backupSecondaryCopy, bool) {
-	var newest, oldestDue *backupSecondaryCopy
+	var newest, newestConfirmed, oldestDue *backupSecondaryCopy
 	for i := range copies {
 		copy := &copies[i]
 		if newest == nil || secondaryCapturedAfter(*copy, *newest) {
 			newest = copy
 		}
+		if secondaryIntegrityFresh(*copy, now) && (newestConfirmed == nil || secondaryCapturedAfter(*copy, *newestConfirmed)) {
+			newestConfirmed = copy
+		}
 		if secondaryIntegrityDue(*copy, now, backupIntegrityOtherAfter) && (oldestDue == nil ||
 			parseBackupStamp(copy.Integrity.AttemptedAt).Before(parseBackupStamp(oldestDue.Integrity.AttemptedAt))) {
 			oldestDue = copy
 		}
+	}
+	if newestConfirmed != nil && secondaryIntegrityDue(*newestConfirmed, now, backupIntegrityNewestAfter) {
+		return *newestConfirmed, true
 	}
 	if newest != nil && secondaryIntegrityDue(*newest, now, backupIntegrityNewestAfter) {
 		return *newest, true

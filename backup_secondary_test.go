@@ -679,10 +679,18 @@ func TestSecondaryRetentionWaitsForConfirmedReplacementIntegrity(t *testing.T) {
 		status.Secondary.Integrity.State != backupIntegrityMismatch || status.Secondary.CapturedAt != older.Archive.CapturedAt {
 		t.Fatalf("fallback status after restarting = %+v, %v", status.Secondary, err)
 	}
+	*now = now.Add(backupIntegrityNewestAfter)
+	if err := restarted.copyNextSecondaryBackup(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	state = backupAutomationStateForTest(t, restarted)
+	if state.Secondary.Copies[0].Integrity.CheckedAt != backupStamp(*now) {
+		t.Fatal("the only confirmed recovery point missed its hourly integrity check")
+	}
 	if err := os.WriteFile(newPath, original, 0600); err != nil {
 		t.Fatal(err)
 	}
-	*now = now.Add(backupIntegrityNewestAfter)
+	*now = now.Add(backupSecondaryPollInterval)
 	if err := restarted.copyNextSecondaryBackup(t.Context()); err != nil {
 		t.Fatal(err)
 	}

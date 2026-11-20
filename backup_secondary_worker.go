@@ -537,17 +537,20 @@ func (a *backupAutomation) observeSecondaryCopies(ctx context.Context, root *os.
 		return nil
 	}
 	changes := make(map[string]bool)
-	for _, copy := range copies {
+	for i := range copies {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
+		copy := &copies[i]
 		unavailable := true
 		if backupArchiveOwned(copy.Archive, binding.Owner) {
 			info, err := root.Lstat(copy.Archive.Name)
-			unavailable = err != nil || !secondaryCopyMatches(info, copy)
+			unavailable = err != nil || !secondaryCopyMatches(info, *copy)
 		}
 		if unavailable != copy.Unavailable {
 			changes[copy.Archive.ID] = unavailable
+			// Use the same availability when choosing this cycle's digest.
+			copy.Unavailable = unavailable
 		}
 	}
 	if !backupArchiveMountAvailable(root.Name(), binding.Directory) {

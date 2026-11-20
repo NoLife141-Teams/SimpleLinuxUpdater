@@ -591,6 +591,7 @@ func TestSecondaryRetentionCountsOnlyCopiesStillPresentAndUnchanged(t *testing.T
 	if err := os.Chmod(filepath.Join(secondary, copies[2].Archive.Name), 0000); err != nil {
 		t.Fatal(err)
 	}
+	*now = now.Add(backupIntegrityNewestAfter)
 	if err := automation.copyNextSecondaryBackup(t.Context()); err != nil {
 		t.Fatal(err)
 	}
@@ -598,6 +599,10 @@ func TestSecondaryRetentionCountsOnlyCopiesStillPresentAndUnchanged(t *testing.T
 	if err != nil || status.Secondary.State != "degraded" || status.Secondary.Failed != 2 ||
 		status.Secondary.Failure != "copy_unavailable" || status.Secondary.CapturedAt != copies[0].Archive.CapturedAt {
 		t.Fatalf("status relied on an unavailable copy: %+v (%v)", status.Secondary, err)
+	}
+	state := backupAutomationStateForTest(t, automation)
+	if state.Secondary.Copies[0].Integrity.CheckedAt != backupStamp(*now) {
+		t.Fatal("the confirmed fallback recovery point missed its hourly check")
 	}
 	if err := os.Remove(oldest); err != nil {
 		t.Fatal(err)

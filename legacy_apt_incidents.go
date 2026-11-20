@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"net/url"
 
 	auditpkg "debian-updater/internal/audit"
@@ -14,41 +15,75 @@ type legacyAPTIncident struct {
 	jobID, name, identity, endpoint string
 }
 
-func preserveLegacyAPTIncidents(ctx context.Context, live *sql.Tx, staged *sql.DB) error {
+type legacyAPTIncidentEvidence struct {
+	legacyAPTIncident
+	resolved bool
+	record   jobs.Record
+}
+
+func captureLegacyAPTIncidents(ctx context.Context, live *sql.Tx) ([]legacyAPTIncidentEvidence, error) {
 	// The installed decision wins over an older archive. A resolved legacy
 	// incident must not reappear, and a pending incident must keep its report.
 	incidents, err := live.QueryContext(ctx, `SELECT job_id,server_name,identity,endpoint,resolved FROM legacy_apt_incidents`)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer incidents.Close()
-	stagedJobs := jobs.NewSQLiteRepository(staged)
+	var evidence []legacyAPTIncidentEvidence
 	for incidents.Next() {
-		var incident legacyAPTIncident
-		var resolved bool
-		if err := incidents.Scan(&incident.jobID, &incident.name, &incident.identity, &incident.endpoint, &resolved); err != nil {
-			return err
+		var incident legacyAPTIncidentEvidence
+		if err := incidents.Scan(&incident.jobID, &incident.name, &incident.identity, &incident.endpoint, &incident.resolved); err != nil {
+			return nil, err
 		}
-		if !resolved {
+		evidence = append(evidence, incident)
+	}
+	if err := incidents.Err(); err != nil {
+		return nil, err
+	}
+	if err := incidents.Close(); err != nil {
+		return nil, err
+	}
+	for i := range evidence {
+		incident := &evidence[i]
+		if !incident.resolved {
 			record, err := jobs.ReadAPTRecoveryJob(ctx, live, incident.jobID)
 			if err != nil {
-				return err
+				return nil, err
 			}
-			if err := stagedJobs.ImportAPTRecoveryEvidence(ctx, record, live); err != nil {
-				return err
+			incident.record = record
+		}
+	}
+	return evidence, nil
+}
+
+func preserveLegacyAPTIncidents(ctx context.Context, evidence []legacyAPTIncidentEvidence, staged *sql.DB, logSource *sql.Tx) (aptRestoreConflicts, error) {
+	if len(evidence) == 0 {
+		return nil, nil
+	}
+	stagedJobs := jobs.NewSQLiteRepository(staged)
+	var conflicts aptRestoreConflicts
+	for _, incident := range evidence {
+		if !incident.resolved {
+			err := stagedJobs.ImportAPTRecoveryEvidence(ctx, incident.record, logSource)
+			if errors.Is(err, jobs.ErrAPTRecoveryEvidenceConflict) {
+				conflicts = append(conflicts, aptRestoreConflict{
+					Code: "apt_evidence_conflict", Server: incident.record.ServerName, jobID: incident.jobID,
+					Message: "The archive contains conflicting APT job evidence for this server.",
+				})
+				continue
+			}
+			if err != nil {
+				return nil, err
 			}
 		}
 		if _, err := staged.ExecContext(ctx, `INSERT INTO legacy_apt_incidents(job_id,server_name,identity,endpoint,resolved)
 			VALUES(?,?,?,?,?) ON CONFLICT(job_id) DO UPDATE SET
 				server_name=excluded.server_name,identity=excluded.identity,endpoint=excluded.endpoint,resolved=excluded.resolved`,
-			incident.jobID, incident.name, incident.identity, incident.endpoint, resolved); err != nil {
-			return err
+			incident.jobID, incident.name, incident.identity, incident.endpoint, incident.resolved); err != nil {
+			return nil, err
 		}
 	}
-	if err := incidents.Err(); err != nil {
-		return err
-	}
-	return bindUnmatchedLegacyAPTIncidents(ctx, staged)
+	return conflicts, bindUnmatchedLegacyAPTIncidents(ctx, staged)
 }
 
 func (i legacyAPTIncident) matches(server Server) bool {
@@ -134,7 +169,7 @@ func bindUnmatchedLegacyAPTIncidents(ctx context.Context, db interface {
 
 func pendingLegacyAPTIncidents(ctx context.Context, db *sql.DB) ([]legacyAPTIncident, error) {
 	rows, err := db.QueryContext(ctx, `SELECT job_id,server_name,identity,endpoint FROM legacy_apt_incidents
-		WHERE resolved=0 ORDER BY job_id`)
+		WHERE resolved=0`)
 	if err != nil {
 		return nil, err
 	}
@@ -151,12 +186,13 @@ func pendingLegacyAPTIncidents(ctx context.Context, db *sql.DB) ([]legacyAPTInci
 }
 
 func legacyAPTIncidentForServer(incidents []legacyAPTIncident, server Server) legacyAPTIncident {
+	var first legacyAPTIncident
 	for _, incident := range incidents {
-		if incident.matches(server) {
-			return incident
+		if (first.jobID == "" || incident.jobID < first.jobID) && incident.matches(server) {
+			first = incident
 		}
 	}
-	return legacyAPTIncident{}
+	return first
 }
 
 func (i legacyAPTIncident) facts(facts restoreAPTHostFacts) restoreAPTHostFacts {

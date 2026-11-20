@@ -253,35 +253,41 @@ func (o restoreAPTObservation) authorizes(server Server) bool {
 	return o.approved && o.result == "healthy" && o.key != "" && o.target != "" && o.target == server.APTTarget()
 }
 
-func (v *restoreAPTValidation) all(ctx context.Context) (map[string]restoreAPTObservation, error) {
+func (v *restoreAPTValidation) all(ctx context.Context) (map[string]restoreAPTObservation, []legacyAPTIncident, error) {
 	db := v.db()
 	if db == nil {
-		return nil, errors.New("restore APT persistence is unavailable")
+		return nil, nil, errors.New("restore APT persistence is unavailable")
 	}
-	rows, err := db.QueryContext(ctx, `SELECT identity,target,host_key,result,checked_at,approved FROM restore_apt_validation`)
+	rows, err := db.QueryContext(ctx, `
+		SELECT identity,target,host_key,result,checked_at,approved,'' AS job_id,'' AS server_name,'' AS endpoint
+		FROM restore_apt_validation
+		UNION ALL
+		SELECT identity,'','','',0,0,job_id,server_name,endpoint
+		FROM legacy_apt_incidents WHERE resolved=0`)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer rows.Close()
 	result := make(map[string]restoreAPTObservation)
+	var legacy []legacyAPTIncident
 	for rows.Next() {
-		var identity string
+		var incident legacyAPTIncident
 		var observation restoreAPTObservation
-		if err := rows.Scan(&identity, &observation.target, &observation.key, &observation.result,
-			&observation.checkedAt, &observation.approved); err != nil {
-			return nil, err
+		if err := rows.Scan(&incident.identity, &observation.target, &observation.key, &observation.result,
+			&observation.checkedAt, &observation.approved, &incident.jobID, &incident.name, &incident.endpoint); err != nil {
+			return nil, nil, err
 		}
-		result[identity] = observation
+		if incident.jobID != "" {
+			legacy = append(legacy, incident)
+		} else {
+			result[incident.identity] = observation
+		}
 	}
-	return result, rows.Err()
+	return result, legacy, rows.Err()
 }
 
 func (v *restoreAPTValidation) hostFacts(ctx context.Context, state *serverpkg.State, now time.Time, isolated bool) []restoreAPTHostFacts {
-	observations, err := v.all(ctx)
-	if err != nil {
-		return nil
-	}
-	legacy, err := pendingLegacyAPTIncidents(ctx, v.db())
+	observations, legacy, err := v.all(ctx)
 	if err != nil {
 		return nil
 	}
@@ -311,13 +317,12 @@ func (v *restoreAPTValidation) hostFacts(ctx context.Context, state *serverpkg.S
 }
 
 func (v *restoreAPTValidation) blocked(ctx context.Context, servers []Server) map[string]bool {
-	observations, err := v.all(ctx)
-	legacy, legacyErr := pendingLegacyAPTIncidents(ctx, v.db())
+	observations, legacy, err := v.all(ctx)
 	blocked := make(map[string]bool)
 	isolated := v.isolation.BlocksExternalWork()
 	for _, server := range servers {
 		observation, required := observations[server.Identity]
-		if err != nil || legacyErr != nil || legacyAPTIncidentForServer(legacy, server).jobID != "" ||
+		if err != nil || legacyAPTIncidentForServer(legacy, server).jobID != "" ||
 			(required && (isolated || !observation.authorizes(server))) {
 			blocked[server.Name] = true
 		}

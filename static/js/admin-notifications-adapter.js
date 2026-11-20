@@ -96,7 +96,7 @@
                     const label = document.createElement("dt");
                     label.textContent = `${labels[destination]} queue paused`;
                     const deadline = document.createElement("dd");
-                    deadline.textContent = `HTTP 429 · Next eligible at ${formatAdminRefreshTime(until)}`;
+                    deadline.textContent = `HTTP 429 · Next eligible at ${formatAdminRefreshTime(until, "medium")}`;
                     row.append(label, deadline);
                     return row;
                 });
@@ -150,7 +150,7 @@
             if (retryRow) retryRow.hidden = !hasRetry;
             if (retryAt)
                 retryAt.textContent = hasRetry
-                    ? formatAdminRefreshTime(status.nextRetryAt) ||
+                    ? formatAdminRefreshTime(status.nextRetryAt, "medium") ||
                       status.nextRetryAt
                     : "";
             if (errorRow) errorRow.hidden = !status.error;

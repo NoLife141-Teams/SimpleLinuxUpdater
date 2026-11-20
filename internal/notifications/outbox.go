@@ -519,21 +519,31 @@ func recoverExpiredOutboxClaims(ctx context.Context, db *sql.DB, now time.Time, 
 }
 
 // Eligibility and wake scheduling share the same destination binding. Legacy
-// unbound rows use the current binding. Rows for rotated credentials can proceed
-// to revalidation when their individual delay expires.
+// unbound rows use the current binding until an HTTP 429 binds their retry.
 const outboxCurrentFingerprint = `json_extract(binding.fingerprints, '$.' || o.destination)`
 
 const outboxSchedulingJoins = `
 	LEFT JOIN (
-		SELECT CASE WHEN json_valid(value) THEN json_extract(value, '$.destination_fingerprints') END AS fingerprints
+		SELECT CASE WHEN json_valid(value) THEN
+			CASE WHEN json_type(value, '$.destination_fingerprints')='object'
+			THEN json_extract(value, '$.destination_fingerprints') END
+		END AS fingerprints
 		FROM settings WHERE key=?
 	) binding ON TRUE
 	LEFT JOIN notification_destination_health health
-		ON health.destination=o.destination AND health.fingerprint=` + outboxCurrentFingerprint + `
-		AND (o.destination_fingerprint='' OR o.destination_fingerprint=health.fingerprint)
+		ON health.destination=o.destination
+		AND health.fingerprint=COALESCE(NULLIF(o.destination_fingerprint, ''), ` + outboxCurrentFingerprint + `)
 `
 
-const outboxEffectiveDue = `max(rtrim(o.next_attempt_at, 'Z'), COALESCE(rtrim(health.rate_limited_until, 'Z'), ''))`
+// A rotated destination's cooldown must not delay revalidating its old rows.
+// Preserve independent delays, such as a new backoff after a revalidation error.
+const outboxEffectiveDue = `CASE
+	WHEN binding.fingerprints IS NOT NULL AND o.destination_fingerprint<>''
+		AND o.destination_fingerprint IS NOT ` + outboxCurrentFingerprint + `
+	THEN CASE WHEN o.status_code=429 AND o.next_attempt_at=health.rate_limited_until THEN ''
+		ELSE rtrim(o.next_attempt_at, 'Z') END
+	ELSE max(rtrim(o.next_attempt_at, 'Z'), COALESCE(rtrim(health.rate_limited_until, 'Z'), ''))
+END`
 
 func claimNextOutboxRow(ctx context.Context, db *sql.DB, now time.Time, active outboxDeliveries) (*outboxRow, error) {
 	if db == nil {
@@ -600,11 +610,14 @@ func completeOutboxRow(ctx context.Context, db *sql.DB, id string, outcome outbo
 	err = tx.QueryRowContext(ctx, `
 		UPDATE notification_outbox
 		   SET state = ?, attempts = ?, next_attempt_at = ?, claimed_at = '', attempted_at = ?,
-		       completed_at = ?, status_code = ?, error = ?, duration_ms = ?, updated_at = ?
+		       completed_at = ?, status_code = ?, error = ?, duration_ms = ?, updated_at = ?,
+		       destination_fingerprint = CASE WHEN destination_fingerprint='' AND ?<>''
+		           THEN ? ELSE destination_fingerprint END
 		 WHERE id = ? AND state = ?
 		 RETURNING destination
 	`, outcome.State, outcome.Attempts, outcome.NextAttemptAt, outcome.AttemptedAt,
-		outcome.CompletedAt, outcome.StatusCode, outcome.Error, outcome.DurationMS, now, id, outboxStateClaimed).Scan(&destination)
+		outcome.CompletedAt, outcome.StatusCode, outcome.Error, outcome.DurationMS, now,
+		outcome.RateLimitedUntil, outcome.DestinationFingerprint, id, outboxStateClaimed).Scan(&destination)
 	if errors.Is(err, sql.ErrNoRows) {
 		return errors.New("notification outbox completion lost its claim")
 	}

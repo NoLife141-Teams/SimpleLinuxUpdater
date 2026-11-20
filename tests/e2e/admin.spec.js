@@ -2341,7 +2341,7 @@ test("notification delivery health exposes safe retry diagnostics and independen
         "HTTP 503",
     );
 
-    state.notificationRateLimits = { webhook: "2026-11-20T05:30:00Z" };
+    state.notificationRateLimits = { webhook: "2026-11-20T05:30:42Z" };
     state.notificationDiagnosticsResponse = {
         event_type: "update.complete",
         outcome: "failed",
@@ -2367,7 +2367,7 @@ test("notification delivery health exposes safe retry diagnostics and independen
 
     const queuePause = page.locator("#notification-diagnostics-rate-limits");
     await expect(queuePause).toContainText("Webhook queue paused");
-    await expect(queuePause).toContainText(/HTTP 429 · Next eligible at .+/);
+    await expect(queuePause).toContainText(/HTTP 429 · Next eligible at .*:42\b/);
     state.notificationTestFailure = true;
     state.notificationTestResponse = {
         event_type: "notification.test",

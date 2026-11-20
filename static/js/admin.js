@@ -197,14 +197,14 @@
             return adminPageInteraction.getView();
         }
 
-        function formatAdminRefreshTime(value) {
+        function formatAdminRefreshTime(value, timeStyle = "short") {
             const timestamp = String(value || "").trim();
             if (!timestamp) return "";
             const parsed = new Date(timestamp);
             if (Number.isNaN(parsed.getTime())) return "";
             return new Intl.DateTimeFormat(undefined, {
                 dateStyle: "medium",
-                timeStyle: "short",
+                timeStyle,
             }).format(parsed);
         }
 

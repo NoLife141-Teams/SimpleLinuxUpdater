@@ -119,6 +119,11 @@ func TestQueuedRetryAfterSurvivesRestartAndKeepsOtherDestinationsMoving(t *testi
 			t.Cleanup(func() { closeOutboxService(t, first) })
 			first.StartConditionMonitoring()
 			configure(first, "https://rate-limited.example.test/private-path")
+			if rotate {
+				// An older database can have an unbound row. Its HTTP 429
+				// must bind the retry to the credentials that were used.
+				insertPendingOutboxIntent(t, db, DeliveryIntent{ID: "first", Action: EventUpdateComplete, TargetName: "host"}, now)
+			}
 			enqueue(first, "first")
 			waitForRateLimitRow(t, db, "first", DestinationWebhook, outboxStateRetrying)
 			var due string
@@ -153,8 +158,9 @@ func TestQueuedRetryAfterSurvivesRestartAndKeepsOtherDestinationsMoving(t *testi
 			}
 			if rotate {
 				configure(reopened, "https://rotated.example.test/private-path")
-				enqueue(reopened, "after-rotation")
+				waitForRateLimitRow(t, db, "first", DestinationWebhook, outboxStateSkipped)
 				waitForRateLimitRow(t, db, "second", DestinationWebhook, outboxStateSkipped)
+				enqueue(reopened, "after-rotation")
 				waitForRateLimitRow(t, db, "after-rotation", DestinationWebhook, outboxStateSucceeded)
 				if original.Load() != 1 || rotated.Load() != 1 {
 					t.Fatalf("rotation: old calls=%d, new calls=%d", original.Load(), rotated.Load())

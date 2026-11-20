@@ -112,9 +112,13 @@ func handleRestoreIsolationResume(c *gin.Context, deps AppDeps) {
 	ctx := c.Request.Context()
 	now := deps.Now().UTC()
 	snapshot := collectRestoreResumeSnapshot(ctx, deps, activation, now)
-	if !snapshot.confirms(confirmed.PreviewToken, now) {
+	deadline := snapshot.confirmationDeadline(confirmed.PreviewToken, now)
+	reviewChanged := func(snapshot restoreResumeSnapshot, now time.Time) {
 		c.JSON(http.StatusConflict, gin.H{"error": "Review the current resumption impact before confirming.",
 			"code": "restore_resume_preview_changed", "preview": snapshot.preview(now)})
+	}
+	if deadline.IsZero() {
+		reviewChanged(snapshot, now)
 		return
 	}
 	minute := now.Truncate(time.Minute)
@@ -133,13 +137,23 @@ func handleRestoreIsolationResume(c *gin.Context, deps AppDeps) {
 	if err := ctx.Err(); err != nil {
 		return
 	}
+	approvalAt := deps.Now().UTC()
+	if !approvalAt.Before(deadline) {
+		reviewChanged(collectRestoreResumeSnapshot(ctx, deps, activation, approvalAt), approvalAt)
+		return
+	}
 	if deps.RestoreAPTValidation != nil {
-		if err := deps.RestoreAPTValidation.approve(ctx, deps.Now()); err != nil {
+		if err := deps.RestoreAPTValidation.approve(ctx, approvalAt); err != nil {
 			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "APT validation could not be recorded. External work stays paused."})
 			return
 		}
 	}
-	if err := deps.RestoreIsolation.Reactivate(deps.Now); err != nil {
+	if err := deps.RestoreIsolation.Reactivate(deps.Now, deadline); err != nil {
+		if errors.Is(err, internalbackup.ErrRestoreResumptionExpired) {
+			changedAt := deps.Now().UTC()
+			reviewChanged(collectRestoreResumeSnapshot(ctx, deps, activation, changedAt), changedAt)
+			return
+		}
 		log.Printf("restore isolation release failed: %v", err)
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "The resumption decision could not be applied. Retry in Admin."})
 		return

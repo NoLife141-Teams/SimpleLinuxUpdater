@@ -18,6 +18,8 @@ type restoreIsolationState struct {
 	ResumeSchedules time.Time `json:"resume_schedules,omitzero"`
 }
 
+var ErrRestoreResumptionExpired = errors.New("restore resumption review expired")
+
 // RestoreIsolation belongs to the local installation. Archive application can
 // replace SQLite and host trust while this file continues to govern outbound work.
 type RestoreIsolation struct {
@@ -112,7 +114,7 @@ func (s *RestoreIsolation) Activate() error {
 	return s.replaceState(RestoreIsolationPath(database), restoreIsolationState{Active: true, Activation: rand.Text()})
 }
 
-func (s *RestoreIsolation) Reactivate(now func() time.Time) error {
+func (s *RestoreIsolation) Reactivate(now func() time.Time, reviewDeadline time.Time) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	database, err := s.resolveDatabaseForWrite()
@@ -140,7 +142,11 @@ func (s *RestoreIsolation) Reactivate(now func() time.Time) error {
 	if err := s.replaceState(RestoreIsolationPath(database), restoreIsolationState{ResumeSchedules: resumeAt, Activation: state.Activation}); err != nil {
 		return err
 	}
-	if !now().Before(resumeAt) {
+	at := now()
+	if !reviewDeadline.IsZero() && !at.Before(reviewDeadline) {
+		return ErrRestoreResumptionExpired
+	}
+	if !at.Before(resumeAt) {
 		return errors.New("restore isolation schedule boundary elapsed during resumption")
 	}
 	if err := os.Remove(pending); err != nil {

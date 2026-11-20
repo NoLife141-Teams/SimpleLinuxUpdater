@@ -2853,7 +2853,7 @@ test("admin restore isolation is selectable and resumption requires typed confir
             {name: "healthy-host", allowed: true, reason: "healthy"},
             {name: "offline-host", allowed: false, reason: "unreachable"},
         ],
-        schedules: [{server: "healthy-host", policy: "Nightly", at: "2026-11-20T03:00:00Z"}],
+        schedules: [{server: "healthy-host", policy: "Nightly", at: "2026-11-20T03:00:00Z", reason: "rollout_waiting"}],
         notifications: [{destination: "webhook", configured: true, pending: 2, retrying: 1, claimed: 0}],
     };
     await ensureAuthenticatedSession(page);
@@ -2916,6 +2916,7 @@ test("admin restore isolation is selectable and resumption requires typed confir
     await page.getByRole("button", {name: "Review resumption impact"}).click();
     await expect(page.locator("#restore-impact-hosts")).toContainText("offline-host · Stays blocked");
     await expect(page.locator("#restore-impact-schedules")).toContainText("Nightly");
+    await expect(page.locator("#restore-impact-schedules")).toContainText("Waiting for preceding batch success");
     await expect(page.locator("#restore-impact-notifications")).toContainText("2 pending");
     await dismissTypedConfirm(page, resume);
     expect(resumptionCount).toBe(0);

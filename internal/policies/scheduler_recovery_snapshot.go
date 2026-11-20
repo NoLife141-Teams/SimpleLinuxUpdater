@@ -27,9 +27,10 @@ type schedulerRecoveryTimeStore struct{}
 func (schedulerRecoveryTimeStore) Load(context.Context) (string, error) { return "", nil }
 func (schedulerRecoveryTimeStore) Save(context.Context, string) error   { return nil }
 
-func (s *Service) captureSchedulerRecoverySnapshot() (schedulerRecoverySnapshot, error) {
+func (s *Service) captureSchedulerRecoverySnapshot(inventory []servers.Server) (schedulerRecoverySnapshot, error) {
 	deps := s.EnsureDeps()
-	if deps.ListPolicies == nil || deps.LoadOverrides == nil || deps.LoadGlobalBlackouts == nil || deps.SnapshotServers == nil {
+	if deps.ListPolicies == nil || deps.LoadOverrides == nil || deps.LoadGlobalBlackouts == nil ||
+		(inventory == nil && deps.SnapshotServers == nil) {
 		return schedulerRecoverySnapshot{}, errors.New("policy service dependencies are incomplete")
 	}
 	policies, err := deps.ListPolicies()
@@ -48,11 +49,14 @@ func (s *Service) captureSchedulerRecoverySnapshot() (schedulerRecoverySnapshot,
 	if loc == nil {
 		loc = time.Local
 	}
+	if inventory == nil {
+		inventory = deps.SnapshotServers()
+	}
 	return schedulerRecoverySnapshot{
 		Policies:        cloneRecoveryPolicies(policies),
 		Overrides:       cloneRecoveryOverrides(overrides),
 		GlobalBlackouts: cloneRecoveryBlackouts(globalBlackouts),
-		Servers:         cloneRecoveryServers(deps.SnapshotServers()),
+		Servers:         cloneRecoveryServers(inventory),
 		Location:        loc,
 	}, nil
 }

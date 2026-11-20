@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	policypkg "debian-updater/internal/policies"
+
 	"github.com/gin-gonic/gin"
 )
 
@@ -136,5 +138,63 @@ func TestRestoreResumptionRejectsChangedAndExpiredPreview(t *testing.T) {
 		gin.H{"confirmation": "RESUME", "preview_token": current.Token})
 	if rec.Code != http.StatusOK {
 		t.Fatalf("resume with current preview = %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestRestoreResumptionProjectsFromCurrentInventoryWithoutWritingAndRechecksLateSlots(t *testing.T) {
+	now := time.Date(2026, 11, 20, 12, 0, 58, 0, time.UTC)
+	nextSlot := now.Truncate(time.Minute).Add(time.Minute)
+	var clock atomic.Int64
+	clock.Store(now.Unix())
+	app := newTestAppWithDeps(t, filepath.Join(t.TempDir(), "servers.db"), AppDeps{
+		Now: func() time.Time { return time.Unix(clock.Load(), 0) },
+		NotifyDashboardEvent: func(action string) {
+			if action == "backup.restore_isolation.resume" {
+				clock.Store(nextSlot.Unix())
+			}
+		},
+	})
+	admin := app.authenticate(t)
+	server, err := app.Deps.ServerInventoryService.Create(Server{
+		Name: "current-host", Host: "current.example.test", User: "root", Tags: []string{"maintenance"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy, err := app.Deps.PolicyRepository.CreatePolicy(UpdatePolicy{
+		Name: "Nightly", Enabled: true, TargetTag: "maintenance",
+		ExecutionMode: policypkg.ExecutionScanOnly, PackageScope: policypkg.PackageScopeSecurity,
+		CadenceKind: policypkg.CadenceDaily, TimeLocal: nextSlot.In(app.Deps.ApplicationTime.Current().Location).Format("15:04"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, inserted, err := app.Deps.PolicyRepository.CreateRun(policypkg.Run{
+		PolicyID: policy.ID, PolicyName: policy.Name, ServerName: "deleted-host",
+		ScheduledForUTC: nextSlot.Format(jobTimestampLayout), Status: policypkg.RunSkipped,
+	}); err != nil || !inserted {
+		t.Fatalf("set up historical scheduled run: %v, %v", inserted, err)
+	}
+	if _, err := app.Deps.DB().Exec("DROP TABLE IF EXISTS " + policypkg.SchedulerStateRevisionTable); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.Deps.RestoreIsolation.Activate(); err != nil {
+		t.Fatal(err)
+	}
+	preview := reviewRestoreResumption(t, app, admin)
+	var revisionTables int
+	err = app.Deps.DB().QueryRow("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?", policypkg.SchedulerStateRevisionTable).Scan(&revisionTables)
+	if err != nil || revisionTables != 0 {
+		t.Fatalf("preview created scheduler revision storage: %d, %v", revisionTables, err)
+	}
+	if len(preview.Impact.Schedules) != 1 || preview.Impact.Schedules[0].Server != server.Name ||
+		preview.Impact.Schedules[0].At != nextSlot.Format(jobTimestampLayout) {
+		t.Fatalf("preview schedule = %+v", preview.Impact.Schedules)
+	}
+	rec := identityRequest(app, "POST", restoreIsolationResumeRoute, admin, "",
+		gin.H{"confirmation": "RESUME", "preview_token": preview.Token})
+	if rec.Code != http.StatusConflict || !app.Deps.RestoreIsolation.BlocksExternalWork() ||
+		!strings.Contains(rec.Body.String(), nextSlot.AddDate(0, 0, 1).Format(jobTimestampLayout)) {
+		t.Fatalf("resumption across the reviewed slot returned %d %s", rec.Code, rec.Body.String())
 	}
 }

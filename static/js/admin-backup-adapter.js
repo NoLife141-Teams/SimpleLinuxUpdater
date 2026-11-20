@@ -539,9 +539,15 @@
             renderList("restore-impact-hosts", hosts?.map(host =>
                 `${host.name} · ${host.allowed ? "Can resume" : "Stays blocked"} · ${aptReason[host.reason] || describeRestoreAPTState(host.reason)}`) ?? null,
             "No servers");
-            renderList("restore-impact-schedules", schedules?.map(run =>
-                `${run.server} · ${run.policy} · ${formatSessionTime(run.at)}`) ?? null,
-            "No upcoming scheduled runs");
+            const scheduleStates = {
+                queued: "Queued", running: "Running", waiting_approval: "Waiting for approval",
+                skipped: "Skipped", succeeded: "Succeeded", failed: "Failed", cancelled: "Cancelled",
+                interrupted: "Interrupted",
+            };
+            renderList("restore-impact-schedules", schedules?.map(run => {
+                const status = run.reason === "rollout_waiting" ? "Waiting for preceding batch success" : scheduleStates[run.status];
+                return [run.server, run.policy, formatSessionTime(run.at), status].filter(Boolean).join(" · ");
+            }) ?? null, "No upcoming scheduled runs");
             const names = {webhook: "Webhook", discord: "Discord", telegram: "Telegram"};
             renderList("restore-impact-notifications", notifications?.map(queue => {
                 const cooldown = queue.rate_limited_until ? ` · paused until ${formatSessionTime(queue.rate_limited_until)}` : "";

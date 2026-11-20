@@ -36,6 +36,7 @@ type restoreResumeSchedule struct {
 	Policy string `json:"policy"`
 	At     string `json:"at"`
 	Reason string `json:"reason,omitempty"`
+	Status string `json:"status"`
 }
 
 type restoreResumeImpact struct {
@@ -54,7 +55,7 @@ type restoreResumeSnapshot struct {
 	Impact               restoreResumeImpact
 	Activation           string
 	Inventory            []restoreResumeHostBinding
-	PolicyRevision       int64
+	PolicyFingerprint    string
 	NotificationRevision string
 }
 
@@ -102,7 +103,7 @@ func collectRestoreResumeSnapshot(ctx context.Context, deps AppDeps, activation 
 	state.Unlock()
 
 	nextTick := now.Truncate(time.Minute).Add(time.Minute)
-	snapshot.Impact.Schedules, snapshot.PolicyRevision = restoreResumeSchedules(deps, inventory, nextTick)
+	snapshot.Impact.Schedules, snapshot.PolicyFingerprint = restoreResumeSchedules(deps, inventory, nextTick)
 	if notifications, ok := deps.NotificationService.(interface {
 		RestoreDeliveryResumption(context.Context, time.Time) ([]notificationpkg.RestoreDeliveryQueue, string, error)
 	}); ok {
@@ -114,33 +115,19 @@ func collectRestoreResumeSnapshot(ctx context.Context, deps AppDeps, activation 
 	return snapshot
 }
 
-func restoreResumeSchedules(deps AppDeps, servers []Server, nextTick time.Time) ([]restoreResumeSchedule, int64) {
-	repository, ok := deps.PolicyRepository.(policySchedulerStateRevisionRepository)
-	var revision int64
-	if ok {
-		var err error
-		revision, err = repository.LoadSchedulerStateRevision()
-		if err != nil {
-			return nil, 0
-		}
-	}
-	projected, err := deps.PolicyService.ProjectSchedule(policypkg.ScheduleProjectionRequest{Now: nextTick, Servers: servers})
+func restoreResumeSchedules(deps AppDeps, servers []Server, nextTick time.Time) ([]restoreResumeSchedule, string) {
+	projected, fingerprint, err := deps.PolicyService.ProjectRestoreResumption(policypkg.ScheduleProjectionRequest{Now: nextTick, Servers: servers})
 	if err != nil {
-		return nil, revision
+		return nil, fingerprint
 	}
-	if ok {
-		if current, err := repository.LoadSchedulerStateRevision(); err != nil || current != revision {
-			return nil, revision
-		}
-	}
-	rows := make([]restoreResumeSchedule, 0, len(projected.Servers))
-	for server, projection := range projected.Servers {
-		next := projection.NextRun
+	rows := make([]restoreResumeSchedule, 0, len(servers))
+	for _, server := range servers {
+		next := projected.Servers[server.Name].NextRun
 		if next.ScheduledForUTC == "" {
 			continue
 		}
-		rows = append(rows, restoreResumeSchedule{Server: server, Policy: next.PolicyName,
-			At: next.ScheduledForUTC, Reason: next.Reason})
+		rows = append(rows, restoreResumeSchedule{Server: server.Name, Policy: next.PolicyName,
+			At: next.ScheduledForUTC, Reason: next.Reason, Status: next.Status})
 	}
 	sort.Slice(rows, func(i, j int) bool {
 		if rows[i].At != rows[j].At {
@@ -148,7 +135,7 @@ func restoreResumeSchedules(deps AppDeps, servers []Server, nextTick time.Time) 
 		}
 		return rows[i].Server < rows[j].Server
 	})
-	return rows, revision
+	return rows, fingerprint
 }
 
 func (s restoreResumeSnapshot) signature(expires string) []byte {
@@ -167,14 +154,40 @@ func (s restoreResumeSnapshot) preview(now time.Time) restoreResumePreview {
 	}
 }
 
-func (s restoreResumeSnapshot) confirms(token string, now time.Time) bool {
+func (s restoreResumeSnapshot) confirmationDeadline(token string, now time.Time) time.Time {
 	stamp, signature, found := strings.Cut(token, ".")
 	seconds, err := strconv.ParseInt(stamp, 10, 64)
 	if !found || err != nil || seconds <= now.Unix() || len(signature) != 2*sha256.Size {
-		return false
+		return time.Time{}
 	}
 	supplied, err := hex.DecodeString(signature)
-	return err == nil && hmac.Equal(s.signature(stamp), supplied)
+	if err != nil || !hmac.Equal(s.signature(stamp), supplied) {
+		return time.Time{}
+	}
+	deadline := time.Unix(seconds, 0)
+	for _, host := range s.Impact.Hosts {
+		if host.Allowed && host.CheckedAt != nil {
+			deadline = earlierResumptionDeadline(deadline, host.CheckedAt.Add(restoreAPTProofLifetime+time.Second))
+		}
+	}
+	for _, run := range s.Impact.Schedules {
+		if scheduledAt, err := time.Parse(time.RFC3339Nano, run.At); err == nil {
+			deadline = earlierResumptionDeadline(deadline, scheduledAt)
+		}
+	}
+	for _, queue := range s.Impact.Notifications {
+		if queue.RateLimitedUntil != nil {
+			deadline = earlierResumptionDeadline(deadline, *queue.RateLimitedUntil)
+		}
+	}
+	return deadline
+}
+
+func earlierResumptionDeadline(current, candidate time.Time) time.Time {
+	if candidate.Before(current) {
+		return candidate
+	}
+	return current
 }
 
 func handleRestoreResumePreview(c *gin.Context, deps AppDeps) {

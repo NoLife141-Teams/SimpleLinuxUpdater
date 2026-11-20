@@ -30,18 +30,24 @@ type backupSecondaryBinding struct {
 }
 
 type backupSecondaryCopy struct {
-	Archive      ownedBackupArchive     `json:"archive"`
-	Attempts     int                    `json:"attempts"`
-	Transferring bool                   `json:"transferring,omitempty"`
-	RetryAt      string                 `json:"retry_at,omitempty"`
-	Failure      string                 `json:"failure,omitempty"`
-	Temporary    string                 `json:"temporary,omitempty"`
-	FileIdentity string                 `json:"file_identity,omitempty"`
-	ModifiedAt   string                 `json:"modified_at,omitempty"`
-	ChangedAt    string                 `json:"changed_at,omitempty"`
-	VerifiedAt   string                 `json:"verified_at,omitempty"`
-	Unavailable  bool                   `json:"unavailable,omitempty"`
-	Integrity    backupArchiveIntegrity `json:"integrity,omitzero"`
+	Archive      ownedBackupArchive      `json:"archive"`
+	Attempts     int                     `json:"attempts"`
+	Transferring bool                    `json:"transferring,omitempty"`
+	RetryAt      string                  `json:"retry_at,omitempty"`
+	Failure      string                  `json:"failure,omitempty"`
+	Temporary    string                  `json:"temporary,omitempty"`
+	FileIdentity string                  `json:"file_identity,omitempty"`
+	ModifiedAt   string                  `json:"modified_at,omitempty"`
+	ChangedAt    string                  `json:"changed_at,omitempty"`
+	VerifiedAt   string                  `json:"verified_at,omitempty"`
+	Unavailable  bool                    `json:"unavailable,omitempty"`
+	Integrity    backupArchiveIntegrity  `json:"integrity,omitzero"`
+	Retention    secondaryRetentionProof `json:"retention,omitzero"`
+}
+
+type secondaryRetentionProof struct {
+	BeforeID  string `json:"before_id,omitempty"`
+	CheckedAt string `json:"checked_at,omitempty"`
 }
 
 func (copy backupSecondaryCopy) pending() bool {

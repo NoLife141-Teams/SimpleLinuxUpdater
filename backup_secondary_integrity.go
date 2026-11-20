@@ -16,9 +16,18 @@ func secondaryCapturedAfter(copy, other backupSecondaryCopy) bool {
 }
 
 func secondaryIntegrityFresh(copy backupSecondaryCopy, now time.Time) bool {
-	checked := parseBackupStamp(copy.Integrity.CheckedAt)
 	return copy.VerifiedAt != "" && !copy.Unavailable && copy.Integrity.State == backupIntegrityMatched &&
-		!checked.IsZero() && !checked.After(now) && now.Sub(checked) < backupIntegrityOtherAfter
+		secondaryDigestRecent(copy.Integrity.CheckedAt, now)
+}
+
+func secondaryDigestRecent(timestamp string, now time.Time) bool {
+	checked := parseBackupStamp(timestamp)
+	return !checked.IsZero() && !checked.After(now) && now.Sub(checked) < backupIntegrityOtherAfter
+}
+
+func secondaryRetentionConfirmed(copy backupSecondaryCopy, beforeID string, now time.Time) bool {
+	return secondaryIntegrityFresh(copy, now) && copy.Retention.BeforeID == beforeID &&
+		secondaryDigestRecent(copy.Retention.CheckedAt, now)
 }
 
 func secondaryIntegrityCandidate(copies []backupSecondaryCopy, now time.Time) (backupSecondaryCopy, bool) {
@@ -56,14 +65,20 @@ func (a *backupAutomation) checkSecondaryIntegrity(ctx context.Context, root *os
 	if !due {
 		return nil
 	}
+	_, err := a.verifyAndRecordSecondaryIntegrity(ctx, root, binding, copy, "")
+	return err
+}
+
+func (a *backupAutomation) verifyAndRecordSecondaryIntegrity(ctx context.Context, root *os.Root, binding backupSecondaryBinding, copy backupSecondaryCopy, beforeID string) (backupSecondaryCopy, error) {
 	state, info := inspectSecondaryIntegrity(ctx, root, binding, copy)
 	if err := ctx.Err(); err != nil {
-		return err
+		return backupSecondaryCopy{}, err
 	}
 	if !backupArchiveMountAvailable(root.Name(), binding.Directory) {
-		return errBackupSecondaryDeferred
+		return backupSecondaryCopy{}, errBackupSecondaryDeferred
 	}
-	return a.updateCurrentSecondary(ctx, binding, copy.Archive.ID, func(_ *backupSecondaryState, current *backupSecondaryCopy) (bool, error) {
+	var verified backupSecondaryCopy
+	err := a.updateCurrentSecondary(ctx, binding, copy.Archive.ID, func(_ *backupSecondaryState, current *backupSecondaryCopy) (bool, error) {
 		if current.VerifiedAt != copy.VerifiedAt || current.FileIdentity != copy.FileIdentity ||
 			current.Archive.Name != copy.Archive.Name || current.Archive.SHA256 != copy.Archive.SHA256 ||
 			current.Integrity != copy.Integrity {
@@ -77,11 +92,22 @@ func (a *backupAutomation) checkSecondaryIntegrity(ctx context.Context, root *os
 		}
 		if state == backupIntegrityMatched {
 			current.Unavailable = false
-			current.ModifiedAt = backupStamp(info.ModTime())
-			current.ChangedAt = backupStamp(backupIntegrityChangeTime(info))
+			modifiedAt := backupStamp(info.ModTime())
+			changedAt := backupStamp(backupIntegrityChangeTime(info))
+			if modifiedAt != current.ModifiedAt || changedAt != current.ChangedAt {
+				current.Retention = secondaryRetentionProof{}
+			}
+			current.ModifiedAt, current.ChangedAt = modifiedAt, changedAt
+			if beforeID != "" {
+				current.Retention = secondaryRetentionProof{BeforeID: beforeID, CheckedAt: at}
+			}
+		} else {
+			current.Retention = secondaryRetentionProof{}
 		}
+		verified = *current
 		return true, nil
 	})
+	return verified, err
 }
 
 func inspectSecondaryIntegrity(ctx context.Context, root *os.Root, binding backupSecondaryBinding, copy backupSecondaryCopy) (string, os.FileInfo) {

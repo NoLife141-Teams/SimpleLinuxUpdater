@@ -227,9 +227,10 @@ The worker also checks the encrypted SHA-256 on the approved mount, with
 at most one periodic digest read per 30-second cycle. It checks the newest
 published copy hourly and other copies daily, with an earlier retry for
 unavailable results. Admin separates publication verification from integrity
-observations. A copy needs a matching digest less than 24 hours old and the
-same file metadata to count toward secondary retention. The worker keeps older
-copies while enough newer copies lack that evidence.
+observations. The worker keeps older copies until enough newer copies have a
+matching digest less than 24 hours old, unchanged file metadata, and an
+integrity check for that removal candidate. The worker checks one prospective
+keeper per cycle before removing the older copy.
 To recover without the primary host, obtain a copy from the secondary mount and use the normal archive
 restore workflow in isolation on the new installation. Keep the original
 passphrase in a separate secret store.

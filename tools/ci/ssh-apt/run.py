@@ -1052,7 +1052,15 @@ finally:
             raw = self.target("cat", "/var/lib/slu-fixture/webhook-receipts")
             return [json.loads(line) for line in raw.splitlines()]
 
-        baseline_ssh, baseline_receipts = ssh_connections(), receipts()
+        traffic = {}
+        record["isolation_traffic"] = traffic
+
+        def sample_traffic(phase):
+            ssh, delivery = ssh_connections(), receipts()
+            traffic[phase] = {"ssh_connections": ssh, "notification_receipts": len(delivery)}
+            return ssh, delivery
+
+        baseline_ssh, baseline_receipts = sample_traffic("before_restore")
         require(baseline_ssh > 0, "SSH fixture did not instrument connections")
         restored = self.api.backup_archive("restore", archive, passphrase, isolate=True)
         require(restored["restore_isolated"], "restore did not enter isolation")
@@ -1071,6 +1079,7 @@ finally:
             failure = self.api.request("POST", path, {}, allowed=(409,))
             require(failure["code"] == "restore_isolated", "an outbound API bypassed isolation")
 
+        sample_traffic("after_initial_isolation")
         record["checkpoint"] = "restart-and-restore"
         self.stop_app()
         paused.unlink(missing_ok=True)
@@ -1080,11 +1089,14 @@ finally:
         require(self.api.request("GET", "/api/installation/health")["restore_isolation"] == "active",
                 "restart lost local isolation")
         self.api.request("POST", "/api/auth/reauthenticate", {"password": self.password})
+        sample_traffic("after_restart")
         repeated = self.api.backup_archive("restore", archive, passphrase)
         require(repeated["restore_isolated"], "restored settings cleared existing isolation")
         self.api.request("POST", "/api/auth/login", credentials)
         until(paused.is_file, "notification pause was lost during restart")
-        require(ssh_connections() == baseline_ssh and receipts() == baseline_receipts,
+        final_ssh, final_receipts = sample_traffic("after_repeat_restore")
+        traffic["same_receipts_as_baseline"] = final_receipts == baseline_receipts
+        require(final_ssh == baseline_ssh and traffic["same_receipts_as_baseline"],
                 "SSH or notification traffic left the isolated installation")
         queued = self.api.request("GET", "/api/notifications/delivery-history")["items"]
         destinations = {"webhook", "discord", "telegram"}

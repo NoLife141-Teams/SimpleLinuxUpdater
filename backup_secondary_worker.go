@@ -113,7 +113,7 @@ func (a *backupAutomation) copyNextSecondaryBackup(parent context.Context) error
 			return false, nil
 		}
 		binding = state.Secondary.Binding
-		catchUp = state.Secondary.CatchUp || state.Secondary.LastFailure == "storage_unavailable"
+		catchUp = state.Secondary.CatchUp || state.Secondary.MountUnavailable
 		a.setSecondaryCancellation(cancel)
 		now := a.now()
 		for _, item := range state.Secondary.Copies {
@@ -164,8 +164,8 @@ func (a *backupAutomation) copyNextSecondaryBackup(parent context.Context) error
 		copyErr = a.stageAndPublishSecondary(ctx, root, binding, pending)
 	} else if !waitingForMount {
 		err := a.updateCurrentSecondary(ctx, binding, "", func(state *backupSecondaryState, _ *backupSecondaryCopy) (bool, error) {
-			if state.LastFailure == "storage_unavailable" {
-				state.LastFailure = ""
+			if state.MountUnavailable {
+				state.MountUnavailable = false
 				return true, nil
 			}
 			return false, nil
@@ -243,12 +243,17 @@ func (a *backupAutomation) updateCurrentSecondary(ctx context.Context, binding b
 
 func (a *backupAutomation) recordSecondaryFailure(ctx context.Context, binding backupSecondaryBinding, id, reason string) error {
 	return a.updateCurrentSecondary(ctx, binding, id, func(state *backupSecondaryState, copy *backupSecondaryCopy) (bool, error) {
-		if copy == nil && state.LastFailure == reason {
-			return false, nil
-		}
-		state.LastFailure = reason
 		if reason == "storage_unavailable" {
+			if copy == nil && state.MountUnavailable && state.CatchUp {
+				return false, nil
+			}
+			state.MountUnavailable = true
 			state.CatchUp = true
+		} else {
+			if copy == nil && state.LastFailure == reason {
+				return false, nil
+			}
+			state.LastFailure = reason
 		}
 		if copy != nil && copy.pending() {
 			if !copy.Transferring && reason != "storage_unavailable" {
@@ -349,6 +354,7 @@ func (a *backupAutomation) stageAndPublishSecondary(ctx context.Context, root *o
 		current.Transferring = false
 		current.Temporary, current.RetryAt, current.Failure = "", "", ""
 		state.LastFailure = ""
+		state.MountUnavailable = false
 		return true, nil
 	})
 	if err != nil {
@@ -435,9 +441,7 @@ func (a *backupAutomation) startSecondaryTransfer(ctx context.Context, root *os.
 		current.Attempts++
 		current.Transferring = true
 		current.Failure = ""
-		if state.LastFailure == "storage_unavailable" {
-			state.LastFailure = ""
-		}
+		state.MountUnavailable = false
 		return true, nil
 	})
 	if err != nil {

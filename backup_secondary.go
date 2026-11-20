@@ -68,12 +68,13 @@ func (copy backupSecondaryCopy) retryable() bool {
 }
 
 type backupSecondaryState struct {
-	Binding     backupSecondaryBinding `json:"binding,omitzero"`
-	Approved    bool                   `json:"approved"`
-	Copies      []backupSecondaryCopy  `json:"copies,omitempty"`
-	LastFailure string                 `json:"last_failure,omitempty"`
-	CatchUp     bool                   `json:"catch_up,omitempty"`
-	Retired     []string               `json:"retired,omitempty"`
+	Binding          backupSecondaryBinding `json:"binding,omitzero"`
+	Approved         bool                   `json:"approved"`
+	Copies           []backupSecondaryCopy  `json:"copies,omitempty"`
+	LastFailure      string                 `json:"last_failure,omitempty"`
+	MountUnavailable bool                   `json:"mount_unavailable,omitempty"`
+	CatchUp          bool                   `json:"catch_up,omitempty"`
+	Retired          []string               `json:"retired,omitempty"`
 }
 
 type backupSecondaryStatus struct {
@@ -179,11 +180,11 @@ func (a *backupAutomation) secondaryStatus(current backupAutomationState) *backu
 		}
 	}
 	if a.secondaryConfigured(state) {
-		status.WaitingForMount = state.LastFailure == "storage_unavailable"
+		status.WaitingForMount = state.MountUnavailable
 		status.RetryCandidates = secondaryRetryCandidates(current)
 		status.Integrity = latestPublished.Integrity
 		switch {
-		case state.LastFailure == "storage_unavailable":
+		case status.WaitingForMount:
 			status.Integrity.State = backupIntegrityUnavailable
 		case latestPublished.Unavailable && status.Integrity.State != backupIntegrityMismatch:
 			status.Integrity.State = backupIntegrityUnavailable
@@ -200,6 +201,9 @@ func (a *backupAutomation) secondaryStatus(current backupAutomationState) *backu
 		}
 		if status.Failure == "" && hasSkippedCopies {
 			status.Failure = "queue_full"
+		}
+		if status.Failure == "" && status.WaitingForMount {
+			status.Failure = "storage_unavailable"
 		}
 		switch {
 		case status.Failure != "" || status.Failed > 0:

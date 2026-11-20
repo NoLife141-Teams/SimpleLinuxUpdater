@@ -233,6 +233,10 @@ func readBackupAutomationState(ctx context.Context, db *sql.DB) (backupAutomatio
 	}
 	err = json.Unmarshal([]byte(raw), &s)
 	if err == nil {
+		if s.Secondary.LastFailure == "storage_unavailable" {
+			s.Secondary.MountUnavailable = true
+			s.Secondary.LastFailure = ""
+		}
 		err = s.Config.validate()
 	}
 	return s, err

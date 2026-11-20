@@ -134,15 +134,6 @@ func TestSecondaryCatchUpAdmitsNewestSkippedCopyWhenSlotOpens(t *testing.T) {
 	if err := automation.save(t.Context(), state); err != nil {
 		t.Fatal(err)
 	}
-	*now = now.Add(time.Minute)
-	if err := automation.Tick(t.Context(), true); err != nil {
-		t.Fatal(err)
-	}
-	state = backupAutomationStateForTest(t, automation)
-	newest := state.Archives[len(state.Archives)-1]
-	if state.Secondary.Copies[len(state.Secondary.Copies)-1].Failure != "queue_full" {
-		t.Fatal("fixture did not produce a skipped copy")
-	}
 	offline := secondary + ".offline"
 	if err := os.Rename(secondary, offline); err != nil {
 		t.Fatal(err)
@@ -151,15 +142,30 @@ func TestSecondaryCatchUpAdmitsNewestSkippedCopyWhenSlotOpens(t *testing.T) {
 	if err := automation.copyNextSecondaryBackup(t.Context()); err != nil {
 		t.Fatal(err)
 	}
+	*now = now.Add(backupSecondaryRetryBase)
+	if err := automation.Tick(t.Context(), true); err != nil {
+		t.Fatal(err)
+	}
+	restarted := newBackupAutomation(automation.deps)
+	restarted.deployment = automation.deployment
+	status, err := restarted.Status(t.Context())
+	if err != nil || status.Secondary == nil || !status.Secondary.WaitingForMount ||
+		status.Secondary.Failure != "queue_full" || status.Secondary.Failed != 1 {
+		t.Fatalf("queue overflow hid the durable mount outage: %+v, %v", status.Secondary, err)
+	}
 	if err := os.Rename(offline, secondary); err != nil {
 		t.Fatal(err)
 	}
-	*now = now.Add(backupSecondaryRetryBase)
-	if err := automation.copyNextSecondaryBackup(t.Context()); err != nil {
+	if err := restarted.copyNextSecondaryBackup(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	state = backupAutomationStateForTest(t, automation)
-	if !automation.secondaryProtectsSource(state.Secondary, newest.ID) {
+	status, err = restarted.Status(t.Context())
+	if err != nil || status.Secondary == nil || status.Secondary.WaitingForMount {
+		t.Fatalf("mounted destination still reported a mount outage: %+v, %v", status.Secondary, err)
+	}
+	state = backupAutomationStateForTest(t, restarted)
+	newest := state.Archives[len(state.Archives)-1]
+	if !restarted.secondaryProtectsSource(state.Secondary, newest.ID) {
 		t.Fatal("newest skipped archive did not get the first available queue slot")
 	}
 }

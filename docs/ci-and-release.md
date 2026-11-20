@@ -13,11 +13,17 @@ host-trust replacement. It runs the packaged Windows executable for export,
 normal restore, startup and offline CLI checks. It also rejects overbroad
 ACLs on a passphrase file and a rollback set. The redacted report contains
 step outcomes and the candidate commit.
+The same Windows job runs the release ancestry script in Git Bash from a
+disposable checkout with `core.autocrlf=true`. Git keeps the script at LF.
+The **Qualify release ancestry with Git for Windows and CRLF conversion** step
+logs the accepted tag and SHA case and the two rejected cases (wrong SHA and
+commit outside main). The fixture pushes its tags only to a temporary local
+bare repository.
 The quality job also cross-compiles Darwin amd64 recovery support, so an
 unavailable platform constant fails PR CI before archive publication. The release
 preparation and release workflow still build all five distribution targets.
-The helper regression tests use Bash and Python 3 on Linux/macOS and skip on
-Windows, matching the existing release-lineage script tests.
+The other release helper regression tests use Bash and Python 3 on Linux/macOS
+and skip on Windows.
 
 The Go filter includes scripts, templates, static resources and documentation
 inspected by architecture tests. Docker validation builds amd64 and arm64

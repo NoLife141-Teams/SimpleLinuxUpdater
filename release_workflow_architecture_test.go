@@ -115,6 +115,17 @@ func TestReleaseGateMatchesCriticalCIValidation(t *testing.T) {
 			t.Error("Windows restoration must run natively for both CI and release")
 		}
 	}
+	hasWindowsLineageStep := false
+	for _, step := range strings.Split(ciWindows, "\n      - ") {
+		if strings.Contains(step, "\n        shell: bash\n") &&
+			strings.Contains(step, "-run '^TestReleaseLineageAcceptsMainAndRejectsUnmergedCommit$'") {
+			hasWindowsLineageStep = true
+			break
+		}
+	}
+	if !hasWindowsLineageStep {
+		t.Error("normal CI must qualify release ancestry in native Windows Git Bash")
+	}
 	criticalCommands := []string{
 		"go vet ./...",
 		"staticcheck ./...",

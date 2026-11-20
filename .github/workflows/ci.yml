@@ -409,6 +409,13 @@ jobs:
         with:
           go-version-file: 'go.mod'
           cache: true
+      - name: Qualify release ancestry with Git for Windows and CRLF conversion
+        shell: bash
+        run: |
+          SLU_RELEASE_LINEAGE_BASH="$(cygpath -w "$BASH")"
+          test -n "$SLU_RELEASE_LINEAGE_BASH"
+          export SLU_RELEASE_LINEAGE_BASH
+          go test -count=1 -v -run '^TestReleaseLineageAcceptsMainAndRejectsUnmergedCommit$' .
       - name: Qualify Windows amd64 restore and offline recovery on NTFS
         run: python tools/ci/upgrade/windows_restore.py --output windows-restore-evidence
       - name: Retain redacted Windows restore evidence

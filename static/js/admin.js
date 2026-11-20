@@ -683,6 +683,13 @@
             };
             aptPanel.querySelector("tbody").replaceChildren(...view.restoreAPTHosts.map(host => {
                 const row = document.createElement("tr");
+                const selection = document.createElement("td");
+                const checkbox = document.createElement("input");
+                checkbox.type = "checkbox";
+                checkbox.dataset.restoreAptSelect = host.identity;
+                checkbox.setAttribute("aria-label", `Select ${host.name} for APT check`);
+                selection.append(checkbox);
+                row.append(selection);
                 const name = document.createElement("th");
                 name.scope = "row";
                 name.textContent = host.name;
@@ -701,10 +708,14 @@
                 button.textContent = "Check APT";
                 button.setAttribute("aria-label", `Check APT on ${host.name}`);
                 button.disabled = host.disabled;
-                command.append(button);
+                const progress = document.createElement("div");
+                progress.className = "muted";
+                progress.dataset.restoreAptProgress = "";
+                command.append(button, progress);
                 row.append(command);
                 return row;
             }));
+            adminBackup.renderRestoreAPTControls();
             const body = document.getElementById("installation-workers");
             body.replaceChildren(...view.workers.map(worker => {
                 const row = document.createElement("tr");

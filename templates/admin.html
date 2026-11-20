@@ -1095,8 +1095,9 @@
                 </section>
                 <section id="restore-apt-validation" class="installation-notification-deliveries" aria-labelledby="restore-apt-validation-heading" hidden>
                     <h3 id="restore-apt-validation-heading">APT checks after restore</h3>
-                    <p class="muted">Check each restored server before allowing it to change packages. Unverified servers remain blocked after external work resumes.</p>
-                    <div class="table-wrap"><table><thead><tr><th>Server</th><th>Package maintenance</th><th>Checked</th><th>Action</th></tr></thead><tbody></tbody></table></div>
+                    <p class="muted">Select up to 12 servers to check their package state. Unverified servers remain blocked after external work resumes.</p>
+                    <div><button id="restore-apt-check-selected" class="btn-ghost inline-btn" type="button" disabled>Check selected</button></div>
+                    <div class="table-wrap"><table><thead><tr><th>Select</th><th>Server</th><th>Package maintenance</th><th>Checked</th><th>Action</th></tr></thead><tbody></tbody></table></div>
                     <p id="restore-apt-feedback" class="muted" role="status" aria-live="polite"></p>
                 </section>
                 <div id="restore-isolation-controls" hidden>

@@ -18,16 +18,23 @@ import (
 )
 
 const restoreAPTValidationRoute = "/api/backup/restore-isolation/apt-check"
-const restoreAPTProofLifetime = 15 * time.Minute
+const (
+	restoreAPTProofLifetime    = 15 * time.Minute
+	restoreAPTCheckConcurrency = 4
+	restoreAPTCheckBatchLimit  = 12
+	// Keep time for the response within the HTTP server's write deadline.
+	restoreAPTCheckBatchTimeout = 50 * time.Second
+)
 
 var errRestoredAPTKeyChanged = errors.New("SSH host key changed after restore validation. Recheck the server in Installation Health")
 
 type restoreAPTValidation struct {
-	db        func() *sql.DB
-	now       func() time.Time
-	isolation *internalbackup.RestoreIsolation
-	sessions  HostMaintenanceSessionFactory
-	checkMu   sync.Mutex
+	db             func() *sql.DB
+	now            func() time.Time
+	isolation      *internalbackup.RestoreIsolation
+	sessions       HostMaintenanceSessionFactory
+	checkSlotsOnce sync.Once
+	checkSlots     chan struct{}
 }
 
 type restoreAPTObservation struct {
@@ -40,6 +47,7 @@ type restoreAPTHostFacts struct {
 	Name      string     `json:"name"`
 	Identity  string     `json:"identity"`
 	Disabled  bool       `json:"disabled"`
+	Checking  bool       `json:"checking,omitempty"`
 	State     string     `json:"state"`
 	CheckedAt *time.Time `json:"checked_at,omitempty"`
 }
@@ -249,7 +257,10 @@ func (v *restoreAPTValidation) hostFacts(ctx context.Context, state *serverpkg.S
 	var facts []restoreAPTHostFacts
 	for _, server := range state.Servers() {
 		if observation, required := observations[server.Identity]; required {
-			facts = append(facts, observation.facts(server, now, isolated, state.StatusMap()[server.Name].RequiresAPTReconciliation()))
+			status := state.StatusMap()[server.Name]
+			host := observation.facts(server, now, isolated, status.RequiresAPTReconciliation())
+			host.Checking = status != nil && status.Status == runtimepkg.StatusRestoreAPTCheck
+			facts = append(facts, host)
 		}
 	}
 	return facts
@@ -336,6 +347,24 @@ func (v *restoreAPTValidation) probe(ctx context.Context, server Server) restore
 	return observation
 }
 
+type restoreAPTCheckTarget struct {
+	Name     string `json:"name"`
+	Identity string `json:"identity"`
+}
+
+type restoreAPTCheckResult struct {
+	restoreAPTHostFacts
+	Error  string `json:"error,omitempty"`
+	status int
+}
+
+func (target restoreAPTCheckTarget) failure(status int, message string) restoreAPTCheckResult {
+	return restoreAPTCheckResult{
+		restoreAPTHostFacts: restoreAPTHostFacts{Name: target.Name, Identity: target.Identity},
+		Error:               message, status: status,
+	}
+}
+
 func handleRestoreAPTValidation(c *gin.Context, deps AppDeps) {
 	setNoStoreHeaders(c)
 	v := deps.RestoreAPTValidation
@@ -344,26 +373,89 @@ func handleRestoreAPTValidation(c *gin.Context, deps AppDeps) {
 		return
 	}
 	var selection struct {
-		Name     string `json:"name"`
-		Identity string `json:"identity"`
+		restoreAPTCheckTarget
+		Targets *[]restoreAPTCheckTarget `json:"targets"`
 	}
-	if err := c.ShouldBindJSON(&selection); err != nil || selection.Name == "" || selection.Identity == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Select a restored server to check."})
+	if err := c.ShouldBindJSON(&selection); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Select one or more restored servers to check."})
 		return
 	}
-	if !v.checkMu.TryLock() {
-		c.JSON(http.StatusConflict, gin.H{"error": "Another restored server is being checked. Try again in a moment."})
+	single := selection.Targets == nil
+	targets := []restoreAPTCheckTarget{selection.restoreAPTCheckTarget}
+	if !single {
+		targets = *selection.Targets
+		if selection.Name != "" || selection.Identity != "" || len(targets) == 0 || len(targets) > restoreAPTCheckBatchLimit {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Select between 1 and 12 restored servers to check."})
+			return
+		}
+	}
+	names, identities := make(map[string]bool), make(map[string]bool)
+	for _, target := range targets {
+		if target.Name == "" || target.Identity == "" || names[target.Name] || identities[target.Identity] {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Select each restored server once with its current identity."})
+			return
+		}
+		names[target.Name], identities[target.Identity] = true, true
+	}
+
+	ctx, cancel := context.WithTimeout(c.Request.Context(), restoreAPTCheckBatchTimeout)
+	defer cancel()
+	actor, ip := actorFromContext(c), clientIPFromContext(c)
+	if single {
+		result := v.check(ctx, deps, targets[0], actor, ip)
+		if c.Request.Context().Err() != nil {
+			return
+		}
+		if result.Error != "" {
+			c.JSON(result.status, gin.H{"error": result.Error})
+			return
+		}
+		c.JSON(http.StatusOK, result.restoreAPTHostFacts)
 		return
 	}
-	defer v.checkMu.Unlock()
-	server, previousStatus, err := deps.ServerState.BeginTransientActionForIdentity(selection.Name, runtimepkg.StatusRestoreAPTCheck, selection.Identity)
+
+	results := make([]restoreAPTCheckResult, len(targets))
+	next := make(chan int, len(targets))
+	for index := range targets {
+		next <- index
+	}
+	close(next)
+	var workers sync.WaitGroup
+	for range min(restoreAPTCheckConcurrency, len(targets)) {
+		workers.Go(func() {
+			for index := range next {
+				results[index] = v.check(ctx, deps, targets[index], actor, ip)
+			}
+		})
+	}
+	workers.Wait()
+	if c.Request.Context().Err() == nil {
+		c.JSON(http.StatusOK, gin.H{"results": results})
+	}
+}
+
+func (v *restoreAPTValidation) check(ctx context.Context, deps AppDeps, target restoreAPTCheckTarget, actor, ip string) restoreAPTCheckResult {
+	cancelled := func() restoreAPTCheckResult {
+		return target.failure(http.StatusRequestTimeout, "The APT check did not finish. Select the server to try again.")
+	}
+	v.checkSlotsOnce.Do(func() { v.checkSlots = make(chan struct{}, restoreAPTCheckConcurrency) })
+	select {
+	case v.checkSlots <- struct{}{}:
+		defer func() { <-v.checkSlots }()
+	case <-ctx.Done():
+		return cancelled()
+	}
+	if ctx.Err() != nil {
+		return cancelled()
+	}
+
+	server, previousStatus, err := deps.ServerState.BeginTransientActionForIdentity(target.Name, runtimepkg.StatusRestoreAPTCheck, target.Identity)
 	if err != nil {
 		message := "Select the current enabled restored server."
 		if errors.Is(err, serverpkg.ErrActionInProgress) {
 			message = "Wait for current server work to finish before checking APT."
 		}
-		c.JSON(http.StatusConflict, gin.H{"error": message})
-		return
+		return target.failure(http.StatusConflict, message)
 	}
 	checkStarted := false
 	defer func() {
@@ -372,23 +464,20 @@ func handleRestoreAPTValidation(c *gin.Context, deps AppDeps) {
 			deps.NotifyDashboardEvent("restore-apt-checked")
 		}
 	}()
-	ctx := c.Request.Context()
-	if _, required, err := v.observe(ctx, server); err != nil || !required {
-		c.JSON(http.StatusConflict, gin.H{"error": "This server has no pending restore validation."})
-		return
+	previous, required, err := v.observe(ctx, server)
+	if err != nil || !required {
+		return target.failure(http.StatusConflict, "This server has no pending restore validation.")
 	}
 	isolated, err := v.isolation.State()
 	if err != nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Restore isolation state is unavailable."})
-		return
+		return target.failure(http.StatusServiceUnavailable, "Restore isolation state is unavailable.")
 	}
 	// Once a new check starts, only its recorded result may authorize this
 	// host. Cancellation or a failed audit leaves the gate closed.
 	if _, err := v.db().ExecContext(ctx, `UPDATE restore_apt_validation
 		SET result='pending',host_key='',checked_at=0,approved=0
-		WHERE identity=? AND result='healthy'`, server.Identity); err != nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "The previous APT check could not be cleared."})
-		return
+		WHERE identity=? AND target=? AND result='healthy'`, server.Identity, previous.target); err != nil {
+		return target.failure(http.StatusServiceUnavailable, "The previous APT check could not be cleared.")
 	}
 	checkStarted = true
 	probeCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
@@ -396,30 +485,33 @@ func handleRestoreAPTValidation(c *gin.Context, deps AppDeps) {
 	probeErr := probeCtx.Err()
 	cancel()
 	if ctx.Err() != nil {
-		return
+		return cancelled()
 	}
 	if probeErr != nil {
 		observation.result = "unreachable"
 	}
-	current, found := deps.ServerState.FindByName(selection.Name)
+	current, found := deps.ServerState.FindByName(target.Name)
 	if !found || current.Disabled || current.APTTarget() != observation.target {
-		c.JSON(http.StatusConflict, gin.H{"error": "The server changed during the APT check."})
-		return
+		return target.failure(http.StatusConflict, "The server changed during the APT check.")
 	}
 	now := v.now()
 	observation.checkedAt = now.Unix()
 	observation.approved = !isolated && observation.result == "healthy"
-	if err := deps.AuditService.Record(actorFromContext(c), clientIPFromContext(c), "backup.restore_apt.check",
+	if err := deps.AuditService.Record(actor, ip, "backup.restore_apt.check",
 		"server", server.Name, observation.result, "Remote APT state checked after restore", nil); err != nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "The APT check could not be audited."})
-		return
+		return target.failure(http.StatusServiceUnavailable, "The APT check could not be audited.")
 	}
-	if _, err := v.db().ExecContext(ctx, `UPDATE restore_apt_validation
-		SET target=?,host_key=?,result=?,checked_at=?,approved=? WHERE identity=?`, observation.target,
-		observation.key, observation.result, observation.checkedAt, observation.approved, server.Identity); err != nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "The APT check could not be saved."})
-		return
+	saved, err := v.db().ExecContext(ctx, `UPDATE restore_apt_validation
+		SET target=?,host_key=?,result=?,checked_at=?,approved=? WHERE identity=? AND target=?`, observation.target,
+		observation.key, observation.result, observation.checkedAt, observation.approved, server.Identity, previous.target)
+	if err != nil {
+		return target.failure(http.StatusServiceUnavailable, "The APT check could not be saved.")
+	}
+	if affected, err := saved.RowsAffected(); err != nil || affected != 1 {
+		return target.failure(http.StatusConflict, "The server changed during the APT check.")
 	}
 	status := deps.ServerState.CurrentStatusSnapshot(server.Name)
-	c.JSON(http.StatusOK, observation.facts(server, now, isolated, status.RequiresAPTReconciliation()))
+	return restoreAPTCheckResult{
+		restoreAPTHostFacts: observation.facts(server, now, isolated, status.RequiresAPTReconciliation()),
+	}
 }

@@ -2841,6 +2841,60 @@ test("admin restore isolation is selectable and resumption requires typed confir
     expect(resumptionCount).toBe(1);
 });
 
+test("admin checks selected restored hosts and can retry only the failed entries", async ({page}) => {
+    await ensureAuthenticatedSession(page);
+    await stubAdminApi(page, {});
+    const hosts = [
+        {name: "healthy-host", identity: "1", state: "pending"},
+        {name: "offline-host", identity: "2", state: "pending"},
+        {name: "outside-selection", identity: "3", state: "pending"},
+    ];
+    const submissions = [];
+    let finish;
+    await page.route("**/api/installation/health", route => fulfillJson(route, {
+        state: "ready", restore_isolation: "active", restore_apt_hosts: hosts,
+    }));
+    await page.route("**/api/backup/restore-isolation/apt-check", async route => {
+        const { targets } = route.request().postDataJSON();
+        submissions.push(targets);
+        if (submissions.length === 1) {
+            hosts[0].checking = true;
+            await new Promise(resolve => { finish = resolve; });
+            delete hosts[0].checking;
+            hosts[0].state = "healthy";
+            hosts[0].checked_at = "2026-11-19T12:00:00Z";
+            return fulfillJson(route, {results: [hosts[0], {...hosts[1], error: "Wait for current server work to finish before checking APT."}]});
+        }
+        hosts[1].state = "unreachable";
+        hosts[1].checked_at = "2026-11-19T12:01:00Z";
+        return fulfillJson(route, {results: [hosts[1]]});
+    });
+
+    await page.goto("/admin#admin-section-installation");
+    const panel = page.locator("#restore-apt-validation");
+    const healthy = panel.getByRole("checkbox", {name: "Select healthy-host for APT check"});
+    const offline = panel.getByRole("checkbox", {name: "Select offline-host for APT check"});
+    await healthy.check();
+    await offline.check();
+    const submit = panel.getByRole("button", {name: /Check selected/});
+    await submit.click();
+    await expect(panel.getByRole("row", {name: /healthy-host/})).toContainText("Checking…");
+    await expect(panel.getByRole("row", {name: /offline-host/})).toContainText("Waiting to check…");
+    await expect(submit).toBeDisabled();
+    finish();
+    await expect(panel.getByRole("row", {name: /healthy-host/})).toContainText("Validated");
+    await expect(panel.getByRole("row", {name: /offline-host/})).toContainText("Wait for current server work");
+    await expect(healthy).not.toBeChecked();
+    await expect(offline).toBeChecked();
+    await submit.click();
+    await expect(panel.getByRole("row", {name: /offline-host/})).toContainText("Unreachable");
+    expect(submissions).toEqual([
+        [{name: "healthy-host", identity: "1"}, {name: "offline-host", identity: "2"}],
+        [{name: "offline-host", identity: "2"}],
+    ]);
+    await expect(page.locator("#restore-isolation-resume")).toBeVisible();
+});
+
 test("admin typed confirmations gate restore and policy deletion", async ({
     baseURL,
     page,

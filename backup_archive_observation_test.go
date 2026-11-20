@@ -733,6 +733,43 @@ func TestBackupStorageAlertWaitsForCurrentProcessObservation(t *testing.T) {
 	}
 }
 
+func TestBackupStorageProbeDiscardsObservationsFromWithdrawnMount(t *testing.T) {
+	app, a, _, _ := publishedCatalogFixture(t)
+	now := a.now()
+	a.deps.Now = func() time.Time { return now }
+	if err := a.observeArchiveAvailability(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	lastAvailable := backupStamp(now)
+	directory := a.deployment.Directory
+	withdrawn := directory + ".withdrawn"
+	t.Cleanup(func() { _ = os.RemoveAll(withdrawn) })
+	now = now.Add(time.Hour)
+	scan := func(ctx context.Context, archives []ownedBackupArchive) backupArchiveScan {
+		result := a.scanBackupArchives(ctx, archives)
+		if result.observation.Storage != "available" {
+			t.Errorf("fixture did not observe the original mount: %+v", result.observation)
+		}
+		if err := os.Rename(directory, withdrawn); err != nil {
+			t.Error(err)
+		}
+		if err := os.Mkdir(directory, 0700); err != nil {
+			t.Error(err)
+		}
+		return result
+	}
+	if err := a.observeArchiveAvailabilityWithScan(t.Context(), scan); err != nil {
+		t.Fatal(err)
+	}
+	deps := app.Deps
+	deps.Now = a.deps.Now
+	facts := installationSnapshot(t.Context(), deps).BackupArchives
+	if facts.StorageHealth.State != "unavailable" || facts.StorageHealth.LastAvailableAt != lastAvailable ||
+		facts.RecoveryPoint.State != "unknown" || facts.Lost != 0 {
+		t.Fatalf("probe replaced storage evidence with a result from a withdrawn mount: %+v, %+v", facts, facts.StorageHealth)
+	}
+}
+
 func TestExpiredArchiveObservationContinuesIntoFailedProbe(t *testing.T) {
 	start := time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
 	binding := backupStorageBinding("/archives")

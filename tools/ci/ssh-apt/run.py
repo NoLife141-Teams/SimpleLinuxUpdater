@@ -38,7 +38,7 @@ BACKUP_STORAGE_OUTAGE = "backup-storage-outage"
 SCENARIOS = ("root-upgrade", "operator-upgrade", "misconfigured-helper", "apt-lock",
              "plan-drift-and-obsolete-approval", "ssh-disconnect-during-mutation-and-repair",
              "batch-app-interruption-during-mutation-and-repair", "changed-host-key",
-             RESTORE_CRASH, RESTORE_ISOLATION, RESTORE_APT_VALIDATION, BACKUP_STORAGE_OUTAGE,
+             RESTORE_CRASH, RESTORE_ISOLATION, BACKUP_STORAGE_OUTAGE, RESTORE_APT_VALIDATION,
              "systemd-active", "controlled-reboot", "official-provenance")
 
 
@@ -1225,6 +1225,8 @@ finally:
             "include_known_hosts": True, "retain": 2,
         })
         record["checkpoint"] = "verified-publication"
+        until(lambda: all(s["status"] != "facts_refresh" for s in self.api.request("GET", "/api/servers")),
+              "pre-publication facts did not settle")
         self.api.request("POST", "/api/backup/automation/run")
         template = '{{ (index .NetworkSettings.Networks "' + self.network + '").IPAddress }}'
         address = self.docker("inspect", "--format", template, self.container).strip()
@@ -1556,15 +1558,14 @@ print(json.dumps([inspect_code, inspection, apply_code, blocked, unchanged, retr
                 self.qualify_restore_isolation(record)
             except (RuntimeError, OSError, ValueError, sqlite3.Error, subprocess.SubprocessError) as error:
                 raise AssertionError(f"fixture operation failed ({type(error).__name__})") from None
-        with self.scenario(RESTORE_APT_VALIDATION) as record:
-            try:
-                self.qualify_cold_restore_apt_validation(record)
-            except (RuntimeError, OSError, ValueError, sqlite3.Error, subprocess.SubprocessError) as error:
-                raise AssertionError(f"fixture operation failed ({type(error).__name__})") from None
-
         with self.scenario(BACKUP_STORAGE_OUTAGE) as record:
             try:
                 self.qualify_backup_storage_outage(record)
+            except (RuntimeError, OSError, ValueError, sqlite3.Error, subprocess.SubprocessError) as error:
+                raise AssertionError(f"fixture operation failed ({type(error).__name__})") from None
+        with self.scenario(RESTORE_APT_VALIDATION) as record:
+            try:
+                self.qualify_cold_restore_apt_validation(record)
             except (RuntimeError, OSError, ValueError, sqlite3.Error, subprocess.SubprocessError) as error:
                 raise AssertionError(f"fixture operation failed ({type(error).__name__})") from None
 

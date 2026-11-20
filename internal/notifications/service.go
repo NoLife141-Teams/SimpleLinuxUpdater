@@ -469,6 +469,7 @@ func (s *Service) PreparePersistenceReplacement(ctx context.Context) error {
 	if alreadyPrepared {
 		return nil
 	}
+	s.flushRateLimitCompletions(ctx)
 	conditions, rows, err := loadPersistenceEvidence(ctx, s.database())
 	if err != nil {
 		s.resumePersistence()
@@ -683,6 +684,10 @@ func (s *Service) Close(ctx context.Context) error {
 	select {
 	case <-done:
 		s.cancel()
+		if s.tryBeginPersistence() {
+			defer s.endPersistence()
+			s.flushRateLimitCompletions(ctx)
+		}
 		return nil
 	case <-ctx.Done():
 		s.cancel()
@@ -722,13 +727,18 @@ func (s *Service) processOutboxRow(ctx context.Context, row outboxRow) bool {
 		s.releaseClaim(row, s.deps.PollInterval, err.Error())
 		return false
 	}
+	fingerprint := destinationConfigFingerprint(settings, row.Destination)
+	key := rateLimitKey{row.Destination, fingerprint}
+	if handled, ok := s.recoverRateLimitCompletion(row, key); handled {
+		return ok
+	}
+
 	eligibility, eligibilityErr := s.revalidateOutboxCondition(ctx, &row, settings)
 	if eligibilityErr != nil {
 		s.health.Error(s.deps.Now())
 		s.releaseClaim(row, s.deps.PollInterval, eligibilityErr.Error())
 		return false
 	}
-	fingerprint := destinationConfigFingerprint(settings, row.Destination)
 	var skipReason string
 	switch {
 	case eligibility == conditionIneligible:
@@ -762,11 +772,6 @@ func (s *Service) processOutboxRow(ctx context.Context, row outboxRow) bool {
 		return err == nil
 	}
 
-	key := rateLimitKey{row.Destination, fingerprint}
-	if handled, ok := s.recoverRateLimitCompletion(row, key); handled {
-		return ok
-	}
-
 	// Settings can change between the scheduling query and revalidation.
 	// Check the fingerprint of the actual request, including legacy unbound rows.
 	until, err := destinationRateLimit(ctx, s.database(), row.Destination, fingerprint)
@@ -775,8 +780,10 @@ func (s *Service) processOutboxRow(ctx context.Context, row outboxRow) bool {
 		s.releaseClaim(row, s.deps.PollInterval, "destination retry deadline could not be loaded")
 		return false
 	}
-	if delay := until.Sub(s.deps.Now()); delay > 0 {
-		return s.releaseClaim(row, delay, "destination is rate limited")
+	if until.After(s.deps.Now()) {
+		// The scheduling query already accounts for the destination pause.
+		// Keep this row's own deadline so rotation can release it immediately.
+		return s.releaseClaimAt(row, s.deps.Now().UTC(), row.NextAttemptAt, "destination is rate limited")
 	}
 	if s.queuedDeliveryBlocked(ctx) {
 		return s.releaseClaim(row, 0, "delivery suspended")
@@ -818,7 +825,7 @@ func (s *Service) processOutboxRow(ctx context.Context, row outboxRow) bool {
 		status.Outcome = DeliveryOutcomeFailed
 		status.NextRetryAt = ""
 	}
-	if err := s.persistOutboxCompletion(row.ID, outcome); err != nil {
+	if err := s.persistOutboxCompletion(context.Background(), row.ID, outcome); err != nil {
 		now := s.deps.Now()
 		if outcome.RateLimitedUntil != "" && nextRetry.After(now) {
 			s.rateLimitCompletions.remember(key, failedRateLimitCompletion{rowID: row.ID, outcome: outcome, deadline: nextRetry}, now)
@@ -835,8 +842,8 @@ func (s *Service) processOutboxRow(ctx context.Context, row outboxRow) bool {
 	return err == nil
 }
 
-func (s *Service) persistOutboxCompletion(id string, outcome outboxOutcome) error {
-	persistCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+func (s *Service) persistOutboxCompletion(ctx context.Context, id string, outcome outboxOutcome) error {
+	persistCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
 	return s.retrySQLiteContention(func() error {
 		return completeOutboxRow(persistCtx, s.database(), id, outcome, s.deps.Now().UTC().Format(time.RFC3339Nano))
@@ -929,8 +936,11 @@ func (s *Service) currentSettings() (Settings, error) {
 
 func (s *Service) releaseClaim(row outboxRow, retryDelay time.Duration, reason string) bool {
 	now := s.deps.Now().UTC()
+	return s.releaseClaimAt(row, now, now.Add(retryDelay).Format(time.RFC3339Nano), reason)
+}
+
+func (s *Service) releaseClaimAt(row outboxRow, now time.Time, nextAttempt, reason string) bool {
 	nowText := now.Format(time.RFC3339Nano)
-	nextAttempt := now.Add(retryDelay).Format(time.RFC3339Nano)
 	persistCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	if err := s.retrySQLiteContention(func() error {
@@ -1107,11 +1117,12 @@ func (s *Service) SaveSettings(update SettingsUpdate) (SettingsResponse, error) 
 	if err := s.saveSettings(settings); err != nil {
 		return SettingsResponse{}, err
 	}
-	// Rotation can release pending rows that were waiting solely on the old
-	// destination's pause. Wake their revalidation without a new delivery.
+	// Rotation and disablement can release rows waiting on the destination's
+	// pause. Wake their revalidation without a new delivery.
 	for _, destination := range healthDestinations {
 		previous := destinationConfigFingerprint(current, destination)
-		if previous == "" || previous == destinationConfigFingerprint(settings, destination) {
+		disabled := destinationEnabled(current, destination) && !destinationEnabled(settings, destination)
+		if previous == "" || (previous == destinationConfigFingerprint(settings, destination) && !disabled) {
 			continue
 		}
 		until, err := destinationRateLimit(context.Background(), s.database(), destination, previous)

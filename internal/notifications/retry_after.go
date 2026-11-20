@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"maps"
 	"net/http"
 	"strconv"
 	"strings"
@@ -86,11 +87,24 @@ func (c *failedRateLimitCompletions) remember(key rateLimitKey, failed failedRat
 	c.items[key] = failed
 }
 
-func (c *failedRateLimitCompletions) get(key rateLimitKey) (failedRateLimitCompletion, bool) {
+func (c *failedRateLimitCompletions) find(rowID string, key rateLimitKey) (rateLimitKey, failedRateLimitCompletion, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	// A legacy unbound row can be reclaimed after its credentials rotate.
+	// Finish its known HTTP attempt before revalidating the original binding.
+	for actualKey, completion := range c.items {
+		if completion.rowID == rowID {
+			return actualKey, completion, true
+		}
+	}
 	completion, ok := c.items[key]
-	return completion, ok
+	return key, completion, ok
+}
+
+func (c *failedRateLimitCompletions) snapshot() map[rateLimitKey]failedRateLimitCompletion {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return maps.Clone(c.items)
 }
 
 func (c *failedRateLimitCompletions) forget(key rateLimitKey) {
@@ -103,12 +117,12 @@ func (c *failedRateLimitCompletions) forget(key rateLimitKey) {
 // sending again on this configuration. Until it can be saved, the running
 // worker still honors the provider's deadline without holding other lanes.
 func (s *Service) recoverRateLimitCompletion(row outboxRow, key rateLimitKey) (handled, ok bool) {
-	pending, exists := s.rateLimitCompletions.get(key)
+	key, pending, exists := s.rateLimitCompletions.find(row.ID, key)
 	if !exists {
 		return false, false
 	}
 
-	if err := s.persistOutboxCompletion(pending.rowID, pending.outcome); err == nil {
+	if err := s.persistOutboxCompletion(context.Background(), pending.rowID, pending.outcome); err == nil {
 		s.rateLimitCompletions.forget(key)
 		return row.ID == pending.rowID, true
 	}
@@ -120,4 +134,16 @@ func (s *Service) recoverRateLimitCompletion(row outboxRow, key rateLimitKey) (h
 	retryDelay := min(delay, max(s.deps.PollInterval, defaultOutboxPollInterval))
 	s.releaseClaim(row, retryDelay, "destination retry deadline could not be persisted")
 	return true, false
+}
+
+// After draining the workers, a graceful restart or persistence replacement
+// can keep a known response even when there are no other eligible rows.
+func (s *Service) flushRateLimitCompletions(ctx context.Context) {
+	for key, pending := range s.rateLimitCompletions.snapshot() {
+		if err := s.persistOutboxCompletion(ctx, pending.rowID, pending.outcome); err == nil {
+			s.rateLimitCompletions.forget(key)
+		} else {
+			s.deps.Logf("notification rate limit still could not be persisted for %q: %v", pending.rowID, err)
+		}
+	}
 }

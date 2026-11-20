@@ -520,14 +520,17 @@ func recoverExpiredOutboxClaims(ctx context.Context, db *sql.DB, now time.Time, 
 
 // Eligibility and wake scheduling share the same destination binding. Legacy
 // unbound rows use the current binding until an HTTP 429 binds their retry.
-const outboxCurrentFingerprint = `json_extract(binding.fingerprints, '$.' || o.destination)`
+const outboxCurrentFingerprint = `json_extract(binding.configuration, '$.destination_fingerprints.' || o.destination)`
+
+const outboxDestinationEnabled = `COALESCE(json_extract(binding.configuration, CASE o.destination
+	WHEN 'webhook' THEN '$.enabled'
+	WHEN 'discord' THEN '$.discord_enabled'
+	WHEN 'telegram' THEN '$.telegram_enabled'
+END), 0)`
 
 const outboxSchedulingJoins = `
 	LEFT JOIN (
-		SELECT CASE WHEN json_valid(value) THEN
-			CASE WHEN json_type(value, '$.destination_fingerprints')='object'
-			THEN json_extract(value, '$.destination_fingerprints') END
-		END AS fingerprints
+		SELECT CASE WHEN json_valid(value) THEN value END AS configuration
 		FROM settings WHERE key=?
 	) binding ON TRUE
 	LEFT JOIN notification_destination_health health
@@ -535,11 +538,12 @@ const outboxSchedulingJoins = `
 		AND health.fingerprint=COALESCE(NULLIF(o.destination_fingerprint, ''), ` + outboxCurrentFingerprint + `)
 `
 
-// A rotated destination's cooldown must not delay revalidating its old rows.
+// A disabled or rotated destination's cooldown must not delay revalidating its rows.
 // Preserve independent delays, such as a new backoff after a revalidation error.
 const outboxEffectiveDue = `CASE
-	WHEN binding.fingerprints IS NOT NULL AND o.destination_fingerprint<>''
-		AND o.destination_fingerprint IS NOT ` + outboxCurrentFingerprint + `
+	WHEN binding.configuration IS NOT NULL AND (NOT ` + outboxDestinationEnabled + `
+		OR (json_type(binding.configuration, '$.destination_fingerprints')='object'
+		AND o.destination_fingerprint<>'' AND o.destination_fingerprint IS NOT ` + outboxCurrentFingerprint + `))
 	THEN CASE WHEN o.status_code=429 AND o.next_attempt_at=health.rate_limited_until THEN ''
 		ELSE rtrim(o.next_attempt_at, 'Z') END
 	ELSE max(rtrim(o.next_attempt_at, 'Z'), COALESCE(rtrim(health.rate_limited_until, 'Z'), ''))

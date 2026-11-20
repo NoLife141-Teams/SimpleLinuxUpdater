@@ -49,11 +49,7 @@ func TestRetryAfterDeadline(t *testing.T) {
 }
 
 func TestQueuedRetryAfterSurvivesRestartAndKeepsOtherDestinationsMoving(t *testing.T) {
-	for _, rotate := range []bool{false, true} {
-		name := "resume at deadline"
-		if rotate {
-			name = "rotate while paused"
-		}
+	for _, name := range []string{"resume at deadline", "rotate while paused", "disable while paused"} {
 		t.Run(name, func(t *testing.T) {
 			db := openNativeIntegrationTestDB(t, "rate-limited.db")
 			now := time.Date(2026, 11, 20, 5, 0, 0, 250_000_000, time.UTC)
@@ -119,7 +115,7 @@ func TestQueuedRetryAfterSurvivesRestartAndKeepsOtherDestinationsMoving(t *testi
 			t.Cleanup(func() { closeOutboxService(t, first) })
 			first.StartConditionMonitoring()
 			configure(first, "https://rate-limited.example.test/private-path")
-			if rotate {
+			if name == "rotate while paused" {
 				// An older database can have an unbound row. Its HTTP 429
 				// must bind the retry to the credentials that were used.
 				insertPendingOutboxIntent(t, db, DeliveryIntent{ID: "first", Action: EventUpdateComplete, TargetName: "host"}, now)
@@ -156,7 +152,8 @@ func TestQueuedRetryAfterSurvivesRestartAndKeepsOtherDestinationsMoving(t *testi
 			if err != nil || !diagnostics.RateLimitedUntil[DestinationWebhook].Equal(deadline) || len(diagnostics.RateLimitedUntil) != 1 {
 				t.Fatalf("restarted diagnostics = %+v, %v", diagnostics, err)
 			}
-			if rotate {
+			switch name {
+			case "rotate while paused":
 				configure(reopened, "https://rotated.example.test/private-path")
 				waitForRateLimitRow(t, db, "first", DestinationWebhook, outboxStateSkipped)
 				waitForRateLimitRow(t, db, "second", DestinationWebhook, outboxStateSkipped)
@@ -165,7 +162,16 @@ func TestQueuedRetryAfterSurvivesRestartAndKeepsOtherDestinationsMoving(t *testi
 				if original.Load() != 1 || rotated.Load() != 1 {
 					t.Fatalf("rotation: old calls=%d, new calls=%d", original.Load(), rotated.Load())
 				}
-			} else {
+			case "disable while paused":
+				if _, err := reopened.SaveSettings(SettingsUpdate{Enabled: false, EventTypes: []string{EventUpdateComplete}}); err != nil {
+					t.Fatal(err)
+				}
+				waitForRateLimitRow(t, db, "first", DestinationWebhook, outboxStateSkipped)
+				waitForRateLimitRow(t, db, "second", DestinationWebhook, outboxStateSkipped)
+				if original.Load() != 1 {
+					t.Fatalf("disabled destination sent another request: %d calls", original.Load())
+				}
+			default:
 				// Another destination's delivery gives the restarted worker a
 				// full poll cycle before we release the isolated queue.
 				enqueue(reopened, "after-restart")
@@ -246,6 +252,16 @@ func TestTerminalRateLimitUsesBackoffAndSurvivesOfflineRecovery(t *testing.T) {
 }
 
 func TestRateLimitedLaneRepairsFailedCompletionBeforeNextDelivery(t *testing.T) {
+	for _, name := range []string{"resume at deadline", "revalidate immediately after rotation", "reclaim original row after rotation"} {
+		t.Run(name, func(t *testing.T) {
+			testRateLimitedLaneRepairsFailedCompletion(t, name)
+		})
+	}
+}
+
+func testRateLimitedLaneRepairsFailedCompletion(t *testing.T, scenario string) {
+	t.Helper()
+	const retryAfter = 5 * time.Minute
 	h := newConditionHarness(t)
 	h.service.deps.DeliveryTimeout = time.Second
 	h.service.deps.HTTPClient = notificationHTTPFunc(func(*http.Request) (*http.Response, error) {
@@ -253,13 +269,17 @@ func TestRateLimitedLaneRepairsFailedCompletionBeforeNextDelivery(t *testing.T) 
 		resp := &http.Response{StatusCode: http.StatusNoContent, Body: io.NopCloser(strings.NewReader("")), Header: make(http.Header)}
 		if h.client.calls == 1 {
 			resp.StatusCode = http.StatusTooManyRequests
-			resp.Header.Set("Retry-After", "90")
+			resp.Header.Set("Retry-After", "300")
 		}
 		return resp, nil
 	})
 
 	first := insertPendingOutboxIntent(t, h.db, DeliveryIntent{ID: "first-rate-limited", Action: EventUpdateComplete}, h.now)
-	next := insertPendingOutboxIntent(t, h.db, DeliveryIntent{ID: "next-while-paused", Action: EventUpdateComplete}, h.now)
+	const nextIntent = "next-while-paused"
+	if result := h.service.Accept(DeliveryIntent{ID: nextIntent, Action: EventUpdateComplete}); result.State != AdmissionAdmitted {
+		t.Fatalf("queue next notification: %+v", result)
+	}
+	next := outboxDeliveryID(nextIntent, DestinationWebhook)
 	if _, err := h.db.Exec(`CREATE TRIGGER reject_rate_limit_completion BEFORE UPDATE OF status_code ON notification_outbox
 		WHEN new.status_code=429 BEGIN SELECT RAISE(ABORT, 'temporary persistence failure'); END`); err != nil {
 		t.Fatal(err)
@@ -279,6 +299,33 @@ func TestRateLimitedLaneRepairsFailedCompletionBeforeNextDelivery(t *testing.T) 
 	if _, err := h.db.Exec("DROP TRIGGER reject_rate_limit_completion"); err != nil {
 		t.Fatal(err)
 	}
+	rotate := func() {
+		t.Helper()
+		_, err := h.service.SaveSettings(SettingsUpdate{Enabled: true, WebhookURLIntent: WebhookURLReplace,
+			WebhookURL: "https://rotated.example.test/private-path", EventTypes: []string{EventUpdateComplete}})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	assertSkippedAfterRotation := func(id string) {
+		t.Helper()
+		var state string
+		if err := h.db.QueryRow("SELECT state FROM notification_outbox WHERE id=?", id).Scan(&state); err != nil ||
+			state != outboxStateSkipped || h.client.calls != 1 {
+			t.Fatalf("notification after rotation = %q with %d deliveries, %v", state, h.client.calls, err)
+		}
+	}
+	if scenario == "reclaim original row after rotation" {
+		rotate()
+		h.now = h.now.Add(defaultOutboxClaimTTL)
+		if err := recoverExpiredOutboxClaims(t.Context(), h.db, h.now, defaultOutboxClaimTTL, outboxDeliveries{}); err != nil {
+			t.Fatal(err)
+		}
+		h.drain(t)
+		assertSkippedAfterRotation(first)
+		return
+	}
+
 	h.service.processOutboxRow(t.Context(), claim(next))
 	if h.client.calls != 1 {
 		t.Fatalf("same destination sent %d requests before its deadline, want 1", h.client.calls)
@@ -290,10 +337,62 @@ func TestRateLimitedLaneRepairsFailedCompletionBeforeNextDelivery(t *testing.T) 
 		t.Fatalf("recovered response = %q with %d attempts, %v", state, attempts, err)
 	}
 
-	h.now = h.now.Add(90 * time.Second)
+	if scenario == "revalidate immediately after rotation" {
+		rotate()
+		h.drain(t)
+		assertSkippedAfterRotation(next)
+		return
+	}
+	h.now = h.now.Add(retryAfter)
 	h.drain(t)
 	if h.client.calls != 3 {
 		t.Fatalf("queued deliveries did not resume at the persisted deadline, got %d calls", h.client.calls)
+	}
+}
+
+func TestGracefulRestartPersistsRateLimitAfterTemporaryWriteFailure(t *testing.T) {
+	db := openNativeIntegrationTestDB(t, "rate-limit-close.db")
+	prepareOutboxSettings(t, db, "https://hooks.example.test/test", true)
+	now := time.Date(2026, 11, 20, 5, 0, 0, 0, time.UTC)
+	deps := outboxTestDeps(db, time.Second)
+	deps.Now = func() time.Time { return now }
+	deps.HTTPClient = notificationHTTPFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusTooManyRequests,
+			Header:     http.Header{"Retry-After": {"90"}},
+			Body:       io.NopCloser(strings.NewReader("")),
+		}, nil
+	})
+	failed := make(chan struct{}, 1)
+	deps.Logf = func(format string, _ ...any) {
+		if strings.HasPrefix(format, "notification outbox outcome persistence failed") {
+			failed <- struct{}{}
+		}
+	}
+	if _, err := db.Exec(`CREATE TRIGGER reject_rate_limit_completion BEFORE UPDATE OF status_code ON notification_outbox
+		WHEN new.status_code=429 BEGIN SELECT RAISE(ABORT, 'temporary persistence failure'); END`); err != nil {
+		t.Fatal(err)
+	}
+	first := NewService(deps)
+	t.Cleanup(func() { closeOutboxService(t, first) })
+	if got := first.Accept(DeliveryIntent{ID: "failed-before-close", Action: EventUpdateComplete}); got.State != AdmissionAdmitted {
+		t.Fatalf("enqueue notification: %+v", got)
+	}
+	select {
+	case <-failed:
+	case <-time.After(time.Second):
+		t.Fatal("worker did not report the failed write")
+	}
+	if _, err := db.Exec("DROP TRIGGER reject_rate_limit_completion"); err != nil {
+		t.Fatal(err)
+	}
+	closeOutboxService(t, first)
+
+	reopened := NewService(deps)
+	defer closeOutboxService(t, reopened)
+	diagnostics, err := reopened.DeliveryDiagnostics()
+	if err != nil || !diagnostics.RateLimitedUntil[DestinationWebhook].Equal(now.Add(90*time.Second)) {
+		t.Fatalf("reopened delivery diagnostics lost observed pause: %+v, %v", diagnostics, err)
 	}
 }
 

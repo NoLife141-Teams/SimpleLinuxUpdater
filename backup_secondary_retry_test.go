@@ -187,6 +187,60 @@ func TestSecondaryCatchUpBudgetSurvivesFailedHistoryPruning(t *testing.T) {
 	t.Fatal("pruned terminal outcome reset the budget of an archive still in the primary catalog")
 }
 
+func TestSecondaryCatchUpDoesNotRequeueCopiesRemovedByRetention(t *testing.T) {
+	_, automation, now := newBackupAutomationTest(t)
+	secondary := secondaryBackupTestDirectory(t, automation)
+	automation.deployment.SecondaryDirectory = secondary
+	if _, err := automation.validateSecondaryDestination(t.Context(), nil); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		*now = now.Add(time.Minute)
+		if err := automation.Tick(t.Context(), true); err != nil {
+			t.Fatal(err)
+		}
+		if err := automation.copyNextSecondaryBackup(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	state := backupAutomationStateForTest(t, automation)
+	oldest := state.Archives[0]
+	config := state.Config
+	config.Retain = 1
+	if _, err := automation.Configure(t.Context(), config); err != nil {
+		t.Fatal(err)
+	}
+	if err := automation.copyNextSecondaryBackup(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(secondary, oldest.Name)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("retention did not remove the older secondary copy: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(automation.deployment.Directory, oldest.Name)); err != nil {
+		t.Fatalf("fixture lost the registered primary source: %v", err)
+	}
+	offline := secondary + ".offline"
+	if err := os.Rename(secondary, offline); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(offline) })
+	if err := automation.copyNextSecondaryBackup(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(offline, secondary); err != nil {
+		t.Fatal(err)
+	}
+	restarted := newBackupAutomation(automation.deps)
+	restarted.deployment = automation.deployment
+	if err := restarted.copyNextSecondaryBackup(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	status, err := restarted.Status(t.Context())
+	if err != nil || status.Secondary == nil || status.Secondary.Pending != 0 || status.Secondary.State != "verified" {
+		t.Fatalf("mount recovery queued a copy already removed by retention: %+v, %v", status.Secondary, err)
+	}
+}
+
 func TestSecondaryLateMountFailureBeforeTransferPreservesBudget(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("requires filesystem traversal permissions to be enforced")
@@ -247,6 +301,13 @@ func testSecondaryLateMountFailureBeforeTransfer(t *testing.T, mode os.FileMode)
 	state := backupAutomationStateForTest(t, automation)
 	if copy := state.Secondary.Copies[1]; copy.Attempts != 0 || copy.Failure != "storage_unavailable" {
 		t.Fatalf("late mount failure spent a transfer attempt: %+v", copy)
+	}
+	if err := automation.copyNextSecondaryBackup(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	status, err := automation.Status(t.Context())
+	if err != nil || status.Secondary == nil || !status.Secondary.WaitingForMount {
+		t.Fatalf("mount wait disappeared during transfer backoff: %+v, %v", status.Secondary, err)
 	}
 }
 

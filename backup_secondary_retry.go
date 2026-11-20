@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"os"
+	"slices"
 	"sort"
 
 	internalbackup "debian-updater/internal/backup"
@@ -78,7 +79,8 @@ func (a *backupAutomation) catchUpSecondaryCopy(ctx context.Context, root *os.Ro
 		}
 		for _, archive := range state.Archives {
 			copy, exists := copies[archive.ID]
-			if (!exists || copy.Failure == "queue_full" || copy.VerifiedAt != "") &&
+			if !slices.Contains(state.Secondary.Retired, archive.ID) &&
+				(!exists || copy.Failure == "queue_full" || copy.VerifiedAt != "") &&
 				secondaryPrimaryEligible(archive, binding.Owner) {
 				candidates = append(candidates, archive)
 			}

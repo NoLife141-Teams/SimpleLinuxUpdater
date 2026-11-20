@@ -69,6 +69,7 @@ type backupSecondaryState struct {
 	Copies      []backupSecondaryCopy  `json:"copies,omitempty"`
 	LastFailure string                 `json:"last_failure,omitempty"`
 	CatchUp     bool                   `json:"catch_up,omitempty"`
+	Retired     []string               `json:"retired,omitempty"`
 }
 
 type backupSecondaryStatus struct {
@@ -169,7 +170,8 @@ func (a *backupAutomation) secondaryStatus(current backupAutomationState) *backu
 }
 
 func (a *backupAutomation) queueSecondaryCopy(state *backupAutomationState, archive ownedBackupArchive) {
-	if !a.secondaryConfigured(state.Secondary) || archive.Owner != state.Secondary.Binding.Owner {
+	if !a.secondaryConfigured(state.Secondary) || archive.Owner != state.Secondary.Binding.Owner ||
+		slices.Contains(state.Secondary.Retired, archive.ID) {
 		return
 	}
 	pending := 0
@@ -195,6 +197,9 @@ func (a *backupAutomation) queueSecondaryCopy(state *backupAutomationState, arch
 	for _, archive := range state.Archives {
 		sources[archive.ID] = true
 	}
+	state.Secondary.Retired = slices.DeleteFunc(state.Secondary.Retired, func(id string) bool {
+		return !sources[id]
+	})
 	failed := 0
 	for i := len(state.Secondary.Copies) - 1; i >= 0; i-- {
 		copy := state.Secondary.Copies[i]

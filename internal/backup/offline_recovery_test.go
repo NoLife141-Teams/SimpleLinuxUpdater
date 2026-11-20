@@ -8,6 +8,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"testing"
@@ -139,7 +140,14 @@ func TestOfflineRecoveryUsesSealedRollbackWithUnreadableSQLite(t *testing.T) {
 	f, root, id := interruptedRecoveryFixture(t, true)
 	corrupt := []byte("fixture with an invalid SQLite header")
 	// This restore stopped before replacing trust. A read-only deployment
-	// mount containing the original bytes must not need to be replaced.
+	// mount containing the original bytes must not require free space.
+	free, full := uint64(128<<20), uint64(0)
+	f.service.deps.ProbeRestoreStorage = func(dir string) installationhealth.VolumeCapacity {
+		if dir == filepath.Dir(f.hosts) {
+			return installationhealth.VolumeCapacity{Device: 2, Identified: true, AvailableBytes: &full}
+		}
+		return installationhealth.VolumeCapacity{Device: 1, Identified: true, AvailableBytes: &free}
+	}
 	f.service.syncRestoreFile = func(file *os.File) error {
 		if filepath.Dir(file.Name()) == filepath.Dir(f.hosts) && strings.HasPrefix(filepath.Base(file.Name()), ".restore-") {
 			return syscall.EROFS
@@ -322,27 +330,47 @@ func TestOfflineRecoveryMarkerRemovalSyncFailureKeepsSQLiteLatch(t *testing.T) {
 }
 
 func TestOfflineRecoveryRetriesTrustDirectorySyncBeforeRelease(t *testing.T) {
-	f, _, id := interruptedRecoveryFixture(t, true)
+	f, root, id := interruptedRecoveryFixture(t, true)
 	if err := os.WriteFile(f.hosts, []byte(archivedRestoreTrust), 0600); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(f.db, []byte("damaged active SQLite"), 0600); err != nil {
 		t.Fatal(err)
 	}
+	free := uint64(128 << 20)
+	f.service.deps.ProbeRestoreStorage = func(dir string) installationhealth.VolumeCapacity {
+		if dir == filepath.Dir(f.hosts) {
+			return installationhealth.VolumeCapacity{Device: 2, Identified: true, AvailableBytes: &free}
+		}
+		return installationhealth.VolumeCapacity{Device: 1, Identified: true, AvailableBytes: &free}
+	}
 	f.service.syncRestoreFile = func(file *os.File) error {
 		if file.Name() == filepath.Dir(f.hosts) {
-			return syscall.EIO
+			return syscall.ENOSPC
 		}
 		return file.Sync()
 	}
-	for range 2 {
+	for attempt := range 2 {
 		report, err := f.service.OfflineRestoreRecovery(t.Context(), id, offlineRecoveryMergeFixtureJobs)
-		if err == nil || report.Applied != "" || !report.RecoveryRequired {
+		if !errors.Is(err, errOfflineRecoveryStorage) || report.Applied != "" || !report.RecoveryRequired {
 			t.Fatalf("recovery cleared the latch before synchronizing host trust: %+v, %v", report, err)
+		}
+		if len(report.Sets) != 1 || report.Sets[0].StorageRole != restoreStorageHostKeys ||
+			!slices.ContainsFunc(report.Sets[0].Storage, func(volume RestoreStorageVolume) bool {
+				return slices.Contains(volume.Roles, restoreStorageDatabase) && volume.State == restoreStorageReady
+			}) {
+			t.Fatalf("a host trust error affected SQLite capacity: %+v", report.Sets)
+		}
+		if (report.Diagnosis == "") != (attempt == 1) {
+			t.Fatalf("unexpected retained diagnosis for attempt %d: %+v", attempt, report)
 		}
 		// The first attempt installs the correct contents but its directory
 		// sync fails. The second attempt sees those same bytes.
 		requireDurableRestoreState(t, f.db, f.hosts, originalRestoreServer, originalRestoreTrust, true)
+	}
+	diagnoses, err := filepath.Glob(filepath.Join(root, "slu-recovery-diagnosis-*"))
+	if err != nil || len(diagnoses) != 1 {
+		t.Fatalf("retry retained another diagnosis before replacing files: %v, %v", diagnoses, err)
 	}
 	f.service.syncRestoreFile = nil
 	report, err := f.service.OfflineRestoreRecovery(t.Context(), id, offlineRecoveryMergeFixtureJobs)
@@ -353,7 +381,7 @@ func TestOfflineRecoveryRetriesTrustDirectorySyncBeforeRelease(t *testing.T) {
 }
 
 func TestOfflineRecoveryCanRetryAfterMarkerWriteFailure(t *testing.T) {
-	f, _, id := interruptedRecoveryFixture(t, true)
+	f, root, id := interruptedRecoveryFixture(t, true)
 	marker := RestoreRecoveryMarkerPath(f.db)
 	if err := os.Remove(marker); err != nil {
 		t.Fatal(err)
@@ -373,12 +401,16 @@ func TestOfflineRecoveryCanRetryAfterMarkerWriteFailure(t *testing.T) {
 			if err := file.Truncate(0); err != nil {
 				t.Fatal(err)
 			}
-			return syscall.EIO
+			return syscall.ENOSPC
 		}
 		return file.Sync()
 	}
-	if report, err := f.service.OfflineRestoreRecovery(t.Context(), id, offlineRecoveryMergeFixtureJobs); err == nil || !report.RecoveryRequired || report.Diagnosis == "" {
+	if report, err := f.service.OfflineRestoreRecovery(t.Context(), id, offlineRecoveryMergeFixtureJobs); !errors.Is(err, errOfflineRecoveryStorage) || !report.RecoveryRequired || report.Diagnosis != "" {
 		t.Fatalf("failed publication = %+v, %v", report, err)
+	}
+	diagnoses, err := filepath.Glob(filepath.Join(root, "slu-recovery-diagnosis-*"))
+	if err != nil || len(diagnoses) != 0 {
+		t.Fatalf("marker failure retained a diagnosis before replacing files: %v, %v", diagnoses, err)
 	}
 	f.service.syncRestoreFile = nil
 	if report, err := f.service.OfflineRestoreRecovery(t.Context(), id, offlineRecoveryMergeFixtureJobs); err != nil || report.Applied != id || report.RecoveryRequired {
@@ -503,6 +535,9 @@ func TestOfflineRecoveryDoesNotSubstituteSealedEvidenceWhenCopyFails(t *testing.
 
 func TestOfflineRecoveryRechecksCapacityAfterCopyingDiagnosis(t *testing.T) {
 	f, root, id := interruptedRecoveryFixture(t, true)
+	if err := os.WriteFile(f.hosts, []byte(archivedRestoreTrust), 0600); err != nil {
+		t.Fatal(err)
+	}
 	dbFree := uint64(128 << 20)
 	prepFree := dbFree
 	tempDir := f.service.deps.TempDir()
@@ -516,9 +551,11 @@ func TestOfflineRecoveryRechecksCapacityAfterCopyingDiagnosis(t *testing.T) {
 	if err != nil || len(preview.Sets) != 1 || len(preview.Sets[0].Storage) != 2 || !preview.Sets[0].Ready {
 		t.Fatalf("volume preview = %+v, %v", preview, err)
 	}
-	roles := strings.Join(preview.Sets[0].Storage[1].Roles, ",")
-	if roles != "sqlite_replacement,ssh_trust_replacement,diagnosis_snapshots" {
-		t.Fatalf("replacement and diagnosis must share one volume: %q", roles)
+	if !slices.ContainsFunc(preview.Sets[0].Storage, func(volume RestoreStorageVolume) bool {
+		return slices.Contains(volume.Roles, restoreStorageDatabase) && slices.Contains(volume.Roles, restoreStorageHostKeys) &&
+			slices.Contains(volume.Roles, offlineRecoveryDiagnosis)
+	}) {
+		t.Fatalf("replacement and diagnosis must share one volume: %+v", preview.Sets[0].Storage)
 	}
 	f.service.syncRestoreFile = func(file *os.File) error {
 		if filepath.Base(file.Name()) == "recovery.json" && strings.HasPrefix(filepath.Base(filepath.Dir(file.Name())), "slu-recovery-diagnosis-") {
@@ -538,5 +575,5 @@ func TestOfflineRecoveryRechecksCapacityAfterCopyingDiagnosis(t *testing.T) {
 	if err != nil || len(diagnoses) != 0 {
 		t.Fatalf("blocked attempt retained provisional diagnosis: %v, %v", diagnoses, err)
 	}
-	requireDurableRestoreState(t, f.db, f.hosts, archivedRestoreServer, originalRestoreTrust, true)
+	requireDurableRestoreState(t, f.db, f.hosts, archivedRestoreServer, archivedRestoreTrust, true)
 }

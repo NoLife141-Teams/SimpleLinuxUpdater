@@ -36,6 +36,7 @@ type OfflineRecoverySet struct {
 	Blocker        string                 `json:"blocker,omitempty"`
 	EvidenceSource string                 `json:"evidence_source,omitempty"`
 	Servers        int                    `json:"servers,omitempty"`
+	StorageRole    string                 `json:"storage_role,omitempty"`
 	Storage        []RestoreStorageVolume `json:"storage,omitempty"`
 	APTReports     int                    `json:"apt_reports,omitempty"`
 }
@@ -214,10 +215,7 @@ func (s *Service) OfflineRestoreRecovery(ctx context.Context, selection string, 
 			return report, err
 		}
 		databaseBytes, _ := sizeOnDisk(staged)
-		hostsPath := ""
-		if stagedHosts != nil && stagedHosts.Exists {
-			hostsPath = stagedHosts.BackupPath
-		}
+		hostsPath := recoveryHostReplacementPath(hosts, stagedHosts, true)
 		selected := &report.Sets[len(report.Sets)-1]
 		failStorage := func(cause error, role string) (OfflineRecoveryReport, error) {
 			err := selected.storageFailure(cause, role)
@@ -235,6 +233,11 @@ func (s *Service) OfflineRestoreRecovery(ctx context.Context, selection string, 
 			return report, errors.New("could not preserve current installation for diagnosis")
 		}
 		report.Diagnosis = filepath.Base(diagnosis)
+		discardProvisionalDiagnosis := func() {
+			if os.RemoveAll(diagnosis) == nil {
+				report.Diagnosis = ""
+			}
+		}
 		raw, err := json.MarshalIndent(entries, "", "  ")
 		if err == nil {
 			err = fs.writeSnapshot(filepath.Join(diagnosis, "recovery.json"), bytes.NewReader(raw))
@@ -247,9 +250,7 @@ func (s *Service) OfflineRestoreRecovery(ctx context.Context, selection string, 
 		}
 		if err != nil {
 			if IsStorageFull(err) {
-				if os.RemoveAll(diagnosis) == nil {
-					report.Diagnosis = ""
-				}
+				discardProvisionalDiagnosis()
 				return failStorage(err, offlineRecoveryDiagnosis)
 			}
 			return report, errors.New("could not persist the diagnosis copy; recovery remains locked")
@@ -261,33 +262,35 @@ func (s *Service) OfflineRestoreRecovery(ctx context.Context, selection string, 
 			if err := fs.syncPath(restoreEntryDirectory(hosts)); err != nil &&
 				(currentHosts.Exists || !errors.Is(err, os.ErrNotExist)) {
 				if IsStorageFull(err) {
+					discardProvisionalDiagnosis()
 					return failStorage(err, restoreStorageHostKeys)
 				}
 				return report, errors.New("could not synchronize host trust; recovery remains locked")
 			}
 			stagedHosts = nil
 		}
-		if stagedHosts == nil {
-			hostsPath = ""
+		hostsPath = ""
+		if stagedHosts != nil && stagedHosts.Exists {
+			hostsPath = stagedHosts.BackupPath
 		}
 		selected.Storage = s.estimateRestoreStorage(s.recoveryReplacementNeeds(database, hosts, hostsPath, databaseBytes, nil)...)
 		if err := storageBlocker(selected.Storage); err != nil {
-			if os.RemoveAll(diagnosis) == nil {
-				report.Diagnosis = ""
-			}
+			discardProvisionalDiagnosis()
 			return failStorage(err, "")
 		}
 		if !marked {
 			if _, err := fs.publishRecoveryMarker(marker, chosen); err != nil {
 				if IsStorageFull(err) {
+					discardProvisionalDiagnosis()
 					return failStorage(err, restoreStorageDatabase)
 				}
 				return report, errors.New("could not persist restore recovery marker")
 			}
 		}
 		if err := s.applyOfflineRecovery(ctx, fs, staged, stagedHosts, database, hosts, marker, chosen, live != nil); err != nil {
-			if errors.Is(err, errOfflineRecoveryStorage) {
-				return failStorage(err, "")
+			var failure offlineRecoveryWriteFailure
+			if errors.As(err, &failure) {
+				return failStorage(err, string(failure))
 			}
 			return report, err
 		}
@@ -323,16 +326,13 @@ func (s *Service) prepareOfflineRecoverySet(ctx context.Context, rootPath, work 
 		return fail("invalid_manifest", nil)
 	}
 	var inputs []string
-	hostsPath := ""
-	for i, entry := range indexed {
+	for _, entry := range indexed {
 		if entry == nil || !entry.Exists {
 			continue
 		}
 		inputs = append(inputs, entry.BackupPath)
-		if i == len(targets) {
-			hostsPath = entry.BackupPath
-		}
 	}
+	hostsPath := recoveryHostReplacementPath(hosts, indexed[len(targets)], sealed)
 	preparation := recoveryFileNeed(work, restoreStoragePreparation, inputs...)
 	// The reconstructed database, SQLite's working files and VACUUM INTO
 	// output can coexist. The live clone is already charged to this volume.
@@ -514,9 +514,9 @@ func validateRecoverySnapshots(root string, paths []string, snapshots []fileRest
 
 func (s *Service) applyOfflineRecovery(ctx context.Context, fs restoreFiles, staged string, stagedHosts *fileRestoreSnapshot, database, hosts, marker string, recorded restoreRecoveryMarker, readable bool) error {
 	fail := errors.New("could not apply verified recovery files; recovery remains locked")
-	writeFailure := func(err error) error {
+	writeFailure := func(err error, role string) error {
 		if IsStorageFull(err) {
-			return errOfflineRecoveryStorage
+			return offlineRecoveryWriteFailure(role)
 		}
 		return fail
 	}
@@ -524,45 +524,45 @@ func (s *Service) applyOfflineRecovery(ctx context.Context, fs restoreFiles, sta
 	// the diagnosis directory. SQLite cannot checkpoint their WAL safely.
 	if readable {
 		if err := fs.checkpointRecoveryWAL(ctx, database); err != nil {
-			return writeFailure(err)
+			return writeFailure(err, restoreStorageDatabase)
 		}
 	}
 	if err := fs.removeSQLiteSidecars(database); err != nil {
-		return writeFailure(err)
+		return writeFailure(err, restoreStorageDatabase)
 	}
 	if err := fs.writeAtomicFileFromPath(database, staged, 0600, s.deps.EnsurePrivateDirForFile); err != nil {
-		return writeFailure(err)
+		return writeFailure(err, restoreStorageDatabase)
 	}
 	if stagedHosts != nil {
 		if stagedHosts.Exists {
 			if err := fs.writeAtomicFileFromPath(hosts, stagedHosts.BackupPath, 0600, s.deps.EnsurePrivateDirForFile); err != nil {
-				return writeFailure(err)
+				return writeFailure(err, restoreStorageHostKeys)
 			}
 		} else if err := fs.removeFile(hosts); err != nil {
-			return writeFailure(err)
+			return writeFailure(err, restoreStorageHostKeys)
 		}
 	}
 	// Keep the SQLite latch while removing the filesystem marker. Either gate
 	// must survive if verification or the marker directory sync fails.
 	db, err := openRecoveryCopy(ctx, database)
 	if err != nil {
-		return writeFailure(err)
+		return writeFailure(err, restoreStorageDatabase)
 	}
 	defer db.Close()
 	if _, err := knownhosts.New(hosts); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return writeFailure(err)
+		return writeFailure(err, restoreStorageHostKeys)
 	}
 	if _, err := db.ExecContext(ctx, "PRAGMA synchronous=FULL"); err != nil {
-		return writeFailure(err)
+		return writeFailure(err, restoreStorageDatabase)
 	}
 	if err := fs.removeFile(marker); err != nil {
 		_, _ = fs.publishRecoveryMarker(marker, recorded)
-		return writeFailure(err)
+		return writeFailure(err, restoreStorageDatabase)
 	}
 	store := maintenance.SQLiteStore{DB: func() *sql.DB { return db }}
 	if err := errors.Join(store.Save(ctx, maintenance.State{}), db.Close()); err != nil {
 		_, _ = fs.publishRecoveryMarker(marker, recorded)
-		return writeFailure(err)
+		return writeFailure(err, restoreStorageDatabase)
 	}
 	return nil
 }

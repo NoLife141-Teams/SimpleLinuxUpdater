@@ -1,7 +1,10 @@
 package backup
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
+	"os"
 	"slices"
 )
 
@@ -32,6 +35,44 @@ func (s *Service) recoveryReplacementNeeds(database, hosts, stagedHosts string, 
 	return needs
 }
 
+// A matching trust file only needs a directory sync. Only budget space for
+// the copy when the current file differs or the comparison is unavailable.
+func recoveryHostReplacementPath(hosts string, snapshot *fileRestoreSnapshot, digestKnown bool) string {
+	if snapshot == nil || !snapshot.Exists {
+		return ""
+	}
+	size, known := sizeOnDisk(hosts)
+	snapshotSize, snapshotKnown := sizeOnDisk(snapshot.BackupPath)
+	if !known || !snapshotKnown || size != snapshotSize || size > MaxExtractedBytes {
+		return snapshot.BackupPath
+	}
+	expected := snapshot.SHA256
+	if !digestKnown {
+		var err error
+		expected, err = recoveryTrustDigest(snapshot.BackupPath)
+		if err != nil {
+			return snapshot.BackupPath
+		}
+	}
+	if digest, err := recoveryTrustDigest(hosts); err == nil && digest == expected {
+		return ""
+	}
+	return snapshot.BackupPath
+}
+
+func recoveryTrustDigest(path string) (string, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+	digest := sha256.New()
+	if _, err := copyFileBounded(digest, file, MaxExtractedBytes); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(digest.Sum(nil)), nil
+}
+
 // A measured shortage carries its own observation. A write that failed after
 // the observation makes the capacity of the affected volume uncertain.
 func recoveryStorageFailure(volumes []RestoreStorageVolume, role string, cause error) []RestoreStorageVolume {
@@ -51,6 +92,7 @@ func recoveryStorageFailure(volumes []RestoreStorageVolume, role string, cause e
 func (set *OfflineRecoverySet) storageFailure(cause error, role string) error {
 	set.Ready = false
 	set.Blocker = offlineRecoveryStorageBlocker
+	set.StorageRole = role
 	set.Storage = recoveryStorageFailure(set.Storage, role, cause)
 	return offlineRecoveryStorageError(cause)
 }
@@ -64,3 +106,7 @@ func offlineRecoveryStorageError(cause error) error {
 }
 
 var errOfflineRecoveryStorage = errors.New("offline recovery ran out of storage space. Free space on the affected volume and retry")
+
+type offlineRecoveryWriteFailure string
+
+func (offlineRecoveryWriteFailure) Error() string { return errOfflineRecoveryStorage.Error() }

@@ -46,12 +46,56 @@ func TestSecondaryBackupCoverageCondition(t *testing.T) {
 	if got := coverage(now, previous); !got.Active || !got.Suspended || got.Generation != stale.Generation {
 		t.Fatalf("unknown observation should suspend the previous episode: %+v", got)
 	}
+	restored := secondaryBackupConditions(binding.Path, backupSecondaryState{}, now, []notificationpkg.Condition{previous}, nil)[1]
+	if !restored.Active || !restored.Suspended || restored.Generation != stale.Generation {
+		t.Fatalf("restoring a catalog before secondary setup should suspend the unresolved coverage episode: %+v", restored)
+	}
 	state.Binding.Directory = "replacement"
 	if got := coverage(now, previous); got.Active {
 		t.Fatalf("replacement mount carried over an earlier mount's episode: %+v", got)
 	}
 	if got := secondaryBackupConditions("", state, now, []notificationpkg.Condition{previous}, nil)[1]; got.Active {
 		t.Fatalf("disabled destination kept a coverage alert: %+v", got)
+	}
+}
+
+func TestSecondaryBackupAlertsWhenWorkerStopsObserving(t *testing.T) {
+	start := time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		name       string
+		lastResult bool
+		alertDelay time.Duration
+	}{
+		{name: "first probe", alertDelay: 31 * time.Minute},
+		{name: "after a successful probe", lastResult: true, alertDelay: 90 * time.Minute},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			binding := backupSecondaryBinding{Path: backupStorageBinding("/mounted"), Directory: "secondary", Owner: "installation"}
+			state := backupSecondaryState{Approved: true, Binding: binding}
+			state.Observation.start(start)
+			if tc.lastResult {
+				state.Observation.record(start, true)
+			}
+			alert := func(at time.Time) notificationpkg.ConditionFact {
+				return secondaryBackupConditions(binding.Path, state, at, nil, nil)[0]
+			}
+			due := start.Add(tc.alertDelay)
+			if got := alert(due.Add(-time.Second)); got.Active {
+				t.Fatalf("overdue probe should respect the storage outage grace period: %+v", got)
+			}
+			outage := alert(due)
+			if !outage.Active {
+				t.Fatalf("overdue probe should open an outage after the grace period: %+v", outage)
+			}
+			state.Observation.record(due.Add(time.Minute), false)
+			if got := alert(due.Add(time.Minute)); !got.Active || got.Generation != outage.Generation || got.CreatedAt != outage.CreatedAt {
+				t.Fatalf("a late failure should continue the same outage: %+v, before: %+v", got, outage)
+			}
+			state.Observation.record(due.Add(2*time.Minute), true)
+			if got := alert(due.Add(2 * time.Minute)); got.Active {
+				t.Fatalf("successful observation should resolve the outage: %+v", got)
+			}
+		})
 	}
 }
 

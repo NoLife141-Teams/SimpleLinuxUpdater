@@ -128,7 +128,7 @@ func (a *backupAutomation) copyNextSecondaryBackup(parent context.Context) error
 				cleanup = item
 			}
 		}
-		return false, nil
+		return state.Secondary.Observation.start(now), nil
 	})
 	if err != nil || binding.Path == "" {
 		return err

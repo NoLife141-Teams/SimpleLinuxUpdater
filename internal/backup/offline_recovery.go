@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 
@@ -471,7 +472,7 @@ func (s *Service) prepareOfflineRecoverySet(ctx context.Context, rootPath, work 
 }
 
 func loadRecoverySnapshots(root string, marker restoreRecoveryMarker) ([]fileRestoreSnapshot, bool, error) {
-	raw, err := readRecoveryFile(filepath.Join(root, "recovery.json"), 128*1024)
+	raw, err := readRecoveryFileWithAccess(filepath.Join(root, "recovery.json"), 128*1024, runtime.GOOS == "windows")
 	if err != nil {
 		return nil, false, err
 	}
@@ -702,6 +703,10 @@ func canUseSealedRecoveryEvidence(err error) bool {
 }
 
 func readRecoveryFile(path string, limit int64) ([]byte, error) {
+	return readRecoveryFileWithAccess(path, limit, false)
+}
+
+func readRecoveryFileWithAccess(path string, limit int64, requirePrivate bool) ([]byte, error) {
 	info, err := os.Lstat(path)
 	if err != nil || !info.Mode().IsRegular() || info.Size() > limit {
 		return nil, errors.New("unreadable recovery file")
@@ -711,6 +716,12 @@ func readRecoveryFile(path string, limit int64) ([]byte, error) {
 		return nil, err
 	}
 	defer f.Close()
+	if requirePrivate {
+		opened, err := f.Stat()
+		if err != nil || !os.SameFile(opened, info) || !privatefile.IsPrivate(f) {
+			return nil, errors.New("recovery file must have private access")
+		}
+	}
 	data, err := io.ReadAll(io.LimitReader(f, limit+1))
 	if int64(len(data)) > limit {
 		return nil, errors.New("recovery file exceeded its size limit")

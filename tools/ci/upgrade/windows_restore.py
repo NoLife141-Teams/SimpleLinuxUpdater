@@ -118,11 +118,11 @@ class Installation:
                 require(self.process.poll() is None, "Windows executable exited before readiness")
                 try:
                     ready = api.request("GET", "/readyz", allowed=(200, 503), timeout=2)
-                    if ready.get("status") == expected:
-                        yield api
-                        return
                 except OSError:
-                    pass
+                    ready = {}
+                if ready.get("status") == expected:
+                    yield api
+                    return
                 time.sleep(0.2)
             raise AssertionError("Windows executable did not reach " + expected)
         finally:
@@ -267,11 +267,12 @@ def qualify(source, work, report):
 
     set_id = inspect["sets"][0]["id"]
     rollback_path = interrupted.directory / set_id
-    checked(["icacls.exe", str(rollback_path), "/grant", USERS_SID + ":(RX)"], "grant fixture rollback access")
-    unsafe = interrupted.cli(binary, "recover", "--inspect")
-    require(unsafe["sets"][0].get("blocker") == "invalid_manifest" and not unsafe["sets"][0]["ready"],
-            "overbroad rollback ACL was accepted")
-    checked(["icacls.exe", str(rollback_path), "/remove:g", USERS_SID], "restore private rollback ACL")
+    for entry in (rollback_path, rollback_path / "snapshot-0", rollback_path / "recovery.json"):
+        checked(["icacls.exe", str(entry), "/grant", USERS_SID + ":(RX)"], "grant fixture rollback access")
+        unsafe = interrupted.cli(binary, "recover", "--inspect")
+        require(unsafe["sets"][0].get("blocker") == "invalid_manifest" and not unsafe["sets"][0]["ready"],
+                "overbroad rollback ACL was accepted")
+        checked(["icacls.exe", str(entry), "/remove:g", USERS_SID], "restore private rollback ACL")
     report["steps"]["recovery_acl"] = "passed"
     applied = interrupted.cli(binary, "recover", "--apply", set_id)
     require(applied.get("applied") == set_id and not applied.get("recovery_required"), "native offline recovery was incomplete")

@@ -342,6 +342,7 @@ func testRateLimitedLaneRepairsFailedCompletion(t *testing.T, scenario string) {
 		if err := recoverExpiredOutboxClaims(t.Context(), h.db, h.now, defaultOutboxClaimTTL, outboxDeliveries{}); err != nil {
 			t.Fatal(err)
 		}
+		h.now = h.now.Add(indeterminateRetryDelay)
 		h.drain(t)
 		assertSkippedAfterRotation(first)
 		return

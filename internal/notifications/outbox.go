@@ -618,8 +618,7 @@ const outboxEffectiveDue = `CASE
 	WHEN binding.configuration IS NOT NULL AND (NOT ` + outboxDestinationEnabled + `
 		OR (json_type(binding.configuration, '$.destination_fingerprints')='object'
 		AND o.destination_fingerprint<>'' AND o.destination_fingerprint IS NOT ` + outboxCurrentFingerprint + `))
-	THEN CASE WHEN (o.status_code=429 AND o.next_attempt_at=health.rate_limited_until)
-		OR o.error='` + outboxIndeterminateReason + `' THEN ''
+	THEN CASE WHEN o.status_code=429 AND o.next_attempt_at=health.rate_limited_until THEN ''
 		ELSE rtrim(o.next_attempt_at, 'Z') END
 	ELSE max(rtrim(o.next_attempt_at, 'Z'), COALESCE(rtrim(health.rate_limited_until, 'Z'), ''))
 END`

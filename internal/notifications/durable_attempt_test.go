@@ -224,6 +224,52 @@ func TestQueuedConditionRotationBeforeAdmissionPreventsStaleRequest(t *testing.T
 	}
 }
 
+func TestIndeterminateRetryDelaySurvivesDestinationRotation(t *testing.T) {
+	h := newConditionHarness(t)
+	h.facts = []ConditionFact{rebootFact(true)}
+	h.reconcile(t)
+	ctx := t.Context()
+	obsolete, err := claimNextOutboxRow(ctx, h.db, h.now, outboxDeliveries{})
+	if err != nil || obsolete == nil {
+		t.Fatalf("initial claim = %+v, %v", obsolete, err)
+	}
+	if err := admitOutboxAttempt(ctx, h.db, obsolete, obsolete.DestinationFingerprint, h.now); err != nil {
+		t.Fatal(err)
+	}
+	if err := recoverExpiredOutboxClaims(ctx, h.db, h.now, 0, outboxDeliveries{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.service.SaveSettings(SettingsUpdate{
+		Enabled: true, WebhookURLIntent: WebhookURLReplace, WebhookURL: "https://rotated.example.test/hooks",
+		EventTypes: SupportedEvents(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	newIntent := DeliveryIntent{ID: "rotated-destination", Action: EventUpdateComplete}
+	if got := h.service.Accept(newIntent); got.State != AdmissionAdmitted {
+		t.Fatalf("queue for rotated destination: %+v", got)
+	}
+	current, err := claimNextOutboxRow(ctx, h.db, h.now, outboxDeliveries{})
+	if err != nil || current == nil || current.ID != outboxDeliveryID(newIntent.ID, DestinationWebhook) {
+		t.Fatalf("current destination claim = %+v, %v", current, err)
+	}
+	h.service.processOutboxRow(ctx, *current)
+	if h.client.calls != 1 {
+		t.Fatalf("requests to current destination = %d, want one", h.client.calls)
+	}
+
+	h.now = h.now.Add(indeterminateRetryDelay)
+	old, err := claimNextOutboxRow(ctx, h.db, h.now, outboxDeliveries{})
+	if err != nil || old == nil || old.ID != obsolete.ID {
+		t.Fatalf("obsolete row claim after fallback = %+v, %v", old, err)
+	}
+	h.sourceErr = errors.New("condition observations unavailable")
+	h.service.processOutboxRow(ctx, *old)
+	if row, err := claimNextOutboxRow(ctx, h.db, h.now, outboxDeliveries{}); err != nil || row != nil {
+		t.Fatalf("obsolete row became eligible during revalidation backoff: %+v, %v", row, err)
+	}
+}
+
 func TestStagedRestoreKeepsInterruptionFromArchivedAPTAttempt(t *testing.T) {
 	live, archived := newConditionHarness(t), newConditionHarness(t)
 	fact := ConditionFact{

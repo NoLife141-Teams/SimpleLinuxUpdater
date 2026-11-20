@@ -2452,6 +2452,43 @@ test("notification delivery health exposes safe retry diagnostics and independen
     }
 });
 
+test("admin validates optional secondary backups and reports their availability independently", async ({ page }) => {
+    await ensureAuthenticatedSession(page);
+    const automation = {
+        state: "succeeded", configured: true, message: "Verified encrypted backup published.",
+        config: { enabled: true, cadence: "daily", time: "02:00", retain: 3 },
+    };
+    const state = { backupStatusResponse: { automation } };
+    await stubAdminApi(page, state);
+    let validations = 0;
+    await page.route("**/api/backup/automation/secondary/validate", async route => {
+        expect(route.request().method()).toBe("POST");
+        validations++;
+        automation.secondary = { state: "waiting", pending: 0, failed: 0 };
+        return fulfillJson(route, automation.secondary);
+    });
+    await page.goto("/admin#admin-section-backup");
+    const panel = page.locator("#backup-secondary");
+    await expect(page.locator("#backup-automation-status")).toContainText("Verified encrypted backup");
+    await expect(panel).toBeHidden();
+    automation.secondary = { state: "validation_required", pending: 0, failed: 0 };
+    await page.evaluate(() => window.fetchBackupStatus());
+    await expect(panel).toContainText("Validation required");
+    await panel.getByRole("button", { name: "Validate secondary destination" }).click();
+    await expect(panel).toContainText("Waiting for a verified primary backup");
+    expect(validations).toBe(1);
+
+    automation.secondary = {
+        state: "degraded", pending: 1, failed: 0, failure: "storage_unavailable",
+        captured_at: "2026-11-20T05:00:00Z", verified_at: "2026-11-20T05:02:00Z",
+    };
+    await panel.getByRole("button", { name: "Refresh secondary status" }).click();
+    await expect(panel).toContainText("Mount unavailable or replaced");
+    await expect(panel).toContainText("1 pending");
+    await expect(page.locator("#backup-secondary-captured")).not.toHaveText("Unknown");
+    await expect(page.locator("#backup-automation-status")).toContainText("Verified encrypted backup");
+});
+
 test("automated backups validate configuration and display suspended, deferred and failed results", async ({
     baseURL,
     page,

@@ -192,6 +192,35 @@ The UI reports configuration/suspension, next attempt, last attempt, last verifi
 
 Restoration preserves historical configuration and results but clears local approval, even when restoring into the same installation. Revalidate destination and secret in Admin before resuming. Existing manual exports and archives remain compatible. No S3/SFTP backend or remote-server filesystem snapshot is provided.
 
+### Secondary backup copies
+
+Set `DEBIAN_UPDATER_BACKUP_SECONDARY_DIR` to the absolute path of a dedicated
+archive directory on a filesystem mounted from another host. The deployer
+provides and secures the mount. Keep the secondary mount separate from the
+primary archive, passphrase and application data directories. The mount must
+support private files, atomic no-overwrite hard links and directory fsync.
+
+In Admin → Backup & Restore, validate the primary settings and then use
+**Validate secondary destination**. Validation pins the identity of the
+secondary directory. An absent or replaced mount blocks writes until the
+approved mount returns or the operator validates a new one. Restore suspends
+secondary copies until the destination is revalidated.
+
+New verified primary archives enter the secondary copy queue. The worker copies
+the existing encrypted bytes after the primary export releases exclusive
+admission and verifies the SHA-256 before publication. It resumes interrupted
+work after restart and allows up to five attempts per copy. The queue holds up to
+16 pending copies. Pending sources are eligible for local retention again when
+their copy finishes or exhausts its retries. Secondary failures do not change the
+primary export outcome.
+
+The secondary destination uses the configured archive retention count and
+preserves files that do not match a registered copy. Admin shows the queue
+and the capture time of its latest verified copy. To recover without the
+primary host, obtain a copy from the secondary mount and use the normal archive
+restore workflow in isolation on the new installation. Keep the original
+passphrase in a separate secret store.
+
 ### Registered automated archive catalog
 
 **Admin → Backup & Restore → Registered automated archives** shows at most the

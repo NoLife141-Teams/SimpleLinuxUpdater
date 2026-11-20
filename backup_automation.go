@@ -77,22 +77,24 @@ type backupAutomationState struct {
 	Temporary     string                   `json:"temporary"`
 	Archives      []ownedBackupArchive     `json:"archives"`
 	Observation   backupArchiveObservation `json:"archive_observation,omitzero"`
+	Secondary     backupSecondaryState     `json:"secondary,omitzero"`
 }
 
 type backupAutomationStatus struct {
-	LocalArchiveCount int                  `json:"local_archive_count"`
-	Catalog           backupArchiveCatalog `json:"catalog"`
-	Config            backupScheduleConfig `json:"config"`
-	State             string               `json:"state"`
-	Message           string               `json:"message"`
-	Configured        bool                 `json:"configured"`
-	NextAt            string               `json:"next_at,omitempty"`
-	RetryAt           string               `json:"retry_at,omitempty"`
-	LastAttemptAt     string               `json:"last_attempt_at,omitempty"`
-	LastSuccessAt     string               `json:"last_success_at,omitempty"`
+	LocalArchiveCount int                    `json:"local_archive_count"`
+	Catalog           backupArchiveCatalog   `json:"catalog"`
+	Config            backupScheduleConfig   `json:"config"`
+	State             string                 `json:"state"`
+	Message           string                 `json:"message"`
+	Configured        bool                   `json:"configured"`
+	NextAt            string                 `json:"next_at,omitempty"`
+	RetryAt           string                 `json:"retry_at,omitempty"`
+	LastAttemptAt     string                 `json:"last_attempt_at,omitempty"`
+	LastSuccessAt     string                 `json:"last_success_at,omitempty"`
+	Secondary         *backupSecondaryStatus `json:"secondary,omitempty"`
 }
 
-type backupAutomationDeployment struct{ Directory, SecretFile string }
+type backupAutomationDeployment struct{ Directory, SecretFile, SecondaryDirectory string }
 
 type backupAutomation struct {
 	health      installationhealthpkg.Worker
@@ -100,6 +102,7 @@ type backupAutomation struct {
 	mu          sync.Mutex
 	scanMu      sync.Mutex
 	integrityMu sync.Mutex
+	secondaryMu sync.Mutex
 	wg          sync.WaitGroup
 	deps        AppDeps
 	deployment  backupAutomationDeployment
@@ -108,12 +111,19 @@ type backupAutomation struct {
 }
 
 func loadBackupAutomationDeployment() (backupAutomationDeployment, error) {
-	d := backupAutomationDeployment{strings.TrimSpace(os.Getenv("DEBIAN_UPDATER_BACKUP_DIR")), strings.TrimSpace(os.Getenv("DEBIAN_UPDATER_BACKUP_PASSPHRASE_FILE"))}
+	d := backupAutomationDeployment{
+		Directory:          strings.TrimSpace(os.Getenv("DEBIAN_UPDATER_BACKUP_DIR")),
+		SecretFile:         strings.TrimSpace(os.Getenv("DEBIAN_UPDATER_BACKUP_PASSPHRASE_FILE")),
+		SecondaryDirectory: strings.TrimSpace(os.Getenv("DEBIAN_UPDATER_BACKUP_SECONDARY_DIR")),
+	}
 	if (d.Directory == "") != (d.SecretFile == "") {
 		return d, errors.New("DEBIAN_UPDATER_BACKUP_DIR and DEBIAN_UPDATER_BACKUP_PASSPHRASE_FILE must be configured together")
 	}
 	if d.Directory != "" && (!filepath.IsAbs(d.Directory) || !filepath.IsAbs(d.SecretFile)) {
 		return d, errors.New("automated backup deployment paths must be absolute")
+	}
+	if d.SecondaryDirectory != "" && (d.Directory == "" || !filepath.IsAbs(d.SecondaryDirectory)) {
+		return d, errors.New("DEBIAN_UPDATER_BACKUP_SECONDARY_DIR requires primary backup configuration and an absolute path")
 	}
 	return d, nil
 }
@@ -465,7 +475,8 @@ func (a *backupAutomation) statusLocked(ctx context.Context) (backupAutomationSt
 	if err != nil {
 		return backupAutomationStatus{}, err
 	}
-	status := backupAutomationStatus{Config: s.Config, State: s.Outcome, Message: s.Message, LastAttemptAt: s.LastAttemptAt, LastSuccessAt: s.LastSuccessAt, RetryAt: s.RetryAt}
+	status := backupAutomationStatus{Config: s.Config, State: s.Outcome, Message: s.Message, LastAttemptAt: s.LastAttemptAt, LastSuccessAt: s.LastSuccessAt, RetryAt: s.RetryAt,
+		Secondary: a.secondaryStatus(s.Secondary)}
 	root, _, owner, binding, validationErr := a.destination(false)
 	if root != nil {
 		defer root.Close()
@@ -557,6 +568,7 @@ func (a *backupAutomation) SuspendAfterRestore(ctx context.Context) error {
 	s.RetryAt = ""
 	s.Temporary = ""
 	s.Observation = backupArchiveObservation{}
+	s.Secondary.Approved = false
 	for i := range s.Archives {
 		s.Archives[i].ObservedAt = ""
 		s.Archives[i].ObservationProcess = ""
@@ -754,6 +766,7 @@ func (a *backupAutomation) Tick(ctx context.Context, manual bool) (resultErr err
 		published = true
 		s.Temporary = ""
 		s.Archives = append(s.Archives, archive)
+		a.queueSecondaryCopy(&s, archive)
 		if archive.DirectoryIdentity != "" && backupArchiveMountAvailable(root.Name(), archive.DirectoryIdentity) {
 			a.recordArchiveObservation(&s, newBackupArchiveObservation(a.now(), "available", owner, archive.DirectoryIdentity))
 		}
@@ -1028,7 +1041,7 @@ func (a *backupAutomation) retain(root *os.Root, s *backupAutomationState) error
 			continue
 		}
 		valid++
-		if valid > keep {
+		if valid > keep && !a.secondaryProtectsSource(s.Secondary, archive.ID) {
 			if err = root.Remove(archive.Name); err != nil {
 				return errors.New("verified backup published, but an owned archive could not be removed by retention")
 			}
@@ -1044,6 +1057,9 @@ func (a *backupAutomation) retain(root *os.Root, s *backupAutomationState) error
 }
 
 func (a *backupAutomation) Start(ctx context.Context) {
+	if a.deployment.SecondaryDirectory != "" {
+		a.wg.Go(func() { a.monitorSecondaryBackups(ctx) })
+	}
 	if a.deployment.Directory != "" {
 		a.wg.Go(func() { a.monitorArchiveAvailability(ctx) })
 		a.wg.Go(func() { a.monitorArchiveIntegrity(ctx) })

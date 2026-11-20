@@ -2007,6 +2007,7 @@ func registerProtectedAuthAndSettingsRoutes(r *gin.Engine, deps AppDeps) {
 	r.GET("/api/backup/automation", func(c *gin.Context) { handleBackupAutomationStatus(c, deps.BackupAutomation) })
 	r.PUT("/api/backup/automation", func(c *gin.Context) { handleBackupAutomationConfigure(c, deps.BackupAutomation) })
 	r.POST("/api/backup/automation/run", func(c *gin.Context) { handleBackupAutomationRun(c, deps.BackupAutomation) })
+	r.POST(backupSecondaryValidateRoute, requireRecentAuthentication(), func(c *gin.Context) { handleBackupSecondaryValidate(c, deps.BackupAutomation) })
 	r.GET("/api/backup/status", func(c *gin.Context) {
 		handleBackupStatusWithService(c, deps.BackupService, deps.BackupAutomation)
 	})

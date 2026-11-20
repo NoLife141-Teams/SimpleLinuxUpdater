@@ -1448,6 +1448,10 @@
     color: var(--text);
 }
 
+#backup-secondary[hidden] {
+  display: none;
+}
+
 .backup-block {
     gap: 10px;
 }

@@ -4,6 +4,7 @@ import argparse
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing, contextmanager
 from datetime import datetime
+import hashlib
 import http.client
 import http.cookiejar
 import ipaddress
@@ -144,6 +145,38 @@ def qualification_overlay(work):
     ])
     instrument("backup_archive_observation.go", [
         ("const backupArchiveObservationInterval = 5 * time.Minute", "const backupArchiveObservationInterval = time.Second"),
+    ])
+    # Wake the real worker early only while the outage control is armed.
+    retry_marker = "/work/arm-primary-control-retry"
+    instrument("backup_automation.go", [
+        ("s.RetryAt = backupStamp(now.Add(backupRetryDelay))", f"""\
+delay := backupRetryDelay
+		if _, err := os.Stat("{retry_marker}"); err == nil {{
+			delay = time.Second
+		}}
+		s.RetryAt = backupStamp(now.Add(delay))"""),
+        ("defer ticker.Stop()\n\t\tfor {", f"""\
+defer ticker.Stop()
+		qualificationTicker := time.NewTicker(500 * time.Millisecond)
+		defer qualificationTicker.Stop()
+		for {{"""),
+        ("case <-ticker.C:\n\t\t\t}", f"""\
+case <-ticker.C:
+			case <-qualificationTicker.C:
+				for {{
+					if _, err := os.Stat("{retry_marker}"); err == nil {{
+						break
+					}}
+					select {{
+					case <-ctx.Done():
+						return
+					case <-ticker.C:
+					case <-qualificationTicker.C:
+						continue
+					}}
+					break
+				}}
+			}}"""),
     ])
     instrument("backup_storage_health.go", [
         ("backupStorageAlertAfter  = 30 * time.Minute", "backupStorageAlertAfter  = 10 * time.Second"),
@@ -1342,29 +1375,72 @@ assert trust.read_bytes() == b'fixture trust' and marker.read_bytes() == b'fixtu
         record["verified_offline_archive_with_constrained_workspace"] = True
 
     def control_backup_during_secondary_outage(self, record, primary_archives, before_export):
-        # This fixture disables scheduled backups. A manual control deferred for
-        # shared admission is retried automatically only after five minutes.
-        # Allow a short second admission chance without awaiting that follow-up,
-        # but never retry an error or a response that may have published.
-        control = {"attempts": 0, "state": "not_started"}
+        control = {"initial_state": "not_started", "terminal_state": "not_observed",
+                   "verified_publication": False}
         record["secondary_outage_control"] = control
+        endpoint = "/api/backup/automation"
+        previous = self.api.request("GET", endpoint, timeout=4)
+        previous_ids = {row["id"] for row in previous["catalog"]["archives"]}
+        states = {"succeeded", "deferred", "failed", "running", "suspended", "disabled", "configured"}
 
-        def run_control():
-            control["attempts"] += 1
-            response = self.api.request("POST", "/api/backup/automation/run")
+        def accepted_state(response):
             state = response.get("state") if isinstance(response, dict) else None
-            control["state"] = state if state in (
-                "succeeded", "deferred", "failed", "running", "suspended", "disabled", "configured"
-            ) else "unexpected"
-            if state == "deferred":
-                current = {file.name for file in primary_archives.glob("*.slubkp")}
-                require(current == before_export, "deferred control changed the primary archives")
-                return False
-            require(state == "succeeded",
-                    "unavailable secondary storage affected primary publication: control state " + control["state"])
-            return True
+            if isinstance(state, str) and state in states:
+                return state
+            if isinstance(response, dict) and response.get("error") == "maintenance mode active":
+                return "maintenance"
+            return "unexpected"
 
-        until(run_control, "primary control remained deferred while secondary storage was unavailable", seconds=3)
+        try:
+            result = self.api.request("POST", endpoint + "/run", allowed=(200, 503), timeout=20)
+        except (AssertionError, OSError, ValueError):
+            control["terminal_state"] = "request_failed"
+            raise AssertionError("primary control returned an error during the secondary outage") from None
+        control["initial_state"] = accepted_state(result)
+
+        def completed(response):
+            state = accepted_state(response)
+            if state in ("deferred", "running", "maintenance"):
+                return False
+            control["terminal_state"] = state
+            require(state == "succeeded", "primary control ended with state " + state)
+            require(response.get("last_success_at") and response["last_success_at"] != previous.get("last_success_at"),
+                    "primary control did not record a new completion")
+            return response
+
+        final = completed(result)
+        if not final:
+            deadline = time.monotonic() + 18
+            while (remaining := deadline - time.monotonic()) > 0:
+                try:
+                    response = self.api.request("GET", endpoint, allowed=(200, 503), timeout=min(4, remaining))
+                except (AssertionError, OSError, ValueError):
+                    if time.monotonic() >= deadline:
+                        break
+                    control["terminal_state"] = "request_failed"
+                    raise AssertionError("could not read primary control status during the secondary outage") from None
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                final = completed(response)
+                if final:
+                    break
+                time.sleep(min(.1, remaining))
+            if not final:
+                control["terminal_state"] = "timed_out"
+                raise AssertionError("primary control did not finish during the secondary outage")
+        new_names = {file.name for file in primary_archives.glob("*.slubkp")} - before_export
+        require(len(new_names) == 1, "fixture did not publish exactly one new source archive")
+        new_name = next(iter(new_names))
+        with (primary_archives / new_name).open("rb") as archive:
+            digest = hashlib.file_digest(archive, "sha256").hexdigest()
+        published = [row for row in final["catalog"]["archives"] if row["id"] not in previous_ids]
+        require(len(published) == 1 and published[0].get("sha256") == digest
+                and published[0].get("availability") == "present" and published[0].get("verification") == "verified"
+                and published[0].get("last_verified_at") and published[0].get("job_id"),
+                "new primary archive did not match a verified catalog publication")
+        control["verified_publication"] = True
+        return new_name
 
     def verified_secondary_archive(self, record, credentials):
         record["checkpoint"] = "secondary-validation"
@@ -1373,8 +1449,18 @@ assert trust.read_bytes() == b'fixture trust' and marker.read_bytes() == b'fixtu
         primary = self.work / "archive-mount-probe"
         secondary = self.secondary_work
         directory = secondary / "archives"
+
         def secondary_verified():
             status = self.api.request("GET", "/api/backup/automation")["secondary"]
+            state = status.get("state")
+            record["secondary_observation"] = {
+                "state": state if state in ("verified", "degraded", "pending", "integrity_pending",
+                                            "waiting", "validation_required") else "unexpected",
+                "pending": status["pending"],
+                "captured": bool(status.get("captured_at")),
+                "waiting_for_mount": bool(status.get("waiting_for_mount")),
+                "failed": status["failed"],
+            }
             return status["state"] == "verified" and status.get("captured_at") and status["pending"] == 0
 
         until(secondary_verified, "secondary validation did not catch up an existing archive")
@@ -1382,15 +1468,17 @@ assert trust.read_bytes() == b'fixture trust' and marker.read_bytes() == b'fixtu
         before_export = {file.name for file in (primary / "archives").glob("*.slubkp")}
         require(len(caught_up) == 1 and caught_up <= before_export, "catch-up did not publish a registered archive")
         saved = secondary / "removed-mount"
+        retry_marker = self.work / "arm-primary-control-retry"
         directory.rename(saved)
         directory.mkdir(mode=0o700)
         try:
             record["checkpoint"] = "secondary-mount-unavailable"
             primary_archives = primary / "archives"
-            self.control_backup_during_secondary_outage(record, primary_archives, before_export)
-            new_names = {file.name for file in primary_archives.glob("*.slubkp")} - before_export
-            require(len(new_names) == 1, "fixture did not publish exactly one new source archive")
-            new_name = next(iter(new_names))
+            retry_marker.touch()
+            try:
+                new_name = self.control_backup_during_secondary_outage(record, primary_archives, before_export)
+            finally:
+                retry_marker.unlink()
 
             def mount_failure():
                 status = self.api.request("GET", "/api/backup/automation")
@@ -1414,7 +1502,7 @@ assert trust.read_bytes() == b'fixture trust' and marker.read_bytes() == b'fixtu
 
         record["checkpoint"] = "secondary-copy-verified"
         until(secondary_verified, "secondary copy did not recover after restart")
-        require({file.name for file in directory.glob("*.slubkp")} == caught_up | new_names,
+        require({file.name for file in directory.glob("*.slubkp")} == caught_up | {new_name},
                 "restart did not preserve exactly the caught-up and interrupted archives")
         primary_archive = primary / "archives" / new_name
         archive = (directory / new_name).read_bytes()

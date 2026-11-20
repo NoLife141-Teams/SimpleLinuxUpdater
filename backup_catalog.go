@@ -188,7 +188,10 @@ func (a *backupAutomation) catalogLocked(ctx context.Context, s *backupAutomatio
 		})
 	}
 	if changed {
-		s.Observation = newBackupArchiveObservation(a.now(), "available", owner, directory)
+		if !backupArchiveMountAvailable(root.Name(), directory) {
+			return backupArchiveCatalog{}, errBackupCatalogUnavailable
+		}
+		a.recordArchiveObservation(s, newBackupArchiveObservation(a.now(), "available", owner, directory))
 		return catalog, a.save(ctx, *s, events...)
 	}
 	return catalog, nil
@@ -298,7 +301,7 @@ func snapshotBackupArchive(ctx context.Context, root *os.Root, archive ownedBack
 		return empty, noop, errBackupCatalogVersionChanged
 	}
 	if copyErr != nil || closeErr != nil || statErr != nil || nameErr != nil || size <= 0 || size > internalbackup.MaxUploadBytes ||
-		size != opened.Size() || !backupCatalogMountAvailable(root, directoryIdentity) || ctx.Err() != nil {
+		size != opened.Size() || !backupArchiveMountAvailable(root.Name(), directoryIdentity) || ctx.Err() != nil {
 		cleanup()
 		return empty, noop, errBackupCatalogUnavailable
 	}
@@ -309,16 +312,11 @@ func snapshotBackupArchive(ctx context.Context, root *os.Root, archive ownedBack
 	return backupCatalogSnapshot{file: internalbackup.TemporaryFile{Path: dst.Name(), Size: size}, info: current}, cleanup, nil
 }
 
-func backupCatalogMountAvailable(root *os.Root, identity string) bool {
-	info, err := os.Lstat(root.Name())
-	return err == nil && backupArchiveDirectoryAccessible(info) && backupCatalogFileIdentity(info) == identity
-}
-
 func (a *backupAutomation) saveBackupCatalogSnapshotFailure(ctx context.Context, s backupAutomationState, index int, root *os.Root, directory, actor, ip string, snapshot backupCatalogSnapshot, snapshotErr error) error {
 	digestMismatch := errors.Is(snapshotErr, errBackupCatalogDigestMismatch)
 	versionChanged := errors.Is(snapshotErr, errBackupCatalogVersionChanged)
 	if ctx.Err() != nil || (!digestMismatch && !versionChanged && !errors.Is(snapshotErr, errBackupCatalogUnavailable)) ||
-		!backupCatalogMountAvailable(root, directory) {
+		!backupArchiveMountAvailable(root.Name(), directory) {
 		return nil
 	}
 	archive := &s.Archives[index]
@@ -328,7 +326,10 @@ func (a *backupAutomation) saveBackupCatalogSnapshotFailure(ctx context.Context,
 		digestMismatch = err == nil && sameBackupIntegrityFile(snapshot.info, named)
 		versionChanged = !digestMismatch
 	}
-	s.Observation = newBackupArchiveObservation(a.now(), "available", archive.Owner, directory)
+	if !backupArchiveMountAvailable(root.Name(), directory) {
+		return nil
+	}
+	a.recordArchiveObservation(&s, newBackupArchiveObservation(a.now(), "available", archive.Owner, directory))
 	at := s.Observation.CheckedAt
 	var event *AuditEvent
 	switch {
@@ -429,7 +430,8 @@ func handleBackupCatalogOperation(c *gin.Context, a *backupAutomation, verify bo
 			return
 		}
 		ready := verifyErr == nil && result.RestoreReady
-		if ready {
+		mountAvailable := backupArchiveMountAvailable(root.Name(), directory)
+		if ready || !mountAvailable {
 			verified := *archive
 			verified.SizeBytes = &snapshot.file.Size
 			verified.FileIdentity = backupCatalogFileIdentity(snapshot.info)
@@ -439,7 +441,7 @@ func handleBackupCatalogOperation(c *gin.Context, a *backupAutomation, verify bo
 			// The readiness pipeline verified pinned bytes. Confirm that their
 			// registered file is still present before restoring local coverage.
 			storage, availability := "unavailable", "unavailable"
-			if backupCatalogMountAvailable(root, directory) {
+			if mountAvailable {
 				storage = "available"
 				availability, _ = backupArchiveAvailabilityAt(root, verified, owner, directory)
 				if availability == "present" {
@@ -450,7 +452,7 @@ func handleBackupCatalogOperation(c *gin.Context, a *backupAutomation, verify bo
 				}
 			}
 			if availability != "present" {
-				s.Observation = newBackupArchiveObservation(a.now(), storage, owner, directory)
+				a.recordArchiveObservation(&s, newBackupArchiveObservation(a.now(), storage, owner, directory))
 				actor, ip := actorFromContext(c), clientIPFromContext(c)
 				if archiveAvailabilityLost(availability) {
 					archive.DirectoryIdentity = directory
@@ -486,7 +488,7 @@ func handleBackupCatalogOperation(c *gin.Context, a *backupAutomation, verify bo
 			archive.Verification = "failed"
 		}
 		archive.Availability = "present"
-		s.Observation = newBackupArchiveObservation(a.now(), "available", owner, directory)
+		a.recordArchiveObservation(&s, newBackupArchiveObservation(a.now(), "available", owner, directory))
 		archive.ObservedAt = s.Observation.CheckedAt
 		archive.ObservationProcess = backupArchiveObservationProcess
 		if ready {

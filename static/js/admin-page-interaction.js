@@ -362,11 +362,18 @@
             : previousRestoreAPTHosts;
         const archives = data.backup_archives || {};
         const point = archives.recovery_point || {};
+        const storageHealth = archives.storage_health;
         return { state: String(data.state || "unavailable"), checkedAt: timestamp(data.checked_at), maintenance: Boolean(data.maintenance), restoreIsolation, restoreAPTHosts, restoreAPTHostsAvailable, workers,
             backupAvailable: Boolean(data.backup_available), backupState: String(data.backup_state || "unavailable"), verifiedAt: timestamp(data.last_verified_backup_at), backupAgeSeconds: count(data.verified_backup_age_seconds),
             backupArchives: {
                 state: ["covered", "missing", "no_registered"].includes(archives.state) ? archives.state : "unknown",
                 storage: ["available", "unavailable", "stale"].includes(archives.storage) ? archives.storage : "not_observed",
+                storageHealth: storageHealth ? {
+                    state: ["available", "unavailable", "stale"].includes(storageHealth.state) ? storageHealth.state : "not_observed",
+                    lastAvailableAt: timestamp(storageHealth.last_available_at),
+                    unavailableAt: timestamp(storageHealth.unavailable_at),
+                    alertDue: Boolean(storageHealth.alert_due),
+                } : null,
                 verified: count(archives.verified),
                 lost: count(archives.lost),
                 unknown: count(archives.unknown)

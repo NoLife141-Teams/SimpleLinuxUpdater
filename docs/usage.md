@@ -624,6 +624,7 @@ Supported operational events are:
 - confirmed reboot requirements (`reboot.required`);
 - failed backup exports and restore-readiness verification (`backup.export.failed`, `backup.verify.failed`);
 - a missing or stale verified local recovery point (`backup.coverage.missing`, `backup.coverage.stale`). These events use the local archive catalog and the date of data capture. Temporary storage uncertainty pauses coverage notifications and preserves the previous confirmed episode.
+- backup storage unobservable for at least 30 minutes (`backup.storage.unavailable`). The timer starts with an unavailable observation, or when the last observation becomes stale after 10 minutes. The event is opt-in and deduplicated until a successful observation. Installation Health shows the last successful storage observation and the recovery guide.
 
 Notification delivery is best-effort and never changes the maintenance result. Admin shows masked destination state and delivery diagnostics without returning stored secrets. Use HTTPS for public webhook endpoints, and treat test delivery as a real outbound message.
 

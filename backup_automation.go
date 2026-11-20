@@ -754,6 +754,9 @@ func (a *backupAutomation) Tick(ctx context.Context, manual bool) (resultErr err
 		published = true
 		s.Temporary = ""
 		s.Archives = append(s.Archives, archive)
+		if archive.DirectoryIdentity != "" && backupArchiveMountAvailable(root.Name(), archive.DirectoryIdentity) {
+			a.recordArchiveObservation(&s, newBackupArchiveObservation(a.now(), "available", owner, archive.DirectoryIdentity))
+		}
 		// Persist ownership before retention, so interrupted publication never grants
 		// authority to delete an unregistered file discovered in the directory.
 		if err = a.save(ctx, s); err != nil {

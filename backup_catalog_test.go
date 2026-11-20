@@ -273,7 +273,7 @@ func TestBackupCatalogRejectsReplacedCorruptSymlinkMissingAndForeign(t *testing.
 				if err != nil || health.Verification.State != internalbackup.RecoveryStateFailed {
 					t.Fatalf("damage did not update recovery facts: %+v %v", health, err)
 				}
-				source := newNotificationConditionSource(app.Deps.DB, a.deps.Now, nil)
+				source := newNotificationConditionSource(app.Deps.DB, a.deps.Now, nil, "")
 				batch, err := source(context.Background(), "", nil)
 				if err != nil {
 					t.Fatal(err)
@@ -283,6 +283,37 @@ func TestBackupCatalogRejectsReplacedCorruptSymlinkMissingAndForeign(t *testing.
 				}
 			}
 		})
+	}
+}
+
+func TestBackupCatalogFailedReverifyDoesNotConfirmWithdrawnMount(t *testing.T) {
+	app, a, cookie, archive := publishedCatalogFixture(t)
+	now := a.now()
+	a.deps.Now = func() time.Time { return now }
+	if err := a.observeArchiveAvailability(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	lastAvailable := now
+	directory := a.deployment.Directory
+	unmounted := directory + ".unmounted"
+	t.Cleanup(func() { _ = os.RemoveAll(unmounted) })
+	a.verify = func(context.Context, internalbackup.TemporaryFile, string) (internalbackup.VerifyResult, error) {
+		if err := os.Rename(directory, unmounted); err != nil {
+			t.Fatal(err)
+		}
+		now = now.Add(time.Hour)
+		return internalbackup.VerifyResult{}, errors.New("fixture restore preparation failure")
+	}
+	if rec := catalogRequest(app, cookie, archive.ID, "verify"); rec.Code != http.StatusConflict {
+		t.Fatalf("failed reverify accepted the initial open mount as current: %d %s", rec.Code, rec.Body.String())
+	}
+	state := backupAutomationStateForTest(t, a)
+	if got := state.Observation.storageHealth(backupStorageBinding(directory), now); got.State != "unavailable" ||
+		got.LastAvailableAt != backupStamp(lastAvailable) || !got.AlertDue {
+		t.Fatalf("withdrawn mount was recorded as recovered: %+v", got)
+	}
+	if got := state.Archives[0]; got.Verification != "verified" || got.LossActive {
+		t.Fatalf("withdrawn mount changed the historical verification: %+v", got)
 	}
 }
 
@@ -805,7 +836,7 @@ func TestBackupCatalogRetriesLossAfterAuditWriteFailure(t *testing.T) {
 			if err != nil || health.Verification.State != internalbackup.RecoveryStateFailed {
 				t.Fatalf("retried loss recovery health=%+v %v", health, err)
 			}
-			source := newNotificationConditionSource(app.Deps.DB, a.deps.Now, nil)
+			source := newNotificationConditionSource(app.Deps.DB, a.deps.Now, nil, "")
 			batch, err := source(context.Background(), "", nil)
 			if err != nil || !lastConditionFact(batch.Facts, notificationpkg.BackupArchiveLossConditionPrefix+archive.ID+"/1").Active {
 				t.Fatalf("retried loss notification condition missing: %v", err)
@@ -867,7 +898,7 @@ func TestBackupCatalogExplicitVerificationRequiresAuditEvidence(t *testing.T) {
 			if err != nil || health.Verification.State != wantState {
 				t.Fatalf("retried verification health=%+v %v", health, err)
 			}
-			source := newNotificationConditionSource(app.Deps.DB, a.deps.Now, nil)
+			source := newNotificationConditionSource(app.Deps.DB, a.deps.Now, nil, "")
 			batch, err := source(context.Background(), "", nil)
 			if err != nil || lastConditionFact(batch.Facts, "backup/verify").Active != (wantState == internalbackup.RecoveryStateFailed) {
 				t.Fatalf("retried verification notification evidence=%+v %v", batch, err)

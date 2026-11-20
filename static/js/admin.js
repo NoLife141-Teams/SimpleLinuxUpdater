@@ -625,6 +625,21 @@
                     not_observed: "Never observed",
                 }[archives.storage],
             }[archives.state];
+            const storageHealth = archives.storageHealth;
+            const storageRow = document.getElementById("installation-backup-storage-row");
+            storageRow.hidden = !storageHealth;
+            const storageLabel = {
+                available: "Available", unavailable: "Storage unavailable",
+                stale: "Availability observation is stale", not_observed: "Never observed in this process",
+            };
+            document.getElementById("installation-backup-storage").textContent = storageHealth ? [
+                storageLabel[storageHealth.state],
+                `Last successful observation · ${date(storageHealth.lastAvailableAt)}`,
+                storageHealth.unavailableAt && `Unobservable since ${date(storageHealth.unavailableAt)}`,
+                storageHealth.alertDue && "Unavailable for at least 30 minutes",
+            ].filter(Boolean).join(" · ") : "";
+            document.getElementById("installation-backup-storage-help").hidden =
+                !storageHealth || storageHealth.state === "available";
             let recoveryPoint = "Unknown";
             if (point.state === "missing") recoveryPoint = "No verified local recovery point";
             if (["recent", "stale"].includes(point.state) && point.capturedAt && point.age !== null) {

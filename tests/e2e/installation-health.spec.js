@@ -90,10 +90,18 @@ test("production installation health is public, admin cookie diagnostics refresh
   archiveFacts = {state: "unknown", storage: "available", verified: 0, lost: 1, unknown: 1};
   await section.getByRole("button",{name:"Refresh",exact:true}).click();
   await expect(page.locator("#installation-backup-archives")).toHaveText("Coverage unknown · 1 lost");
-  archiveFacts = {state: "unknown", storage: "unavailable", verified: 0, lost: 0, unknown: 0};
+  archiveFacts = {state: "unknown", storage: "unavailable", verified: 0, lost: 0, unknown: 0,
+   storage_health: {state:"unavailable", last_available_at:evaluatedAt, unavailable_at:deliveredAt, alert_due:true}};
   await section.getByRole("button",{name:"Refresh",exact:true}).click();
   await expect(page.locator("#installation-backup-archives")).toHaveText("Storage unavailable");
   await expect(page.locator("#installation-backup-recovery-point")).toHaveText("Unknown");
+  await expect(page.locator("#installation-backup-storage")).toContainText("Last successful observation · " + evaluationDate);
+  await expect(page.locator("#installation-backup-storage")).toContainText("Unavailable for at least 30 minutes");
+  const recoveryGuide = page.getByRole("link",{name:"Backup storage and offline recovery guide"});
+  await expect(recoveryGuide).toHaveAttribute("href", /#backup-storage-unavailable$/);
+  archiveFacts.storage_health = {state:"available", last_available_at:deliveredAt};
+  await section.getByRole("button",{name:"Refresh",exact:true}).click();
+  await expect(recoveryGuide).toBeHidden();
   await page.setViewportSize({width:390,height:844});await section.scrollIntoViewIfNeeded();await expect(page.locator("#installation-state")).toBeVisible();
   await expect(telegram).toBeVisible();
   expect(await destinations.evaluate(node => node.scrollWidth)).toBeLessThanOrEqual(await destinations.evaluate(node => node.clientWidth));

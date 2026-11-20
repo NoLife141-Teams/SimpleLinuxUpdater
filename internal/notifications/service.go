@@ -40,6 +40,7 @@ const (
 	EventBackupVerifyFailed        = "backup.verify.failed"
 	EventBackupCoverageMissing     = "backup.coverage.missing"
 	EventBackupCoverageStale       = "backup.coverage.stale"
+	EventBackupStorageUnavailable  = "backup.storage.unavailable"
 	EventReminder                  = "notification.reminder"
 
 	defaultAttempts                     = 3
@@ -58,7 +59,7 @@ var legacyEvents = []string{
 	EventBackupRestore,
 }
 
-var supportedEvents = append(append([]string(nil), legacyEvents...), EventApprovalPublished, EventApprovalExpired, EventRebootRequired, EventAPTReconciliationRequired, EventBackupExportFailed, EventBackupVerifyFailed, EventBackupCoverageMissing, EventBackupCoverageStale)
+var supportedEvents = append(append([]string(nil), legacyEvents...), EventApprovalPublished, EventApprovalExpired, EventRebootRequired, EventAPTReconciliationRequired, EventBackupExportFailed, EventBackupVerifyFailed, EventBackupCoverageMissing, EventBackupCoverageStale, EventBackupStorageUnavailable)
 
 var errUnsupportedEvent = errors.New("unsupported notification event type")
 

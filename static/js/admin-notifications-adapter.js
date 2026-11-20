@@ -709,6 +709,7 @@
                 "update.complete": "Completed update",
                 "schedule.run.failed": "Failed scheduled run",
                 "schedule.run.skipped": "Skipped scheduled run",
+                "backup.storage.unavailable": "Backup storage unobservable",
                 "notification.reminder": "Grouped reminder",
             };
             let navigation = { filters: {}, cursors: [""] };

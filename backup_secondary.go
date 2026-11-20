@@ -30,17 +30,18 @@ type backupSecondaryBinding struct {
 }
 
 type backupSecondaryCopy struct {
-	Archive      ownedBackupArchive `json:"archive"`
-	Attempts     int                `json:"attempts"`
-	Transferring bool               `json:"transferring,omitempty"`
-	RetryAt      string             `json:"retry_at,omitempty"`
-	Failure      string             `json:"failure,omitempty"`
-	Temporary    string             `json:"temporary,omitempty"`
-	FileIdentity string             `json:"file_identity,omitempty"`
-	ModifiedAt   string             `json:"modified_at,omitempty"`
-	ChangedAt    string             `json:"changed_at,omitempty"`
-	VerifiedAt   string             `json:"verified_at,omitempty"`
-	Unavailable  bool               `json:"unavailable,omitempty"`
+	Archive      ownedBackupArchive     `json:"archive"`
+	Attempts     int                    `json:"attempts"`
+	Transferring bool                   `json:"transferring,omitempty"`
+	RetryAt      string                 `json:"retry_at,omitempty"`
+	Failure      string                 `json:"failure,omitempty"`
+	Temporary    string                 `json:"temporary,omitempty"`
+	FileIdentity string                 `json:"file_identity,omitempty"`
+	ModifiedAt   string                 `json:"modified_at,omitempty"`
+	ChangedAt    string                 `json:"changed_at,omitempty"`
+	VerifiedAt   string                 `json:"verified_at,omitempty"`
+	Unavailable  bool                   `json:"unavailable,omitempty"`
+	Integrity    backupArchiveIntegrity `json:"integrity,omitzero"`
 }
 
 func (copy backupSecondaryCopy) pending() bool {
@@ -55,12 +56,13 @@ type backupSecondaryState struct {
 }
 
 type backupSecondaryStatus struct {
-	State      string `json:"state"`
-	Pending    int    `json:"pending"`
-	Failed     int    `json:"failed"`
-	Failure    string `json:"failure,omitempty"`
-	CapturedAt string `json:"captured_at,omitempty"`
-	VerifiedAt string `json:"verified_at,omitempty"`
+	State      string                 `json:"state"`
+	Pending    int                    `json:"pending"`
+	Failed     int                    `json:"failed"`
+	Failure    string                 `json:"failure,omitempty"`
+	CapturedAt string                 `json:"captured_at,omitempty"`
+	VerifiedAt string                 `json:"verified_at,omitempty"`
+	Integrity  backupArchiveIntegrity `json:"integrity,omitzero"`
 }
 
 func (a *backupAutomation) secondaryConfigured(state backupSecondaryState) bool {
@@ -77,12 +79,21 @@ func (a *backupAutomation) secondaryStatus(state backupSecondaryState) *backupSe
 		return status
 	}
 	var latestVerified, latestCapture time.Time
-	hasUnavailableCopies, hasSkippedCopies := false, false
+	var latestPublished backupSecondaryCopy
+	hasUnavailableCopies, hasCorruptCopies, hasSkippedCopies := false, false, false
+	now := a.now()
 	for _, copy := range state.Copies {
-		if copy.Unavailable {
+		if copy.VerifiedAt != "" && (latestPublished.VerifiedAt == "" || secondaryCapturedAfter(copy, latestPublished)) {
+			latestPublished = copy
+		}
+		if copy.Integrity.State == backupIntegrityMismatch {
+			hasCorruptCopies = true
+			status.Failed++
+		} else if copy.Unavailable || copy.Integrity.State == backupIntegrityUnavailable {
 			hasUnavailableCopies = true
 			status.Failed++
-		} else if at := parseBackupStamp(copy.VerifiedAt); !at.IsZero() {
+		} else if secondaryIntegrityFresh(copy, now) {
+			at := parseBackupStamp(copy.VerifiedAt)
 			captured := parseBackupStamp(copy.Archive.CapturedAt)
 			if latestVerified.IsZero() || captured.After(latestCapture) || (captured.Equal(latestCapture) && at.After(latestVerified)) {
 				status.CapturedAt, status.VerifiedAt = copy.Archive.CapturedAt, copy.VerifiedAt
@@ -90,13 +101,26 @@ func (a *backupAutomation) secondaryStatus(state backupSecondaryState) *backupSe
 			}
 		} else if copy.pending() {
 			status.Pending++
-		} else {
+		} else if copy.VerifiedAt == "" {
 			status.Failed++
 			hasSkippedCopies = hasSkippedCopies || copy.Failure == "queue_full"
 		}
 	}
 	if a.secondaryConfigured(state) {
+		status.Integrity = latestPublished.Integrity
+		switch {
+		case state.LastFailure == "storage_unavailable":
+			status.Integrity.State = backupIntegrityUnavailable
+		case latestPublished.Unavailable && status.Integrity.State != backupIntegrityMismatch:
+			status.Integrity.State = backupIntegrityUnavailable
+		case latestPublished.VerifiedAt != "" && !secondaryIntegrityFresh(latestPublished, now) &&
+			(status.Integrity.State == "" || status.Integrity.State == backupIntegrityMatched):
+			status.Integrity.State = "check_due"
+		}
 		status.Failure = state.LastFailure
+		if status.Failure == "" && hasCorruptCopies {
+			status.Failure = "copy_corrupt"
+		}
 		if status.Failure == "" && hasUnavailableCopies {
 			status.Failure = "copy_unavailable"
 		}
@@ -110,6 +134,8 @@ func (a *backupAutomation) secondaryStatus(state backupSecondaryState) *backupSe
 			status.State = "pending"
 		case status.VerifiedAt != "":
 			status.State = "verified"
+		case latestPublished.VerifiedAt != "":
+			status.State = "integrity_pending"
 		default:
 			status.State = "waiting"
 		}

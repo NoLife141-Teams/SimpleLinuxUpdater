@@ -51,7 +51,7 @@ func (e *RestoreStorageError) Error() string {
 // successful estimate. The restore still follows its normal rollback path.
 func IsStorageFull(err error) bool {
 	var sqliteErr *sqlite.Error
-	return errors.Is(err, syscall.ENOSPC) ||
+	return errors.Is(err, syscall.ENOSPC) || errors.Is(err, syscall.EDQUOT) ||
 		(errors.As(err, &sqliteErr) && sqliteErr.Code() == sqlitelib.SQLITE_FULL)
 }
 

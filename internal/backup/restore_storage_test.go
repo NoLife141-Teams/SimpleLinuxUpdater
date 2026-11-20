@@ -37,6 +37,29 @@ func TestRestoreStorageReviewInvalidatesCapacityWhenPreparationRunsOutOfSpace(t 
 	}
 }
 
+func TestOfflineArchiveVerificationReportsWorkspaceQuota(t *testing.T) {
+	f := newDurabilityFixture(t, t.TempDir(), testRestoredRuntime{})
+	archive := restoreStorageFixtureArchive(t, f)
+	f.service.deps.ProbeRestoreStorage = func(string) installationhealth.VolumeCapacity {
+		available := uint64(128 << 20)
+		return installationhealth.VolumeCapacity{Device: 1, Identified: true, AvailableBytes: &available}
+	}
+	f.service.deps.EnsureSchema = func(*sql.DB) error {
+		return &os.PathError{Op: "write", Path: f.db, Err: syscall.EDQUOT}
+	}
+	result, err := f.service.VerifyArchiveFileOffline(t.Context(), archive, testPassphrase)
+	if err != nil || result.RestoreReady || len(result.Storage) != 1 {
+		t.Fatalf("offline verification after exhausting a quota = %+v, %v", result, err)
+	}
+	if !reflect.DeepEqual(result.Storage[0].Roles, []string{restoreStoragePreparation}) ||
+		result.Storage[0].State != restoreStorageUnknown || result.Storage[0].AvailableBytes != nil {
+		t.Fatalf("offline storage report used the volume capacity in place of the exhausted quota: %+v", result.Storage[0])
+	}
+	if len(result.Blockers) != 1 || result.Blockers[0].Code != "insufficient_storage" {
+		t.Fatalf("quota failure was not reported as a storage blocker: %+v", result.Blockers)
+	}
+}
+
 func restoreStorageFixtureArchive(t *testing.T, f durabilityFixture) TemporaryFile {
 	t.Helper()
 	files := make(map[string][]byte, len(f.files))

@@ -70,9 +70,6 @@ func (i ArchiveFileInspection) Remove() error {
 }
 
 func createTemporaryFile(dir, pattern string) (*os.File, error) {
-	if strings.TrimSpace(dir) == "" {
-		dir = os.TempDir()
-	}
 	file, err := os.CreateTemp(dir, pattern)
 	if err != nil {
 		return nil, err
@@ -860,10 +857,7 @@ func parseEnvelopePath(ctx context.Context, path, tempDir string, extractPayload
 				target = encoded
 			}
 			if _, err := readJSONString(reader, target, maxEncodedPayloadBytes); err != nil {
-				if IsStorageFull(err) {
-					return Envelope{}, TemporaryFile{}, err
-				}
-				return Envelope{}, TemporaryFile{}, ErrMalformed
+				return Envelope{}, TemporaryFile{}, err
 			}
 		} else {
 			value, err := readRawJSONValue(reader, maxEnvelopeMetadataBytes)
@@ -944,7 +938,8 @@ func parseEnvelopePath(ctx context.Context, path, tempDir string, extractPayload
 	if copyErr != nil || written == 0 {
 		_ = ciphertext.Close()
 		_ = os.Remove(cipherPath)
-		if IsStorageFull(copyErr) {
+		var pathErr *os.PathError
+		if errors.As(copyErr, &pathErr) {
 			return Envelope{}, TemporaryFile{}, copyErr
 		}
 		return Envelope{}, TemporaryFile{}, ErrMalformed

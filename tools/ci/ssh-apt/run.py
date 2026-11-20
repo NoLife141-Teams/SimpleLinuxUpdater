@@ -1263,6 +1263,8 @@ finally:
 import json
 import os
 from pathlib import Path
+import resource
+import signal
 import subprocess
 
 target = Path('/recovery/servers.db')
@@ -1282,14 +1284,25 @@ assert set(os.listdir('/small')) == {'pressure'} and not list(target.parent.iter
 read_only = subprocess.run([*args, '/input'], capture_output=True, text=True, timeout=30)
 assert read_only.returncode == 1
 assert json.loads(read_only.stdout)['status'] == 'verification_io_error'
+
+def constrain_spool_size():
+    signal.signal(signal.SIGXFSZ, signal.SIG_IGN)
+    resource.setrlimit(resource.RLIMIT_FSIZE, (1, 1))
+
+write_failed = subprocess.run([*args, '/ample'], capture_output=True, text=True, timeout=30,
+                              preexec_fn=constrain_spool_size)
+assert write_failed.returncode == 1, write_failed.stdout
+assert json.loads(write_failed.stdout)['status'] == 'verification_io_error'
+assert not list(Path('/ample').iterdir())
 target.write_bytes(b'unreadable fixture database')
 trust = target.with_name('known_hosts')
 trust.write_bytes(b'fixture trust')
 marker = target.with_suffix('.db.restore-recovery')
 marker.write_bytes(b'fixture recovery lock')
-workspace = Path('/ample/review?workspace')
-workspace.mkdir()
-checked = subprocess.run([*args, str(workspace)], capture_output=True, text=True, timeout=30)
+workspace = Path('/ample/review?workspace') / ' '
+workspace.mkdir(parents=True)
+checked = subprocess.run([*args, workspace.name], cwd=workspace.parent,
+                         capture_output=True, text=True, timeout=30)
 assert checked.returncode == 0, checked.stdout
 good = json.loads(checked.stdout)
 assert good['archive_verified'] and good['target_status'] == 'not_inspected'

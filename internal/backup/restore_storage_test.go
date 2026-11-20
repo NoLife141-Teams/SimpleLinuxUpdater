@@ -37,6 +37,68 @@ func TestRestoreStorageReviewInvalidatesCapacityWhenPreparationRunsOutOfSpace(t 
 	}
 }
 
+func TestOfflineArchiveVerificationReportsWorkspaceQuota(t *testing.T) {
+	f := newDurabilityFixture(t, t.TempDir(), testRestoredRuntime{})
+	archive := restoreStorageFixtureArchive(t, f)
+	f.service.deps.ProbeRestoreStorage = func(string) installationhealth.VolumeCapacity {
+		available := uint64(128 << 20)
+		return installationhealth.VolumeCapacity{Device: 1, Identified: true, AvailableBytes: &available}
+	}
+	f.service.deps.EnsureSchema = func(*sql.DB) error {
+		return &os.PathError{Op: "write", Path: f.db, Err: syscall.EDQUOT}
+	}
+	result, err := f.service.VerifyArchiveFileOffline(t.Context(), archive, testPassphrase)
+	if err != nil || result.RestoreReady || len(result.Storage) != 1 {
+		t.Fatalf("offline verification after exhausting a quota = %+v, %v", result, err)
+	}
+	if !reflect.DeepEqual(result.Storage[0].Roles, []string{restoreStoragePreparation}) ||
+		result.Storage[0].State != restoreStorageUnknown || result.Storage[0].AvailableBytes != nil {
+		t.Fatalf("offline storage report used the volume capacity in place of the exhausted quota: %+v", result.Storage[0])
+	}
+	if len(result.Blockers) != 1 || result.Blockers[0].Code != "insufficient_storage" {
+		t.Fatalf("quota failure was not reported as a storage blocker: %+v", result.Blockers)
+	}
+}
+
+func TestOfflineArchiveVerificationReportsUnsupportedEncryptionOnFullWorkspace(t *testing.T) {
+	work := t.TempDir()
+	path := filepath.Join(work, "incompatible.slubkp")
+	const envelope = `{"format":"simplelinuxupdater-backup","version":1,"kdf":{"name":"future-kdf"},"cipher":{"name":"aes-256-gcm"},"payload_b64":"YWJj"}`
+	if err := os.WriteFile(path, []byte(envelope), 0600); err != nil {
+		t.Fatal(err)
+	}
+	available := uint64(0)
+	service := NewService(ServiceDeps{
+		TempDir: func() string { return work },
+		ProbeRestoreStorage: func(string) installationhealth.VolumeCapacity {
+			return installationhealth.VolumeCapacity{Device: 1, Identified: true, AvailableBytes: &available}
+		},
+	})
+	result, err := service.VerifyArchiveFileOffline(t.Context(), TemporaryFile{Path: path, Size: int64(len(envelope))}, testPassphrase)
+	if err != nil || result.RestoreReady || len(result.Blockers) != 1 || result.Blockers[0].Code != "unsupported_encryption" {
+		t.Fatalf("incompatible archive on full workspace = %+v, %v", result.Blockers, err)
+	}
+}
+
+func TestOfflineArchiveVerificationPreservesSQLiteWorkspaceFailure(t *testing.T) {
+	f := newDurabilityFixture(t, t.TempDir(), testRestoredRuntime{})
+	archive := restoreStorageFixtureArchive(t, f)
+	f.service.deps.EnsureSchema = func(db *sql.DB) error {
+		if _, err := db.Exec("PRAGMA query_only=ON"); err != nil {
+			t.Fatal(err)
+		}
+		_, err := db.Exec("CREATE TABLE verification_workspace (id INTEGER)")
+		if err == nil {
+			t.Fatal("expected a SQLite read-only error")
+		}
+		return err
+	}
+	result, err := f.service.VerifyArchiveFileOffline(t.Context(), archive, testPassphrase)
+	if !IsVerificationIOError(err) || result.RestoreReady || len(result.Blockers) != 0 {
+		t.Fatalf("workspace failure was treated as archive incompatibility: %+v, %v", result.Blockers, err)
+	}
+}
+
 func restoreStorageFixtureArchive(t *testing.T, f durabilityFixture) TemporaryFile {
 	t.Helper()
 	files := make(map[string][]byte, len(f.files))

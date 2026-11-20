@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"mime/multipart"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -21,7 +22,11 @@ import (
 var errArchivedNotifications = errors.New("archived notification state is unreadable or incompatible")
 
 func (s *Service) ValidateDatabaseFile(ctx context.Context, path string, encryptionKey []byte) error {
-	db, err := sql.Open("sqlite", path)
+	return s.validateDatabaseFile(ctx, path, encryptionKey, false)
+}
+
+func (s *Service) validateDatabaseFile(ctx context.Context, path string, encryptionKey []byte, offline bool) error {
+	db, err := openStagedArchiveDatabase(path, offline)
 	if err != nil {
 		return fmt.Errorf("open restored database: %w", err)
 	}
@@ -81,7 +86,7 @@ func (s *Service) ValidateDatabaseFile(ctx context.Context, path string, encrypt
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		if IsStorageFull(err) {
+		if IsStorageFull(err) || (offline && IsVerificationIOError(err)) {
 			return err
 		}
 		return errArchivedNotifications
@@ -89,8 +94,28 @@ func (s *Service) ValidateDatabaseFile(ctx context.Context, path string, encrypt
 	return nil
 }
 
+func openStagedArchiveDatabase(path string, offline bool) (*sql.DB, error) {
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		return nil, err
+	}
+	uriPath := filepath.ToSlash(absolute)
+	if !strings.HasPrefix(uriPath, "/") {
+		uriPath = "/" + uriPath
+	}
+	dsn := url.URL{Scheme: "file", Path: uriPath}
+	query := url.Values{"mode": {"rw"}}
+	if offline {
+		// A legacy archive can require SQLite index rebuilds. Keep transient
+		// sorting in memory so SQLite cannot spill onto the system temp volume.
+		query.Set("_pragma", "temp_store(MEMORY)")
+	}
+	dsn.RawQuery = query.Encode()
+	return sql.Open("sqlite", dsn.String())
+}
+
 func InspectDatabaseSafeCountsFile(ctx context.Context, path string) (SafeCounts, error) {
-	db, err := sql.Open("sqlite", path)
+	db, err := openStagedArchiveDatabase(path, false)
 	if err != nil {
 		return SafeCounts{}, fmt.Errorf("open restored database for safe counts: %w", err)
 	}
@@ -680,24 +705,45 @@ func restoreResourceReviewsFromPaths(manifest Manifest, files map[string]string)
 func (s *Service) VerifyArchiveFile(ctx context.Context, encrypted TemporaryFile, passphrase string) (VerifyResult, error) {
 	// Scheduled archival verification checks portability. The interactive
 	// verification endpoint separately evaluates this installation's capacity.
-	return s.verifyArchiveFile(ctx, encrypted, passphrase, nil, false)
+	return s.verifyArchiveFile(ctx, encrypted, passphrase, nil, verifyWithoutStorage)
+}
+
+// VerifyArchiveFileOffline checks the archive and workspace without consulting
+// an installation's active database, SSH trust file, or rollback storage.
+func (s *Service) VerifyArchiveFileOffline(ctx context.Context, encrypted TemporaryFile, passphrase string) (VerifyResult, error) {
+	return s.verifyArchiveFile(ctx, encrypted, passphrase, nil, verifyWorkspaceStorage)
 }
 
 // VerifyArchiveFileWithReview allows an installation-specific compatibility
 // check on the isolated, schema-validated archive database.
 func (s *Service) VerifyArchiveFileWithReview(ctx context.Context, encrypted TemporaryFile, passphrase string, review func(context.Context, *sql.DB)) (VerifyResult, error) {
-	return s.verifyArchiveFile(ctx, encrypted, passphrase, review, true)
+	return s.verifyArchiveFile(ctx, encrypted, passphrase, review, verifyInstallationStorage)
 }
 
-func (s *Service) verifyArchiveFile(ctx context.Context, encrypted TemporaryFile, passphrase string, review func(context.Context, *sql.DB), assessStorage bool) (VerifyResult, error) {
+type verifyStorageMode int
+
+const (
+	verifyWithoutStorage verifyStorageMode = iota
+	verifyWorkspaceStorage
+	verifyInstallationStorage
+)
+
+func (s *Service) verifyArchiveFile(ctx context.Context, encrypted TemporaryFile, passphrase string, review func(context.Context, *sql.DB), mode verifyStorageMode) (VerifyResult, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	if err := ctx.Err(); err != nil {
+		return VerifyResult{}, err
+	}
+	assessStorage := mode != verifyWithoutStorage
 	passphrase = strings.TrimSpace(passphrase)
 	if err := ValidatePassphrase(passphrase); err != nil {
 		return VerifyResult{}, err
 	}
-	envelope, err := InspectEnvelopeFile(encrypted.Path)
+	envelope, _, err := parseEnvelopePath(ctx, encrypted.Path, "", false)
+	if err := ctx.Err(); err != nil {
+		return VerifyResult{}, err
+	}
 	if err != nil {
 		return VerifyResult{}, &RestoreError{Stage: RestoreStageDecrypt, Err: err}
 	}
@@ -714,6 +760,14 @@ func (s *Service) verifyArchiveFile(ctx context.Context, encrypted TemporaryFile
 		result.Blockers = append(result.Blockers, ReadinessIssue{Code: "unsupported_version", Message: fmt.Sprintf("Backup version %d is not supported; this application accepts version %d.", envelope.Version, FormatVersion)})
 		return result, nil
 	}
+	unsupportedEncryption := ReadinessIssue{
+		Code:    "unsupported_encryption",
+		Message: "The backup uses encryption settings that this application does not support.",
+	}
+	if mode == verifyWorkspaceStorage && validateEnvelopeEncryption(envelope) != nil {
+		result.Blockers = append(result.Blockers, unsupportedEncryption)
+		return result, nil
+	}
 	var preparation []RestoreStorageVolume
 	if assessStorage {
 		preparation = s.decryptStorage(encrypted.Path)
@@ -721,10 +775,10 @@ func (s *Service) verifyArchiveFile(ctx context.Context, encrypted TemporaryFile
 			return result.withStorageFailure(err), nil
 		}
 	}
-	plain, err := s.decryptFile(encrypted.Path, passphrase)
+	plain, err := s.decryptFile(ctx, encrypted.Path, passphrase)
 	if err != nil {
 		if errors.Is(err, ErrUnsupportedFormat) {
-			result.Blockers = append(result.Blockers, ReadinessIssue{Code: "unsupported_encryption", Message: "The backup uses encryption settings that this application does not support."})
+			result.Blockers = append(result.Blockers, unsupportedEncryption)
 			return result, nil
 		}
 		if assessStorage && IsStorageFull(err) {
@@ -739,13 +793,16 @@ func (s *Service) verifyArchiveFile(ctx context.Context, encrypted TemporaryFile
 		if err != nil {
 			return VerifyResult{}, &RestoreError{Stage: RestoreStageArchive, Err: err}
 		}
-		volumes, canExtract := s.archiveRestoreStorage(sizes)
+		volumes, canExtract := s.archiveRestoreStorage(sizes, mode == verifyInstallationStorage)
 		result.Storage = volumes
 		if !canExtract {
 			return result.withStorageFailure(storageBlocker(volumes)), nil
 		}
 	}
-	inspection, err := InspectTarGzFileWithLimits(plain.Path, s.deps.TempDir(), MaxExtractedBytes, MaxExtractedBytes)
+	if err := ctx.Err(); err != nil {
+		return VerifyResult{}, err
+	}
+	inspection, err := inspectTarGzFileWithLimits(ctx, plain.Path, s.deps.TempDir(), MaxExtractedBytes, MaxExtractedBytes)
 	if err != nil {
 		if assessStorage && IsStorageFull(err) {
 			return result.withStorageFailure(err), nil
@@ -773,6 +830,12 @@ func (s *Service) verifyArchiveFile(ctx context.Context, encrypted TemporaryFile
 	}
 	configData, err := readPathBounded(inspection.Files["config.json"], MaxExtractedBytes)
 	if err != nil {
+		if mode == verifyWorkspaceStorage && IsStorageFull(err) {
+			return result.withStorageFailure(err), nil
+		}
+		if mode == verifyWorkspaceStorage && IsVerificationIOError(err) {
+			return result, &RestoreError{Stage: RestoreStageArchive, Err: err}
+		}
 		result.Blockers = append(result.Blockers, ReadinessIssue{Code: "invalid_configuration", Message: "The archived configuration cannot be restored safely."})
 		return result, nil
 	}
@@ -782,9 +845,12 @@ func (s *Service) verifyArchiveFile(ctx context.Context, encrypted TemporaryFile
 		return result, nil
 	}
 	result.ConfigValid = true
-	if err := s.ValidateDatabaseFile(ctx, inspection.Files["servers.db"], backupKey); err != nil {
+	if err := s.validateDatabaseFile(ctx, inspection.Files["servers.db"], backupKey, mode == verifyWorkspaceStorage); err != nil {
 		if assessStorage && IsStorageFull(err) {
 			return result.withStorageFailure(err), nil
+		}
+		if mode == verifyWorkspaceStorage && IsVerificationIOError(err) {
+			return result, &RestoreError{Stage: RestoreStageArchive, Err: err}
 		}
 		if errors.Is(err, errArchivedNotifications) {
 			result.Blockers = append(result.Blockers, ReadinessIssue{
@@ -820,7 +886,7 @@ func (s *Service) verifyArchiveFile(ctx context.Context, encrypted TemporaryFile
 	}
 	result.RestoreReady = true
 	if review != nil {
-		db, err := sql.Open("sqlite", inspection.Files["servers.db"])
+		db, err := openStagedArchiveDatabase(inspection.Files["servers.db"], false)
 		if err == nil {
 			defer db.Close()
 			db.SetMaxOpenConns(1)
@@ -841,7 +907,7 @@ func (s *Service) RestoreArchiveFileWithOptions(ctx context.Context, encrypted T
 	if err := storageBlocker(s.decryptStorage(encrypted.Path)); err != nil {
 		return RestoreResult{}, &RestoreError{Stage: RestoreStageApply, Err: err}
 	}
-	plain, err := s.decryptFile(encrypted.Path, passphrase)
+	plain, err := s.decryptFile(ctx, encrypted.Path, passphrase)
 	if err != nil {
 		return RestoreResult{}, &RestoreError{Stage: RestoreStageDecrypt, Err: err}
 	}
@@ -850,11 +916,11 @@ func (s *Service) RestoreArchiveFileWithOptions(ctx context.Context, encrypted T
 	if err != nil {
 		return RestoreResult{}, &RestoreError{Stage: RestoreStageArchive, Err: err}
 	}
-	volumes, _ := s.archiveRestoreStorage(sizes)
+	volumes, _ := s.archiveRestoreStorage(sizes, true)
 	if err := storageBlocker(volumes); err != nil {
 		return RestoreResult{}, &RestoreError{Stage: RestoreStageApply, Err: err}
 	}
-	inspection, err := InspectTarGzFileWithLimits(plain.Path, s.deps.TempDir(), MaxExtractedBytes, MaxExtractedBytes)
+	inspection, err := inspectTarGzFileWithLimits(ctx, plain.Path, s.deps.TempDir(), MaxExtractedBytes, MaxExtractedBytes)
 	if err != nil {
 		return RestoreResult{}, &RestoreError{Stage: RestoreStageArchive, Err: err}
 	}

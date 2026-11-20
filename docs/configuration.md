@@ -227,6 +227,10 @@ To recover without the primary host, obtain a copy from the secondary mount and 
 restore workflow in isolation on the new installation. Keep the original
 passphrase in a separate secret store.
 
+Before starting the recovery installation, use the
+[offline archive verification command](troubleshooting.md#verify-an-archive-offline)
+to check the copy and choose a workspace with enough capacity.
+
 ### Registered automated archive catalog
 
 **Admin → Backup & Restore → Registered automated archives** shows at most the

@@ -18,6 +18,7 @@
 - [CVE enrichment issues](#cve-enrichment-issues)
 - [Notification delivery failures](#notification-delivery-failures)
 - [Incomplete backup recovery](#incomplete-backup-recovery)
+- [Verify an archive offline](#verify-an-archive-offline)
 - [Database and file permissions](#database-and-file-permissions)
 
 ## Setup and login issues
@@ -277,3 +278,32 @@ The JSON report includes estimated and available bytes for preparation, the diag
 An older rollback set requires a readable installed database. If the report cannot validate a set, preserve the volume and rollback directories for diagnosis. A verified independent backup and retained recovery evidence may be needed. The process and container logs may also contain the original restore failure.
 
 If the recovery latch cannot be persisted, the current process still blocks work and logs that persistence error. Diagnose the storage failure before restarting. Retained rollback files contain sensitive application data; protect them like backups and remove them after recovery has been verified. They are retained only on incomplete recovery, not after a successful restore or successful rollback.
+
+## Verify an archive offline
+
+Run this command on the recovery machine with an existing writable directory
+for temporary files. Pick a directory on another volume if the normal temporary
+volume is full.
+
+```sh
+webserver backup verify --archive /recovery/backup.slubkp --work-dir /mnt/scratch
+```
+
+The command prompts for the passphrase without echoing it. For unattended
+verification, pass `--passphrase-file` with the path to a private regular
+file of at most 4096 bytes. Add `--json` for machine-readable output. If
+`--work-dir` is omitted, the command uses the system temporary directory.
+
+Verification opens the archive in read-only mode and validates its decrypted
+contents and SQLite compatibility in the workspace. The report marks the
+restoration target as uninspected. Check the target installation in Admin
+before replacing its data. Use `backup recover --inspect` when an existing
+installation has an incomplete-restore marker.
+
+Exit code `0` records successful archive verification. Code `3` means the
+archive could not be authenticated or validated, `4` means its format or data
+is incompatible, and `5` means the verification workspace lacks space.
+On code `5`, compare the preparation volume's required and available bytes
+when reported, then free space or select another workspace and verify the same
+archive again. Code `2` indicates invalid command arguments, code `1` an
+operational error, and code `130` an interruption.

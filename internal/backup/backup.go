@@ -54,10 +54,11 @@ const (
 )
 
 var (
-	ErrInvalidPassphrase = errors.New("passphrase must be at least 12 characters")
-	ErrMalformed         = errors.New("malformed backup file")
-	ErrUnsupportedFormat = errors.New("unsupported backup format")
-	ErrMissingFile       = errors.New("backup missing required file")
+	ErrInvalidPassphrase     = errors.New("passphrase must be at least 12 characters")
+	ErrArchiveAuthentication = errors.New("invalid passphrase or corrupted backup")
+	ErrMalformed             = errors.New("malformed backup file")
+	ErrUnsupportedFormat     = errors.New("unsupported backup format")
+	ErrMissingFile           = errors.New("backup missing required file")
 )
 
 type ExportRequest struct {
@@ -630,7 +631,7 @@ func DecryptPayload(encrypted []byte, passphrase string) ([]byte, error) {
 	plain, err := gcm.Open(nil, nonce, ciphertext, nil)
 	if err != nil {
 		log.Printf("decryptBackupPayload: gcm open failed: %v", err)
-		return nil, errors.New("invalid passphrase or corrupted backup")
+		return nil, ErrArchiveAuthentication
 	}
 	return plain, nil
 }

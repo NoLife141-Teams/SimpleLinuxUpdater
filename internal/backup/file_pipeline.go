@@ -70,9 +70,6 @@ func (i ArchiveFileInspection) Remove() error {
 }
 
 func createTemporaryFile(dir, pattern string) (*os.File, error) {
-	if strings.TrimSpace(dir) == "" {
-		dir = os.TempDir()
-	}
 	file, err := os.CreateTemp(dir, pattern)
 	if err != nil {
 		return nil, err
@@ -559,7 +556,10 @@ func (s *Service) ExportArchiveFileFromSnapshot(ctx context.Context, req ExportR
 
 func readJSONString(reader *bufio.Reader, writer io.Writer, maxBytes int64) (int64, error) {
 	first, err := reader.ReadByte()
-	if err != nil || first != '"' {
+	if err != nil {
+		return 0, archiveJSONReadError(err)
+	}
+	if first != '"' {
 		return 0, ErrMalformed
 	}
 	var written int64
@@ -594,7 +594,7 @@ func readJSONString(reader *bufio.Reader, writer io.Writer, maxBytes int64) (int
 	for {
 		b, err := reader.ReadByte()
 		if err != nil {
-			return written, ErrMalformed
+			return written, archiveJSONReadError(err)
 		}
 		switch b {
 		case '"':
@@ -607,7 +607,7 @@ func readJSONString(reader *bufio.Reader, writer io.Writer, maxBytes int64) (int
 		case '\\':
 			escaped, err := reader.ReadByte()
 			if err != nil {
-				return written, ErrMalformed
+				return written, archiveJSONReadError(err)
 			}
 			switch escaped {
 			case '"', '\\', '/':
@@ -641,7 +641,10 @@ func readJSONString(reader *bufio.Reader, writer io.Writer, maxBytes int64) (int
 				}
 				if utf16.IsSurrogate(r) {
 					prefix := make([]byte, 2)
-					if _, err := io.ReadFull(reader, prefix); err != nil || prefix[0] != '\\' || prefix[1] != 'u' {
+					if _, err := io.ReadFull(reader, prefix); err != nil {
+						return written, archiveJSONReadError(err)
+					}
+					if prefix[0] != '\\' || prefix[1] != 'u' {
 						return written, ErrMalformed
 					}
 					r2, err := readJSONHexRune(reader)
@@ -672,10 +675,17 @@ func readJSONString(reader *bufio.Reader, writer io.Writer, maxBytes int64) (int
 	}
 }
 
+func archiveJSONReadError(err error) error {
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return ErrMalformed
+	}
+	return err
+}
+
 func readJSONHexRune(reader io.Reader) (rune, error) {
 	var raw [4]byte
 	if _, err := io.ReadFull(reader, raw[:]); err != nil {
-		return 0, ErrMalformed
+		return 0, archiveJSONReadError(err)
 	}
 	var value rune
 	for _, b := range raw {
@@ -708,7 +718,7 @@ func skipJSONWhitespace(reader *bufio.Reader) error {
 
 func readRawJSONValue(reader *bufio.Reader, maxBytes int64) ([]byte, error) {
 	if err := skipJSONWhitespace(reader); err != nil {
-		return nil, ErrMalformed
+		return nil, archiveJSONReadError(err)
 	}
 	var raw bytes.Buffer
 	depth := 0
@@ -717,7 +727,7 @@ func readRawJSONValue(reader *bufio.Reader, maxBytes int64) ([]byte, error) {
 	for {
 		b, err := reader.ReadByte()
 		if err != nil {
-			return nil, ErrMalformed
+			return nil, archiveJSONReadError(err)
 		}
 		if !inString && depth == 0 && (b == ',' || b == '}') {
 			if err := reader.UnreadByte(); err != nil {
@@ -760,12 +770,24 @@ func readRawJSONValue(reader *bufio.Reader, maxBytes int64) ([]byte, error) {
 	return append([]byte(nil), value...), nil
 }
 
-func parseEnvelopePath(path, tempDir string, extractPayload bool) (Envelope, TemporaryFile, error) {
+type archiveContextReader struct {
+	ctx    context.Context
+	reader io.Reader
+}
+
+func (r archiveContextReader) Read(p []byte) (int, error) {
+	if err := r.ctx.Err(); err != nil {
+		return 0, err
+	}
+	return r.reader.Read(p)
+}
+
+func parseEnvelopePath(ctx context.Context, path, tempDir string, extractPayload bool) (Envelope, TemporaryFile, error) {
 	info, err := os.Stat(path)
 	if err != nil {
 		return Envelope{}, TemporaryFile{}, err
 	}
-	if info.Size() <= 0 || info.Size() > MaxUploadBytes {
+	if !info.Mode().IsRegular() || info.Size() <= 0 || info.Size() > MaxUploadBytes {
 		return Envelope{}, TemporaryFile{}, ErrMalformed
 	}
 	file, err := os.Open(path)
@@ -773,12 +795,19 @@ func parseEnvelopePath(path, tempDir string, extractPayload bool) (Envelope, Tem
 		return Envelope{}, TemporaryFile{}, err
 	}
 	defer file.Close()
-	reader := bufio.NewReaderSize(file, 64*1024)
+	return parseEnvelopeReader(ctx, file, tempDir, extractPayload)
+}
+
+func parseEnvelopeReader(ctx context.Context, source io.Reader, tempDir string, extractPayload bool) (Envelope, TemporaryFile, error) {
+	reader := bufio.NewReaderSize(archiveContextReader{ctx, source}, 64*1024)
 	if err := skipJSONWhitespace(reader); err != nil {
-		return Envelope{}, TemporaryFile{}, ErrMalformed
+		return Envelope{}, TemporaryFile{}, archiveJSONReadError(err)
 	}
 	opening, err := reader.ReadByte()
-	if err != nil || opening != '{' {
+	if err != nil {
+		return Envelope{}, TemporaryFile{}, archiveJSONReadError(err)
+	}
+	if opening != '{' {
 		return Envelope{}, TemporaryFile{}, ErrMalformed
 	}
 	values := make(map[string]json.RawMessage)
@@ -799,11 +828,11 @@ func parseEnvelopePath(path, tempDir string, extractPayload bool) (Envelope, Tem
 	allowObjectEnd := true
 	for {
 		if err := skipJSONWhitespace(reader); err != nil {
-			return Envelope{}, TemporaryFile{}, ErrMalformed
+			return Envelope{}, TemporaryFile{}, archiveJSONReadError(err)
 		}
 		peek, err := reader.Peek(1)
 		if err != nil {
-			return Envelope{}, TemporaryFile{}, ErrMalformed
+			return Envelope{}, TemporaryFile{}, archiveJSONReadError(err)
 		}
 		if peek[0] == '}' {
 			if !allowObjectEnd {
@@ -814,7 +843,10 @@ func parseEnvelopePath(path, tempDir string, extractPayload bool) (Envelope, Tem
 		}
 		allowObjectEnd = true
 		var keyBuffer bytes.Buffer
-		if _, err := readJSONString(reader, &keyBuffer, 256); err != nil || !utf8.Valid(keyBuffer.Bytes()) {
+		if _, err := readJSONString(reader, &keyBuffer, 256); err != nil {
+			return Envelope{}, TemporaryFile{}, err
+		}
+		if !utf8.Valid(keyBuffer.Bytes()) {
 			return Envelope{}, TemporaryFile{}, ErrMalformed
 		}
 		key := keyBuffer.String()
@@ -827,14 +859,17 @@ func parseEnvelopePath(path, tempDir string, extractPayload bool) (Envelope, Tem
 		}
 		seen[key] = struct{}{}
 		if err := skipJSONWhitespace(reader); err != nil {
-			return Envelope{}, TemporaryFile{}, ErrMalformed
+			return Envelope{}, TemporaryFile{}, archiveJSONReadError(err)
 		}
 		colon, err := reader.ReadByte()
-		if err != nil || colon != ':' {
+		if err != nil {
+			return Envelope{}, TemporaryFile{}, archiveJSONReadError(err)
+		}
+		if colon != ':' {
 			return Envelope{}, TemporaryFile{}, ErrMalformed
 		}
 		if err := skipJSONWhitespace(reader); err != nil {
-			return Envelope{}, TemporaryFile{}, ErrMalformed
+			return Envelope{}, TemporaryFile{}, archiveJSONReadError(err)
 		}
 		if key == "payload_b64" {
 			payloadSeen = true
@@ -848,10 +883,7 @@ func parseEnvelopePath(path, tempDir string, extractPayload bool) (Envelope, Tem
 				target = encoded
 			}
 			if _, err := readJSONString(reader, target, maxEncodedPayloadBytes); err != nil {
-				if IsStorageFull(err) {
-					return Envelope{}, TemporaryFile{}, err
-				}
-				return Envelope{}, TemporaryFile{}, ErrMalformed
+				return Envelope{}, TemporaryFile{}, err
 			}
 		} else {
 			value, err := readRawJSONValue(reader, maxEnvelopeMetadataBytes)
@@ -868,11 +900,11 @@ func parseEnvelopePath(path, tempDir string, extractPayload bool) (Envelope, Tem
 			}
 		}
 		if err := skipJSONWhitespace(reader); err != nil {
-			return Envelope{}, TemporaryFile{}, ErrMalformed
+			return Envelope{}, TemporaryFile{}, archiveJSONReadError(err)
 		}
 		separator, err := reader.ReadByte()
 		if err != nil {
-			return Envelope{}, TemporaryFile{}, ErrMalformed
+			return Envelope{}, TemporaryFile{}, archiveJSONReadError(err)
 		}
 		if separator == '}' {
 			break
@@ -890,7 +922,10 @@ func parseEnvelopePath(path, tempDir string, extractPayload bool) (Envelope, Tem
 		if err == io.EOF {
 			break
 		}
-		if err != nil || (b != ' ' && b != '\n' && b != '\r' && b != '\t') {
+		if err != nil {
+			return Envelope{}, TemporaryFile{}, err
+		}
+		if b != ' ' && b != '\n' && b != '\r' && b != '\t' {
 			return Envelope{}, TemporaryFile{}, ErrMalformed
 		}
 	}
@@ -927,12 +962,13 @@ func parseEnvelopePath(path, tempDir string, extractPayload bool) (Envelope, Tem
 		return Envelope{}, TemporaryFile{}, err
 	}
 	cipherPath := ciphertext.Name()
-	decoder := base64.NewDecoder(base64.StdEncoding, encodedInput)
+	decoder := base64.NewDecoder(base64.StdEncoding, archiveContextReader{ctx, encodedInput})
 	written, copyErr := copyFileBounded(ciphertext, decoder, maxCiphertextBytes)
 	if copyErr != nil || written == 0 {
 		_ = ciphertext.Close()
 		_ = os.Remove(cipherPath)
-		if IsStorageFull(copyErr) {
+		var pathErr *os.PathError
+		if errors.As(copyErr, &pathErr) {
 			return Envelope{}, TemporaryFile{}, copyErr
 		}
 		return Envelope{}, TemporaryFile{}, ErrMalformed
@@ -946,12 +982,17 @@ func parseEnvelopePath(path, tempDir string, extractPayload bool) (Envelope, Tem
 }
 
 func InspectEnvelopeFile(path string) (Envelope, error) {
-	env, _, err := parseEnvelopePath(path, os.TempDir(), false)
+	env, _, err := parseEnvelopePath(context.Background(), path, "", false)
 	return env, err
 }
 
-func (s *Service) decryptFile(path, passphrase string) (TemporaryFile, error) {
-	env, ciphertextFile, err := parseEnvelopePath(path, s.deps.TempDir(), true)
+func (s *Service) decryptFile(ctx context.Context, path, passphrase string) (TemporaryFile, error) {
+	env, ciphertextFile, err := parseEnvelopePath(ctx, path, s.deps.TempDir(), true)
+	if ctx.Err() != nil {
+		// The parser can finish creating its ciphertext after cancellation.
+		_ = ciphertextFile.Remove()
+		return TemporaryFile{}, ctx.Err()
+	}
 	if err != nil {
 		return TemporaryFile{}, err
 	}
@@ -986,10 +1027,13 @@ func (s *Service) decryptFile(path, passphrase string) (TemporaryFile, error) {
 	plain, err := gcm.Open(ciphertext[:0], nonce, ciphertext, nil)
 	ciphertext = nil
 	if err != nil {
-		return TemporaryFile{}, errors.New("invalid passphrase or corrupted backup")
+		return TemporaryFile{}, ErrArchiveAuthentication
 	}
 	if int64(len(plain)) > MaxArchiveBytes {
 		return TemporaryFile{}, ErrMalformed
+	}
+	if err := ctx.Err(); err != nil {
+		return TemporaryFile{}, err
 	}
 	out, err := createTemporaryFile(s.deps.TempDir(), "slu-backup-plain-*.tar.gz")
 	if err != nil {
@@ -1006,6 +1050,10 @@ func (s *Service) decryptFile(path, passphrase string) (TemporaryFile, error) {
 }
 
 func InspectTarGzFileWithLimits(path, tempRoot string, maxFileBytes, maxTotalBytes int64) (ArchiveFileInspection, error) {
+	return inspectTarGzFileWithLimits(context.Background(), path, tempRoot, maxFileBytes, maxTotalBytes)
+}
+
+func inspectTarGzFileWithLimits(ctx context.Context, path, tempRoot string, maxFileBytes, maxTotalBytes int64) (ArchiveFileInspection, error) {
 	extractDir, err := os.MkdirTemp(tempRoot, "slu-backup-extract-*")
 	if err != nil {
 		return ArchiveFileInspection{}, err
@@ -1020,14 +1068,23 @@ func InspectTarGzFileWithLimits(path, tempRoot string, maxFileBytes, maxTotalByt
 		return ArchiveFileInspection{}, err
 	}
 	actual := make(map[string]ManifestFile, 4)
-	err = walkTarGzFile(path, maxFileBytes, maxTotalBytes, func(name string, size int64, data io.Reader) error {
+	var manifestData bytes.Buffer
+	err = walkTarGzFile(ctx, path, maxFileBytes, maxTotalBytes, func(name string, size int64, data io.Reader) error {
+		if name == "manifest.json" {
+			if size > maxManifestBytes {
+				return ErrMalformed
+			}
+			// Parse the bytes already copied by extraction. Reopening the
+			// temporary file would add a second dependency on the workspace.
+			data = io.TeeReader(data, &manifestData)
+		}
 		targetPath := filepath.Join(extractDir, name)
 		target, err := os.OpenFile(targetPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
 		if err != nil {
 			return err
 		}
 		hash := sha256.New()
-		written, copyErr := io.Copy(io.MultiWriter(target, hash), data)
+		written, copyErr := io.Copy(io.MultiWriter(target, hash), archiveContextReader{ctx, data})
 		if err := errors.Join(copyErr, target.Close()); err != nil {
 			return err
 		}
@@ -1041,16 +1098,8 @@ func InspectTarGzFileWithLimits(path, tempRoot string, maxFileBytes, maxTotalByt
 	if err != nil {
 		return fail(err)
 	}
-	manifestPath, ok := inspection.Files["manifest.json"]
-	if !ok {
-		return fail(ErrMalformed)
-	}
-	manifestData, err := readPathBounded(manifestPath, maxManifestBytes)
-	if err != nil {
-		return fail(ErrMalformed)
-	}
 	var manifest Manifest
-	if json.Unmarshal(manifestData, &manifest) != nil || manifest.Files == nil {
+	if json.Unmarshal(manifestData.Bytes(), &manifest) != nil || manifest.Files == nil {
 		return fail(ErrMalformed)
 	}
 	missing := make([]string, 0, 2)
@@ -1093,20 +1142,20 @@ func InspectTarGzFileWithLimits(path, tempRoot string, maxFileBytes, maxTotalByt
 
 func measureTarGzFile(ctx context.Context, path string) (map[string]uint64, error) {
 	sizes := make(map[string]uint64, 4)
-	err := walkTarGzFile(path, MaxExtractedBytes, MaxExtractedBytes, func(name string, size int64, _ io.Reader) error {
+	err := walkTarGzFile(ctx, path, MaxExtractedBytes, MaxExtractedBytes, func(name string, size int64, _ io.Reader) error {
 		sizes[name] = uint64(size)
 		return ctx.Err()
 	})
 	return sizes, err
 }
 
-func walkTarGzFile(path string, maxFileBytes, maxTotalBytes int64, visit func(string, int64, io.Reader) error) error {
+func walkTarGzFile(ctx context.Context, path string, maxFileBytes, maxTotalBytes int64, visit func(string, int64, io.Reader) error) error {
 	archive, err := os.Open(path)
 	if err != nil {
 		return err
 	}
 	defer archive.Close()
-	gz, err := gzip.NewReader(archive)
+	gz, err := gzip.NewReader(archiveContextReader{ctx, archive})
 	if err != nil {
 		return err
 	}

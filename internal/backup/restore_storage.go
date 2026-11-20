@@ -51,8 +51,27 @@ func (e *RestoreStorageError) Error() string {
 // successful estimate. The restore still follows its normal rollback path.
 func IsStorageFull(err error) bool {
 	var sqliteErr *sqlite.Error
-	return errors.Is(err, syscall.ENOSPC) ||
+	return errors.Is(err, syscall.ENOSPC) || errors.Is(err, syscall.EDQUOT) ||
 		(errors.As(err, &sqliteErr) && sqliteErr.Code() == sqlitelib.SQLITE_FULL)
+}
+
+// IsVerificationIOError distinguishes inaccessible archive or workspace
+// files from malformed archive data and incompatible SQLite contents.
+func IsVerificationIOError(err error) bool {
+	var pathErr *os.PathError
+	if errors.As(err, &pathErr) {
+		return true
+	}
+	var sqliteErr *sqlite.Error
+	if !errors.As(err, &sqliteErr) {
+		return false
+	}
+	switch sqliteErr.Code() & 0xff {
+	case sqlitelib.SQLITE_IOERR, sqlitelib.SQLITE_CANTOPEN, sqlitelib.SQLITE_READONLY, sqlitelib.SQLITE_PERM:
+		return true
+	default:
+		return false
+	}
 }
 
 func restoreStorageRoleNames(roles []string) string {
@@ -238,7 +257,7 @@ func (s *Service) decryptStorage(path string) []RestoreStorageVolume {
 	})
 }
 
-func (s *Service) archiveRestoreStorage(sizes map[string]uint64) ([]RestoreStorageVolume, bool) {
+func (s *Service) archiveRestoreStorage(sizes map[string]uint64, includeTarget bool) ([]RestoreStorageVolume, bool) {
 	var extracted uint64
 	for _, size := range sizes {
 		extracted += size // the bounded tar walker checked the aggregate size
@@ -250,9 +269,14 @@ func (s *Service) archiveRestoreStorage(sizes map[string]uint64) ([]RestoreStora
 	preparation := restoreStorageNeed{
 		directory: s.deps.TempDir(), role: restoreStoragePreparation, bytes: extracted + 2*databaseBytes,
 	}
-	needs := append([]restoreStorageNeed{preparation},
-		s.previewRestoreTargets(hasHosts).replacementNeeds(databaseBytes, hostsBytes, true)...)
+	needs := []restoreStorageNeed{preparation}
+	if includeTarget {
+		needs = append(needs, s.previewRestoreTargets(hasHosts).replacementNeeds(databaseBytes, hostsBytes, true)...)
+	}
 	volumes := s.estimateRestoreStorage(needs...)
+	if !includeTarget {
+		return volumes, storageBlocker(volumes) == nil
+	}
 	// Verification can usually complete even if replacement would run out of
 	// space. If there is not even room to extract, return the estimate alone.
 	temp := volumes[0].AvailableBytes

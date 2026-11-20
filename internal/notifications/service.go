@@ -1645,7 +1645,7 @@ func readArchivedNotificationSettings(ctx context.Context, db interface {
 		return nil, nil
 	}
 	if err != nil {
-		return nil, errors.New("read restored notification settings")
+		return nil, fmt.Errorf("read restored notification settings: %w", err)
 	}
 	var stored persistedSettings
 	if err := json.Unmarshal([]byte(raw), &stored); err != nil {

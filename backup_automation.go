@@ -97,19 +97,20 @@ type backupAutomationStatus struct {
 type backupAutomationDeployment struct{ Directory, SecretFile, SecondaryDirectory string }
 
 type backupAutomation struct {
-	health            installationhealthpkg.Worker
-	copyArchive       func(io.Writer, io.Reader) (int64, error)
-	mu                sync.Mutex
-	scanMu            sync.Mutex
-	integrityMu       sync.Mutex
-	secondaryMu       sync.Mutex
-	secondaryCancelMu sync.Mutex
-	secondaryCancel   context.CancelFunc
-	wg                sync.WaitGroup
-	deps              AppDeps
-	deployment        backupAutomationDeployment
-	export            func(context.Context, backupExportCommand) backupOperationOutcome
-	verify            func(context.Context, internalbackup.TemporaryFile, string) (internalbackup.VerifyResult, error)
+	health                 installationhealthpkg.Worker
+	copyArchive            func(io.Writer, io.Reader) (int64, error)
+	syncSecondaryDirectory func(*os.Root) error
+	mu                     sync.Mutex
+	scanMu                 sync.Mutex
+	integrityMu            sync.Mutex
+	secondaryMu            sync.Mutex
+	secondaryCancelMu      sync.Mutex
+	secondaryCancel        context.CancelFunc
+	wg                     sync.WaitGroup
+	deps                   AppDeps
+	deployment             backupAutomationDeployment
+	export                 func(context.Context, backupExportCommand) backupOperationOutcome
+	verify                 func(context.Context, internalbackup.TemporaryFile, string) (internalbackup.VerifyResult, error)
 }
 
 func loadBackupAutomationDeployment() (backupAutomationDeployment, error) {
@@ -132,7 +133,7 @@ func loadBackupAutomationDeployment() (backupAutomationDeployment, error) {
 
 func newBackupAutomation(deps AppDeps) *backupAutomation {
 	d, _ := loadBackupAutomationDeployment() // main validates malformed environment before startup.
-	a := &backupAutomation{deps: deps, deployment: d, copyArchive: io.Copy}
+	a := &backupAutomation{deps: deps, deployment: d, copyArchive: io.Copy, syncSecondaryDirectory: syncSecondaryDirectory}
 	a.export = func(ctx context.Context, cmd backupExportCommand) backupOperationOutcome {
 		return newBackupOperationLifecycle(deps).Export(ctx, cmd)
 	}

@@ -481,3 +481,172 @@ func TestSecondaryTransferStopsWritingDuringRestore(t *testing.T) {
 		t.Fatalf("canceled secondary copy became public: %v", err)
 	}
 }
+
+func TestSecondaryPublicationReleasesAdmissionAndRecoversAfterLastSyncFailure(t *testing.T) {
+	_, automation, now := newBackupAutomationTest(t)
+	secondary := secondaryBackupTestDirectory(t, automation)
+	automation.deployment.SecondaryDirectory = secondary
+	if _, err := automation.ValidateSecondaryDestination(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if err := automation.Tick(t.Context(), true); err != nil {
+		t.Fatal(err)
+	}
+	state := backupAutomationStateForTest(t, automation)
+	first := state.Archives[0]
+	state.Secondary.Copies[0].Attempts = backupSecondaryMaxAttempts - 1
+	if err := automation.save(t.Context(), state); err != nil {
+		t.Fatal(err)
+	}
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	syncFailed := errors.New("secondary directory sync temporarily failed")
+	automation.syncSecondaryDirectory = func(*os.Root) error {
+		close(entered)
+		<-release
+		return syncFailed
+	}
+	finished := make(chan error, 1)
+	go func() { finished <- automation.copyNextSecondaryBackup(t.Context()) }()
+	select {
+	case <-entered:
+	case err := <-finished:
+		close(release)
+		t.Fatalf("secondary backup did not reach directory sync: %v", err)
+	case <-time.After(3 * time.Second):
+		close(release)
+		t.Fatal("secondary backup did not reach directory sync")
+	}
+	// The secondary has finished transferring bytes and is suspended in a
+	// mounted filesystem operation, which must leave exclusive admission free.
+	exportDone := make(chan error, 1)
+	go func() { exportDone <- automation.Tick(t.Context(), true) }()
+	var exportErr error
+	select {
+	case exportErr = <-exportDone:
+	case <-time.After(5 * time.Second):
+		close(release)
+		t.Fatal("secondary directory sync blocked primary export")
+	}
+	close(release)
+	select {
+	case err := <-finished:
+		if !errors.Is(err, syncFailed) {
+			t.Fatalf("secondary sync error = %v, want %v", err, syncFailed)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("secondary backup did not report the sync failure")
+	}
+	state = backupAutomationStateForTest(t, automation)
+	if exportErr != nil || state.Outcome != "succeeded" || len(state.Archives) != 2 {
+		t.Fatalf("secondary directory sync blocked primary export: %s, %d archives (%v)", state.Outcome, len(state.Archives), exportErr)
+	}
+	if info, err := os.Stat(filepath.Join(secondary, first.Name)); err != nil || info.Size() != *first.SizeBytes {
+		t.Fatalf("last attempt did not retain its linked copy: %v (%v)", info, err)
+	}
+
+	restarted := newBackupAutomation(automation.deps)
+	restarted.deployment = automation.deployment
+	status, err := restarted.Status(t.Context())
+	if err != nil || status.Secondary.State != "degraded" || status.Secondary.Failure != "publication_pending" ||
+		status.Secondary.VerifiedAt != "" {
+		t.Fatalf("unconfirmed publication not visible independently: %+v (%v)", status.Secondary, err)
+	}
+	restarted.copyArchive = func(io.Writer, io.Reader) (int64, error) {
+		t.Error("registration of the linked archive started another transfer")
+		return 0, io.ErrUnexpectedEOF
+	}
+	*now = now.Add(time.Duration(backupSecondaryMaxAttempts) * backupSecondaryRetryBase)
+	if err := restarted.copyNextSecondaryBackup(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	state = backupAutomationStateForTest(t, restarted)
+	if copy := state.Secondary.Copies[0]; copy.VerifiedAt == "" || copy.Attempts != backupSecondaryMaxAttempts {
+		t.Fatalf("last linked attempt was not finalized after restart: %+v", copy)
+	}
+}
+
+func TestSecondaryRetentionRetriesUnreadableOwnedCopy(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("this test requires filesystem permissions that also restrict reads")
+	}
+	_, automation, now := newBackupAutomationTest(t)
+	secondary := secondaryBackupTestDirectory(t, automation)
+	automation.deployment.SecondaryDirectory = secondary
+	config := backupAutomationStateForTest(t, automation).Config
+	config.Retain = 2
+	if _, err := automation.Configure(t.Context(), config); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := automation.ValidateSecondaryDestination(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		*now = now.Add(time.Minute)
+		if err := automation.Tick(t.Context(), true); err != nil {
+			t.Fatal(err)
+		}
+		if err := automation.copyNextSecondaryBackup(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	copies := backupAutomationStateForTest(t, automation).Secondary.Copies
+	oldest := filepath.Join(secondary, copies[0].Archive.Name)
+	if err := os.Chmod(oldest, 0000); err != nil {
+		t.Fatal(err)
+	}
+	config.Retain = 1
+	if _, err := automation.Configure(t.Context(), config); err != nil {
+		t.Fatal(err)
+	}
+	if err := automation.copyNextSecondaryBackup(t.Context()); !errors.Is(err, os.ErrPermission) {
+		t.Fatalf("retention did not preserve unreadable file registration for retry: %v", err)
+	}
+	if err := os.Chmod(oldest, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := automation.copyNextSecondaryBackup(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(oldest); !os.IsNotExist(err) {
+		t.Fatalf("retention never retried after restoring file access: %v", err)
+	}
+}
+
+func TestSecondaryPublicationRejectsChangedFinalContentWithOriginalTimeAndSize(t *testing.T) {
+	_, automation, _ := newBackupAutomationTest(t)
+	secondary := secondaryBackupTestDirectory(t, automation)
+	automation.deployment.SecondaryDirectory = secondary
+	if _, err := automation.ValidateSecondaryDestination(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if err := automation.Tick(t.Context(), true); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(secondary, backupAutomationStateForTest(t, automation).Archives[0].Name)
+	automation.syncSecondaryDirectory = func(root *os.Root) error {
+		info, err := os.Stat(path)
+		if err != nil {
+			return err
+		}
+		blob, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		blob[len(blob)/2] ^= 0xff
+		if err := os.WriteFile(path, blob, 0600); err != nil {
+			return err
+		}
+		if err := os.Chtimes(path, info.ModTime(), info.ModTime()); err != nil {
+			return err
+		}
+		return syncSecondaryDirectory(root)
+	}
+	if err := automation.copyNextSecondaryBackup(t.Context()); !errors.Is(err, errBackupSecondaryMismatch) {
+		t.Fatalf("last digest did not detect changed final content: %v", err)
+	}
+	status, err := automation.Status(t.Context())
+	if err != nil || status.Secondary.State != "degraded" || status.Secondary.VerifiedAt != "" {
+		t.Fatalf("changed file was reported as verified: %+v (%v)", status.Secondary, err)
+	}
+}

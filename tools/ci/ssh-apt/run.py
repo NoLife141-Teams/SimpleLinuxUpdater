@@ -146,10 +146,37 @@ def qualification_overlay(work):
     instrument("backup_archive_observation.go", [
         ("const backupArchiveObservationInterval = 5 * time.Minute", "const backupArchiveObservationInterval = time.Second"),
     ])
-    # Exercise the real pending-manual retry path within this disposable run.
+    # Wake the real worker early only while the outage control is armed.
+    retry_marker = "/work/arm-primary-control-retry"
     instrument("backup_automation.go", [
-        ("const backupRetryDelay = 5 * time.Minute", "const backupRetryDelay = time.Second"),
-        ("ticker := time.NewTicker(time.Minute)", "ticker := time.NewTicker(500 * time.Millisecond)"),
+        ("s.RetryAt = backupStamp(now.Add(backupRetryDelay))", f"""\
+delay := backupRetryDelay
+		if _, err := os.Stat("{retry_marker}"); err == nil {{
+			delay = time.Second
+		}}
+		s.RetryAt = backupStamp(now.Add(delay))"""),
+        ("defer ticker.Stop()\n\t\tfor {", f"""\
+defer ticker.Stop()
+		qualificationTicker := time.NewTicker(500 * time.Millisecond)
+		defer qualificationTicker.Stop()
+		for {{"""),
+        ("case <-ticker.C:\n\t\t\t}", f"""\
+case <-ticker.C:
+			case <-qualificationTicker.C:
+				for {{
+					if _, err := os.Stat("{retry_marker}"); err == nil {{
+						break
+					}}
+					select {{
+					case <-ctx.Done():
+						return
+					case <-ticker.C:
+					case <-qualificationTicker.C:
+						continue
+					}}
+					break
+				}}
+			}}"""),
     ])
     instrument("backup_storage_health.go", [
         ("backupStorageAlertAfter  = 30 * time.Minute", "backupStorageAlertAfter  = 10 * time.Second"),
@@ -1422,8 +1449,18 @@ assert trust.read_bytes() == b'fixture trust' and marker.read_bytes() == b'fixtu
         primary = self.work / "archive-mount-probe"
         secondary = self.secondary_work
         directory = secondary / "archives"
+
         def secondary_verified():
             status = self.api.request("GET", "/api/backup/automation")["secondary"]
+            state = status.get("state")
+            record["secondary_observation"] = {
+                "state": state if state in ("verified", "degraded", "pending", "integrity_pending",
+                                            "waiting", "validation_required") else "unexpected",
+                "pending": status["pending"],
+                "captured": bool(status.get("captured_at")),
+                "waiting_for_mount": bool(status.get("waiting_for_mount")),
+                "failed": status["failed"],
+            }
             return status["state"] == "verified" and status.get("captured_at") and status["pending"] == 0
 
         until(secondary_verified, "secondary validation did not catch up an existing archive")
@@ -1431,12 +1468,17 @@ assert trust.read_bytes() == b'fixture trust' and marker.read_bytes() == b'fixtu
         before_export = {file.name for file in (primary / "archives").glob("*.slubkp")}
         require(len(caught_up) == 1 and caught_up <= before_export, "catch-up did not publish a registered archive")
         saved = secondary / "removed-mount"
+        retry_marker = self.work / "arm-primary-control-retry"
         directory.rename(saved)
         directory.mkdir(mode=0o700)
         try:
             record["checkpoint"] = "secondary-mount-unavailable"
             primary_archives = primary / "archives"
-            new_name = self.control_backup_during_secondary_outage(record, primary_archives, before_export)
+            retry_marker.touch()
+            try:
+                new_name = self.control_backup_during_secondary_outage(record, primary_archives, before_export)
+            finally:
+                retry_marker.unlink()
 
             def mount_failure():
                 status = self.api.request("GET", "/api/backup/automation")

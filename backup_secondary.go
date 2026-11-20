@@ -90,6 +90,34 @@ func (a *backupAutomation) secondaryConfigured(state backupSecondaryState) bool 
 		state.Binding.Path == backupStorageBinding(a.deployment.SecondaryDirectory)
 }
 
+func (state *backupAutomationState) selectSecondaryDestination(binding backupSecondaryBinding) {
+	if state.Secondary.Binding == binding {
+		return
+	}
+	next := backupSecondaryState{Binding: binding}
+	for i, previous := range state.SecondaryHistory {
+		if previous.Binding == binding {
+			next = previous
+			state.SecondaryHistory = slices.Delete(state.SecondaryHistory, i, i+1)
+			for j := range next.Copies {
+				if next.Copies[j].VerifiedAt != "" {
+					next.Copies[j].Unavailable = true
+				}
+			}
+			break
+		}
+	}
+	current := state.Secondary
+	if current.Binding.Directory != "" && (len(current.Copies) > 0 || len(current.Retired) > 0) {
+		// Keep the catalog and spent attempts with their original directory.
+		// Only the destination validated by this request can be activated.
+		current.Approved = false
+		state.SecondaryHistory = append(state.SecondaryHistory, current)
+	}
+	next.Approved = false
+	state.Secondary = next
+}
+
 func (a *backupAutomation) secondaryStatus(current backupAutomationState) *backupSecondaryStatus {
 	state := current.Secondary
 	if a.deployment.SecondaryDirectory == "" {
@@ -336,10 +364,7 @@ func (a *backupAutomation) validateSecondaryDestination(ctx context.Context, adm
 	if err != nil {
 		return nil, errors.New("secondary backup settings are unavailable")
 	}
-	if state.Secondary.Binding != binding {
-		// A different mount grants no authority over files from the old one.
-		state.Secondary = backupSecondaryState{Binding: binding}
-	}
+	state.selectSecondaryDestination(binding)
 	if !state.Secondary.Approved {
 		state.Secondary.CatchUp = true
 	}

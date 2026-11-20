@@ -62,22 +62,23 @@ type ownedBackupArchive struct {
 }
 
 type backupAutomationState struct {
-	PendingManual bool                     `json:"pending_manual"`
-	Timezone      string                   `json:"timezone"`
-	OccurrenceAt  string                   `json:"occurrence_at"`
-	Config        backupScheduleConfig     `json:"config"`
-	Approval      string                   `json:"approval"`
-	NextAt        string                   `json:"next_at"`
-	PendingAt     string                   `json:"pending_at"`
-	RetryAt       string                   `json:"retry_at"`
-	LastAttemptAt string                   `json:"last_attempt_at"`
-	LastSuccessAt string                   `json:"last_success_at"`
-	Outcome       string                   `json:"outcome"`
-	Message       string                   `json:"message"`
-	Temporary     string                   `json:"temporary"`
-	Archives      []ownedBackupArchive     `json:"archives"`
-	Observation   backupArchiveObservation `json:"archive_observation,omitzero"`
-	Secondary     backupSecondaryState     `json:"secondary,omitzero"`
+	PendingManual    bool                     `json:"pending_manual"`
+	Timezone         string                   `json:"timezone"`
+	OccurrenceAt     string                   `json:"occurrence_at"`
+	Config           backupScheduleConfig     `json:"config"`
+	Approval         string                   `json:"approval"`
+	NextAt           string                   `json:"next_at"`
+	PendingAt        string                   `json:"pending_at"`
+	RetryAt          string                   `json:"retry_at"`
+	LastAttemptAt    string                   `json:"last_attempt_at"`
+	LastSuccessAt    string                   `json:"last_success_at"`
+	Outcome          string                   `json:"outcome"`
+	Message          string                   `json:"message"`
+	Temporary        string                   `json:"temporary"`
+	Archives         []ownedBackupArchive     `json:"archives"`
+	Observation      backupArchiveObservation `json:"archive_observation,omitzero"`
+	Secondary        backupSecondaryState     `json:"secondary,omitzero"`
+	SecondaryHistory []backupSecondaryState   `json:"secondary_history,omitempty"`
 }
 
 type backupAutomationStatus struct {

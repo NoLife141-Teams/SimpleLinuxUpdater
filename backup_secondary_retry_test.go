@@ -164,6 +164,84 @@ func TestSecondaryCatchUpAdmitsNewestSkippedCopyWhenSlotOpens(t *testing.T) {
 	}
 }
 
+func TestSecondaryReapprovalUsesOriginalMountCatalogAndRetryBudget(t *testing.T) {
+	_, automation, now := newBackupAutomationTest(t)
+	secondary := secondaryBackupTestDirectory(t, automation)
+	automation.deployment.SecondaryDirectory = secondary
+	if _, err := automation.validateSecondaryDestination(t.Context(), nil); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		*now = now.Add(time.Minute)
+		if err := automation.Tick(t.Context(), true); err != nil {
+			t.Fatal(err)
+		}
+		if err := automation.copyNextSecondaryBackup(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	state := backupAutomationStateForTest(t, automation)
+	present, missing := state.Secondary.Copies[0], state.Secondary.Copies[1]
+	// Both budgets are already spent for the most recent copy on this mount.
+	state.Secondary.Copies[1].Attempts = 2 * backupSecondaryMaxAttempts
+	state.Secondary.Copies[1].Retried = true
+	if err := automation.save(t.Context(), state); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(secondary, missing.Archive.Name)); err != nil {
+		t.Fatal(err)
+	}
+	original := secondary + ".original"
+	replacement := secondary + ".replacement"
+	t.Cleanup(func() {
+		_ = os.RemoveAll(original)
+		_ = os.RemoveAll(replacement)
+	})
+	if err := os.Rename(secondary, original); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(secondary, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := automation.validateSecondaryDestination(t.Context(), nil); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if err := automation.copyNextSecondaryBackup(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(secondary, missing.Archive.Name)); err != nil {
+		t.Fatalf("replacement mount did not get its own copy: %v", err)
+	}
+	if err := os.Rename(secondary, replacement); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(original, secondary); err != nil {
+		t.Fatal(err)
+	}
+
+	restarted := newBackupAutomation(automation.deps)
+	restarted.deployment = automation.deployment
+	if _, err := restarted.validateSecondaryDestination(t.Context(), nil); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if err := restarted.copyNextSecondaryBackup(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	status, err := restarted.Status(t.Context())
+	if err != nil || status.Secondary == nil || status.Secondary.CapturedAt != present.Archive.CapturedAt ||
+		status.Secondary.Pending != 0 || len(status.Secondary.RetryCandidates) != 0 {
+		t.Fatalf("returning mount lost original catalog or retried an exhausted copy: %+v, %v", status.Secondary, err)
+	}
+	if _, err := os.Stat(filepath.Join(secondary, missing.Archive.Name)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("returning mount published another copy with a fresh budget: %v", err)
+	}
+}
+
 func TestSecondaryCatchUpBudgetSurvivesFailedHistoryPruning(t *testing.T) {
 	automation := backupAutomation{deployment: backupAutomationDeployment{SecondaryDirectory: "/backups"}}
 	binding := backupSecondaryBinding{Path: backupStorageBinding("/backups"), Owner: "owner"}

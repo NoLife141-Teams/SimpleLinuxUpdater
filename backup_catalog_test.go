@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -14,6 +16,7 @@ import (
 
 	internalbackup "debian-updater/internal/backup"
 	maintenancepkg "debian-updater/internal/maintenance"
+	notificationpkg "debian-updater/internal/notifications"
 )
 
 func publishedCatalogFixture(t *testing.T) (*testApp, *backupAutomation, *http.Cookie, ownedBackupArchive) {
@@ -260,7 +263,7 @@ func TestBackupCatalogRejectsReplacedCorruptSymlinkMissingAndForeign(t *testing.
 				if err != nil {
 					t.Fatal(err)
 				}
-				if !lastConditionFact(batch.Facts, backupArchiveLossConditionPrefix+archive.ID+"/1").Active {
+				if !lastConditionFact(batch.Facts, notificationpkg.BackupArchiveLossConditionPrefix+archive.ID+"/1").Active {
 					t.Fatal("existing backup notification condition not updated")
 				}
 			}
@@ -270,6 +273,23 @@ func TestBackupCatalogRejectsReplacedCorruptSymlinkMissingAndForeign(t *testing.
 
 func TestBackupCatalogLegacyMetadataAndForeignOwnershipRemainUnknown(t *testing.T) {
 	app, a, cookie, archive := publishedCatalogFixture(t)
+	// Model the legacy format by packaging a SQLite snapshot without its capture
+	// timestamp. The manifest still contains the separate archive creation time.
+	snapshot, err := app.Deps.BackupService.CreateDBSnapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := app.Deps.BackupService.ExportArchive(t.Context(), internalbackup.ExportRequest{
+		Passphrase: "a separate automated backup secret", DBSnapshot: snapshot,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(a.deployment.Directory, archive.Name), result.Bytes, 0600); err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256(result.Bytes)
+	archive.SHA256 = hex.EncodeToString(digest[:])
 	state := backupAutomationStateForTest(t, a)
 	// Serialize the exact legacy row, without any new metadata.
 	state.Archives = []ownedBackupArchive{{Name: archive.Name, SHA256: archive.SHA256, Owner: archive.Owner}, {Name: "slu-auto-foreign-legacy.slubkp", SHA256: archive.SHA256, Owner: "foreign"}}
@@ -314,13 +334,14 @@ func TestBackupCatalogLegacyMetadataAndForeignOwnershipRemainUnknown(t *testing.
 		t.Fatalf("legacy verify=%d %s", rec.Code, rec.Body.String())
 	}
 	after := catalogFacts(t, app, cookie).Archives[1]
-	if after.PublishedAt != "" || after.LastVerifiedAt == "" || after.SizeBytes == nil || after.KnownHostsIncluded == nil {
+	if after.PublishedAt != "" || after.CapturedAt != "" || after.LastVerifiedAt == "" || after.SizeBytes == nil || after.KnownHostsIncluded == nil {
 		t.Fatalf("additive verification metadata=%+v", after)
 	}
 	if err := restarted.observeArchiveAvailability(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	if got := installationSnapshot(t.Context(), app.Deps).BackupArchives; got.Verified != 1 || got.Lost != 0 {
+	if got := installationSnapshot(t.Context(), app.Deps).BackupArchives; got.Verified != 1 || got.Lost != 0 ||
+		got.RecoveryPoint.State != "unknown" || got.RecoveryPoint.AgeSeconds != nil {
 		t.Fatalf("observer discarded verified legacy archive: %+v", got)
 	}
 	persisted := backupAutomationStateForTest(t, a)
@@ -632,7 +653,7 @@ func TestBackupCatalogRetriesLossAfterAuditWriteFailure(t *testing.T) {
 			}
 			source := newNotificationConditionSource(app.Deps.DB, a.deps.Now, nil)
 			batch, err := source(context.Background(), "", nil)
-			if err != nil || !lastConditionFact(batch.Facts, backupArchiveLossConditionPrefix+archive.ID+"/1").Active {
+			if err != nil || !lastConditionFact(batch.Facts, notificationpkg.BackupArchiveLossConditionPrefix+archive.ID+"/1").Active {
 				t.Fatalf("retried loss notification condition missing: %v", err)
 			}
 			if catalogProtectedState(t, app) != before {

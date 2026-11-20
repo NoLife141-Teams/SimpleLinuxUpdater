@@ -90,6 +90,7 @@ type backupArchiveCatalog struct {
 type backupArchiveView struct {
 	ID                 string `json:"id"`
 	PublishedAt        string `json:"published_at,omitempty"`
+	CapturedAt         string `json:"captured_at,omitempty"`
 	SizeBytes          *int64 `json:"size_bytes"`
 	KnownHostsIncluded *bool  `json:"known_hosts_included"`
 	SHA256             string `json:"sha256"`
@@ -177,13 +178,13 @@ func (a *backupAutomation) catalogLocked(ctx context.Context, s *backupAutomatio
 			verification = "unknown"
 		}
 		catalog.Archives = append(catalog.Archives, backupArchiveView{
-			ID: archive.ID, PublishedAt: archive.PublishedAt, SizeBytes: archive.SizeBytes,
+			ID: archive.ID, PublishedAt: archive.PublishedAt, CapturedAt: archive.CapturedAt, SizeBytes: archive.SizeBytes,
 			KnownHostsIncluded: archive.KnownHostsIncluded, SHA256: archive.SHA256, LastVerifiedAt: archive.LastVerifiedAt,
 			Verification: verification, Availability: availability, ReverifyPossible: reverifyPossible, JobID: archive.JobID,
 		})
 	}
 	if changed {
-		s.Observation = backupArchiveObservation{CheckedAt: backupStamp(a.now()), Storage: "available", Owner: owner, DirectoryIdentity: directory}
+		s.Observation = newBackupArchiveObservation(a.now(), "available", owner, directory)
 		return catalog, a.save(ctx, *s, events...)
 	}
 	return catalog, nil
@@ -358,10 +359,10 @@ func handleBackupCatalogOperation(c *gin.Context, a *backupAutomation, verify bo
 			var evidenceErr error
 			var events []AuditEvent
 			if archiveAvailabilityLost(availability) {
-				if event := a.observeArchive(archive, availability, backupStamp(a.now()), actorFromContext(c), clientIPFromContext(c)); event != nil {
+				s.Observation = newBackupArchiveObservation(a.now(), "available", owner, directory)
+				if event := a.observeArchive(archive, availability, s.Observation.CheckedAt, actorFromContext(c), clientIPFromContext(c)); event != nil {
 					events = append(events, *event)
 				}
-				s.Observation = backupArchiveObservation{CheckedAt: archive.ObservedAt, Storage: "available", Owner: owner, DirectoryIdentity: directory}
 			} else if availability == "present" {
 				archive.Verification = "failed"
 				evidenceErr = a.catalogAudit(actorFromContext(c), clientIPFromContext(c), "backup.verify", *archive, false)
@@ -399,15 +400,14 @@ func handleBackupCatalogOperation(c *gin.Context, a *backupAutomation, verify bo
 				availability, _ = backupArchiveAvailabilityAt(root, verified, owner, directory)
 			}
 			if availability != "present" {
-				observedAt := backupStamp(a.now())
+				s.Observation = newBackupArchiveObservation(a.now(), storage, owner, directory)
 				if archiveAvailabilityLost(availability) {
 					archive.DirectoryIdentity = directory
 				}
 				var events []AuditEvent
-				if event := a.observeArchive(archive, availability, observedAt, actorFromContext(c), clientIPFromContext(c)); event != nil {
+				if event := a.observeArchive(archive, availability, s.Observation.CheckedAt, actorFromContext(c), clientIPFromContext(c)); event != nil {
 					events = append(events, *event)
 				}
-				s.Observation = backupArchiveObservation{CheckedAt: observedAt, Storage: storage, Owner: owner, DirectoryIdentity: directory}
 				if err := a.save(ctx, s, events...); err != nil {
 					c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Backup verification evidence could not be saved."})
 					return
@@ -417,17 +417,25 @@ func handleBackupCatalogOperation(c *gin.Context, a *backupAutomation, verify bo
 			}
 			verified.Verification = "verified"
 			verified.LossActive = false
+			captureLimit := a.now()
+			if published := parseBackupStamp(archive.PublishedAt); !published.IsZero() && published.Before(captureLimit) {
+				captureLimit = published
+			}
+			if capture := verifiedBackupCapture(result.Manifest, captureLimit); capture != "" {
+				verified.CapturedAt = capture
+			}
 			verified.KnownHostsIncluded = &result.KnownHostsIncluded
 			*archive = verified
 		} else {
 			archive.Verification = "failed"
 		}
 		archive.Availability = "present"
-		archive.ObservedAt = backupStamp(a.now())
+		s.Observation = newBackupArchiveObservation(a.now(), "available", owner, directory)
+		archive.ObservedAt = s.Observation.CheckedAt
+		archive.ObservationProcess = backupArchiveObservationProcess
 		if ready {
 			archive.LastVerifiedAt = archive.ObservedAt
 		}
-		s.Observation = backupArchiveObservation{CheckedAt: archive.ObservedAt, Storage: "available", Owner: owner, DirectoryIdentity: directory}
 		// Recovery health and notifications consume the audit, so never report
 		// a completed review or persist its marker without that shared evidence.
 		if err = a.catalogAudit(actorFromContext(c), clientIPFromContext(c), "backup.verify", *archive, ready); err != nil {

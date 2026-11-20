@@ -132,6 +132,81 @@ func TestBackupArchiveObservationsDistinguishLossFromUnavailableStorage(t *testi
 	check("missing", "available", 0, 2)
 }
 
+func TestBackupRecoveryPointFallsBackToCaptureTimeAfterNewestArchiveLoss(t *testing.T) {
+	app, a, now := newBackupAutomationTest(t)
+	initial := *now
+	if err := a.Tick(t.Context(), true); err != nil {
+		t.Fatal(err)
+	}
+	state := backupAutomationStateForTest(t, a)
+	if len(state.Archives) != 1 || state.Archives[0].CapturedAt != backupStamp(initial) {
+		t.Fatalf("verified publication did not preserve capture time: %+v", state.Archives)
+	}
+	older := state.Archives[0]
+	// Simulate an older registration that did not retain the verified stamp.
+	state.Archives[0].CapturedAt = ""
+	if err := a.save(t.Context(), state); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.observeArchiveAvailability(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if got := installationSnapshot(t.Context(), app.Deps).BackupArchives; got.Verified != 1 ||
+		got.RecoveryPoint.State != "unknown" || got.RecoveryPoint.AgeSeconds != nil {
+		t.Fatalf("availability supplied an undocumented capture date: %+v", got)
+	}
+	*now = initial.Add(8 * 24 * time.Hour)
+	cookie := app.authenticate(t)
+	if rec := catalogRequest(app, cookie, older.ID, "verify"); rec.Code != 200 {
+		t.Fatalf("reverification = %d %s", rec.Code, rec.Body.String())
+	}
+	check := func(wantState, wantCaptured string, wantAge float64) {
+		t.Helper()
+		if err := a.observeArchiveAvailability(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		snapshot := installationSnapshot(t.Context(), app.Deps)
+		point := snapshot.BackupArchives.RecoveryPoint
+		if point.State != wantState || point.CapturedAt != wantCaptured ||
+			(wantCaptured == "" && point.AgeSeconds != nil) ||
+			(wantCaptured != "" && (point.AgeSeconds == nil || *point.AgeSeconds != wantAge)) {
+			t.Fatalf("point = %+v, want state %q capture %q age %v", point, wantState, wantCaptured, wantAge)
+		}
+		metrics := installationMetrics(snapshot)
+		if wantCaptured != "" && !strings.Contains(metrics, "\nslu_installation_backup_local_recovery_point_age_seconds ") {
+			t.Fatal("confirmed point has no age metric")
+		}
+		if wantState == "unknown" && strings.Contains(metrics, "\nslu_installation_backup_local_recovery_point_available ") {
+			t.Fatal("unobservable point exported a false availability sample")
+		}
+	}
+	oldAge := now.Sub(initial).Seconds()
+	check("stale", backupStamp(initial), oldAge)
+	if err := a.Tick(t.Context(), true); err != nil {
+		t.Fatal(err)
+	}
+	check("recent", backupStamp(*now), 0)
+	latest := backupAutomationStateForTest(t, a).Archives[1]
+	if err := os.Remove(filepath.Join(a.deployment.Directory, latest.Name)); err != nil {
+		t.Fatal(err)
+	}
+	check("stale", backupStamp(initial), oldAge)
+	if err := os.Remove(filepath.Join(a.deployment.Directory, older.Name)); err != nil {
+		t.Fatal(err)
+	}
+	check("missing", "", 0)
+	dir := a.deployment.Directory
+	if err := os.Rename(dir, dir+"-unmounted"); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := os.Rename(dir+"-unmounted", dir); err != nil {
+			t.Error(err)
+		}
+	}()
+	check("unknown", "", 0)
+}
+
 func TestBackupArchiveObservationKeepsStalledStorageUnavailable(t *testing.T) {
 	app, a, now := newBackupAutomationTest(t)
 	if err := a.Tick(t.Context(), true); err != nil {
@@ -172,10 +247,21 @@ func TestBackupArchiveObservationKeepsStalledStorageUnavailable(t *testing.T) {
 }
 
 type archiveObservationDeliveryClient struct {
-	calls atomic.Int32
+	calls            atomic.Int32
+	disclosedArchive atomic.Bool
+	archiveID        string
+	archiveDirectory string
 }
 
-func (c *archiveObservationDeliveryClient) Do(*http.Request) (*http.Response, error) {
+func (c *archiveObservationDeliveryClient) Do(req *http.Request) (*http.Response, error) {
+	defer req.Body.Close()
+	body, err := io.ReadAll(req.Body)
+	if err != nil {
+		return nil, err
+	}
+	if payload := string(body); strings.Contains(payload, c.archiveID) || strings.Contains(payload, c.archiveDirectory) {
+		c.disclosedArchive.Store(true)
+	}
 	c.calls.Add(1)
 	return &http.Response{StatusCode: 204, Body: io.NopCloser(strings.NewReader("")), Header: http.Header{}}, nil
 }
@@ -186,7 +272,7 @@ func TestBackupArchiveLossNotifiesOnceAcrossWorkerRestartAndReverification(t *te
 	if err := os.Rename(path, path+".saved"); err != nil {
 		t.Fatal(err)
 	}
-	client := &archiveObservationDeliveryClient{}
+	client := &archiveObservationDeliveryClient{archiveID: archive.ID, archiveDirectory: a.deployment.Directory}
 	deps := NotificationServiceDeps{
 		DB: app.Deps.DB, Now: a.deps.Now, HTTPClient: client, ConditionPollInterval: 10 * time.Millisecond,
 		ReadConditions: newNotificationConditionSource(app.Deps.DB, a.deps.Now, nil),
@@ -213,7 +299,7 @@ func TestBackupArchiveLossNotifiesOnceAcrossWorkerRestartAndReverification(t *te
 	if _, err := first.SaveSettings(NotificationSettingsUpdate{
 		Enabled: true, WebhookURL: "https://notifications.example.test/backups",
 		WebhookURLIntent: notificationpkg.WebhookURLReplace,
-		EventTypes:       []string{notificationpkg.EventBackupVerifyFailed},
+		EventTypes:       []string{notificationpkg.EventBackupVerifyFailed, notificationpkg.EventBackupCoverageMissing},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -224,14 +310,15 @@ func TestBackupArchiveLossNotifiesOnceAcrossWorkerRestartAndReverification(t *te
 	a.Start(ctx)
 	var observed int
 	for deadline := time.Now().Add(4 * time.Second); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
-		_ = app.Deps.DB().QueryRow("SELECT count(*) FROM notification_outbox WHERE event_type=? AND state='succeeded'", notificationpkg.EventBackupVerifyFailed).Scan(&observed)
-		if observed == 1 {
+		_ = app.Deps.DB().QueryRow("SELECT count(*) FROM notification_outbox WHERE event_type IN (?,?) AND state='succeeded'",
+			notificationpkg.EventBackupVerifyFailed, notificationpkg.EventBackupCoverageMissing).Scan(&observed)
+		if observed == 2 {
 			break
 		}
 	}
 	cancel()
 	a.Wait()
-	if observed != 1 || client.calls.Load() != 1 {
+	if observed != 2 || client.calls.Load() != 2 {
 		state := backupAutomationStateForTest(t, a)
 		t.Fatalf("initial loss receipts = %d, durable = %d, loss active = %v", client.calls.Load(), observed, state.Archives[0].LossActive)
 	}
@@ -241,6 +328,28 @@ func TestBackupArchiveLossNotifiesOnceAcrossWorkerRestartAndReverification(t *te
 		t.Fatal(err)
 	}
 	stop()
+	restarted := startWorker()
+	for deadline := time.Now().Add(4 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+		worker, facts, err := restarted.InstallationHealth(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !worker.LastProgress.IsZero() && facts.Pending == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("restarted notification worker did not evaluate the existing loss")
+		}
+	}
+	stopCtx, stop = context.WithTimeout(t.Context(), 2*time.Second)
+	if err := restarted.Close(stopCtx); err != nil {
+		stop()
+		t.Fatal(err)
+	}
+	stop()
+	if client.calls.Load() != 2 {
+		t.Fatalf("restart repeated a delivery for the confirmed recovery point loss: %d", client.calls.Load())
+	}
 	if err := a.observeArchiveAvailability(t.Context()); err != nil {
 		t.Fatal(err)
 	}
@@ -283,7 +392,7 @@ func TestBackupArchiveLossNotifiesOnceAcrossWorkerRestartAndReverification(t *te
 	}
 	startWorker()
 	var second int
-	secondCondition := backupArchiveLossConditionPrefix + archive.ID + "/2"
+	secondCondition := notificationpkg.BackupArchiveLossConditionPrefix + archive.ID + "/2"
 	for deadline := time.Now().Add(4 * time.Second); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
 		_ = app.Deps.DB().QueryRow(`SELECT count(*) FROM notification_outbox
 		  WHERE event_type=? AND state='succeeded' AND json_extract(meta_json,'$.condition_id')=?`,
@@ -294,8 +403,11 @@ func TestBackupArchiveLossNotifiesOnceAcrossWorkerRestartAndReverification(t *te
 	}
 	var audits int
 	err := app.Deps.DB().QueryRow("SELECT count(*) FROM audit_events WHERE action='backup.verify' AND status='failure'").Scan(&audits)
-	if err != nil || audits != 2 || second != 1 || client.calls.Load() != 2 {
+	if err != nil || audits != 2 || second != 1 || client.calls.Load() != 3 {
 		t.Fatalf("loss episodes: audits=%d calls=%d second=%d error=%v", audits, client.calls.Load(), second, err)
+	}
+	if client.disclosedArchive.Load() {
+		t.Fatal("an outbound backup alert disclosed the archive identifier or path")
 	}
 }
 

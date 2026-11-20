@@ -292,9 +292,23 @@ func TestNotificationBackupFactsManualAutomaticCoverageAndUnavailable(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	if batch.Incomplete || !lastConditionFact(batch.Facts, "backup/coverage/missing").Active {
-		t.Fatal("an observed absence of backup evidence should be a complete evaluation with a coverage alert")
+	if batch.Incomplete || lastConditionFact(batch.Facts, "backup/coverage/missing").ID != "" {
+		t.Fatal("unobserved local storage produced a coverage alert")
 	}
+	automation := backupAutomationState{Config: defaultBackupSchedule(),
+		Observation: newBackupArchiveObservation(now, "available", "fixture", "fixture-directory")}
+	saveAutomation := func(t *testing.T) {
+		t.Helper()
+		raw, err := json.Marshal(automation)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.Exec(`INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`,
+			backupAutomationSettingsKey, string(raw)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	saveAutomation(t)
 	appendConditionAudit(t, db, now.Format(time.RFC3339), "backup.export", "failure", `{"password":"do-not-forward"}`)
 	appendConditionAudit(t, db, now.Format(time.RFC3339), "backup.automatic.failed", "failure", `{"occurrence_at":"now"}`)
 	batch, err = source(context.Background(), batch.Cursor, conditionPrevious(batch.Facts))
@@ -322,29 +336,53 @@ func TestNotificationBackupFactsManualAutomaticCoverageAndUnavailable(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	if lastConditionFact(batch.Facts, "backup/coverage/missing").Active || lastConditionFact(batch.Facts, "backup/verify").Active {
-		t.Fatal("healthy recovery did not resolve")
+	if !lastConditionFact(batch.Facts, "backup/coverage/missing").Active || lastConditionFact(batch.Facts, "backup/verify").Active {
+		t.Fatal("unrelated export and verification evidence established local coverage")
 	}
-	now = now.Add(8 * 24 * time.Hour)
+	automation.Archives = []ownedBackupArchive{{
+		Name: "slu-auto-fixture-example.slubkp", Owner: "fixture", DirectoryIdentity: "fixture-directory",
+		LastVerifiedAt: backupStamp(now), CapturedAt: backupStamp(now.Add(-8 * 24 * time.Hour)),
+		Verification: "verified", Availability: "present", ObservedAt: backupStamp(now), ObservationProcess: backupArchiveObservationProcess,
+	}}
+	saveAutomation(t)
 	batch, err = source(context.Background(), batch.Cursor, conditionPrevious(batch.Facts))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !lastConditionFact(batch.Facts, "backup/coverage/stale").Active {
-		t.Fatal("stale evidence not detected")
+	if !lastConditionFact(batch.Facts, "backup/coverage/stale").Active || lastConditionFact(batch.Facts, "backup/coverage/missing").Active {
+		t.Fatal("stale capture with fresh verification did not replace the missing condition")
 	}
-	appendConditionAudit(t, db, "invalid-time", "backup.export", "success", `{}`)
-	batch, err = source(context.Background(), batch.Cursor, conditionPrevious(batch.Facts))
+	previous := conditionPrevious(batch.Facts)
+	stale := lastConditionFact(batch.Facts, "backup/coverage/stale")
+	stale.Suspended = true
+	for _, tc := range []struct{ name, storage, storageProcess, archiveProcess string }{
+		{"restart before the first scan", "available", "previous-process", "previous-process"},
+		{"a partial scan has yet to observe the archive", "available", backupArchiveObservationProcess, "previous-process"},
+		{"storage unavailable", "unavailable", backupArchiveObservationProcess, backupArchiveObservationProcess},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			automation.Observation.Storage = tc.storage
+			automation.Observation.Process = tc.storageProcess
+			automation.Archives[0].ObservationProcess = tc.archiveProcess
+			saveAutomation(t)
+			observed, err := source(t.Context(), batch.Cursor, previous)
+			if err != nil || observed.Incomplete || lastConditionFact(observed.Facts, "backup/coverage/stale") != stale {
+				t.Fatalf("unknown local availability did not suspend the prior stale episode: %+v, %v", observed.Facts, err)
+			}
+		})
+	}
+	if _, err := db.Exec("UPDATE settings SET value='!' WHERE key=?", backupAutomationSettingsKey); err != nil {
+		t.Fatal(err)
+	}
+	batch, err = source(context.Background(), batch.Cursor, previous)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !batch.Incomplete {
 		t.Fatal("unreadable recovery evidence appeared to be a complete evaluation")
 	}
-	for _, fact := range batch.Facts {
-		if strings.HasPrefix(fact.ID, "backup/coverage") {
-			t.Fatal("unavailable recovery projected a resolution")
-		}
+	if unreadable := lastConditionFact(batch.Facts, "backup/coverage/stale"); unreadable != stale {
+		t.Fatal("unreadable recovery evidence changed the suspended episode")
 	}
 }
 

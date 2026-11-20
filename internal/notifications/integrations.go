@@ -3,6 +3,7 @@ package notifications
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net/url"
 	"regexp"
 	"strings"
@@ -147,6 +148,13 @@ func destinationRequest(settings Settings, destination string, payload WebhookPa
 	case DestinationWebhook:
 		if err := validateStoredWebhookURL(settings.WebhookURL); err != nil {
 			return "", nil, err
+		}
+		// The outbox uses the ID to deduplicate and revalidate archive loss.
+		// Keep the archive identifier inside the application.
+		conditionID, _ := payload.Meta["condition_id"].(string)
+		if payload.EventType == EventBackupVerifyFailed && strings.HasPrefix(conditionID, BackupArchiveLossConditionPrefix) {
+			payload.Meta = maps.Clone(payload.Meta)
+			delete(payload.Meta, "condition_id")
 		}
 		endpoint = settings.WebhookURL
 		body = payload

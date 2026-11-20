@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"log"
 	"os"
@@ -9,20 +10,32 @@ import (
 	"strconv"
 	"time"
 
+	internalbackup "debian-updater/internal/backup"
 	maintenancepkg "debian-updater/internal/maintenance"
 )
 
 const backupArchiveObservationInterval = 5 * time.Minute
 const backupArchiveObservationBudget = 2 * time.Second
-const backupArchiveLossConditionPrefix = "backup/archive-loss/"
 
 var errBackupArchiveObservationDeferred = errors.New("backup archive observation deferred while catalog changes")
+
+// A mount can change while the process is stopped. A persisted observation
+// needs a new probe before it can describe availability in this process.
+var backupArchiveObservationProcess = rand.Text()
 
 type backupArchiveObservation struct {
 	CheckedAt         string `json:"checked_at,omitempty"`
 	Storage           string `json:"storage,omitempty"`
 	Owner             string `json:"owner,omitempty"`
 	DirectoryIdentity string `json:"directory_identity,omitempty"`
+	Process           string `json:"process,omitempty"`
+}
+
+func newBackupArchiveObservation(at time.Time, storage, owner, directory string) backupArchiveObservation {
+	return backupArchiveObservation{
+		CheckedAt: backupStamp(at), Storage: storage, Owner: owner, DirectoryIdentity: directory,
+		Process: backupArchiveObservationProcess,
+	}
 }
 
 type backupArchiveScan struct {
@@ -31,20 +44,39 @@ type backupArchiveScan struct {
 }
 
 type backupArchiveCoverage struct {
-	State          string `json:"state"`
-	Storage        string `json:"storage"`
-	CheckedAt      string `json:"checked_at,omitempty"`
-	Verified       int    `json:"verified"`
-	Lost           int    `json:"lost"`
-	Unknown        int    `json:"unknown"`
-	LastVerifiedAt string `json:"last_verified_at,omitempty"`
+	State          string              `json:"state"`
+	Storage        string              `json:"storage"`
+	CheckedAt      string              `json:"checked_at,omitempty"`
+	Verified       int                 `json:"verified"`
+	Lost           int                 `json:"lost"`
+	Unknown        int                 `json:"unknown"`
+	LastVerifiedAt string              `json:"last_verified_at,omitempty"`
+	RecoveryPoint  backupRecoveryPoint `json:"recovery_point"`
+}
+
+type backupRecoveryPoint struct {
+	State      string   `json:"state"`
+	CapturedAt string   `json:"captured_at,omitempty"`
+	VerifiedAt string   `json:"verified_at,omitempty"`
+	AgeSeconds *float64 `json:"age_seconds,omitempty"`
+}
+
+// Only a manifest read from integrity-checked, restore-ready bytes can supply
+// a capture date. Manifest creation happens separately from the SQLite snapshot.
+func verifiedBackupCapture(manifest internalbackup.Manifest, latest time.Time) string {
+	at := parseBackupStamp(manifest.CapturedAt)
+	created := parseBackupStamp(manifest.CreatedAt)
+	if at.IsZero() || at.After(latest) || (!created.IsZero() && at.Truncate(time.Second).After(created.Truncate(time.Second))) {
+		return ""
+	}
+	return backupStamp(at)
 }
 
 func (s backupAutomationState) archiveCoverage(now time.Time) backupArchiveCoverage {
-	facts := backupArchiveCoverage{State: "unknown", Storage: "not_observed"}
+	facts := backupArchiveCoverage{State: "unknown", Storage: "not_observed", RecoveryPoint: backupRecoveryPoint{State: "unknown"}}
 	observation := s.Observation
 	checked := parseBackupStamp(observation.CheckedAt)
-	if checked.IsZero() {
+	if checked.IsZero() || observation.Process != backupArchiveObservationProcess {
 		return facts
 	}
 	facts.CheckedAt = observation.CheckedAt
@@ -56,7 +88,7 @@ func (s backupAutomationState) archiveCoverage(now time.Time) backupArchiveCover
 	if observation.Owner == "" || observation.Storage != "available" {
 		return facts
 	}
-	var lastVerified time.Time
+	var lastVerified, captured time.Time
 	registered := 0
 	for _, archive := range s.Archives {
 		if !backupArchiveOwned(archive, observation.Owner) {
@@ -66,12 +98,18 @@ func (s backupAutomationState) archiveCoverage(now time.Time) backupArchiveCover
 		observed := parseBackupStamp(archive.ObservedAt)
 		verified := parseBackupStamp(archive.LastVerifiedAt)
 		switch {
-		case archive.DirectoryIdentity != observation.DirectoryIdentity || observed.IsZero() || now.Sub(observed) > 2*backupArchiveObservationInterval || archive.Availability == "unavailable":
+		case archive.ObservationProcess != observation.Process || archive.DirectoryIdentity != observation.DirectoryIdentity ||
+			observed.IsZero() || now.Sub(observed) > 2*backupArchiveObservationInterval || archive.Availability == "unavailable":
 			facts.Unknown++
 		case archive.Availability == "present" && archive.Verification == "verified" && !archive.LossActive && !verified.IsZero():
 			facts.Verified++
 			if verified.After(lastVerified) {
 				facts.LastVerifiedAt, lastVerified = archive.LastVerifiedAt, verified
+			}
+			if at := parseBackupStamp(archive.CapturedAt); at.After(captured) && !at.After(now) && !at.After(verified) {
+				captured = at
+				facts.RecoveryPoint.CapturedAt = archive.CapturedAt
+				facts.RecoveryPoint.VerifiedAt = archive.LastVerifiedAt
 			}
 		case archive.LossActive || archiveAvailabilityLost(archive.Availability):
 			facts.Lost++
@@ -86,6 +124,18 @@ func (s backupAutomationState) archiveCoverage(now time.Time) backupArchiveCover
 		facts.State = "no_registered"
 	default:
 		facts.State = "missing"
+	}
+	switch {
+	case !captured.IsZero():
+		age := now.Sub(captured)
+		seconds := age.Seconds()
+		facts.RecoveryPoint.AgeSeconds = &seconds
+		facts.RecoveryPoint.State = "recent"
+		if age > internalbackup.DefaultRecoveryStaleAfter {
+			facts.RecoveryPoint.State = "stale"
+		}
+	case facts.State == "missing" || facts.State == "no_registered":
+		facts.RecoveryPoint.State = "missing"
 	}
 	return facts
 }
@@ -162,7 +212,7 @@ func (a *backupAutomation) observeArchiveAvailabilityWithScan(ctx context.Contex
 		return ctx.Err()
 	}
 	if scan.observation.CheckedAt == "" {
-		scan.observation = backupArchiveObservation{CheckedAt: backupStamp(a.now()), Storage: "unavailable"}
+		scan.observation = newBackupArchiveObservation(a.now(), "unavailable", "", "")
 	}
 	// Persist timeouts with a fresh SQLite budget. They describe storage rather
 	// than individual archives, so a partial scan cannot open a loss episode.
@@ -199,7 +249,7 @@ func (a *backupAutomation) observeArchiveAvailabilityWithScan(ctx context.Contex
 }
 
 func (a *backupAutomation) scanBackupArchives(ctx context.Context, archives []ownedBackupArchive) backupArchiveScan {
-	scan := backupArchiveScan{observation: backupArchiveObservation{CheckedAt: backupStamp(a.now()), Storage: "unavailable"}}
+	scan := backupArchiveScan{observation: newBackupArchiveObservation(a.now(), "unavailable", "", "")}
 	observation := &scan.observation
 	owner, err := a.localIdentity(false)
 	if err != nil {
@@ -280,5 +330,6 @@ func (a *backupAutomation) observeArchive(archive *ownedBackupArchive, availabil
 	}
 	archive.Availability = availability
 	archive.ObservedAt = observedAt
+	archive.ObservationProcess = backupArchiveObservationProcess
 	return event
 }

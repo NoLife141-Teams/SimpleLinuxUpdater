@@ -10,7 +10,6 @@ import (
 	"strings"
 	"time"
 
-	backuppkg "debian-updater/internal/backup"
 	"debian-updater/internal/jobs"
 	notificationpkg "debian-updater/internal/notifications"
 )
@@ -27,7 +26,9 @@ type notificationFactQuerier interface {
 // The adapter reads accepted server facts, never browser projections. Audit and
 // health cursors belong to Notification Delivery Lifecycle and commit with admission.
 func newNotificationConditionSource(dbProvider func() *sql.DB, now func() time.Time, origin *url.URL) notificationpkg.ConditionSource {
-	recovery := backuppkg.NewService(backuppkg.ServiceDeps{DB: dbProvider, Now: now})
+	if now == nil {
+		now = time.Now
+	}
 	return func(ctx context.Context, cursorText string, previous []notificationpkg.Condition) (notificationpkg.ConditionBatch, error) {
 		batch := notificationpkg.ConditionBatch{}
 		db := dbProvider()
@@ -212,30 +213,55 @@ func newNotificationConditionSource(dbProvider func() *sql.DB, now func() time.T
 		if err := tx.Commit(); err != nil {
 			return batch, err
 		}
-		// Recovery coverage has no cursor or Server identity dependency. Release
-		// the connection before asking its service for this independent projection.
-		health, err := recovery.RecoveryHealth(ctx)
-		if err != nil || health.State == backuppkg.RecoveryStateUnavailable {
+		// Local coverage uses the same accepted archive observation as
+		// Installation Health. The audit cursor independently tracks failures.
+		automation, err := readBackupAutomationState(ctx, db)
+		if err != nil {
 			batch.Incomplete = true
-		} else {
-			missing := health.Export.LastSuccessAt == "" || health.Verification.LastSuccessAt == ""
-			stale := false
-			for _, timestamp := range []string{health.Export.LastSuccessAt, health.Verification.LastSuccessAt} {
-				when, parseErr := time.Parse(time.RFC3339, timestamp)
-				checked, checkErr := time.Parse(time.RFC3339, health.CheckedAt)
-				if parseErr == nil && checkErr == nil && checked.Sub(when) > time.Duration(health.StaleAfterHours)*time.Hour {
-					stale = true
-				}
-			}
-			batch.Facts = append(batch.Facts,
-				notificationpkg.ConditionFact{ID: "backup/coverage/missing", EventType: notificationpkg.EventBackupCoverageMissing, TargetType: "backup", TargetName: "Application backup", Active: missing, Message: "No successful backup export and restore-ready verification have both been recorded."},
-				notificationpkg.ConditionFact{ID: "backup/coverage/stale", EventType: notificationpkg.EventBackupCoverageStale, TargetType: "backup", TargetName: "Application backup", Active: !missing && stale, Message: fmt.Sprintf("Backup recovery evidence is older than %d hours.", health.StaleAfterHours)},
-			)
 		}
+		state := "unknown"
+		if err == nil {
+			state = automation.archiveCoverage(now().UTC()).RecoveryPoint.State
+		}
+		batch.Facts = append(batch.Facts, localBackupCoverageFacts(state, previous)...)
 		raw, _ := json.Marshal(cursor)
 		batch.Cursor = string(raw)
 		return batch, nil
 	}
+}
+
+func localBackupCoverageFacts(state string, previous []notificationpkg.Condition) []notificationpkg.ConditionFact {
+	const generation = "local-recovery-point"
+	var facts []notificationpkg.ConditionFact
+	for _, item := range []struct{ state, event, message string }{
+		{"missing", notificationpkg.EventBackupCoverageMissing, "No verified local backup is available. Review the backup catalog."},
+		{"stale", notificationpkg.EventBackupCoverageStale, "The newest confirmed local recovery point is older than the recovery threshold. Review the backup catalog."},
+	} {
+		id := "backup/coverage/" + item.state
+		fact := notificationpkg.ConditionFact{ID: id, EventType: item.event,
+			TargetType: "backup", TargetName: "Application backup", Generation: generation,
+			Active: state == item.state, Message: item.message}
+		if state == "unknown" {
+			for _, condition := range previous {
+				if condition.Fact.ID != id {
+					continue
+				}
+				if condition.Fact.Generation != generation {
+					// Retire the old aggregate-audit condition even without archive evidence.
+					facts = append(facts, fact)
+				} else if condition.Fact.Active {
+					// Preserve episode identity while pausing its deliveries.
+					confirmed := condition.Fact
+					confirmed.Suspended = true
+					facts = append(facts, confirmed)
+				}
+				break
+			}
+			continue
+		}
+		facts = append(facts, fact)
+	}
+	return facts
 }
 
 func notificationAPTReconciliationFacts(ctx context.Context, tx *sql.Tx, inventory map[string]Server, previous []notificationpkg.Condition) ([]notificationpkg.ConditionFact, error) {
@@ -311,7 +337,7 @@ func notificationAuditFacts(ctx context.Context, db notificationFactQuerier, aft
 			verify := action == "backup.verify"
 			if verify && meta.LossEpisode > 0 && validBackupArchiveID(meta.ArchiveID) {
 				facts = append(facts, notificationpkg.ConditionFact{
-					ID:        backupArchiveLossConditionPrefix + meta.ArchiveID + "/" + strconv.FormatUint(meta.LossEpisode, 10),
+					ID:        notificationpkg.BackupArchiveLossConditionPrefix + meta.ArchiveID + "/" + strconv.FormatUint(meta.LossEpisode, 10),
 					EventType: notificationpkg.EventBackupVerifyFailed, TargetType: "backup", TargetName: "Application backup",
 					Active: true, OneShot: true, CreatedAt: created,
 					Message: "A registered automated backup is missing or has changed. Review the backup catalog in Administration.",

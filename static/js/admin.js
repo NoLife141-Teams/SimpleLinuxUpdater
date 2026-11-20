@@ -601,6 +601,7 @@
             const number = value => value === null ? missing : value.toLocaleString();
             const notifications = view.notifications;
             const archives = view.backupArchives;
+            const point = view.backupRecoveryPoint;
             const archiveAvailability = {
                 covered: `${number(archives.verified)} verified and present · ${number(archives.lost)} lost`,
                 missing: `No verified archive available · ${number(archives.lost)} lost`,
@@ -612,6 +613,14 @@
                     not_observed: "Never observed",
                 }[archives.storage],
             }[archives.state];
+            let recoveryPoint = "Unknown";
+            if (point.state === "missing") recoveryPoint = "No verified local recovery point";
+            if (["recent", "stale"].includes(point.state) && point.capturedAt && point.age !== null) {
+                const hours = Math.floor(point.age / 3600);
+                const minutes = Math.floor(point.age / 60);
+                const age = hours >= 24 ? `${number(Math.floor(hours / 24))} d ${number(hours % 24)} h` : `${number(hours)} h ${number(minutes % 60)} min`;
+                recoveryPoint = `${point.state === "stale" ? "Stale · " : ""}${date(point.capturedAt)} · ${age} old`;
+            }
             const evaluation = {healthy: "Healthy", degraded: "Degraded"}[notifications.evaluationState];
             let queueAge = missing;
             if (notifications.available && notifications.oldestPendingAge !== null) {
@@ -625,6 +634,7 @@
                 "installation-checked": date(view.checkedAt),
                 "installation-backup": view.backupAvailable ? `${view.backupState}; last verified ${date(view.verifiedAt)}; age ${number(view.backupAgeSeconds)} seconds` : missing,
                 "installation-backup-archives": archiveAvailability,
+                "installation-backup-recovery-point": recoveryPoint,
                 "installation-notifications": notifications.available ? `${notifications.enabled ? "Enabled" : "Disabled"}; ${number(notifications.pending)} pending, ${number(notifications.retrying)} retrying, ${number(notifications.failed)} failed (retained)` : missing,
                 "installation-notification-evaluation": evaluation ? `${evaluation} · Last success ${date(notifications.lastEvaluationAt)}` : notifications.evaluationState === "not_observed" ? "Never observed" : missing,
                 "installation-notification-delivery": notifications.available ? date(notifications.lastDeliveryAt) : missing,

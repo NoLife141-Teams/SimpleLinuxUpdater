@@ -325,6 +325,16 @@ func installationMetrics(value installationDiagnostics) string {
 	if archives.State == "covered" || archives.State == "missing" || archives.State == "no_registered" {
 		gauge("backup_local_archive_coverage", "At least one present and restore-verified registered backup.", bit(archives.State == "covered"))
 	}
+	point := archives.RecoveryPoint
+	switch point.State {
+	case "recent", "stale", "missing":
+		gauge("backup_local_recovery_point_available", "Whether an observed local recovery point is available.", bit(point.State != "missing"))
+	}
+	if at := parseBackupStamp(point.CapturedAt); !at.IsZero() && point.AgeSeconds != nil {
+		gauge("backup_local_recovery_point_timestamp_seconds", "Capture time of the newest available verified local recovery point.", float64(at.UnixNano())/1e9)
+		gauge("backup_local_recovery_point_age_seconds", "Age of the newest available verified local recovery point.", *point.AgeSeconds)
+		gauge("backup_local_recovery_point_stale", "Whether the newest available verified local recovery point is older than the recovery threshold.", bit(point.State == "stale"))
+	}
 	notifications := value.Notifications
 	gauge("notifications_available", "Outbox facts could be read.", bit(notifications.Available))
 	if notifications.Available {

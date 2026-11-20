@@ -74,10 +74,11 @@ type StatusResponse struct {
 }
 
 type Manifest struct {
-	Format    string                  `json:"format"`
-	Version   int                     `json:"version"`
-	CreatedAt string                  `json:"created_at"`
-	Files     map[string]ManifestFile `json:"files"`
+	Format     string                  `json:"format"`
+	Version    int                     `json:"version"`
+	CreatedAt  string                  `json:"created_at"`
+	CapturedAt string                  `json:"captured_at,omitempty"`
+	Files      map[string]ManifestFile `json:"files"`
 }
 
 type ManifestFile struct {

@@ -31,6 +31,7 @@ test("production installation health is public, admin cookie diagnostics refresh
   await expect(page.locator("#installation-workers tr").filter({hasText:"host_facts"})).toContainText("Disabled");
   await expect(page.locator("#installation-workers tr").filter({hasText:"vulnerabilities"})).toContainText("Disabled");
   await expect(page.locator("#installation-backup")).toContainText("never");
+  await expect(page.locator("#installation-backup-recovery-point")).toHaveText("Unknown");
   await expect(page.locator("#installation-storage")).toContainText("bytes");
   await expect(page.locator("#installation-notification-delivery")).toHaveText("Never observed");
   await expect(page.locator("#installation-notification-queue-age")).toHaveText("Queue empty");
@@ -49,7 +50,9 @@ test("production installation health is public, admin cookie diagnostics refresh
   await expect(section.locator("[data-admin-section-status]")).toHaveText("Current");
   const evaluatedAt = "2026-10-27T01:02:03Z";
   const deliveredAt = "2026-10-27T01:03:05Z";
-  let archiveFacts = {state: "covered", storage: "available", verified: 1, lost: 1, unknown: 0};
+  const capturedAt = "2026-10-17T01:00:00Z";
+  let archiveFacts = {state: "covered", storage: "available", verified: 1, lost: 1, unknown: 0,
+   recovery_point: {state:"stale", captured_at:capturedAt, verified_at:evaluatedAt, age_seconds:864060}};
   await page.route(route, route => route.fulfill({json: {
    ...facts,
    backup_archives: archiveFacts,
@@ -82,12 +85,15 @@ test("production installation health is public, admin cookie diagnostics refresh
   await expect(telegram).toContainText("Last manual test · Succeeded");
   await expect(telegram).toContainText("Previous configuration success · " + evaluationDate);
   await expect(page.locator("#installation-backup-archives")).toHaveText("1 verified and present · 1 lost");
+  const captureDate = await page.evaluate(value => new Date(value).toLocaleString(), capturedAt);
+  await expect(page.locator("#installation-backup-recovery-point")).toHaveText("Stale · " + captureDate + " · 10 d 0 h old");
   archiveFacts = {state: "unknown", storage: "available", verified: 0, lost: 1, unknown: 1};
   await section.getByRole("button",{name:"Refresh",exact:true}).click();
   await expect(page.locator("#installation-backup-archives")).toHaveText("Coverage unknown · 1 lost");
   archiveFacts = {state: "unknown", storage: "unavailable", verified: 0, lost: 0, unknown: 0};
   await section.getByRole("button",{name:"Refresh",exact:true}).click();
   await expect(page.locator("#installation-backup-archives")).toHaveText("Storage unavailable");
+  await expect(page.locator("#installation-backup-recovery-point")).toHaveText("Unknown");
   await page.setViewportSize({width:390,height:844});await section.scrollIntoViewIfNeeded();await expect(page.locator("#installation-state")).toBeVisible();
   await expect(telegram).toBeVisible();
   expect(await destinations.evaluate(node => node.scrollWidth)).toBeLessThanOrEqual(await destinations.evaluate(node => node.clientWidth));

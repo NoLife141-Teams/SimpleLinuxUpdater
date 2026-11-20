@@ -839,13 +839,13 @@ func (s *Service) processOutboxRow(ctx context.Context, row outboxRow) bool {
 	settings, err := s.currentSettings()
 	if err != nil {
 		s.health.Error(s.deps.Now())
-		s.releaseClaim(row, err)
+		s.releaseClaim(row, s.deps.PollInterval, err.Error())
 		return false
 	}
 	eligibility, eligibilityErr := s.revalidateOutboxCondition(ctx, &row, settings)
 	if eligibilityErr != nil {
 		s.health.Error(s.deps.Now())
-		s.releaseClaim(row, eligibilityErr)
+		s.releaseClaim(row, s.deps.PollInterval, eligibilityErr.Error())
 		return false
 	}
 	var skipReason string
@@ -860,6 +860,9 @@ func (s *Service) processOutboxRow(ctx context.Context, row outboxRow) bool {
 		skipReason = outboxSkipDestinationChanged
 	case eligibility == reminderSuperseded:
 		skipReason = outboxSkipConditionIneligible
+	case eligibility == conditionDeferred:
+		delay := max(s.deps.PollInterval, s.deps.ConditionPollInterval)
+		return s.releaseClaim(row, delay, "condition observation unavailable")
 	}
 	if skipReason != "" {
 		now := s.deps.Now().UTC().Format(time.RFC3339Nano)
@@ -1008,17 +1011,19 @@ func (s *Service) currentSettings() (Settings, error) {
 	return s.loadSettings()
 }
 
-func (s *Service) releaseClaim(row outboxRow, cause error) {
+func (s *Service) releaseClaim(row outboxRow, retryDelay time.Duration, reason string) bool {
 	now := s.deps.Now().UTC()
 	nowText := now.Format(time.RFC3339Nano)
-	nextAttempt := now.Add(s.deps.PollInterval).Format(time.RFC3339Nano)
+	nextAttempt := now.Add(retryDelay).Format(time.RFC3339Nano)
 	persistCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	if err := s.retrySQLiteContention(func() error {
 		return releaseOutboxClaim(persistCtx, s.database(), row.ID, nextAttempt, nowText)
 	}); err != nil {
-		s.deps.Logf("notification outbox claim release failed for %q after %v: %v", row.ID, cause, err)
+		s.deps.Logf("notification outbox claim release failed for %q after %s: %v", row.ID, reason, err)
+		return false
 	}
+	return true
 }
 
 func destinationEnabled(settings Settings, destination string) bool {

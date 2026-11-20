@@ -19,24 +19,35 @@ import (
 	"debian-updater/internal/notifications"
 
 	"golang.org/x/crypto/ssh/knownhosts"
+	"modernc.org/sqlite"
+	sqlitelib "modernc.org/sqlite/lib"
 )
 
 const restoreRollbackPrefix = "slu-restore-rollback-"
 
+var (
+	errSQLiteRecoveryCorrupt = errors.New("SQLite integrity check failed")
+	errSQLiteRecoveryMissing = errors.New("current SQLite file is missing")
+)
+
 type OfflineRecoverySet struct {
-	ID             string `json:"id"`
-	Ready          bool   `json:"ready"`
-	Blocker        string `json:"blocker,omitempty"`
-	EvidenceSource string `json:"evidence_source,omitempty"`
-	Servers        int    `json:"servers,omitempty"`
-	APTReports     int    `json:"apt_reports,omitempty"`
+	ID             string                 `json:"id"`
+	Ready          bool                   `json:"ready"`
+	Blocker        string                 `json:"blocker,omitempty"`
+	EvidenceSource string                 `json:"evidence_source,omitempty"`
+	Servers        int                    `json:"servers,omitempty"`
+	StorageRole    string                 `json:"storage_role,omitempty"`
+	Storage        []RestoreStorageVolume `json:"storage,omitempty"`
+	APTReports     int                    `json:"apt_reports,omitempty"`
 }
 
 type OfflineRecoveryReport struct {
-	RecoveryRequired bool                 `json:"recovery_required"`
-	Sets             []OfflineRecoverySet `json:"sets"`
-	Applied          string               `json:"applied,omitempty"`
-	Diagnosis        string               `json:"diagnosis,omitempty"`
+	RecoveryRequired bool                   `json:"recovery_required"`
+	Sets             []OfflineRecoverySet   `json:"sets"`
+	Applied          string                 `json:"applied,omitempty"`
+	Blocker          string                 `json:"blocker,omitempty"`
+	Storage          []RestoreStorageVolume `json:"storage,omitempty"`
+	Diagnosis        string                 `json:"diagnosis,omitempty"`
 }
 
 // OfflineRestoreRecovery inspects recovery sets or applies the explicitly
@@ -65,13 +76,43 @@ func (s *Service) OfflineRestoreRecovery(ctx context.Context, selection string, 
 		}
 		ids = []string{recorded.ID}
 	}
-	work, err := os.MkdirTemp(s.deps.TempDir(), "slu-offline-recovery-*")
+	if marked && selection != "" && selection != recorded.ID {
+		return report, errors.New("selected recovery set does not belong to this interrupted restore")
+	}
+	tempDir := s.deps.TempDir()
+	if tempDir == "" {
+		tempDir = os.TempDir()
+	}
+	preparation := recoveryFileNeed(tempDir, restoreStoragePreparation, database, database+"-wal")
+	volumes := s.estimateRestoreStorage(preparation)
+	storageFailure := func(cause error) (OfflineRecoveryReport, error) {
+		report.Blocker = offlineRecoveryStorageBlocker
+		report.Storage = recoveryStorageFailure(volumes, restoreStoragePreparation, cause)
+		if selection == "" && marked {
+			return report, nil
+		}
+		return report, offlineRecoveryStorageError(cause)
+	}
+	if err := storageBlocker(volumes); err != nil {
+		return storageFailure(err)
+	}
+	work, err := os.MkdirTemp(tempDir, "slu-offline-recovery-*")
 	if err != nil {
+		if IsStorageFull(err) {
+			return storageFailure(err)
+		}
 		return report, errors.New("could not prepare recovery workspace")
 	}
 	defer os.RemoveAll(work)
 	livePath := filepath.Join(work, "current.sqlite")
 	live, liveErr := cloneRecoveryDatabase(ctx, fs, livePath, database)
+	if IsStorageFull(liveErr) {
+		return storageFailure(liveErr)
+	}
+	if liveErr != nil && !canUseSealedRecoveryEvidence(liveErr) {
+		report.Blocker = "current_database_unavailable"
+		return report, errors.New("could not prepare a copy of current SQLite evidence")
+	}
 	if live != nil {
 		defer live.Close()
 	}
@@ -120,6 +161,9 @@ func (s *Service) OfflineRestoreRecovery(ctx context.Context, selection string, 
 	}
 	if live != nil {
 		if err := s.deps.EnsureSchema(live); err != nil {
+			if IsStorageFull(err) {
+				return storageFailure(err)
+			}
 			return report, errors.New("could not read current recovery evidence")
 		}
 	}
@@ -131,10 +175,7 @@ func (s *Service) OfflineRestoreRecovery(ctx context.Context, selection string, 
 	if err != nil {
 		return report, errors.New("installation encryption key is invalid")
 	}
-	hosts := filepath.Join(dir, "known_hosts")
-	if path, err := s.deps.KnownHostsWritePath(); err == nil && strings.TrimSpace(path) != "" {
-		hosts = path
-	}
+	hosts := s.restoreKnownHostsTarget(database)
 	targets := append([]string{database}, SQLiteSidecarPaths(database)...)
 	for _, reserved := range append(append([]string{}, targets...), marker, s.deps.ConfigPath(), database+".lock", RestoreIsolationPath(database), restoreIsolationPendingPath(database)) {
 		if same, err := sameRestoreEntry(reserved, hosts); err != nil || same {
@@ -142,32 +183,96 @@ func (s *Service) OfflineRestoreRecovery(ctx context.Context, selection string, 
 		}
 	}
 
+	diagnosisTargets := append(append([]string{}, targets...), hosts, s.deps.ConfigPath(), marker)
 	for _, id := range ids {
 		set := OfflineRecoverySet{ID: id}
+		setWork, err := os.MkdirTemp(work, "set-*")
+		if err != nil {
+			if IsStorageFull(err) {
+				return storageFailure(err)
+			}
+			return report, errors.New("could not prepare recovery workspace")
+		}
 		chosen := recorded
 		if !marked {
 			chosen.ID = id
 		}
-		staged, stagedHosts, setErr := s.prepareOfflineRecoverySet(ctx, filepath.Join(dir, id), work, targets, hosts, key, live, mergeJobs, chosen, &set)
-		report.Sets = append(report.Sets, set)
+		staged, stagedHosts, setErr := s.prepareOfflineRecoverySet(ctx, filepath.Join(dir, id), setWork, targets, hosts, key, live, mergeJobs, chosen, &set, diagnosisTargets)
 		if selection == "" {
+			if setErr == nil {
+				// Evidence can grow the staged database. Check its actual
+				// size after the staging connections have closed.
+				stagedBytes, _ := sizeOnDisk(staged)
+				hostsPath := recoveryHostReplacementPath(hosts, stagedHosts, true)
+				preparation := restoreStorageNeed{directory: setWork, role: restoreStoragePreparation}
+				writes := recoveryReplacementNeeds(ctx, database, hosts, hostsPath, stagedBytes, live, diagnosisTargets)
+				remaining := s.estimateRestoreStorage(append([]restoreStorageNeed{preparation}, writes...)...)
+				// Preparation files already consume space at this point. On
+				// shared volumes only the remaining writes need free space.
+				// Keep the earlier estimate if preparation has its own volume.
+				if len(remaining[0].Roles) == 1 {
+					remaining[0] = set.Storage[0]
+				}
+				set.Storage = remaining
+				if err := storageBlocker(set.Storage); err != nil {
+					set.storageFailure(err, "")
+				}
+			}
+			report.Sets = append(report.Sets, set)
+			if err := os.RemoveAll(setWork); err != nil {
+				return report, errors.New("could not remove temporary recovery files")
+			}
 			continue
 		}
+		report.Sets = append(report.Sets, set)
 		if setErr != nil {
+			if set.Blocker == offlineRecoveryStorageBlocker {
+				return report, setErr
+			}
 			return report, errors.New("selected recovery set did not pass validation; recovery remains locked")
 		}
 		if err := ctx.Err(); err != nil {
 			return report, err
 		}
-		diagnosisTargets := append(append([]string{}, targets...), hosts, s.deps.ConfigPath(), marker)
+		databaseBytes, _ := sizeOnDisk(staged)
+		hostsPath := recoveryHostReplacementPath(hosts, stagedHosts, true)
+		selected := &report.Sets[len(report.Sets)-1]
+		failStorage := func(cause error, role string) (OfflineRecoveryReport, error) {
+			err := selected.storageFailure(cause, role)
+			return report, err
+		}
+		selected.Storage = s.estimateRestoreStorage(recoveryReplacementNeeds(ctx, database, hosts, hostsPath, databaseBytes, live, diagnosisTargets)...)
+		if err := storageBlocker(selected.Storage); err != nil {
+			return failStorage(err, "")
+		}
 		diagnosis, entries, err := fs.snapshotFilesToDirectory(dir, diagnosisTargets, "slu-recovery-diagnosis-")
 		if err != nil {
+			if IsStorageFull(err) {
+				return failStorage(err, offlineRecoveryDiagnosis)
+			}
 			return report, errors.New("could not preserve current installation for diagnosis")
 		}
 		report.Diagnosis = filepath.Base(diagnosis)
+		discardProvisionalDiagnosis := func() {
+			if os.RemoveAll(diagnosis) == nil {
+				report.Diagnosis = ""
+			}
+		}
 		raw, err := json.MarshalIndent(entries, "", "  ")
-		if err != nil || fs.writeSnapshot(filepath.Join(diagnosis, "recovery.json"), bytes.NewReader(raw)) != nil ||
-			fs.syncPath(diagnosis) != nil || fs.syncPath(dir) != nil {
+		if err == nil {
+			err = fs.writeSnapshot(filepath.Join(diagnosis, "recovery.json"), bytes.NewReader(raw))
+		}
+		if err == nil {
+			err = fs.syncPath(diagnosis)
+		}
+		if err == nil {
+			err = fs.syncPath(dir)
+		}
+		if err != nil {
+			if IsStorageFull(err) {
+				discardProvisionalDiagnosis()
+				return failStorage(err, offlineRecoveryDiagnosis)
+			}
 			return report, errors.New("could not persist the diagnosis copy; recovery remains locked")
 		}
 		currentHosts := entries[len(targets)]
@@ -176,16 +281,37 @@ func (s *Service) OfflineRestoreRecovery(ctx context.Context, selection string, 
 			// attempt installed or removed known_hosts before its sync failed.
 			if err := fs.syncPath(restoreEntryDirectory(hosts)); err != nil &&
 				(currentHosts.Exists || !errors.Is(err, os.ErrNotExist)) {
+				if IsStorageFull(err) {
+					discardProvisionalDiagnosis()
+					return failStorage(err, restoreStorageHostKeys)
+				}
 				return report, errors.New("could not synchronize host trust; recovery remains locked")
 			}
 			stagedHosts = nil
 		}
+		hostsPath = ""
+		if stagedHosts != nil && stagedHosts.Exists {
+			hostsPath = stagedHosts.BackupPath
+		}
+		selected.Storage = s.estimateRestoreStorage(recoveryReplacementNeeds(ctx, database, hosts, hostsPath, databaseBytes, live, nil)...)
+		if err := storageBlocker(selected.Storage); err != nil {
+			discardProvisionalDiagnosis()
+			return failStorage(err, "")
+		}
 		if !marked {
 			if _, err := fs.publishRecoveryMarker(marker, chosen); err != nil {
+				if IsStorageFull(err) {
+					discardProvisionalDiagnosis()
+					return failStorage(err, restoreStorageDatabase)
+				}
 				return report, errors.New("could not persist restore recovery marker")
 			}
 		}
 		if err := s.applyOfflineRecovery(ctx, fs, staged, stagedHosts, database, hosts, marker, chosen, live != nil); err != nil {
+			var failure offlineRecoveryWriteFailure
+			if errors.As(err, &failure) {
+				return failStorage(err, string(failure))
+			}
 			return report, err
 		}
 		report.Applied = id
@@ -194,27 +320,52 @@ func (s *Service) OfflineRestoreRecovery(ctx context.Context, selection string, 
 	return report, nil
 }
 
-func (s *Service) prepareOfflineRecoverySet(ctx context.Context, rootPath, work string, targets []string, hosts string, key []byte, live *sql.DB, mergeJobs func(context.Context, *sql.DB, *sql.DB) error, marker restoreRecoveryMarker, result *OfflineRecoverySet) (string, *fileRestoreSnapshot, error) {
-	fail := func(code string) (string, *fileRestoreSnapshot, error) {
+func (s *Service) prepareOfflineRecoverySet(ctx context.Context, rootPath, work string, targets []string, hosts string, key []byte, live *sql.DB, mergeJobs func(context.Context, *sql.DB, *sql.DB) error, marker restoreRecoveryMarker, result *OfflineRecoverySet, diagnosis []string) (string, *fileRestoreSnapshot, error) {
+	fail := func(code string, cause error) (string, *fileRestoreSnapshot, error) {
+		if IsStorageFull(cause) {
+			return "", nil, result.storageFailure(cause, restoreStoragePreparation)
+		}
 		result.Blocker = code
 		return "", nil, errors.New(code)
 	}
 	id := result.ID
 	if marker.ManifestSHA256 != "" && !marker.matchesInstallation(key) {
-		return fail("installation_mismatch")
+		return fail("installation_mismatch", nil)
 	}
 	info, err := os.Lstat(rootPath)
 	if err != nil || !info.IsDir() || info.Mode().Perm()&0077 != 0 {
-		return fail("invalid_manifest")
+		return fail("invalid_manifest", nil)
 	}
 	snapshots, sealed, err := loadRecoverySnapshots(rootPath, marker)
 	if err != nil {
-		return fail("invalid_manifest")
+		return fail("invalid_manifest", nil)
 	}
 	paths := append(append([]string{}, targets...), hosts)
 	indexed, err := validateRecoverySnapshots(rootPath, paths, snapshots)
 	if err != nil {
-		return fail("invalid_manifest")
+		return fail("invalid_manifest", nil)
+	}
+	var inputs []string
+	for i, entry := range indexed {
+		if entry == nil || !entry.Exists || (i == 2 && !sealed) {
+			continue
+		}
+		inputs = append(inputs, entry.BackupPath)
+	}
+	hostsPath := recoveryHostReplacementPath(hosts, indexed[len(targets)], sealed)
+	// Reserve the files copied in this phase. SQLite reports a full volume
+	// during evidence merging or compaction, whose output size is unknown.
+	preparation := recoveryFileNeed(work, restoreStoragePreparation, inputs...)
+	result.Storage = s.estimateRestoreStorage(preparation)
+	if err := storageBlocker(result.Storage); err != nil {
+		return "", nil, result.storageFailure(err, "")
+	}
+	// Diagnosis and trust copies have sizes we can check now. SQLite's
+	// replacement size is only known after evidence is merged and VACUUM INTO
+	// has removed free pages, so check it after staging.
+	knownWrites := recoveryReplacementNeeds(ctx, targets[0], hosts, hostsPath, 0, live, diagnosis)
+	if err := storageBlocker(s.estimateRestoreStorage(knownWrites...)); err != nil {
+		return "", nil, result.storageFailure(err, "")
 	}
 	reconstructed := filepath.Join(work, id+".sqlite")
 	fs := restoreFiles{sync: s.syncRestoreFile}
@@ -229,13 +380,13 @@ func (s *Service) prepareOfflineRecoverySet(ctx context.Context, rootPath, work 
 		destination := reconstructed + suffix
 		digest, err := fs.copyAndHashSnapshot(destination, entry.BackupPath)
 		if err != nil || (sealed && digest != entry.SHA256) {
-			return fail("invalid_snapshot")
+			return fail("invalid_snapshot", err)
 		}
 		entry.SHA256 = digest
 		entry.BackupPath = destination
 	}
 	if err := s.ValidateDatabaseFile(ctx, reconstructed, key); err != nil {
-		return fail("invalid_database")
+		return fail("invalid_database", err)
 	}
 	// A restore that didn't replace host trust retains the current file.
 	checkHosts := hosts
@@ -244,12 +395,12 @@ func (s *Service) prepareOfflineRecoverySet(ctx context.Context, rootPath, work 
 	}
 	if checkHosts != "" {
 		if _, err := knownhosts.New(checkHosts); err != nil && (indexed[3] != nil || !errors.Is(err, os.ErrNotExist)) {
-			return fail("invalid_host_trust")
+			return fail("invalid_host_trust", nil)
 		}
 	}
 	db, err := openRecoveryCopy(ctx, reconstructed)
 	if err != nil {
-		return fail("invalid_database")
+		return fail("invalid_database", err)
 	}
 	defer db.Close()
 	source := "live_database"
@@ -257,45 +408,52 @@ func (s *Service) prepareOfflineRecoverySet(ctx context.Context, rootPath, work 
 		// The sealed rollback database is the complete pre-replacement state.
 		// Use a separate connection and copy for the same evidence validation
 		// used when merging from a readable live database.
+		evidenceCopy := recoveryFileNeed(work, restoreStoragePreparation, reconstructed, reconstructed+"-wal")
+		if err := storageBlocker(s.estimateRestoreStorage(evidenceCopy)); err != nil {
+			return "", nil, result.storageFailure(err, "")
+		}
 		live, err = cloneRecoveryDatabase(ctx, fs, reconstructed+".evidence", reconstructed)
 		if err != nil {
-			return fail("invalid_database")
+			return fail("invalid_database", err)
 		}
 		defer live.Close()
 		source = "sealed_rollback"
 	}
-	if mergeJobs == nil || mergeJobs(ctx, live, db) != nil {
-		return fail("apt_evidence_conflict")
+	if mergeJobs == nil {
+		return fail("apt_evidence_conflict", nil)
 	}
-	if notifications.MergeOfflineDeliveryEvidence(ctx, live, db, s.deps.Now()) != nil {
-		return fail("delivery_evidence_conflict")
+	if err := mergeJobs(ctx, live, db); err != nil {
+		return fail("apt_evidence_conflict", err)
+	}
+	if err := notifications.MergeOfflineDeliveryEvidence(ctx, live, db, s.deps.Now()); err != nil {
+		return fail("delivery_evidence_conflict", err)
 	}
 	if err := db.QueryRowContext(ctx, "SELECT count(*) FROM servers").Scan(&result.Servers); err != nil {
-		return fail("invalid_database")
+		return fail("invalid_database", err)
 	}
 	tx, err := db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
-		return fail("invalid_database")
+		return fail("invalid_database", err)
 	}
 	incidents, readErr := jobs.ListAPTReconciliationIncidents(ctx, tx)
 	_ = tx.Rollback()
 	if readErr != nil {
-		return fail("invalid_database")
+		return fail("invalid_database", readErr)
 	}
 	result.APTReports = len(incidents)
 	if err := clearDatabaseSessions(ctx, db); err != nil {
-		return fail("invalid_database")
+		return fail("invalid_database", err)
 	}
 	store := maintenance.SQLiteStore{DB: func() *sql.DB { return db }}
 	if err := store.Save(ctx, maintenance.State{
 		Active: true, RecoveryRequired: true, Kind: string(maintenance.OperationBackupRestore),
 	}); err != nil {
-		return fail("invalid_database")
+		return fail("invalid_database", err)
 	}
 	// Install a self-contained SQLite file with all WAL changes folded in.
 	staged := filepath.Join(work, id+".complete")
 	if _, err := db.ExecContext(ctx, "VACUUM INTO ?", staged); err != nil {
-		return fail("invalid_database")
+		return fail("invalid_database", err)
 	}
 	result.Ready = true
 	result.EvidenceSource = source
@@ -370,49 +528,55 @@ func validateRecoverySnapshots(root string, paths []string, snapshots []fileRest
 
 func (s *Service) applyOfflineRecovery(ctx context.Context, fs restoreFiles, staged string, stagedHosts *fileRestoreSnapshot, database, hosts, marker string, recorded restoreRecoveryMarker, readable bool) error {
 	fail := errors.New("could not apply verified recovery files; recovery remains locked")
+	writeFailure := func(err error, role string) error {
+		if IsStorageFull(err) {
+			return offlineRecoveryWriteFailure(role)
+		}
+		return fail
+	}
 	// For sealed recovery, the unreadable files have already been saved to
 	// the diagnosis directory. SQLite cannot checkpoint their WAL safely.
 	if readable {
 		if err := fs.checkpointRecoveryWAL(ctx, database); err != nil {
-			return fail
+			return writeFailure(err, restoreStorageDatabase)
 		}
 	}
 	if err := fs.removeSQLiteSidecars(database); err != nil {
-		return fail
+		return writeFailure(err, restoreStorageDatabase)
 	}
 	if err := fs.writeAtomicFileFromPath(database, staged, 0600, s.deps.EnsurePrivateDirForFile); err != nil {
-		return fail
+		return writeFailure(err, restoreStorageDatabase)
 	}
 	if stagedHosts != nil {
 		if stagedHosts.Exists {
 			if err := fs.writeAtomicFileFromPath(hosts, stagedHosts.BackupPath, 0600, s.deps.EnsurePrivateDirForFile); err != nil {
-				return fail
+				return writeFailure(err, restoreStorageHostKeys)
 			}
 		} else if err := fs.removeFile(hosts); err != nil {
-			return fail
+			return writeFailure(err, restoreStorageHostKeys)
 		}
 	}
 	// Keep the SQLite latch while removing the filesystem marker. Either gate
 	// must survive if verification or the marker directory sync fails.
 	db, err := openRecoveryCopy(ctx, database)
 	if err != nil {
-		return fail
+		return writeFailure(err, restoreStorageDatabase)
 	}
 	defer db.Close()
 	if _, err := knownhosts.New(hosts); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return fail
+		return writeFailure(err, restoreStorageHostKeys)
 	}
 	if _, err := db.ExecContext(ctx, "PRAGMA synchronous=FULL"); err != nil {
-		return fail
+		return writeFailure(err, restoreStorageDatabase)
 	}
 	if err := fs.removeFile(marker); err != nil {
 		_, _ = fs.publishRecoveryMarker(marker, recorded)
-		return fail
+		return writeFailure(err, restoreStorageDatabase)
 	}
 	store := maintenance.SQLiteStore{DB: func() *sql.DB { return db }}
 	if err := errors.Join(store.Save(ctx, maintenance.State{}), db.Close()); err != nil {
 		_, _ = fs.publishRecoveryMarker(marker, recorded)
-		return fail
+		return writeFailure(err, restoreStorageDatabase)
 	}
 	return nil
 }
@@ -449,6 +613,10 @@ func (fs restoreFiles) checkpointRecoveryWAL(ctx context.Context, database strin
 
 func cloneRecoveryDatabase(ctx context.Context, fs restoreFiles, dest, source string) (*sql.DB, error) {
 	if err := fs.copySnapshot(dest, source); err != nil {
+		var pathErr *os.PathError
+		if errors.As(err, &pathErr) && pathErr.Path == source && errors.Is(err, os.ErrNotExist) {
+			return nil, errSQLiteRecoveryMissing
+		}
 		return nil, err
 	}
 	wal := source + "-wal"
@@ -481,15 +649,40 @@ func openRecoveryCopy(ctx context.Context, path string) (*sql.DB, error) {
 	}
 	db.SetMaxOpenConns(1)
 	rows, err := db.QueryContext(ctx, "PRAGMA quick_check")
-	if err == nil {
+	if err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	count, passed := 0, true
+	for rows.Next() {
 		var check string
-		passed := rows.Next() && rows.Scan(&check) == nil && check == "ok" && !rows.Next() && rows.Err() == nil
-		if err := rows.Close(); passed && err == nil {
-			return db, nil
+		if err = rows.Scan(&check); err != nil {
+			break
 		}
+		count++
+		passed = passed && check == "ok"
+	}
+	err = errors.Join(err, rows.Err(), rows.Close())
+	if err == nil && passed && count == 1 {
+		return db, nil
 	}
 	_ = db.Close()
-	return nil, errors.New("SQLite integrity check failed")
+	if err != nil {
+		return nil, err
+	}
+	return nil, errSQLiteRecoveryCorrupt
+}
+
+func canUseSealedRecoveryEvidence(err error) bool {
+	if errors.Is(err, errSQLiteRecoveryCorrupt) || errors.Is(err, errSQLiteRecoveryMissing) {
+		return true
+	}
+	var sqliteErr *sqlite.Error
+	if !errors.As(err, &sqliteErr) {
+		return false
+	}
+	code := sqliteErr.Code() & 0xff
+	return code == sqlitelib.SQLITE_CORRUPT || code == sqlitelib.SQLITE_NOTADB
 }
 
 func readRecoveryFile(path string, limit int64) ([]byte, error) {

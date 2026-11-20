@@ -6,16 +6,24 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"testing"
 
+	"debian-updater/internal/installationhealth"
 	"debian-updater/internal/maintenance"
 )
 
 func interruptedRecoveryFixture(t *testing.T, includeKnownHosts bool) (durabilityFixture, string, string) {
+	t.Helper()
+	return interruptedRecoveryFixtureWithSetup(t, includeKnownHosts, nil)
+}
+
+func interruptedRecoveryFixtureWithSetup(t *testing.T, includeKnownHosts bool, setup func(durabilityFixture)) (durabilityFixture, string, string) {
 	t.Helper()
 	root := t.TempDir()
 	calls := 0
@@ -23,6 +31,9 @@ func interruptedRecoveryFixture(t *testing.T, includeKnownHosts bool) (durabilit
 		calls++
 		return errors.New("fixture reload failure")
 	}})
+	if setup != nil {
+		setup(f)
+	}
 	f.service.deps.ConfigPath = func() string { return f.files["config.json"] }
 	if !includeKnownHosts {
 		delete(f.files, "known_hosts")
@@ -137,16 +148,30 @@ func TestOfflineRecoveryRejectsInvalidManifestAndKeepsLatch(t *testing.T) {
 func TestOfflineRecoveryUsesSealedRollbackWithUnreadableSQLite(t *testing.T) {
 	f, root, id := interruptedRecoveryFixture(t, true)
 	corrupt := []byte("fixture with an invalid SQLite header")
+	corruptWAL := make([]byte, 4<<20)
 	// This restore stopped before replacing trust. A read-only deployment
-	// mount containing the original bytes must not need to be replaced.
+	// mount containing the original bytes must not require free space.
+	// The database volume can preserve the corrupt WAL for diagnosis once,
+	// with enough space remaining to replace SQLite without checkpointing it.
+	workspaceFree, databaseFree, full := uint64(128<<20), uint64(14<<20), uint64(0)
+	f.service.deps.ProbeRestoreStorage = func(dir string) installationhealth.VolumeCapacity {
+		switch dir {
+		case root:
+			return installationhealth.VolumeCapacity{Device: 1, Identified: true, AvailableBytes: &databaseFree}
+		case filepath.Dir(f.hosts):
+			return installationhealth.VolumeCapacity{Device: 2, Identified: true, AvailableBytes: &full}
+		default:
+			return installationhealth.VolumeCapacity{Device: 3, Identified: true, AvailableBytes: &workspaceFree}
+		}
+	}
 	f.service.syncRestoreFile = func(file *os.File) error {
 		if filepath.Dir(file.Name()) == filepath.Dir(f.hosts) && strings.HasPrefix(filepath.Base(file.Name()), ".restore-") {
 			return syscall.EROFS
 		}
 		return file.Sync()
 	}
-	for _, path := range []string{f.db, f.db + "-wal"} {
-		if err := os.WriteFile(path, corrupt, 0600); err != nil {
+	for path, contents := range map[string][]byte{f.db: corrupt, f.db + "-wal": corruptWAL} {
+		if err := os.WriteFile(path, contents, 0600); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -163,9 +188,9 @@ func TestOfflineRecoveryUsesSealedRollbackWithUnreadableSQLite(t *testing.T) {
 	if err != nil || applied.Applied != id || applied.RecoveryRequired || applied.Diagnosis == "" {
 		t.Fatalf("apply = %+v, %v", applied, err)
 	}
-	for _, name := range []string{"snapshot-0", "snapshot-1"} {
+	for name, contents := range map[string][]byte{"snapshot-0": corrupt, "snapshot-1": corruptWAL} {
 		body, err := os.ReadFile(filepath.Join(root, applied.Diagnosis, name))
-		if err != nil || !bytes.Equal(body, corrupt) {
+		if err != nil || !bytes.Equal(body, contents) {
 			t.Fatalf("diagnosis lost %s: %v", name, err)
 		}
 	}
@@ -321,27 +346,47 @@ func TestOfflineRecoveryMarkerRemovalSyncFailureKeepsSQLiteLatch(t *testing.T) {
 }
 
 func TestOfflineRecoveryRetriesTrustDirectorySyncBeforeRelease(t *testing.T) {
-	f, _, id := interruptedRecoveryFixture(t, true)
+	f, root, id := interruptedRecoveryFixture(t, true)
 	if err := os.WriteFile(f.hosts, []byte(archivedRestoreTrust), 0600); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(f.db, []byte("damaged active SQLite"), 0600); err != nil {
 		t.Fatal(err)
 	}
+	free := uint64(128 << 20)
+	f.service.deps.ProbeRestoreStorage = func(dir string) installationhealth.VolumeCapacity {
+		if dir == filepath.Dir(f.hosts) {
+			return installationhealth.VolumeCapacity{Device: 2, Identified: true, AvailableBytes: &free}
+		}
+		return installationhealth.VolumeCapacity{Device: 1, Identified: true, AvailableBytes: &free}
+	}
 	f.service.syncRestoreFile = func(file *os.File) error {
 		if file.Name() == filepath.Dir(f.hosts) {
-			return syscall.EIO
+			return syscall.ENOSPC
 		}
 		return file.Sync()
 	}
-	for range 2 {
+	for attempt := range 2 {
 		report, err := f.service.OfflineRestoreRecovery(t.Context(), id, offlineRecoveryMergeFixtureJobs)
-		if err == nil || report.Applied != "" || !report.RecoveryRequired {
+		if !errors.Is(err, errOfflineRecoveryStorage) || report.Applied != "" || !report.RecoveryRequired {
 			t.Fatalf("recovery cleared the latch before synchronizing host trust: %+v, %v", report, err)
+		}
+		if len(report.Sets) != 1 || report.Sets[0].StorageRole != restoreStorageHostKeys ||
+			!slices.ContainsFunc(report.Sets[0].Storage, func(volume RestoreStorageVolume) bool {
+				return slices.Contains(volume.Roles, restoreStorageDatabase) && volume.State == restoreStorageReady
+			}) {
+			t.Fatalf("a host trust error affected SQLite capacity: %+v", report.Sets)
+		}
+		if (report.Diagnosis == "") != (attempt == 1) {
+			t.Fatalf("unexpected retained diagnosis for attempt %d: %+v", attempt, report)
 		}
 		// The first attempt installs the correct contents but its directory
 		// sync fails. The second attempt sees those same bytes.
 		requireDurableRestoreState(t, f.db, f.hosts, originalRestoreServer, originalRestoreTrust, true)
+	}
+	diagnoses, err := filepath.Glob(filepath.Join(root, "slu-recovery-diagnosis-*"))
+	if err != nil || len(diagnoses) != 1 {
+		t.Fatalf("retry retained another diagnosis before replacing files: %v, %v", diagnoses, err)
 	}
 	f.service.syncRestoreFile = nil
 	report, err := f.service.OfflineRestoreRecovery(t.Context(), id, offlineRecoveryMergeFixtureJobs)
@@ -352,7 +397,7 @@ func TestOfflineRecoveryRetriesTrustDirectorySyncBeforeRelease(t *testing.T) {
 }
 
 func TestOfflineRecoveryCanRetryAfterMarkerWriteFailure(t *testing.T) {
-	f, _, id := interruptedRecoveryFixture(t, true)
+	f, root, id := interruptedRecoveryFixture(t, true)
 	marker := RestoreRecoveryMarkerPath(f.db)
 	if err := os.Remove(marker); err != nil {
 		t.Fatal(err)
@@ -372,12 +417,16 @@ func TestOfflineRecoveryCanRetryAfterMarkerWriteFailure(t *testing.T) {
 			if err := file.Truncate(0); err != nil {
 				t.Fatal(err)
 			}
-			return syscall.EIO
+			return syscall.ENOSPC
 		}
 		return file.Sync()
 	}
-	if report, err := f.service.OfflineRestoreRecovery(t.Context(), id, offlineRecoveryMergeFixtureJobs); err == nil || !report.RecoveryRequired || report.Diagnosis == "" {
+	if report, err := f.service.OfflineRestoreRecovery(t.Context(), id, offlineRecoveryMergeFixtureJobs); !errors.Is(err, errOfflineRecoveryStorage) || !report.RecoveryRequired || report.Diagnosis != "" {
 		t.Fatalf("failed publication = %+v, %v", report, err)
+	}
+	diagnoses, err := filepath.Glob(filepath.Join(root, "slu-recovery-diagnosis-*"))
+	if err != nil || len(diagnoses) != 0 {
+		t.Fatalf("marker failure retained a diagnosis before replacing files: %v, %v", diagnoses, err)
 	}
 	f.service.syncRestoreFile = nil
 	if report, err := f.service.OfflineRestoreRecovery(t.Context(), id, offlineRecoveryMergeFixtureJobs); err != nil || report.Applied != id || report.RecoveryRequired {
@@ -403,10 +452,18 @@ func TestOfflineRecoveryWriteFailureKeepsCommittedWALState(t *testing.T) {
 	for _, query := range []string{
 		"PRAGMA journal_mode=WAL",
 		"PRAGMA wal_autocheckpoint=0",
+		"PRAGMA synchronous=OFF",
 		"CREATE TABLE committed_before_recovery (value INTEGER NOT NULL)",
-		"INSERT INTO committed_before_recovery VALUES (42)",
+		"INSERT INTO committed_before_recovery VALUES (0)",
 	} {
 		if _, err := db.Exec(query); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// The WAL holds many versions of the same page. Its full size is
+	// needed for diagnosis, while checkpointing grows only a few pages.
+	for range 2300 {
+		if _, err := db.Exec("UPDATE committed_before_recovery SET value = value + 1"); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -416,14 +473,28 @@ func TestOfflineRecoveryWriteFailureKeepsCommittedWALState(t *testing.T) {
 	if err := fs.copySnapshot(f.db+"-wal", crashDB+"-wal"); err != nil {
 		t.Fatal(err)
 	}
+	tempDir := t.TempDir()
+	f.service.deps.TempDir = func() string { return tempDir }
+	f.service.deps.ProbeRestoreStorage = func(dir string) installationhealth.VolumeCapacity {
+		if dir == root || dir == filepath.Dir(f.hosts) {
+			free := uint64(22 << 20)
+			return installationhealth.VolumeCapacity{Device: 1, Identified: true, AvailableBytes: &free}
+		}
+		free := uint64(128 << 20)
+		return installationhealth.VolumeCapacity{Device: 2, Identified: true, AvailableBytes: &free}
+	}
+	preview, err := f.service.OfflineRestoreRecovery(t.Context(), "", offlineRecoveryMergeFixtureJobs)
+	if err != nil || len(preview.Sets) != 1 || !preview.Sets[0].Ready {
+		t.Fatalf("preview with sufficient space for actual checkpoint growth: %+v, %v", preview, err)
+	}
 	f.service.syncRestoreFile = func(file *os.File) error {
 		if filepath.Dir(file.Name()) == root && strings.HasPrefix(filepath.Base(file.Name()), ".restore-") {
-			return syscall.EIO
+			return syscall.ENOSPC
 		}
 		return file.Sync()
 	}
 	report, err := f.service.OfflineRestoreRecovery(t.Context(), id, offlineRecoveryMergeFixtureJobs)
-	if err == nil || !report.RecoveryRequired || report.Diagnosis == "" || report.Applied != "" {
+	if err == nil || !errors.Is(err, errOfflineRecoveryStorage) || !report.RecoveryRequired || report.Diagnosis == "" || report.Applied != "" || len(report.Sets) != 1 || report.Sets[0].Ready || report.Sets[0].Blocker != offlineRecoveryStorageBlocker {
 		t.Fatalf("failed replacement = %+v, %v", report, err)
 	}
 	live, err := openRecoveryCopy(t.Context(), f.db)
@@ -432,7 +503,213 @@ func TestOfflineRecoveryWriteFailureKeepsCommittedWALState(t *testing.T) {
 	}
 	defer live.Close()
 	var value int
-	if err := live.QueryRow("SELECT value FROM committed_before_recovery").Scan(&value); err != nil || value != 42 {
+	if err := live.QueryRow("SELECT value FROM committed_before_recovery").Scan(&value); err != nil || value != 2300 {
 		t.Fatalf("failed replacement lost committed WAL data: value = %d, err = %v", value, err)
 	}
+}
+
+func TestOfflineRecoveryDoesNotSubstituteSealedEvidenceWhenCopyFails(t *testing.T) {
+	f, _, id := interruptedRecoveryFixture(t, true)
+	checkFiles := func() map[string]string {
+		t.Helper()
+		files := make(map[string]string)
+		for _, path := range []string{f.db, f.hosts, RestoreRecoveryMarkerPath(f.db)} {
+			body, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			files[path] = string(body)
+		}
+		return files
+	}
+	live, err := openRecoveryCopy(t.Context(), f.db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, writeErr := live.Exec("CREATE TABLE live_only_evidence (value TEXT); INSERT INTO live_only_evidence VALUES ('verified')")
+	if err := errors.Join(writeErr, live.Close()); err != nil {
+		t.Fatal(err)
+	}
+	before := checkFiles()
+	for _, failure := range []error{syscall.ENOSPC, syscall.EACCES} {
+		f.service.syncRestoreFile = func(file *os.File) error {
+			if filepath.Base(file.Name()) == "current.sqlite" {
+				return failure
+			}
+			return file.Sync()
+		}
+		for _, selection := range []string{"", id} {
+			report, err := f.service.OfflineRestoreRecovery(t.Context(), selection, offlineRecoveryMergeFixtureJobs)
+			wantBlocker := offlineRecoveryStorageBlocker
+			if errors.Is(failure, syscall.EACCES) {
+				wantBlocker = "current_database_unavailable"
+			}
+			if !report.RecoveryRequired || report.Applied != "" || report.Blocker != wantBlocker || len(report.Sets) != 0 ||
+				(err == nil) != (selection == "" && wantBlocker == offlineRecoveryStorageBlocker) {
+				t.Fatalf("workspace failure %v with selection %q: %+v, %v", failure, selection, report, err)
+			}
+			if wantBlocker == offlineRecoveryStorageBlocker && (len(report.Storage) != 1 || report.Storage[0].AvailableBytes != nil) {
+				t.Fatalf("a failed write must invalidate known workspace capacity: %+v", report.Storage)
+			}
+			for path, current := range checkFiles() {
+				if current != before[path] {
+					t.Fatal("a failed workspace copy changed an active file")
+				}
+			}
+		}
+	}
+	f.service.syncRestoreFile = nil
+	report, err := f.service.OfflineRestoreRecovery(t.Context(), id, func(ctx context.Context, live, staged *sql.DB) error {
+		var evidence string
+		if err := live.QueryRowContext(ctx, "SELECT value FROM live_only_evidence").Scan(&evidence); err != nil || evidence != "verified" {
+			t.Fatalf("retry did not read active SQLite evidence: %q, %v", evidence, err)
+		}
+		return nil
+	})
+	if err != nil || report.Applied != id || report.RecoveryRequired || report.Sets[0].EvidenceSource != "live_database" {
+		t.Fatalf("retry = %+v, %v", report, err)
+	}
+}
+
+func TestOfflineRecoveryRechecksCapacityAfterCopyingDiagnosis(t *testing.T) {
+	f, root, id := interruptedRecoveryFixture(t, true)
+	if err := os.WriteFile(f.hosts, []byte(archivedRestoreTrust), 0600); err != nil {
+		t.Fatal(err)
+	}
+	dbFree := uint64(128 << 20)
+	prepFree := dbFree
+	tempDir := f.service.deps.TempDir()
+	f.service.deps.ProbeRestoreStorage = func(dir string) installationhealth.VolumeCapacity {
+		if dir == tempDir || strings.HasPrefix(dir, tempDir+string(filepath.Separator)) {
+			return installationhealth.VolumeCapacity{Device: 1, Identified: true, AvailableBytes: &prepFree}
+		}
+		return installationhealth.VolumeCapacity{Device: 2, Identified: true, AvailableBytes: &dbFree}
+	}
+	preview, err := f.service.OfflineRestoreRecovery(t.Context(), "", offlineRecoveryMergeFixtureJobs)
+	if err != nil || len(preview.Sets) != 1 || len(preview.Sets[0].Storage) != 2 || !preview.Sets[0].Ready {
+		t.Fatalf("volume preview = %+v, %v", preview, err)
+	}
+	if !slices.ContainsFunc(preview.Sets[0].Storage, func(volume RestoreStorageVolume) bool {
+		return slices.Contains(volume.Roles, restoreStorageDatabase) && slices.Contains(volume.Roles, restoreStorageHostKeys) &&
+			slices.Contains(volume.Roles, offlineRecoveryDiagnosis)
+	}) {
+		t.Fatalf("replacement and diagnosis must share one volume: %+v", preview.Sets[0].Storage)
+	}
+	f.service.syncRestoreFile = func(file *os.File) error {
+		if filepath.Base(file.Name()) == "recovery.json" && strings.HasPrefix(filepath.Base(filepath.Dir(file.Name())), "slu-recovery-diagnosis-") {
+			dbFree = 1 << 20
+		}
+		return file.Sync()
+	}
+	result, err := f.service.OfflineRestoreRecovery(t.Context(), id, offlineRecoveryMergeFixtureJobs)
+	if err == nil || result.Applied != "" || !result.RecoveryRequired || len(result.Sets) != 1 ||
+		result.Sets[0].Ready || result.Sets[0].Blocker != offlineRecoveryStorageBlocker || result.Diagnosis != "" {
+		t.Fatalf("late capacity recheck = %+v, %v", result, err)
+	}
+	if result.Sets[0].Storage[0].State != restoreStorageInsufficient {
+		t.Fatalf("expected a measured shortage: %+v", result.Sets[0].Storage)
+	}
+	diagnoses, err := filepath.Glob(filepath.Join(root, "slu-recovery-diagnosis-*"))
+	if err != nil || len(diagnoses) != 0 {
+		t.Fatalf("blocked attempt retained provisional diagnosis: %v, %v", diagnoses, err)
+	}
+	requireDurableRestoreState(t, f.db, f.hosts, archivedRestoreServer, archivedRestoreTrust, true)
+}
+
+func TestOfflineRecoveryBudgetsOnlyStagedEvidenceAfterCopyingLiveDatabase(t *testing.T) {
+	f, _, id := interruptedRecoveryFixture(t, true)
+	live, err := openRecoveryCopy(t.Context(), f.db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The installed database can contain large tables that do not participate
+	// in APT and delivery evidence reconciliation.
+	_, writeErr := live.Exec("CREATE TABLE omitted_history (data BLOB); INSERT INTO omitted_history VALUES (zeroblob(12*1024*1024))")
+	if err := errors.Join(writeErr, live.Close()); err != nil {
+		t.Fatal(err)
+	}
+	tempDir := t.TempDir()
+	f.service.deps.TempDir = func() string { return tempDir }
+	f.service.deps.ProbeRestoreStorage = func(dir string) installationhealth.VolumeCapacity {
+		if dir != tempDir && !strings.HasPrefix(dir, tempDir+string(filepath.Separator)) {
+			free := uint64(128 << 20)
+			return installationhealth.VolumeCapacity{Device: 1, Identified: true, AvailableBytes: &free}
+		}
+		free := fixtureWorkspaceFree(t, tempDir, 28<<20)
+		return installationhealth.VolumeCapacity{Device: 2, Identified: true, AvailableBytes: &free}
+	}
+	checkEvidence := func(ctx context.Context, live, staged *sql.DB) error {
+		var bytes int
+		if err := live.QueryRowContext(ctx, "SELECT length(data) FROM omitted_history").Scan(&bytes); err != nil || bytes != 12<<20 {
+			t.Fatalf("installed history was not readable: %d, %v", bytes, err)
+		}
+		return nil
+	}
+	preview, err := f.service.OfflineRestoreRecovery(t.Context(), "", checkEvidence)
+	if err != nil || len(preview.Sets) != 1 || !preview.Sets[0].Ready || preview.Sets[0].EvidenceSource != "live_database" {
+		t.Fatalf("preview with sufficient staging space: %+v, %v", preview, err)
+	}
+	report, err := f.service.OfflineRestoreRecovery(t.Context(), id, checkEvidence)
+	if err != nil || report.Applied != id || report.RecoveryRequired {
+		t.Fatalf("apply with sufficient staging space: %+v, %v", report, err)
+	}
+}
+
+func fixtureWorkspaceFree(t *testing.T, dir string, free uint64) uint64 {
+	t.Helper()
+	err := filepath.WalkDir(dir, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil || entry.IsDir() {
+			return err
+		}
+		bytes, _ := sizeOnDisk(path)
+		free -= min(free, bytes)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return free
+}
+
+func TestOfflineRecoveryBudgetsCompactionWithLimitedWorkspaceAndReplacementVolumes(t *testing.T) {
+	f, root, id := interruptedRecoveryFixtureWithSetup(t, false, func(f durabilityFixture) {
+		db, err := openRecoveryCopy(t.Context(), f.db)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// The normal VACUUM INTO step discards these free pages from the
+		// prepared database. They still occupy space in the rollback set.
+		_, writeErr := db.Exec("CREATE TABLE deleted_history (data BLOB); INSERT INTO deleted_history VALUES (zeroblob(12*1024*1024)); DROP TABLE deleted_history")
+		if err := errors.Join(writeErr, db.Close()); err != nil {
+			t.Fatal(err)
+		}
+	})
+	tempDir := t.TempDir()
+	f.service.deps.TempDir = func() string { return tempDir }
+	// The workspace can hold the raw snapshot and compacted SQLite
+	// together, with margin. The replacement volume can hold the
+	// diagnosis and compacted SQLite, with margin.
+	databaseFree := uint64(14 << 20)
+	f.service.deps.ProbeRestoreStorage = func(dir string) installationhealth.VolumeCapacity {
+		if dir == root {
+			return installationhealth.VolumeCapacity{Device: 1, Identified: true, AvailableBytes: &databaseFree}
+		}
+		free := fixtureWorkspaceFree(t, tempDir, 28<<20)
+		return installationhealth.VolumeCapacity{Device: 2, Identified: true, AvailableBytes: &free}
+	}
+	preview, err := f.service.OfflineRestoreRecovery(t.Context(), "", offlineRecoveryMergeFixtureJobs)
+	if err != nil || len(preview.Sets) != 1 || !preview.Sets[0].Ready {
+		t.Fatalf("inspect with room for compacted SQLite: %+v, %v", preview, err)
+	}
+	if !slices.ContainsFunc(preview.Sets[0].Storage, func(volume RestoreStorageVolume) bool {
+		return slices.Contains(volume.Roles, restoreStorageDatabase) &&
+			volume.State == restoreStorageReady && volume.RequiredBytes < databaseFree
+	}) {
+		t.Fatalf("inspect did not budget the compacted replacement: %+v", preview.Sets[0].Storage)
+	}
+	report, err := f.service.OfflineRestoreRecovery(t.Context(), id, offlineRecoveryMergeFixtureJobs)
+	if err != nil || report.Applied != id || report.RecoveryRequired {
+		t.Fatalf("apply with room for compacted SQLite: %+v, %v", report, err)
+	}
+	requireDurableRestoreState(t, f.db, f.hosts, originalRestoreServer, originalRestoreTrust, false)
 }

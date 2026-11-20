@@ -1366,7 +1366,7 @@ assert trust.read_bytes() == b'fixture trust' and marker.read_bytes() == b'fixtu
 
         try:
             result = self.api.request("POST", endpoint + "/run", allowed=(200, 503), timeout=20)
-        except (AssertionError, OSError):
+        except (AssertionError, OSError, ValueError):
             control["terminal_state"] = "request_failed"
             raise AssertionError("primary control returned an error during the secondary outage") from None
         control["initial_state"] = accepted_state(result)
@@ -1381,13 +1381,27 @@ assert trust.read_bytes() == b'fixture trust' and marker.read_bytes() == b'fixtu
                     "primary control did not record a new completion")
             return response
 
-        def poll_control():
-            return completed(self.api.request("GET", endpoint, allowed=(200, 503), timeout=4))
-
         final = completed(result)
         if not final:
-            control["terminal_state"] = "timed_out"
-            final = until(poll_control, "primary control did not finish during the secondary outage", seconds=18)
+            deadline = time.monotonic() + 18
+            while (remaining := deadline - time.monotonic()) > 0:
+                try:
+                    response = self.api.request("GET", endpoint, allowed=(200, 503), timeout=min(4, remaining))
+                except (AssertionError, OSError, ValueError):
+                    if time.monotonic() >= deadline:
+                        break
+                    control["terminal_state"] = "request_failed"
+                    raise AssertionError("could not read primary control status during the secondary outage") from None
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                final = completed(response)
+                if final:
+                    break
+                time.sleep(min(.1, remaining))
+            if not final:
+                control["terminal_state"] = "timed_out"
+                raise AssertionError("primary control did not finish during the secondary outage")
         new_names = {file.name for file in primary_archives.glob("*.slubkp")} - before_export
         require(len(new_names) == 1, "fixture did not publish exactly one new source archive")
         new_name = next(iter(new_names))

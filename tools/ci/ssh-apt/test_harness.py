@@ -41,11 +41,8 @@ class HarnessSafetyTests(unittest.TestCase):
             harness.api.request.side_effect = request
             self.assertEqual(harness.control_backup_during_secondary_outage(record, archives, {"existing.slubkp"}),
                              "new.slubkp")
-        self.assertEqual(harness.api.request.call_args_list, [
-            mock.call("GET", endpoint, timeout=4),
-            mock.call("POST", endpoint + "/run", allowed=(200, 503), timeout=20),
-            mock.call("GET", endpoint, allowed=(200, 503), timeout=4),
-            mock.call("GET", endpoint, allowed=(200, 503), timeout=4),
+        self.assertEqual([call.args for call in harness.api.request.call_args_list], [
+            ("GET", endpoint), ("POST", endpoint + "/run"), ("GET", endpoint), ("GET", endpoint),
         ])
         self.assertEqual(record["secondary_outage_control"], {
             "initial_state": "deferred", "terminal_state": "succeeded", "verified_publication": True,
@@ -90,6 +87,37 @@ class HarnessSafetyTests(unittest.TestCase):
                 mock.patch.object(run.time, "sleep", side_effect=lambda _: clock.__setitem__(0, clock[0] + 6)):
             with self.assertRaisesRegex(AssertionError, "primary control did not finish"):
                 harness.control_backup_during_secondary_outage(record, Path(directory), set())
+        self.assertEqual(record["secondary_outage_control"], {
+            "initial_state": "deferred", "terminal_state": "timed_out", "verified_publication": False,
+        })
+
+    def test_secondary_outage_control_rejects_success_received_after_deadline(self):
+        harness = object.__new__(run.Harness)
+        harness.api = mock.Mock()
+        clock = [0.0]
+        before = {"catalog": {"archives": []}}
+        after = {"state": "succeeded", "last_success_at": "after", "catalog": {"archives": [{
+            "id": "new", "sha256": hashlib.sha256(b"").hexdigest(), "availability": "present",
+            "verification": "verified", "last_verified_at": "after", "job_id": "job",
+        }]}}
+        responses = iter((before, {"state": "deferred"}, {"state": "deferred"}, after))
+
+        def request(*_args, **_kwargs):
+            response = next(responses)
+            if response is after:
+                clock[0] += 2
+            return response
+
+        harness.api.request.side_effect = request
+        record = {}
+        with tempfile.TemporaryDirectory() as directory, \
+                mock.patch.object(run.time, "monotonic", side_effect=lambda: clock[0]), \
+                mock.patch.object(run.time, "sleep", side_effect=lambda _: clock.__setitem__(0, 17)):
+            archives = Path(directory)
+            (archives / "new.slubkp").touch()
+            with self.assertRaisesRegex(AssertionError, "primary control did not finish"):
+                harness.control_backup_during_secondary_outage(record, archives, set())
+        self.assertLessEqual(harness.api.request.call_args.kwargs["timeout"], 1)
         self.assertEqual(record["secondary_outage_control"], {
             "initial_state": "deferred", "terminal_state": "timed_out", "verified_publication": False,
         })

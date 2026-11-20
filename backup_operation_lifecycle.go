@@ -713,6 +713,10 @@ func (l *backupOperationLifecycle) failRestoreArchive(job JobRecord, cmd backupR
 			errorDetail = publicError
 			errorClass = "insufficient_storage"
 			volumes = storage.Volumes
+		} else if errors.Is(err, internalbackup.ErrRestoreHostTarget) {
+			publicError = internalbackup.ErrRestoreHostTarget.Error()
+			summary, auditMessage = publicError, publicError
+			errorClass = "known_hosts_target_conflict"
 		} else if errors.Is(err, jobs.ErrAPTRecoveryEvidenceConflict) {
 			kind = backupOperationRestoreAPTConflict
 			publicError = "The backup conflicts with APT reconciliation evidence. Resolve APT reconciliation on this installation before retrying the restore."

@@ -188,10 +188,9 @@ func (s *Service) OfflineRestoreRecovery(ctx context.Context, selection string, 
 	}
 	hosts := s.restoreKnownHostsTarget(database)
 	targets := append([]string{database}, SQLiteSidecarPaths(database)...)
-	for _, reserved := range append(append([]string{}, targets...), marker, s.deps.ConfigPath(), database+".lock", RestoreIsolationPath(database), restoreIsolationPendingPath(database)) {
-		if same, err := sameRestoreEntry(reserved, hosts); err != nil || same {
-			return report, errors.New("installation host trust path conflicts with recovery files")
-		}
+	if err := s.validateRestoreHostTarget(database, hosts, true, true); err != nil {
+		report.Blocker = "known_hosts_target_conflict"
+		return report, err
 	}
 
 	diagnosisTargets := append(append([]string{}, targets...), hosts, s.deps.ConfigPath(), marker)

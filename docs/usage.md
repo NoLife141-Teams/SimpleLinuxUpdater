@@ -666,6 +666,11 @@ retry delay. The pause survives a restart, follows the destination's
 credentials, and leaves the other queues and condition evaluation active.
 Admin's Delivery health shows the next eligible time for paused queues.
 
+A queued delivery consumes an attempt before sending its HTTP request. After an
+interruption with no saved response, Delivery history shows an indeterminate
+attempt. If attempts remain, the queue waits at least 30 seconds after recovery
+and respects any recorded pause for the same destination configuration.
+
 Changing a destination skips deliveries still bound to its previous credentials and admits current selected conditions once for the new destination. Disabling a destination or deselecting an event stops its pending deliveries and reminders; observations continue so a healthy state and subsequent recurrence remain distinct. Re-enabling the same unchanged configuration does not replay an already admitted episode. A Server rename preserves its notification identity and updates the displayed name; deletion retires its conditions. Recreating a deleted Server creates a new identity. Changing a Server's host or port retires reboot evidence from its previous endpoint; a new alert requires a confirmed observation of the replacement endpoint.
 
 A controlled database restore preserves the live admission ledger and existing outbox replacement protections, skips historical audit replay, and revalidates restored job, Server, and backup facts before delivery. Restored pending jobs interrupted by runtime recovery cannot produce actionable approval reminders. Previously resolved conditions may become new episodes if restored evidence explicitly reports them again. A cold start from an older standalone database backup has only that backup's ledger: external deliveries made after the archive was created cannot be inferred or undone.

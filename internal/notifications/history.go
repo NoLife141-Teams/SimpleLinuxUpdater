@@ -28,20 +28,21 @@ type DeliveryHistoryQuery struct {
 }
 
 type DeliveryHistoryItem struct {
-	Destination        string `json:"destination"`
-	State              string `json:"state"`
-	EventType          string `json:"event_type"`
-	JobID              string `json:"job_id,omitempty"`
-	ApprovalGeneration uint64 `json:"approval_generation,omitempty"`
-	Attempts           int    `json:"attempts"`
-	CreatedAt          string `json:"created_at"`
-	AttemptedAt        string `json:"attempted_at,omitempty"`
-	CompletedAt        string `json:"completed_at,omitempty"`
-	NextAttemptAt      string `json:"next_attempt_at,omitempty"`
-	ReasonCode         string `json:"reason_code,omitempty"`
-	Reason             string `json:"reason,omitempty"`
-	JobReportURL       string `json:"job_report_url,omitempty"`
-	ApprovalPlanURL    string `json:"approval_plan_url,omitempty"`
+	Destination         string `json:"destination"`
+	State               string `json:"state"`
+	EventType           string `json:"event_type"`
+	JobID               string `json:"job_id,omitempty"`
+	ApprovalGeneration  uint64 `json:"approval_generation,omitempty"`
+	Attempts            int    `json:"attempts"`
+	CreatedAt           string `json:"created_at"`
+	AttemptedAt         string `json:"attempted_at,omitempty"`
+	LastIndeterminateAt string `json:"last_indeterminate_at,omitempty"`
+	CompletedAt         string `json:"completed_at,omitempty"`
+	NextAttemptAt       string `json:"next_attempt_at,omitempty"`
+	ReasonCode          string `json:"reason_code,omitempty"`
+	Reason              string `json:"reason,omitempty"`
+	JobReportURL        string `json:"job_report_url,omitempty"`
+	ApprovalPlanURL     string `json:"approval_plan_url,omitempty"`
 }
 
 type DeliveryHistoryPage struct {
@@ -111,6 +112,8 @@ func historyReason(state, message string, httpStatus int) string {
 			return fmt.Sprintf("Destination returned HTTP %d.", httpStatus)
 		}
 		switch message {
+		case outboxIndeterminateReason:
+			return "The delivery outcome is unknown after an interruption."
 		case "Webhook delivery was canceled.":
 			return "Delivery was canceled."
 		case "Webhook delivery timed out.":
@@ -130,20 +133,20 @@ func (s *Service) DeliveryHistory(ctx context.Context, filter DeliveryHistoryQue
 	const generation = `json_extract(` + metadata + `, '$.approval_generation')`
 	const exactGeneration = `CASE WHEN json_type(` + metadata + `, '$.approval_generation') = 'integer'
 		AND typeof(` + generation + `) = 'integer' THEN ` + generation + ` ELSE 0 END`
-	where := `WHERE destination IN ('webhook', 'discord', 'telegram')
-		AND state IN ('pending', 'claimed', 'retrying', 'succeeded', 'failed', 'skipped')`
+	where := `WHERE o.destination IN ('webhook', 'discord', 'telegram')
+		AND o.state IN ('pending', 'claimed', 'retrying', 'succeeded', 'failed', 'skipped')`
 	if filter.Destination != "" {
 		if !slices.Contains([]string{DestinationWebhook, DestinationDiscord, DestinationTelegram}, filter.Destination) {
 			return DeliveryHistoryPage{}, ErrInvalidDeliveryHistoryQuery
 		}
-		where += " AND destination = ?"
+		where += " AND o.destination = ?"
 		args = append(args, filter.Destination)
 	}
 	if filter.State != "" {
 		if !slices.Contains([]string{outboxStatePending, outboxStateClaimed, outboxStateRetrying, outboxStateSucceeded, outboxStateFailed, outboxStateSkipped}, filter.State) {
 			return DeliveryHistoryPage{}, ErrInvalidDeliveryHistoryQuery
 		}
-		where += " AND state = ?"
+		where += " AND o.state = ?"
 		args = append(args, filter.State)
 	}
 	if filter.JobID != "" {
@@ -158,7 +161,7 @@ func (s *Service) DeliveryHistory(ctx context.Context, filter DeliveryHistoryQue
 		if !ok {
 			return DeliveryHistoryPage{}, ErrInvalidDeliveryHistoryQuery
 		}
-		where += " AND (rtrim(created_at, 'Z'), id) < (rtrim(?, 'Z'), ?)"
+		where += " AND (rtrim(o.created_at, 'Z'), o.id) < (rtrim(?, 'Z'), ?)"
 		args = append(args, createdAt, id)
 	}
 
@@ -166,10 +169,14 @@ func (s *Service) DeliveryHistory(ctx context.Context, filter DeliveryHistoryQue
 	if db == nil {
 		return DeliveryHistoryPage{}, errors.New("notification outbox database is unavailable")
 	}
-	rows, err := db.QueryContext(ctx, `SELECT id, destination, state, event_type, attempts,
-		created_at, attempted_at, completed_at, next_attempt_at, status_code, error,
+	rows, err := db.QueryContext(ctx, `SELECT o.id, o.destination, o.state, o.event_type, o.attempts,
+		o.created_at, o.attempted_at, o.last_indeterminate_at, o.completed_at,
+		CASE WHEN o.error = '`+outboxIndeterminateReason+`' AND o.state = 'retrying' THEN
+			(`+outboxEffectiveDue+`) || 'Z' ELSE o.next_attempt_at END, o.status_code, o.error,
 		COALESCE(`+jobID+`, ''), `+exactGeneration+`
-		FROM notification_outbox `+where+` ORDER BY rtrim(created_at, 'Z') DESC, id DESC LIMIT ?`, append(args, deliveryHistoryPageSize+1)...)
+		FROM notification_outbox o `+outboxSchedulingJoins+where+`
+		ORDER BY rtrim(o.created_at, 'Z') DESC, o.id DESC LIMIT ?`,
+		append(append([]any{SettingsKey}, args...), deliveryHistoryPageSize+1)...)
 	if err != nil {
 		return DeliveryHistoryPage{}, err
 	}
@@ -189,7 +196,7 @@ func (s *Service) DeliveryHistory(ctx context.Context, filter DeliveryHistoryQue
 		var approvalGeneration int64
 		var httpStatus int
 		if err := rows.Scan(&id, &item.Destination, &item.State, &item.EventType, &item.Attempts,
-			&item.CreatedAt, &item.AttemptedAt, &item.CompletedAt, &item.NextAttemptAt, &httpStatus, &rawReason,
+			&item.CreatedAt, &item.AttemptedAt, &item.LastIndeterminateAt, &item.CompletedAt, &item.NextAttemptAt, &httpStatus, &rawReason,
 			&item.JobID, &approvalGeneration); err != nil {
 			return DeliveryHistoryPage{}, err
 		}
@@ -199,6 +206,7 @@ func (s *Service) DeliveryHistory(ctx context.Context, filter DeliveryHistoryQue
 		}
 		item.CreatedAt = historyTimestamp(item.CreatedAt)
 		item.AttemptedAt = historyTimestamp(item.AttemptedAt)
+		item.LastIndeterminateAt = historyTimestamp(item.LastIndeterminateAt)
 		item.CompletedAt = historyTimestamp(item.CompletedAt)
 		if item.State == outboxStateRetrying {
 			item.NextAttemptAt = historyTimestamp(item.NextAttemptAt)
@@ -217,6 +225,9 @@ func (s *Service) DeliveryHistory(ctx context.Context, filter DeliveryHistoryQue
 			item.ReasonCode, item.Reason = historySkipReason(rawReason)
 		} else {
 			item.Reason = historyReason(item.State, rawReason, httpStatus)
+			if rawReason == outboxIndeterminateReason {
+				item.ReasonCode = rawReason
+			}
 		}
 		page.Items = append(page.Items, item)
 	}

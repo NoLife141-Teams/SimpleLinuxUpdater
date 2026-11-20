@@ -57,40 +57,30 @@ func TestNotificationOutboxMigratesExistingSettingsDatabase(t *testing.T) {
 	}
 }
 
-func TestNotificationOutboxMigratesDestinationFingerprintColumn(t *testing.T) {
-	db := openOutboxTestDB(t, "destination-fingerprint-migration.db")
-	if _, err := db.Exec(`CREATE TABLE notification_outbox (id TEXT PRIMARY KEY)`); err != nil {
+func TestNotificationOutboxUpgradesLegacyPendingDelivery(t *testing.T) {
+	db := openOutboxTestDB(t, "legacy-outbox.db")
+	prepareOutboxSettings(t, db, "https://hooks.example.test/legacy", true)
+	now := time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
+	id := insertPendingOutboxIntent(t, db, DeliveryIntent{ID: "legacy", Action: EventUpdateComplete}, now)
+	if _, err := db.Exec("UPDATE notification_outbox SET attempts=2 WHERE id=?", id); err != nil {
 		t.Fatal(err)
 	}
-	if err := ensureOutboxDestinationFingerprintColumn(t.Context(), db); err != nil {
-		t.Fatalf("ensureOutboxDestinationFingerprintColumn() error = %v", err)
-	}
-	if err := ensureOutboxDestinationFingerprintColumn(t.Context(), db); err != nil {
-		t.Fatalf("ensureOutboxDestinationFingerprintColumn() second call error = %v", err)
-	}
-	var found int
-	rows, err := db.Query(`PRAGMA table_info(notification_outbox)`)
-	if err != nil {
+	if _, err := db.Exec(`ALTER TABLE notification_outbox DROP COLUMN destination_fingerprint;
+		ALTER TABLE notification_outbox DROP COLUMN attempt_id;
+		ALTER TABLE notification_outbox DROP COLUMN last_indeterminate_at;`); err != nil {
 		t.Fatal(err)
 	}
-	defer rows.Close()
-	for rows.Next() {
-		var cid int
-		var name, columnType string
-		var notNull, primaryKey int
-		var defaultValue any
-		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
-			t.Fatal(err)
-		}
-		if name == "destination_fingerprint" {
-			found++
-		}
+	deps := outboxTestDeps(db, time.Hour)
+	deps.Now = func() time.Time { return now }
+	deps.RestoreDeliveryBlocked = func() bool { return true }
+	service := NewService(deps)
+	defer closeOutboxService(t, service)
+	page, err := service.DeliveryHistory(t.Context(), DeliveryHistoryQuery{})
+	if err != nil || len(page.Items) != 1 {
+		t.Fatalf("legacy history = %+v, %v", page, err)
 	}
-	if err := rows.Err(); err != nil {
-		t.Fatal(err)
-	}
-	if found != 1 {
-		t.Fatalf("destination_fingerprint columns=%d, want 1", found)
+	if item := page.Items[0]; item.State != outboxStatePending || item.Attempts != 2 || item.LastIndeterminateAt != "" {
+		t.Fatalf("legacy pending delivery changed after migration: %+v", item)
 	}
 }
 

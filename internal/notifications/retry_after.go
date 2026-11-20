@@ -6,6 +6,7 @@ import (
 	"errors"
 	"maps"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -66,6 +67,7 @@ type failedRateLimitCompletion struct {
 	rowID    string
 	outcome  outboxOutcome
 	deadline time.Time
+	repairAt time.Time
 }
 
 type failedRateLimitCompletions struct {
@@ -123,6 +125,46 @@ func (c *failedRateLimitCompletions) forget(key rateLimitKey) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	delete(c.items, key)
+}
+
+// An exhausted row no longer has a delivery to claim. Schedule repair of
+// its known response separately, using the same destination slot as delivery.
+func (c *failedRateLimitCompletions) nextTerminalRepair(active outboxDeliveries) (rateLimitKey, failedRateLimitCompletion) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var key rateLimitKey
+	var next failedRateLimitCompletion
+	for candidate, pending := range c.items {
+		if pending.outcome.Attempts < defaultAttempts || slices.ContainsFunc(active[:], func(destination *string) bool {
+			return destination != nil && *destination == candidate.destination
+		}) {
+			continue
+		}
+		if next.rowID == "" || pending.repairAt.Before(next.repairAt) {
+			key, next = candidate, pending
+		}
+	}
+	return key, next
+}
+
+func (s *Service) repairTerminalRateLimit(ctx context.Context, key rateLimitKey, pending failedRateLimitCompletion) bool {
+	err := s.persistOutboxCompletion(ctx, pending.rowID, pending.outcome, true)
+	if err == nil {
+		s.rateLimitCompletions.forget(key)
+		return true
+	}
+	now := s.deps.Now()
+	if errors.Is(err, errOutboxCompletionLostClaim) {
+		if !pending.deadline.After(now) {
+			s.rateLimitCompletions.forget(key)
+			return true
+		}
+		pending.repairAt = pending.deadline
+	} else {
+		pending.repairAt = now.Add(s.deps.PollInterval)
+	}
+	s.rateLimitCompletions.remember(key, pending)
+	return false
 }
 
 // A failed transaction leaves the claim in SQLite. Retry completing it before

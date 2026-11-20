@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -373,7 +374,7 @@ func NewService(deps ServiceDeps) *Service {
 		s.initErr = EnsureSchema(db)
 		if s.initErr == nil {
 			s.backfillDestinationFingerprints(ctx, db)
-			s.initErr = recoverExpiredOutboxClaims(ctx, db, deps.Now(), deps.ClaimTTL, outboxDeliveries{})
+			s.initErr = recoverExpiredOutboxClaims(ctx, db, deps.Now(), 0, outboxDeliveries{})
 		}
 		if s.initErr == nil {
 			_, s.initErr = pruneOutbox(ctx, db, deps.Now(), deps.Retention)
@@ -471,6 +472,10 @@ func (s *Service) PreparePersistenceReplacement(ctx context.Context) error {
 		return nil
 	}
 	s.flushRateLimitCompletions(ctx)
+	if err := recoverExpiredOutboxClaims(ctx, s.database(), s.deps.Now(), 0, outboxDeliveries{}); err != nil {
+		s.resumePersistence()
+		return err
+	}
 	conditions, rows, err := loadPersistenceEvidence(ctx, s.database())
 	if err != nil {
 		s.resumePersistence()
@@ -516,6 +521,9 @@ func (s *Service) StageAPTDeliveryEvidence(ctx context.Context, staged *sql.DB) 
 
 func stageAPTDeliveryEvidence(ctx context.Context, staged *sql.DB, replacement *outboxReplacement, now time.Time) error {
 	if err := PrepareArchivedPersistence(ctx, staged); err != nil {
+		return err
+	}
+	if err := recoverExpiredOutboxClaims(ctx, staged, now, 0, outboxDeliveries{}); err != nil {
 		return err
 	}
 	if len(replacement.APTAdmissions) == 0 && replacement.LastSuccessfulDelivery == "" && len(replacement.DestinationHealth) == 0 {
@@ -571,7 +579,7 @@ func (s *Service) ReloadPersistence(ctx context.Context) error {
 	if _, err := loadAndMigrateConditionState(ctx, db); err != nil {
 		return fmt.Errorf("read restored notification conditions: %w", err)
 	}
-	if err := recoverExpiredOutboxClaims(ctx, db, s.deps.Now(), s.deps.ClaimTTL, outboxDeliveries{}); err != nil {
+	if err := recoverExpiredOutboxClaims(ctx, db, s.deps.Now(), 0, outboxDeliveries{}); err != nil {
 		return err
 	}
 	s.persistenceMu.Lock()
@@ -765,7 +773,7 @@ func (s *Service) processOutboxRow(ctx context.Context, row outboxRow) bool {
 		err := s.retrySQLiteContention(func() error {
 			return completeOutboxRow(persistCtx, s.database(), row.ID, outboxOutcome{
 				State: outboxStateSkipped, Attempts: row.Attempts, CompletedAt: now,
-				Error: skipReason,
+				Error: skipReason, AttemptID: row.AttemptID,
 			}, now, false)
 		})
 		if err != nil {
@@ -794,6 +802,11 @@ func (s *Service) processOutboxRow(ctx context.Context, row outboxRow) bool {
 	if s.queuedDeliveryBlocked(ctx) {
 		return s.releaseClaim(row, 0, "delivery suspended")
 	}
+	if err := s.admitQueuedOutboxAttempt(ctx, &row, settings, fingerprint); err != nil {
+		s.health.Error(s.deps.Now())
+		s.releaseClaim(row, s.deps.PollInterval, "attempt admission could not be persisted")
+		return false
+	}
 	attemptCtx, cancelAttempt := context.WithTimeout(ctx, s.deps.DeliveryTimeout)
 	status, retryAfter, deliveryErr := s.attemptOutboxDestination(attemptCtx, settings, row)
 	if deliveryErr != nil {
@@ -808,6 +821,7 @@ func (s *Service) processOutboxRow(ctx context.Context, row outboxRow) bool {
 		Error:                  status.Error,
 		DurationMS:             status.DurationMS,
 		DestinationFingerprint: fingerprint,
+		AttemptID:              row.AttemptID,
 	}
 	var nextRetry time.Time
 	if deliveryErr != nil && (status.Attempts < defaultAttempts || status.StatusCode == http.StatusTooManyRequests) {
@@ -834,7 +848,9 @@ func (s *Service) processOutboxRow(ctx context.Context, row outboxRow) bool {
 	if err := s.persistOutboxCompletion(context.Background(), row.ID, outcome, false); err != nil {
 		now := s.deps.Now()
 		if outcome.RateLimitedUntil != "" {
-			s.rateLimitCompletions.remember(key, failedRateLimitCompletion{rowID: row.ID, outcome: outcome, deadline: nextRetry})
+			s.rateLimitCompletions.remember(key, failedRateLimitCompletion{
+				rowID: row.ID, outcome: outcome, deadline: nextRetry, repairAt: now.Add(s.deps.PollInterval),
+			})
 		}
 		s.health.Error(now)
 		s.deps.Logf("notification outbox outcome persistence failed for %q: %v", row.ID, err)
@@ -846,6 +862,26 @@ func (s *Service) processOutboxRow(ctx context.Context, row outboxRow) bool {
 		s.deps.Logf("notification diagnostic persistence failed for %q: %v", row.ID, err)
 	}
 	return err == nil
+}
+
+func (s *Service) admitQueuedOutboxAttempt(ctx context.Context, row *outboxRow, validated Settings, fingerprint string) error {
+	now := s.deps.Now()
+	s.settingsMu.Lock()
+	defer s.settingsMu.Unlock()
+	return s.retrySQLiteContention(func() error {
+		current, err := s.loadSettings()
+		if err != nil {
+			return err
+		}
+		if !destinationEnabled(current, row.Destination) ||
+			destinationConfigFingerprint(current, row.Destination) != fingerprint ||
+			!slices.Equal(current.EventTypes, validated.EventTypes) ||
+			(row.EventType == EventReminder && (current.RemindersEnabled != validated.RemindersEnabled ||
+				current.ReminderIntervalMinutes != validated.ReminderIntervalMinutes)) {
+			return errOutboxAttemptNotAdmitted
+		}
+		return admitOutboxAttempt(ctx, s.database(), row, fingerprint, now)
+	})
 }
 
 func (s *Service) persistOutboxCompletion(ctx context.Context, id string, outcome outboxOutcome, recoverReleased bool) error {
@@ -863,10 +899,10 @@ func (s *Service) attemptOutboxDestination(ctx context.Context, settings Setting
 		EventType:   row.EventType,
 		Action:      row.Intent.Action,
 		TargetName:  row.Intent.TargetName,
-		Attempts:    row.Attempts + 1,
+		Attempts:    row.Attempts,
+		AttemptedAt: row.AttemptedAt,
 	}
-	attemptedAt := s.deps.Now().UTC()
-	status.AttemptedAt = attemptedAt.Format(time.RFC3339Nano)
+	attemptedAt, _ := time.Parse(time.RFC3339Nano, row.AttemptedAt)
 	payload, err := buildPayload(row.EventType, row.Intent)
 	if err != nil {
 		status, err := failedDeliveryStatus(status, attemptedAt, s.deps.Now().UTC(), err)

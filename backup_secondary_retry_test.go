@@ -165,6 +165,21 @@ func TestSecondaryCatchUpAdmitsNewestSkippedCopyWhenSlotOpens(t *testing.T) {
 }
 
 func TestSecondaryReapprovalUsesOriginalMountCatalogAndRetryBudget(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		newPath bool
+	}{
+		{name: "same configured path"},
+		{name: "changed configured path", newPath: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			testSecondaryReapprovalUsesOriginalMountCatalogAndRetryBudget(t, tc.newPath)
+		})
+	}
+}
+
+func testSecondaryReapprovalUsesOriginalMountCatalogAndRetryBudget(t *testing.T, newPath bool) {
+	t.Helper()
 	_, automation, now := newBackupAutomationTest(t)
 	secondary := secondaryBackupTestDirectory(t, automation)
 	automation.deployment.SecondaryDirectory = secondary
@@ -218,7 +233,10 @@ func TestSecondaryReapprovalUsesOriginalMountCatalogAndRetryBudget(t *testing.T)
 	if err := os.Rename(secondary, replacement); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Rename(original, secondary); err != nil {
+	if newPath {
+		secondary = original
+		automation.deployment.SecondaryDirectory = secondary
+	} else if err := os.Rename(original, secondary); err != nil {
 		t.Fatal(err)
 	}
 
@@ -266,6 +284,21 @@ func TestSecondaryCatchUpBudgetSurvivesFailedHistoryPruning(t *testing.T) {
 }
 
 func TestSecondaryCatchUpDoesNotRequeueCopiesRemovedByRetention(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		syncFails bool
+	}{
+		{name: "completed retirement"},
+		{name: "interrupted after removal", syncFails: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			testSecondaryCatchUpDoesNotRequeueCopiesRemovedByRetention(t, tc.syncFails)
+		})
+	}
+}
+
+func testSecondaryCatchUpDoesNotRequeueCopiesRemovedByRetention(t *testing.T, syncFails bool) {
+	t.Helper()
 	_, automation, now := newBackupAutomationTest(t)
 	secondary := secondaryBackupTestDirectory(t, automation)
 	automation.deployment.SecondaryDirectory = secondary
@@ -288,8 +321,13 @@ func TestSecondaryCatchUpDoesNotRequeueCopiesRemovedByRetention(t *testing.T) {
 	if _, err := automation.Configure(t.Context(), config); err != nil {
 		t.Fatal(err)
 	}
-	if err := automation.copyNextSecondaryBackup(t.Context()); err != nil {
-		t.Fatal(err)
+	var expectedError error
+	if syncFails {
+		expectedError = errors.New("secondary retirement directory sync interrupted after removal")
+		automation.syncSecondaryDirectory = func(*os.Root) error { return expectedError }
+	}
+	if err := automation.copyNextSecondaryBackup(t.Context()); !errors.Is(err, expectedError) {
+		t.Fatalf("secondary retention = %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(secondary, oldest.Name)); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("retention did not remove the older secondary copy: %v", err)

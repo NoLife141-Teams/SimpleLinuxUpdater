@@ -224,8 +224,9 @@ the newest eligible registered primary archive whose copy is missing from
 that mount. This includes archives previously skipped by a full queue.
 This catch-up uses the same bounded queue and holds its source against
 retention. A missing copy keeps its spent attempt budget on the same mount.
-Copies already retired on that mount stay retired during catch-up.
-Reapproving a previous mount restores its own copy catalog and attempt budgets.
+Copies retired on that mount stay retired during catch-up, including after
+an interruption during removal. Reapproving a previous mount restores its
+copy catalog and attempt budgets even if its configured path has changed.
 Admin distinguishes waiting for the mount, transferring and failed
 copies. Use **Retry copy** after administrator reauthentication for an
 eligible archive that was skipped by a full queue or exhausted its attempts.

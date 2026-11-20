@@ -31,6 +31,10 @@ type backupSecondaryBinding struct {
 	Owner     string `json:"owner,omitempty"`
 }
 
+func (binding backupSecondaryBinding) sameMount(other backupSecondaryBinding) bool {
+	return binding.Directory != "" && binding.Directory == other.Directory && binding.Owner == other.Owner
+}
+
 type backupSecondaryCopy struct {
 	Archive      ownedBackupArchive     `json:"archive"`
 	Attempts     int                    `json:"attempts"`
@@ -94,28 +98,44 @@ func (state *backupAutomationState) selectSecondaryDestination(binding backupSec
 	if state.Secondary.Binding == binding {
 		return
 	}
-	next := backupSecondaryState{Binding: binding}
-	for i, previous := range state.SecondaryHistory {
-		if previous.Binding == binding {
-			next = previous
-			state.SecondaryHistory = slices.Delete(state.SecondaryHistory, i, i+1)
-			for j := range next.Copies {
-				if next.Copies[j].VerifiedAt != "" {
-					next.Copies[j].Unavailable = true
-				}
+	current := state.Secondary
+	next := current
+	if !current.Binding.sameMount(binding) {
+		next = backupSecondaryState{Binding: binding}
+		for i, previous := range state.SecondaryHistory {
+			if previous.Binding.sameMount(binding) {
+				next = previous
+				state.SecondaryHistory = slices.Delete(state.SecondaryHistory, i, i+1)
+				break
 			}
-			break
+		}
+		if current.Binding.Directory != "" && (len(current.Copies) > 0 || len(current.Retired) > 0) {
+			// Keep the catalog and spent attempts with their original directory.
+			current.Approved = false
+			state.SecondaryHistory = append(state.SecondaryHistory, current)
 		}
 	}
-	current := state.Secondary
-	if current.Binding.Directory != "" && (len(current.Copies) > 0 || len(current.Retired) > 0) {
-		// Keep the catalog and spent attempts with their original directory.
-		// Only the destination validated by this request can be activated.
-		current.Approved = false
-		state.SecondaryHistory = append(state.SecondaryHistory, current)
+	for i := range next.Copies {
+		if next.Copies[i].VerifiedAt != "" {
+			next.Copies[i].Unavailable = true
+		}
 	}
+	next.Binding = binding
 	next.Approved = false
 	state.Secondary = next
+}
+
+func (state *backupAutomationState) recordSecondaryRetirement(id string) bool {
+	if slices.Contains(state.Secondary.Retired, id) {
+		return false
+	}
+	for _, source := range state.Archives {
+		if source.ID == id {
+			state.Secondary.Retired = append(state.Secondary.Retired, id)
+			return true
+		}
+	}
+	return false
 }
 
 func (a *backupAutomation) secondaryStatus(current backupAutomationState) *backupSecondaryStatus {

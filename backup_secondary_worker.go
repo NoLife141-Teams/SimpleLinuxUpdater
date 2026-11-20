@@ -674,7 +674,9 @@ func (a *backupAutomation) retainSecondaryBackups(ctx context.Context, root *os.
 					return false, errBackupSecondaryDeferred
 				}
 			}
-			return false, nil
+			// Persist the retirement before unlinking so a restart or a
+			// directory sync failure cannot make catch-up republish it.
+			return state.recordSecondaryRetirement(oldest.Archive.ID), nil
 		}); err != nil {
 			return err
 		}
@@ -717,14 +719,7 @@ func (a *backupAutomation) retainSecondaryBackups(ctx context.Context, root *os.
 			if item.Archive.ID == oldest.Archive.ID && item.FileIdentity == oldest.FileIdentity {
 				// Missing or non-matching names no longer convey retention authority.
 				state.Secondary.Copies = slices.Delete(state.Secondary.Copies, i, i+1)
-				for _, source := range state.Archives {
-					if source.ID == item.Archive.ID {
-						// A future outage must not reopen the budget of a
-						// copy which this mount already retired.
-						state.Secondary.Retired = append(state.Secondary.Retired, source.ID)
-						break
-					}
-				}
+				state.recordSecondaryRetirement(item.Archive.ID)
 				return true, nil
 			}
 		}

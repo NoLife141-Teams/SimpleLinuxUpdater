@@ -857,6 +857,19 @@ func TestSecondaryIntegrityProgressesAfterTransferFailure(t *testing.T) {
 }
 
 func TestSecondaryIntegrityDiscardsProofAfterNameReplacement(t *testing.T) {
+	for _, duringCatalogLoad := range []bool{false, true} {
+		name := "during observation"
+		if duringCatalogLoad {
+			name = "while loading the catalog"
+		}
+		t.Run(name, func(t *testing.T) {
+			testSecondaryIntegrityDiscardsProofAfterNameReplacement(t, duringCatalogLoad)
+		})
+	}
+}
+
+func testSecondaryIntegrityDiscardsProofAfterNameReplacement(t *testing.T, duringCatalogLoad bool) {
+	t.Helper()
 	_, automation, now := newBackupAutomationTest(t)
 	secondary := secondaryBackupTestDirectory(t, automation)
 	automation.deployment.SecondaryDirectory = secondary
@@ -882,16 +895,25 @@ func TestSecondaryIntegrityDiscardsProofAfterNameReplacement(t *testing.T) {
 	}
 	*now = now.Add(backupIntegrityNewestAfter)
 	var replaced bool
-	// Swap the name after reading the registered file, as the observation
-	// timestamp is captured.
-	automation.deps.Now = func() time.Time {
+	replace := func() {
 		if !replaced {
 			if err := os.Rename(foreign, path); err != nil {
 				t.Fatal(err)
 			}
 			replaced = true
 		}
-		return *now
+	}
+	if duringCatalogLoad {
+		database := automation.deps.DB
+		automation.deps.DB = func() *sql.DB {
+			replace()
+			return database()
+		}
+	} else {
+		automation.deps.Now = func() time.Time {
+			replace()
+			return *now
+		}
 	}
 	if _, err := automation.verifyAndRecordSecondaryIntegrity(t.Context(), root, binding, published); err != nil {
 		t.Fatal(err)

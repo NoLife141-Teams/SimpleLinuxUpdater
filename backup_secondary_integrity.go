@@ -66,20 +66,15 @@ func (a *backupAutomation) verifyAndRecordSecondaryIntegrity(ctx context.Context
 	if err := ctx.Err(); err != nil {
 		return backupSecondaryCopy{}, err
 	}
-	if info != nil {
-		named, err := root.Lstat(copy.Archive.Name)
-		if err != nil || !sameBackupIntegrityFile(info, named) {
-			state, info = backupIntegrityUnavailable, nil
-		}
+	if info != nil && !secondaryIntegrityNameMatches(root, copy.Archive.Name, info) {
+		state, info = backupIntegrityUnavailable, nil
 	}
 	if !backupArchiveMountAvailable(root.Name(), binding.Directory) {
 		return backupSecondaryCopy{}, errBackupSecondaryDeferred
 	}
 	var verified backupSecondaryCopy
 	err := a.updateCurrentSecondary(ctx, binding, copy.Archive.ID, func(_ *backupSecondaryState, current *backupSecondaryCopy) (bool, error) {
-		if current.VerifiedAt != copy.VerifiedAt || current.FileIdentity != copy.FileIdentity ||
-			current.Archive.Name != copy.Archive.Name || current.Archive.SHA256 != copy.Archive.SHA256 ||
-			current.Integrity != copy.Integrity {
+		if !sameSecondaryIntegrityRegistration(*current, copy) {
 			return false, errBackupSecondaryDeferred
 		}
 		current.Integrity.State = state
@@ -95,7 +90,41 @@ func (a *backupAutomation) verifyAndRecordSecondaryIntegrity(ctx context.Context
 		verified = *current
 		return true, nil
 	})
+	if err != nil || info == nil {
+		return verified, err
+	}
+	if secondaryIntegrityNameMatches(root, copy.Archive.Name, info) &&
+		backupArchiveMountAvailable(root.Name(), binding.Directory) {
+		return verified, nil
+	}
+	// The name can change while SQLite is saving the observation. Discard that
+	// proof without checking the mount under maintenance admission.
+	retractCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), backupArchiveObservationBudget)
+	defer cancel()
+	err = a.updateCurrentSecondary(retractCtx, binding, copy.Archive.ID, func(_ *backupSecondaryState, current *backupSecondaryCopy) (bool, error) {
+		if !sameSecondaryIntegrityRegistration(*current, verified) {
+			return false, errBackupSecondaryDeferred
+		}
+		current.Integrity = backupArchiveIntegrity{
+			State: backupIntegrityUnavailable, CheckedAt: copy.Integrity.CheckedAt, AttemptedAt: at,
+		}
+		current.Unavailable = true
+		current.ModifiedAt, current.ChangedAt = copy.ModifiedAt, copy.ChangedAt
+		verified = *current
+		return true, nil
+	})
 	return verified, err
+}
+
+func sameSecondaryIntegrityRegistration(current, observed backupSecondaryCopy) bool {
+	return current.VerifiedAt == observed.VerifiedAt && current.FileIdentity == observed.FileIdentity &&
+		current.Archive.Name == observed.Archive.Name && current.Archive.SHA256 == observed.Archive.SHA256 &&
+		current.Integrity == observed.Integrity
+}
+
+func secondaryIntegrityNameMatches(root *os.Root, name string, observed os.FileInfo) bool {
+	named, err := root.Lstat(name)
+	return err == nil && sameBackupIntegrityFile(observed, named)
 }
 
 func inspectSecondaryIntegrity(ctx context.Context, root *os.Root, binding backupSecondaryBinding, copy backupSecondaryCopy) (string, os.FileInfo) {

@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"testing"
 
+	"debian-updater/internal/installationhealth"
 	"debian-updater/internal/maintenance"
 )
 
@@ -418,12 +419,12 @@ func TestOfflineRecoveryWriteFailureKeepsCommittedWALState(t *testing.T) {
 	}
 	f.service.syncRestoreFile = func(file *os.File) error {
 		if filepath.Dir(file.Name()) == root && strings.HasPrefix(filepath.Base(file.Name()), ".restore-") {
-			return syscall.EIO
+			return syscall.ENOSPC
 		}
 		return file.Sync()
 	}
 	report, err := f.service.OfflineRestoreRecovery(t.Context(), id, offlineRecoveryMergeFixtureJobs)
-	if err == nil || !report.RecoveryRequired || report.Diagnosis == "" || report.Applied != "" {
+	if err == nil || !errors.Is(err, errOfflineRecoveryStorage) || !report.RecoveryRequired || report.Diagnosis == "" || report.Applied != "" || len(report.Sets) != 1 || report.Sets[0].Ready || report.Sets[0].Blocker != offlineRecoveryStorageBlocker {
 		t.Fatalf("failed replacement = %+v, %v", report, err)
 	}
 	live, err := openRecoveryCopy(t.Context(), f.db)
@@ -435,4 +436,107 @@ func TestOfflineRecoveryWriteFailureKeepsCommittedWALState(t *testing.T) {
 	if err := live.QueryRow("SELECT value FROM committed_before_recovery").Scan(&value); err != nil || value != 42 {
 		t.Fatalf("failed replacement lost committed WAL data: value = %d, err = %v", value, err)
 	}
+}
+
+func TestOfflineRecoveryDoesNotSubstituteSealedEvidenceWhenCopyFails(t *testing.T) {
+	f, _, id := interruptedRecoveryFixture(t, true)
+	checkFiles := func() map[string]string {
+		t.Helper()
+		files := make(map[string]string)
+		for _, path := range []string{f.db, f.hosts, RestoreRecoveryMarkerPath(f.db)} {
+			body, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			files[path] = string(body)
+		}
+		return files
+	}
+	live, err := openRecoveryCopy(t.Context(), f.db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, writeErr := live.Exec("CREATE TABLE live_only_evidence (value TEXT); INSERT INTO live_only_evidence VALUES ('verified')")
+	if err := errors.Join(writeErr, live.Close()); err != nil {
+		t.Fatal(err)
+	}
+	before := checkFiles()
+	for _, failure := range []error{syscall.ENOSPC, syscall.EACCES} {
+		f.service.syncRestoreFile = func(file *os.File) error {
+			if filepath.Base(file.Name()) == "current.sqlite" {
+				return failure
+			}
+			return file.Sync()
+		}
+		for _, selection := range []string{"", id} {
+			report, err := f.service.OfflineRestoreRecovery(t.Context(), selection, offlineRecoveryMergeFixtureJobs)
+			wantBlocker := offlineRecoveryStorageBlocker
+			if errors.Is(failure, syscall.EACCES) {
+				wantBlocker = "current_database_unavailable"
+			}
+			if !report.RecoveryRequired || report.Applied != "" || report.Blocker != wantBlocker || len(report.Sets) != 0 ||
+				(err == nil) != (selection == "" && wantBlocker == offlineRecoveryStorageBlocker) {
+				t.Fatalf("workspace failure %v with selection %q: %+v, %v", failure, selection, report, err)
+			}
+			if wantBlocker == offlineRecoveryStorageBlocker && (len(report.Storage) != 1 || report.Storage[0].AvailableBytes != nil) {
+				t.Fatalf("a failed write must invalidate known workspace capacity: %+v", report.Storage)
+			}
+			for path, current := range checkFiles() {
+				if current != before[path] {
+					t.Fatal("a failed workspace copy changed an active file")
+				}
+			}
+		}
+	}
+	f.service.syncRestoreFile = nil
+	report, err := f.service.OfflineRestoreRecovery(t.Context(), id, func(ctx context.Context, live, staged *sql.DB) error {
+		var evidence string
+		if err := live.QueryRowContext(ctx, "SELECT value FROM live_only_evidence").Scan(&evidence); err != nil || evidence != "verified" {
+			t.Fatalf("retry did not read active SQLite evidence: %q, %v", evidence, err)
+		}
+		return nil
+	})
+	if err != nil || report.Applied != id || report.RecoveryRequired || report.Sets[0].EvidenceSource != "live_database" {
+		t.Fatalf("retry = %+v, %v", report, err)
+	}
+}
+
+func TestOfflineRecoveryRechecksCapacityAfterCopyingDiagnosis(t *testing.T) {
+	f, root, id := interruptedRecoveryFixture(t, true)
+	dbFree := uint64(128 << 20)
+	prepFree := dbFree
+	tempDir := f.service.deps.TempDir()
+	f.service.deps.ProbeRestoreStorage = func(dir string) installationhealth.VolumeCapacity {
+		if dir == tempDir || strings.HasPrefix(dir, tempDir+string(filepath.Separator)) {
+			return installationhealth.VolumeCapacity{Device: 1, Identified: true, AvailableBytes: &prepFree}
+		}
+		return installationhealth.VolumeCapacity{Device: 2, Identified: true, AvailableBytes: &dbFree}
+	}
+	preview, err := f.service.OfflineRestoreRecovery(t.Context(), "", offlineRecoveryMergeFixtureJobs)
+	if err != nil || len(preview.Sets) != 1 || len(preview.Sets[0].Storage) != 2 || !preview.Sets[0].Ready {
+		t.Fatalf("volume preview = %+v, %v", preview, err)
+	}
+	roles := strings.Join(preview.Sets[0].Storage[1].Roles, ",")
+	if roles != "sqlite_replacement,ssh_trust_replacement,diagnosis_snapshots" {
+		t.Fatalf("replacement and diagnosis must share one volume: %q", roles)
+	}
+	f.service.syncRestoreFile = func(file *os.File) error {
+		if filepath.Base(file.Name()) == "recovery.json" && strings.HasPrefix(filepath.Base(filepath.Dir(file.Name())), "slu-recovery-diagnosis-") {
+			dbFree = 1 << 20
+		}
+		return file.Sync()
+	}
+	result, err := f.service.OfflineRestoreRecovery(t.Context(), id, offlineRecoveryMergeFixtureJobs)
+	if err == nil || result.Applied != "" || !result.RecoveryRequired || len(result.Sets) != 1 ||
+		result.Sets[0].Ready || result.Sets[0].Blocker != offlineRecoveryStorageBlocker || result.Diagnosis != "" {
+		t.Fatalf("late capacity recheck = %+v, %v", result, err)
+	}
+	if result.Sets[0].Storage[0].State != restoreStorageInsufficient {
+		t.Fatalf("expected a measured shortage: %+v", result.Sets[0].Storage)
+	}
+	diagnoses, err := filepath.Glob(filepath.Join(root, "slu-recovery-diagnosis-*"))
+	if err != nil || len(diagnoses) != 0 {
+		t.Fatalf("blocked attempt retained provisional diagnosis: %v, %v", diagnoses, err)
+	}
+	requireDurableRestoreState(t, f.db, f.hosts, archivedRestoreServer, originalRestoreTrust, true)
 }

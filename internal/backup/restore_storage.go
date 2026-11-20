@@ -67,6 +67,8 @@ func restoreStorageRoleNames(roles []string) string {
 			names = append(names, "SSH host-key replacement")
 		case restoreStorageRollback:
 			names = append(names, "rollback snapshots")
+		case offlineRecoveryDiagnosis:
+			names = append(names, "diagnosis snapshots")
 		}
 	}
 	return strings.Join(names, ", ")

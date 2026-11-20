@@ -849,22 +849,29 @@ class Harness:
         require(Path(snapshots).name == snapshots and snapshots.startswith("slu-restore-rollback-")
                 and (self.work / snapshots / "recovery.json").is_file() and marker.get("manifest_sha256"),
                 "durable recovery marker did not locate the rollback manifest")
+        self.qualify_offline_recovery_storage(snapshots, job_id)
+        record["verified_offline_storage_retry_and_live_evidence"] = True
         damaged = b"qualification fixture with an unreadable SQLite header"
         (self.work / "servers.db").write_bytes(damaged)
         (self.work / "servers.db-wal").write_bytes(damaged)
         inspection = self.run_offline_recovery("--inspect")
         expected_set = {"id": snapshots, "ready": True, "servers": 1, "apt_reports": 1}
-        require(inspection["recovery_required"] and inspection["sets"] == [
-            dict(expected_set, evidence_source="sealed_rollback")
-        ] and (self.work / "servers.db").read_bytes() == damaged,
+
+        def recovery_set(report, source):
+            return (report["recovery_required"] and len(report["sets"]) == 1
+                    and all(report["sets"][0].get(key) == value for key, value in expected_set.items())
+                    and report["sets"][0]["evidence_source"] == source and bool(report["sets"][0]["storage"]))
+
+        require(recovery_set(inspection, "sealed_rollback") and (self.work / "servers.db").read_bytes() == damaged,
                 "offline recovery inspection did not validate the sealed set without changing the damaged SQLite")
         self.interrupt_offline_recovery(snapshots)
         retry = self.run_offline_recovery("--inspect")
-        require(retry["recovery_required"] and retry["sets"] == [dict(expected_set, evidence_source="live_database")],
+        require(recovery_set(retry, "live_database"),
                 "interrupted offline recovery did not preserve the validated set and latch")
         (self.work / "servers.db").write_bytes(damaged)
         (self.work / "servers.db-wal").write_bytes(damaged)
-        require(self.run_offline_recovery("--inspect") == inspection, "sealed recovery was unavailable on a new attempt")
+        require(recovery_set(self.run_offline_recovery("--inspect"), "sealed_rollback"),
+                "sealed recovery was unavailable on a new attempt")
         record["verified_interrupted_offline_recovery"] = True
         record["verified_unreadable_sqlite_recovery"] = True
         recovered = self.run_offline_recovery("--apply", snapshots)
@@ -1197,6 +1204,75 @@ finally:
     def run_offline_recovery(self, *args):
         output = self.docker("run", "--rm", *self.offline_recovery_container_args(), *args)
         return json.loads(output)
+
+    def qualify_offline_recovery_storage(self, snapshot, job_id):
+        require(self.owned("container", self.app_name), "application ownership mismatch")
+        with tempfile.TemporaryDirectory(dir=self.work, prefix="offline-storage-") as directory:
+            copy = Path(directory)
+            for name in ("webserver", "config.json", "known_hosts", "servers.db", "servers.db-wal",
+                         "servers.db-shm", "servers.db.restore-recovery"):
+                if (self.work / name).is_file():
+                    shutil.copy2(self.work / name, copy / name)
+            shutil.copytree(self.work / snapshot, copy / snapshot)
+            extra_log = b"fixture APT evidence present only in the installed database"
+            success = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+            with closing(sqlite3.connect(copy / "servers.db")) as db, db:
+                row = db.execute("SELECT log_next_sequence FROM jobs WHERE id=?", (job_id,)).fetchone()
+                require(row is not None, "storage fixture lacks the live APT job")
+                db.execute("INSERT INTO job_log_chunks(job_id, sequence, stream, data, created_at) VALUES (?, ?, ?, ?, ?)",
+                           (job_id, row[0], "stdout", extra_log, success))
+                db.execute("UPDATE jobs SET log_next_sequence=log_next_sequence+1, "
+                           "log_source_bytes=log_source_bytes+? WHERE id=?", (len(extra_log), job_id))
+                db.execute("UPDATE notification_delivery_health SET last_success_at=? WHERE id=1", (success,))
+
+            # Use the same bounded tmpfs before and after deleting the pressure file.
+            # The one-shot container can access only the copied installation.
+            probe = """
+import hashlib, json, os, pathlib, subprocess, sys
+root = pathlib.Path('/work')
+snap = sys.argv[1]
+files = [root / name for name in ('servers.db', 'servers.db-wal', 'servers.db-shm',
+         'known_hosts', 'servers.db.restore-recovery')]
+files += sorted(path for path in (root / snap).iterdir() if path.is_file())
+def evidence():
+    return [hashlib.sha256(path.read_bytes()).hexdigest() if path.exists() else None for path in files]
+def recover(*args):
+    result = subprocess.run(['/work/webserver', 'backup', 'recover', *args], capture_output=True, timeout=30)
+    return result.returncode, json.loads(result.stdout)
+stats = os.statvfs('/offline-work')
+assert os.stat('/offline-work').st_dev != root.stat().st_dev
+assert 0 < stats.f_blocks * stats.f_frsize <= 32 * 1024 * 1024
+before = evidence()
+with open('/offline-work/pressure', 'xb') as pressure:
+    os.posix_fallocate(pressure.fileno(), 0, stats.f_bavail * stats.f_frsize - 4 * 1024 * 1024)
+inspect_code, inspection = recover('--inspect')
+apply_code, blocked = recover('--apply', snap)
+unchanged = before == evidence()
+os.unlink('/offline-work/pressure')
+retry_code, retried = recover('--apply', snap)
+print(json.dumps([inspect_code, inspection, apply_code, blocked, unchanged, retry_code, retried]))
+"""
+            evidence = self.docker("run", "--rm", "--network", "none",
+                "--label", LABEL + "=" + self.owner, "--user", f"{os.getuid()}:{os.getgid()}",
+                "--mount", f"type=bind,src={copy},dst=/work", "--workdir", "/work",
+                "--tmpfs", "/offline-work:rw,nosuid,nodev,size=32m,mode=1777",
+                "--env", "HOME=/work", "--env", "TMPDIR=/offline-work", "--env", "DEBIAN_UPDATER_DB_PATH=/work/servers.db",
+                "--env", "DEBIAN_UPDATER_KNOWN_HOSTS=/work/known_hosts", "--entrypoint", "/usr/bin/python3",
+                self.image, "-c", probe, snapshot)
+            inspect_code, inspection, apply_code, blocked, unchanged, retry_code, retried = json.loads(evidence)
+            require(inspect_code == 0 and apply_code != 0 and unchanged
+                    and all(point["recovery_required"] and point["blocker"] == "insufficient_storage"
+                            and not point.get("applied") and not any(entry["ready"] for entry in point["sets"])
+                            and any(v["state"] == "insufficient" and v["roles"] == ["preparation"] for v in point["storage"])
+                            for point in (inspection, blocked)),
+                    "low offline workspace did not preserve the installed files, evidence and recovery marker")
+            require(retry_code == 0 and retried["applied"] == snapshot and not retried["recovery_required"]
+                    and retried["sets"][0]["evidence_source"] == "live_database",
+                    "freeing recovery workspace did not allow application of the same set from live evidence")
+            with closing(sqlite3.connect(copy / "servers.db")) as db:
+                require(db.execute("SELECT 1 FROM job_log_chunks WHERE job_id=? AND data=?", (job_id, extra_log)).fetchone()
+                        and db.execute("SELECT last_success_at FROM notification_delivery_health WHERE id=1").fetchone() == (success,),
+                        "offline retry discarded live APT or notification delivery evidence")
 
     def interrupt_offline_recovery(self, snapshot):
         (self.work / "arm-offline-recovery-crash").touch(exist_ok=False)

@@ -680,19 +680,37 @@ func restoreResourceReviewsFromPaths(manifest Manifest, files map[string]string)
 func (s *Service) VerifyArchiveFile(ctx context.Context, encrypted TemporaryFile, passphrase string) (VerifyResult, error) {
 	// Scheduled archival verification checks portability. The interactive
 	// verification endpoint separately evaluates this installation's capacity.
-	return s.verifyArchiveFile(ctx, encrypted, passphrase, nil, false)
+	return s.verifyArchiveFile(ctx, encrypted, passphrase, nil, verifyWithoutStorage)
+}
+
+// VerifyArchiveFileOffline checks the archive and workspace without consulting
+// an installation's active database, SSH trust file, or rollback storage.
+func (s *Service) VerifyArchiveFileOffline(ctx context.Context, encrypted TemporaryFile, passphrase string) (VerifyResult, error) {
+	return s.verifyArchiveFile(ctx, encrypted, passphrase, nil, verifyWorkspaceStorage)
 }
 
 // VerifyArchiveFileWithReview allows an installation-specific compatibility
 // check on the isolated, schema-validated archive database.
 func (s *Service) VerifyArchiveFileWithReview(ctx context.Context, encrypted TemporaryFile, passphrase string, review func(context.Context, *sql.DB)) (VerifyResult, error) {
-	return s.verifyArchiveFile(ctx, encrypted, passphrase, review, true)
+	return s.verifyArchiveFile(ctx, encrypted, passphrase, review, verifyInstallationStorage)
 }
 
-func (s *Service) verifyArchiveFile(ctx context.Context, encrypted TemporaryFile, passphrase string, review func(context.Context, *sql.DB), assessStorage bool) (VerifyResult, error) {
+type verifyStorageMode int
+
+const (
+	verifyWithoutStorage verifyStorageMode = iota
+	verifyWorkspaceStorage
+	verifyInstallationStorage
+)
+
+func (s *Service) verifyArchiveFile(ctx context.Context, encrypted TemporaryFile, passphrase string, review func(context.Context, *sql.DB), mode verifyStorageMode) (VerifyResult, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	if err := ctx.Err(); err != nil {
+		return VerifyResult{}, err
+	}
+	assessStorage := mode != verifyWithoutStorage
 	passphrase = strings.TrimSpace(passphrase)
 	if err := ValidatePassphrase(passphrase); err != nil {
 		return VerifyResult{}, err
@@ -739,11 +757,14 @@ func (s *Service) verifyArchiveFile(ctx context.Context, encrypted TemporaryFile
 		if err != nil {
 			return VerifyResult{}, &RestoreError{Stage: RestoreStageArchive, Err: err}
 		}
-		volumes, canExtract := s.archiveRestoreStorage(sizes)
+		volumes, canExtract := s.archiveRestoreStorage(sizes, mode == verifyInstallationStorage)
 		result.Storage = volumes
 		if !canExtract {
 			return result.withStorageFailure(storageBlocker(volumes)), nil
 		}
+	}
+	if err := ctx.Err(); err != nil {
+		return VerifyResult{}, err
 	}
 	inspection, err := InspectTarGzFileWithLimits(plain.Path, s.deps.TempDir(), MaxExtractedBytes, MaxExtractedBytes)
 	if err != nil {
@@ -850,7 +871,7 @@ func (s *Service) RestoreArchiveFileWithOptions(ctx context.Context, encrypted T
 	if err != nil {
 		return RestoreResult{}, &RestoreError{Stage: RestoreStageArchive, Err: err}
 	}
-	volumes, _ := s.archiveRestoreStorage(sizes)
+	volumes, _ := s.archiveRestoreStorage(sizes, true)
 	if err := storageBlocker(volumes); err != nil {
 		return RestoreResult{}, &RestoreError{Stage: RestoreStageApply, Err: err}
 	}

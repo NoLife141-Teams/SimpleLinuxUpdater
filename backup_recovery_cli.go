@@ -19,6 +19,7 @@ import (
 )
 
 const restoreRecoveryUsage = `Usage
+  webserver backup verify --archive <file> [--work-dir <directory>] [--passphrase-file <file>] [--json]
   webserver backup recover --inspect
   webserver backup recover --apply <recovery-set-id>
 `

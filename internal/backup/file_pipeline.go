@@ -765,7 +765,7 @@ func parseEnvelopePath(path, tempDir string, extractPayload bool) (Envelope, Tem
 	if err != nil {
 		return Envelope{}, TemporaryFile{}, err
 	}
-	if info.Size() <= 0 || info.Size() > MaxUploadBytes {
+	if !info.Mode().IsRegular() || info.Size() <= 0 || info.Size() > MaxUploadBytes {
 		return Envelope{}, TemporaryFile{}, ErrMalformed
 	}
 	file, err := os.Open(path)
@@ -986,7 +986,7 @@ func (s *Service) decryptFile(path, passphrase string) (TemporaryFile, error) {
 	plain, err := gcm.Open(ciphertext[:0], nonce, ciphertext, nil)
 	ciphertext = nil
 	if err != nil {
-		return TemporaryFile{}, errors.New("invalid passphrase or corrupted backup")
+		return TemporaryFile{}, ErrArchiveAuthentication
 	}
 	if int64(len(plain)) > MaxArchiveBytes {
 		return TemporaryFile{}, ErrMalformed

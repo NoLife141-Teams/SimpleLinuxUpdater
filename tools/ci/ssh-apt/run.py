@@ -1158,6 +1158,7 @@ finally:
               "pre-archive facts did not settle")
         archive, passphrase = self.verified_secondary_archive(record, credentials)
         self.stop_app()
+        self.qualify_offline_archive_verification(record, archive)
         self.docker("exec", targets[incomplete], "dpkg", "--unpack", "/srv/slu-packages/2.0.deb")
         require(self.docker("exec", targets[incomplete], "dpkg", "--audit").strip(),
                 "incomplete fixture did not simulate an unfinished package configuration")
@@ -1250,6 +1251,60 @@ finally:
         record.update(read_only_probes=True, batched_restore_apt_checks=True, healthy_host_resumed=True, incomplete_host_blocked=True,
                       unreachable_host_blocked=True, gated_after_restart=True, partial_batch_admission=True)
         del record["checkpoint"]
+
+    def qualify_offline_archive_verification(self, record, archive):
+        record["checkpoint"] = "offline-archive-verification"
+        fixture = self.work / "offline-verification"
+        fixture.mkdir(mode=0o700)
+        (fixture / "secondary.slubkp").write_bytes(archive)
+        # The passphrase already exists in the disposable primary fixture.
+        shutil.copy2(self.work / "archive-mount-probe" / "passphrase", fixture / "passphrase")
+        runner = """
+import json
+import os
+from pathlib import Path
+import subprocess
+
+target = Path('/recovery/servers.db')
+assert not target.exists()
+with open('/small/pressure', 'wb') as pressure:
+    stats = os.statvfs('/small')
+    os.posix_fallocate(pressure.fileno(), 0, stats.f_bavail * stats.f_frsize - 1024 * 1024)
+args = ['/webserver', 'backup', 'verify', '--archive', '/input/secondary.slubkp',
+        '--passphrase-file', '/input/passphrase', '--json', '--work-dir']
+failed = subprocess.run([*args, '/small'], capture_output=True, text=True, timeout=30)
+assert failed.returncode == 5
+low = json.loads(failed.stdout)
+assert low['status'] == 'insufficient_storage' and not low['archive_verified']
+assert any(v['roles'] == ['preparation'] and v['state'] == 'insufficient'
+           and v['required_bytes'] > v['available_bytes'] for v in low['storage'])
+assert set(os.listdir('/small')) == {'pressure'} and not list(target.parent.iterdir())
+target.write_bytes(b'unreadable fixture database')
+trust = target.with_name('known_hosts')
+trust.write_bytes(b'fixture trust')
+marker = target.with_suffix('.db.restore-recovery')
+marker.write_bytes(b'fixture recovery lock')
+checked = subprocess.run([*args, '/ample'], capture_output=True, text=True, timeout=30)
+assert checked.returncode == 0, checked.stdout
+good = json.loads(checked.stdout)
+assert good['archive_verified'] and good['target_status'] == 'not_inspected'
+assert all(v['roles'] == ['preparation'] for v in good['storage'])
+assert not list(Path('/ample').iterdir())
+assert set(target.parent.iterdir()) == {target, trust, marker}
+assert target.read_bytes() == b'unreadable fixture database'
+assert trust.read_bytes() == b'fixture trust' and marker.read_bytes() == b'fixture recovery lock'
+"""
+        self.docker("run", "--rm", "--network", "none", "--read-only",
+                    "--label", LABEL + "=" + self.owner, "--user", f"{os.getuid()}:{os.getgid()}",
+                    "--pids-limit", "64", "--memory", "512m",
+                    "--env", "DEBIAN_UPDATER_DB_PATH=/recovery/servers.db",
+                    "--tmpfs", "/small:rw,nosuid,nodev,size=32m,mode=1777",
+                    "--tmpfs", "/ample:rw,nosuid,nodev,size=64m,mode=1777",
+                    "--tmpfs", "/recovery:rw,nosuid,nodev,size=4m,mode=1777",
+                    "--mount", f"type=bind,src={fixture},dst=/input,readonly",
+                    "--mount", f"type=bind,src={self.work / 'webserver'},dst=/webserver,readonly",
+                    "--entrypoint", "/usr/bin/python3", self.image, "-c", runner, timeout=65)
+        record["verified_offline_archive_with_constrained_workspace"] = True
 
     def verified_secondary_archive(self, record, credentials):
         record["checkpoint"] = "secondary-validation"

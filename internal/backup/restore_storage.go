@@ -238,7 +238,7 @@ func (s *Service) decryptStorage(path string) []RestoreStorageVolume {
 	})
 }
 
-func (s *Service) archiveRestoreStorage(sizes map[string]uint64) ([]RestoreStorageVolume, bool) {
+func (s *Service) archiveRestoreStorage(sizes map[string]uint64, includeTarget bool) ([]RestoreStorageVolume, bool) {
 	var extracted uint64
 	for _, size := range sizes {
 		extracted += size // the bounded tar walker checked the aggregate size
@@ -250,9 +250,14 @@ func (s *Service) archiveRestoreStorage(sizes map[string]uint64) ([]RestoreStora
 	preparation := restoreStorageNeed{
 		directory: s.deps.TempDir(), role: restoreStoragePreparation, bytes: extracted + 2*databaseBytes,
 	}
-	needs := append([]restoreStorageNeed{preparation},
-		s.previewRestoreTargets(hasHosts).replacementNeeds(databaseBytes, hostsBytes, true)...)
+	needs := []restoreStorageNeed{preparation}
+	if includeTarget {
+		needs = append(needs, s.previewRestoreTargets(hasHosts).replacementNeeds(databaseBytes, hostsBytes, true)...)
+	}
 	volumes := s.estimateRestoreStorage(needs...)
+	if !includeTarget {
+		return volumes, storageBlocker(volumes) == nil
+	}
 	// Verification can usually complete even if replacement would run out of
 	// space. If there is not even room to extract, return the estimate alone.
 	temp := volumes[0].AvailableBytes

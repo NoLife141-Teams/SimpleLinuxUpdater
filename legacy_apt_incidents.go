@@ -45,7 +45,10 @@ func preserveLegacyAPTIncidents(ctx context.Context, live *sql.Tx, staged *sql.D
 			return err
 		}
 	}
-	return incidents.Err()
+	if err := incidents.Err(); err != nil {
+		return err
+	}
+	return bindUnmatchedLegacyAPTIncidents(ctx, staged)
 }
 
 func (i legacyAPTIncident) matches(server Server) bool {
@@ -64,11 +67,11 @@ func migrateLegacyAPTIncidents(db *sql.DB) error {
 		return err
 	}
 	defer tx.Rollback()
-	rows, err := tx.QueryContext(ctx, `
+	if _, err := tx.ExecContext(ctx, `
 		WITH unresolved AS (
-			SELECT j.id, j.server_name, s.identity, s.host, s.port,
+			SELECT j.id, j.server_name,
 				row_number() OVER (PARTITION BY j.server_name ORDER BY j.created_at DESC, j.id DESC) AS position
-			FROM jobs j LEFT JOIN servers s ON s.name=j.server_name
+			FROM jobs j
 			WHERE j.apt_target='' AND j.server_name<>''
 				AND j.kind IN ('update','autoremove','apt_repair')
 				AND ((j.status='failed' AND j.error_class='reconciliation_required') OR
@@ -78,8 +81,27 @@ func migrateLegacyAPTIncidents(db *sql.DB) error {
 					WHERE newer.server_name=j.server_name AND newer.status='succeeded' AND newer.apt_target=''
 						AND newer.kind IN ('update','autoremove','apt_repair') AND newer.created_at>j.created_at)
 		)
-		SELECT id,server_name,COALESCE(identity,''),COALESCE(host,''),COALESCE(port,0)
-		FROM unresolved WHERE position=1`)
+		INSERT INTO legacy_apt_incidents(job_id,server_name,identity,endpoint)
+		SELECT id,server_name,'','' FROM unresolved WHERE position=1
+		ON CONFLICT(job_id) DO NOTHING`); err != nil {
+		return err
+	}
+	if err := bindUnmatchedLegacyAPTIncidents(ctx, tx); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// Bind a name-only incident when its inventory entry first becomes available.
+// The accepted association follows renames and retains the original SSH
+// endpoint even if the inventory entry is edited or removed again.
+func bindUnmatchedLegacyAPTIncidents(ctx context.Context, db interface {
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+}) error {
+	rows, err := db.QueryContext(ctx, `SELECT i.job_id,s.identity,s.host,s.port
+		FROM legacy_apt_incidents i JOIN servers s ON s.name=i.server_name
+		WHERE i.resolved=0 AND i.identity='' AND i.endpoint='' AND s.identity<>'' AND s.host<>''`)
 	if err != nil {
 		return err
 	}
@@ -89,12 +111,10 @@ func migrateLegacyAPTIncidents(db *sql.DB) error {
 		var incident legacyAPTIncident
 		var host string
 		var port int
-		if err := rows.Scan(&incident.jobID, &incident.name, &incident.identity, &host, &port); err != nil {
+		if err := rows.Scan(&incident.jobID, &incident.identity, &host, &port); err != nil {
 			return err
 		}
-		if host != "" {
-			incident.endpoint = serverpkg.NormalizeServerEndpoint(host, port).String()
-		}
+		incident.endpoint = serverpkg.NormalizeServerEndpoint(host, port).String()
 		incidents = append(incidents, incident)
 	}
 	if err := rows.Err(); err != nil {
@@ -104,12 +124,12 @@ func migrateLegacyAPTIncidents(db *sql.DB) error {
 		return err
 	}
 	for _, incident := range incidents {
-		if _, err := tx.ExecContext(ctx, `INSERT INTO legacy_apt_incidents(job_id,server_name,identity,endpoint)
-			VALUES(?,?,?,?) ON CONFLICT(job_id) DO NOTHING`, incident.jobID, incident.name, incident.identity, incident.endpoint); err != nil {
+		if _, err := db.ExecContext(ctx, `UPDATE legacy_apt_incidents SET identity=?,endpoint=? WHERE job_id=?`,
+			incident.identity, incident.endpoint, incident.jobID); err != nil {
 			return err
 		}
 	}
-	return tx.Commit()
+	return nil
 }
 
 func pendingLegacyAPTIncidents(ctx context.Context, db *sql.DB) ([]legacyAPTIncident, error) {

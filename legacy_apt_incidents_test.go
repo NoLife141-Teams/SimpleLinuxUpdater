@@ -104,3 +104,41 @@ func TestLegacyAPTIncidentGuardsMaintenanceUntilExplicitVerification(t *testing.
 		t.Fatalf("recorded proof authorized a different endpoint: %v", err)
 	}
 }
+
+func TestLegacyAPTIncidentFollowsReappearedServerAndItsEndpoint(t *testing.T) {
+	app := newIsolatedTestApp(t)
+	const originalName = "missing-legacy-host"
+	const renamed = "renamed-legacy-host"
+	db := app.Deps.DB()
+	if _, err := db.Exec(`INSERT INTO jobs(id,kind,server_name,actor,status,phase,error_class,created_at,updated_at)
+		VALUES('unmatched-legacy-job','update',?,'legacy-admin','failed','complete',
+			'reconciliation_required','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')`, originalName); err != nil {
+		t.Fatal(err)
+	}
+	if err := ensureSchema(db); err != nil {
+		t.Fatal(err)
+	}
+	inventory := app.Deps.ServerInventoryService
+	server, err := inventory.Create(Server{Name: originalName, Host: "legacy.example.test", User: "root"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server.Name = renamed
+	server, err = inventory.Update(originalName, server)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := app.Deps.RestoreAPTValidation.admit(server); !errors.Is(err, serverpkg.ErrRestoreAPTValidation) {
+		t.Fatalf("renaming the re-added host lifted the legacy incident block: %v", err)
+	}
+	if err := inventory.Delete(renamed); err != nil {
+		t.Fatal(err)
+	}
+	replacement, err := inventory.Create(Server{Name: "replacement-legacy-host", Host: server.Host, Port: server.Port, User: server.User})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := app.Deps.RestoreAPTValidation.admit(replacement); !errors.Is(err, serverpkg.ErrRestoreAPTValidation) {
+		t.Fatalf("replacing the inventory entry at the same endpoint lifted the legacy incident block: %v", err)
+	}
+}

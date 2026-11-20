@@ -14,7 +14,13 @@ import (
 )
 
 func IsPrivate(file *os.File) bool {
-	sd, err := windows.GetSecurityInfo(windows.Handle(file.Fd()), windows.SE_FILE_OBJECT,
+	handle := windows.Handle(file.Fd())
+	var filesystemFlags uint32
+	if err := windows.GetVolumeInformationByHandle(handle, nil, 0, nil, nil, &filesystemFlags, nil, 0); err != nil ||
+		filesystemFlags&windows.FILE_PERSISTENT_ACLS == 0 {
+		return false
+	}
+	sd, err := windows.GetSecurityInfo(handle, windows.SE_FILE_OBJECT,
 		windows.OWNER_SECURITY_INFORMATION|windows.DACL_SECURITY_INFORMATION)
 	if err != nil {
 		return false
@@ -87,7 +93,13 @@ func CreateTemp(dir, pattern string) (*os.File, error) {
 	if err != nil {
 		return nil, err
 	}
-	return os.NewFile(uintptr(handle), path), nil
+	file := os.NewFile(uintptr(handle), path)
+	if !IsPrivate(file) {
+		_ = file.Close()
+		_ = os.Remove(path)
+		return nil, errors.New("could not establish private access to the temporary file")
+	}
+	return file, nil
 }
 
 func MkdirTemp(dir, pattern string) (string, error) {
@@ -95,7 +107,16 @@ func MkdirTemp(dir, pattern string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return createTemp(dir, pattern, func(name *uint16) error { return windows.CreateDirectory(name, attrs) })
+	path, err := createTemp(dir, pattern, func(name *uint16) error { return windows.CreateDirectory(name, attrs) })
+	if err != nil {
+		return "", err
+	}
+	info, err := os.Lstat(path)
+	if err != nil || !info.IsDir() || !IsPrivatePath(path, info) {
+		_ = os.Remove(path)
+		return "", errors.New("could not establish private access to the temporary directory")
+	}
+	return path, nil
 }
 
 func createTemp(dir, pattern string, create func(*uint16) error) (string, error) {

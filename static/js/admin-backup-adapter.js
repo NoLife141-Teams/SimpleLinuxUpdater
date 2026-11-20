@@ -469,6 +469,9 @@
             const focused = document.activeElement?.dataset;
             const focusedID = focused?.backupArchive, focusedOperation = focused?.backupOperation;
             container.innerHTML = catalog.archives.length ? catalog.archives.map(archive => {
+                const integrity = { matched: "SHA-256 matched", mismatch: "SHA-256 mismatch", unavailable: "Check unavailable" };
+                const integrityState = integrity[archive.integrity.state] || "Unknown";
+                const checkedAt = archive.integrity.checkedAt ? formatSessionTime(archive.integrity.checkedAt) : "";
                 const download = adminPageInteraction.planCommand("downloadBackupArchive", { id: archive.id });
                 const verify = adminPageInteraction.planCommand("reverifyBackupArchive", { id: archive.id });
                 return `<article class="backup-block" data-archive-id="${escapeHtml(archive.id)}">
@@ -476,6 +479,7 @@
                     <p>Size: ${escapeHtml(archive.sizeBytes === null ? "Unknown" : formatBackupBytes(archive.sizeBytes))} · known_hosts: ${archive.knownHostsIncluded === null ? "Unknown" : archive.knownHostsIncluded ? "Included" : "Not included"}</p>
                     <p>Local availability: <strong>${escapeHtml(archive.availability)}</strong> · Latest review: ${escapeHtml(archive.verification)}</p>
                     <p>Last successful verification: ${escapeHtml(archive.lastVerifiedAt ? formatSessionTime(archive.lastVerifiedAt) : "Unknown")}</p>
+                    <p>Content integrity: <strong>${escapeHtml(integrityState)}</strong>${checkedAt ? " · Last completed check " + escapeHtml(checkedAt) : ""}</p>
                     <p>Data captured: ${escapeHtml(archive.capturedAt ? formatSessionTime(archive.capturedAt) : "Unknown")}</p>
                     <details><summary>Recorded SHA-256</summary><code>${escapeHtml(archive.sha256 || "Unknown")}</code></details>
                     <button type="button" class="btn-ghost" data-backup-archive="${escapeHtml(archive.id)}" data-backup-operation="download" ${download.enabled ? "" : "disabled"}>Download encrypted</button>

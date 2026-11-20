@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -196,6 +197,10 @@ func TestBackupCatalogRejectsReplacedCorruptSymlinkMissingAndForeign(t *testing.
 			case "same-size corruption":
 				original[len(original)/2] ^= 1
 				err = os.WriteFile(path, original, 0600)
+				if err == nil {
+					mtime := parseBackupStamp(archive.FileModifiedAt)
+					err = os.Chtimes(path, mtime, mtime)
+				}
 			case "replacement after listing":
 				err = os.Rename(path, path+".old")
 				if err == nil {
@@ -247,6 +252,16 @@ func TestBackupCatalogRejectsReplacedCorruptSymlinkMissingAndForeign(t *testing.
 					}
 				}
 			}
+			if kind == "same-size corruption" {
+				item := catalogFacts(t, app, cookie).Archives[0]
+				if item.Availability != "corrupt" || item.Integrity.State != backupIntegrityMismatch || item.LastVerifiedAt != archive.LastVerifiedAt {
+					t.Fatalf("foreground digest mismatch did not replace the prior integrity evidence: %+v", item)
+				}
+				var failures int
+				if err := app.Deps.DB().QueryRow("SELECT count(*) FROM audit_events WHERE action='backup.verify' AND status='failure'").Scan(&failures); err != nil || failures != 1 {
+					t.Fatalf("download and reverify should share one loss episode: %d, %v", failures, err)
+				}
+			}
 			if catalogProtectedState(t, app) != before {
 				t.Fatal("failed catalog command mutated active data")
 			}
@@ -266,6 +281,145 @@ func TestBackupCatalogRejectsReplacedCorruptSymlinkMissingAndForeign(t *testing.
 				if !lastConditionFact(batch.Facts, notificationpkg.BackupArchiveLossConditionPrefix+archive.ID+"/1").Active {
 					t.Fatal("existing backup notification condition not updated")
 				}
+			}
+		})
+	}
+}
+
+func TestBackupCatalogReverifyDiscardsProofAfterInPlaceMutation(t *testing.T) {
+	app, a, now := newBackupAutomationTest(t)
+	cookie := app.authenticate(t)
+	if err := a.Tick(t.Context(), true); err != nil {
+		t.Fatal(err)
+	}
+	archive := backupAutomationStateForTest(t, a).Archives[0]
+	*now = now.Add(time.Minute)
+	path := filepath.Join(a.deployment.Directory, archive.Name)
+	verify := a.verify
+	a.verify = func(ctx context.Context, snapshot internalbackup.TemporaryFile, passphrase string) (internalbackup.VerifyResult, error) {
+		result, err := verify(ctx, snapshot, passphrase)
+		if err != nil || !result.RestoreReady {
+			t.Fatalf("valid snapshot did not pass verification: %v", err)
+		}
+		file, err := os.OpenFile(path, os.O_WRONLY, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := file.WriteAt([]byte("changed"), 0); err != nil {
+			_ = file.Close()
+			t.Fatal(err)
+		}
+		if err := file.Close(); err != nil {
+			t.Fatal(err)
+		}
+		mtime := parseBackupStamp(archive.FileModifiedAt)
+		if err := os.Chtimes(path, mtime, mtime); err != nil {
+			t.Fatal(err)
+		}
+		return result, nil
+	}
+	if rec := catalogRequest(app, cookie, archive.ID, "verify"); rec.Code != http.StatusConflict {
+		t.Fatalf("reverify renewed proof against a concurrently changed source: %d %s", rec.Code, rec.Body.String())
+	}
+	current := backupAutomationStateForTest(t, a).Archives[0]
+	if current.Integrity.State != backupIntegrityUnavailable || current.Integrity.CheckedAt != archive.Integrity.CheckedAt ||
+		current.Integrity.AttemptedAt != backupStamp(*now) || current.LastVerifiedAt != archive.LastVerifiedAt || current.LossActive {
+		t.Fatalf("concurrent source change recorded new proof or a loss: %+v", current)
+	}
+	if err := a.observeArchiveAvailability(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if facts := installationSnapshot(t.Context(), app.Deps).BackupArchives; facts.State != "unknown" || facts.Unknown != 1 || facts.Verified != 0 {
+		t.Fatalf("metadata observation recovered unverified coverage: %+v", facts)
+	}
+	*now = now.Add(backupIntegrityRetryAfter)
+	if err := a.observeArchiveAvailability(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.checkArchiveIntegrity(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if item := catalogFacts(t, app, cookie).Archives[0]; item.Availability != "corrupt" || item.Integrity.State != backupIntegrityMismatch ||
+		item.LastVerifiedAt != archive.LastVerifiedAt {
+		t.Fatalf("scheduled retry did not detect the changed archive: %+v", item)
+	}
+}
+
+type backupCatalogReadContext struct {
+	context.Context
+	beforeRead func()
+}
+
+func (ctx *backupCatalogReadContext) Err() error {
+	if ctx.beforeRead != nil {
+		ctx.beforeRead()
+		ctx.beforeRead = nil
+	}
+	return ctx.Context.Err()
+}
+
+func TestBackupCatalogSnapshotDoesNotPreserveCoverageAfterVersionChange(t *testing.T) {
+	for _, change := range []string{"during copy", "after mismatch"} {
+		t.Run(change, func(t *testing.T) {
+			app, a, now := newBackupAutomationTest(t)
+			ctx := t.Context()
+			if err := a.Tick(ctx, true); err != nil {
+				t.Fatal(err)
+			}
+			s := backupAutomationStateForTest(t, a)
+			original := s.Archives[0]
+			path := filepath.Join(a.deployment.Directory, original.Name)
+			payload, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			mtime := parseBackupStamp(original.FileModifiedAt)
+			corrupt := func() {
+				t.Helper()
+				payload[0]++
+				if err := os.WriteFile(path, payload, 0600); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Chtimes(path, mtime, mtime); err != nil {
+					t.Fatal(err)
+				}
+			}
+			root, _, owner, _, err := a.destination(false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer root.Close()
+			directory := backupArchiveDirectoryIdentity(root)
+			var readCtx context.Context = ctx
+			want := errBackupCatalogDigestMismatch
+			if change == "during copy" {
+				readCtx = &backupCatalogReadContext{Context: ctx, beforeRead: corrupt}
+				want = errBackupCatalogVersionChanged
+			} else {
+				corrupt()
+			}
+			snapshot, cleanup, err := snapshotBackupArchive(readCtx, root, original, owner, directory)
+			defer cleanup()
+			if !errors.Is(err, want) {
+				t.Fatalf("snapshot error = %v, want %v", err, want)
+			}
+			if change == "after mismatch" {
+				corrupt()
+			}
+			*now = now.Add(time.Minute)
+			if err := a.saveBackupCatalogSnapshotFailure(ctx, s, 0, root, directory, "operator", "", snapshot, err); err != nil {
+				t.Fatal(err)
+			}
+			after := backupAutomationStateForTest(t, a).Archives[0]
+			if after.Integrity.State != backupIntegrityUnavailable || after.Integrity.AttemptedAt != backupStamp(*now) ||
+				after.Integrity.CheckedAt != original.Integrity.CheckedAt || after.LastVerifiedAt != original.LastVerifiedAt || after.LossActive {
+				t.Fatalf("concurrent source change recorded new proof or a loss: %+v", after)
+			}
+			if err := a.observeArchiveAvailability(ctx); err != nil {
+				t.Fatal(err)
+			}
+			if facts := installationSnapshot(ctx, app.Deps).BackupArchives; facts.State != "unknown" || facts.Unknown != 1 || facts.Verified != 0 || facts.Lost != 0 {
+				t.Fatalf("coverage trusted a version the snapshot did not check: %+v", facts)
 			}
 		})
 	}

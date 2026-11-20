@@ -275,6 +275,19 @@ observation before they can contribute to local coverage. Audit history still
 reports export and verification outcomes, including manual backups. Off-host
 availability is outside the local point calculation.
 
+The integrity worker reads at most one registered encrypted archive every five
+minutes, up to the existing archive size limit. It prioritizes the newest
+available recovery point once an hour and checks other candidates after
+24 hours, oldest attempt first. Unavailable reads become eligible for retry
+after 30 minutes. Only one read runs at a time. A slow read can complete over
+multiple intervals within the archive size limit. The worker compares the
+streamed SHA-256 with the registered digest and checks the file and mount identity.
+The backup catalog shows this digest check separately from the capture time
+and the full verification. A mismatch opens a deduplicated archive loss
+episode and coverage falls back to the best remaining point. An unavailable
+read records uncertainty and leaves the last completed check timestamp in
+place. The worker uses the encrypted bytes directly.
+
 The existing Metrics Access Credential also protects the added
 `slu_installation_*` Prometheus gauges. Existing `simplelinuxupdater_*` series are
 preserved during normal operation. During exclusive maintenance `/metrics` and the diagnostics API return a minimal

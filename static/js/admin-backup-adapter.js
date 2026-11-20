@@ -390,7 +390,7 @@
             const panel = document.getElementById("restore-apt-validation");
             if (!panel) return;
             const view = adminPageView();
-            const stale = view.streams?.installation?.freshness === "stale";
+            const freshness = view.streams?.installation?.freshness;
             const hosts = new Map((view.installation?.restoreAPTHosts || []).map(host => [host.identity, host]));
             for (const [identity, selected] of aptSelection) {
                 const host = hosts.get(identity);
@@ -412,8 +412,11 @@
                 const initial = aptRun?.hosts.get(host.identity);
                 const result = aptResults.get(host.identity);
                 const completed = initial && host.checkedAt && host.checkedAt !== initial.checkedAt && !host.checking;
+                const resultTime = Date.parse(result?.checked_at) || 0;
+                const snapshotTime = Date.parse(host.checkedAt) || 0;
                 const showResult = result?.state && result.target_revision === (host.targetRevision || undefined) &&
-                    (stale || Date.parse(result.checked_at) > (Date.parse(host.checkedAt) || 0));
+                    (resultTime > snapshotTime ||
+                        (freshness !== "fresh" && resultTime === snapshotTime && result.state !== host.state));
                 if (completed) finished++;
                 row.querySelector("[data-restore-apt-progress]").textContent =
                     result?.error ? result.error :
@@ -481,11 +484,12 @@
                         }
                     }
                 }
-                await refreshInstallation();
-                if (!lifecycle.isCurrent(lifetime)) return;
                 const subject = targets.length === 1 ? "1 server" : `${targets.length} servers`;
                 const attention = needsAttention === 1 ? " 1 needs attention." : needsAttention ? ` ${needsAttention} need attention.` : "";
                 feedback.textContent = single ? `Check finished for ${run.name}.` : `Checks finished for ${subject}.${attention}`;
+                void refreshInstallation().then(() => {
+                    if (lifecycle.isCurrent(lifetime)) renderRestoreAPTControls();
+                });
             } catch (error) {
                 if (lifecycle.isCurrent(lifetime)) feedback.textContent = error.name === "AbortError"
                     ? "APT checks cancelled." : error.message || "Could not check APT.";

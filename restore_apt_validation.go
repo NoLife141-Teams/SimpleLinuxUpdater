@@ -24,8 +24,9 @@ const (
 	restoreAPTProofLifetime    = 15 * time.Minute
 	restoreAPTCheckConcurrency = 4
 	restoreAPTCheckBatchLimit  = 12
-	// Keep time for the response within the HTTP server's write deadline.
-	restoreAPTCheckBatchTimeout = 50 * time.Second
+	// The write deadline starts before the request body is read. Leave room
+	// for a full body read and for writing the per-host results.
+	restoreAPTCheckBatchTimeout = serverWriteTimeout - serverReadHeaderTimeout - 5*time.Second
 )
 
 var errRestoredAPTKeyChanged = errors.New("SSH host key changed after restore validation. Recheck the server in Installation Health")

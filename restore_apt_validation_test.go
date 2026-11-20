@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -413,6 +414,9 @@ func TestRestoredAPTBatchChecksSelectedHostsWithBoundedConcurrency(t *testing.T)
 		t.Fatalf("duplicate selection: %d, %s", rec.Code, rec.Body)
 	}
 	overLimit := make([]restoreAPTCheckTarget, restoreAPTCheckBatchLimit+1)
+	for i := range overLimit {
+		overLimit[i] = restoreAPTCheckTarget{Name: fmt.Sprintf("server-%d", i), Identity: fmt.Sprintf("identity-%d", i)}
+	}
 	if rec := post(admin, overLimit); rec.Code != http.StatusBadRequest {
 		t.Fatalf("oversize selection: %d, %s", rec.Code, rec.Body)
 	}

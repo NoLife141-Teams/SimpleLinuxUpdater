@@ -2850,10 +2850,15 @@ test("admin checks selected restored hosts and can retry only the failed entries
         {name: "outside-selection", identity: "3", state: "pending"},
     ];
     const submissions = [];
-    let finish, rejectHealthRefresh = false;
-    await page.route("**/api/installation/health", route => rejectHealthRefresh
-        ? route.fulfill({status: 503})
-        : fulfillJson(route, {state: "ready", restore_isolation: "active", restore_apt_hosts: hosts}));
+    let finish, releaseRefresh, rejectHealthRefresh = false;
+    const deferredRefresh = new Promise(resolve => { releaseRefresh = resolve; });
+    await page.route("**/api/installation/health", async route => {
+        if (rejectHealthRefresh) {
+            await deferredRefresh;
+            return route.fulfill({status: 503});
+        }
+        return fulfillJson(route, {state: "ready", restore_isolation: "active", restore_apt_hosts: hosts});
+    });
     await page.route("**/api/backup/restore-isolation/apt-check", async route => {
         const { targets } = route.request().postDataJSON();
         submissions.push(targets);
@@ -2890,11 +2895,16 @@ test("admin checks selected restored hosts and can retry only the failed entries
     await expect(panel.getByRole("row", {name: /offline-host/})).toContainText("Wait for current server work");
     await expect(healthy).not.toBeChecked();
     await expect(offline).toBeChecked();
+    await expect(submit).toBeEnabled();
+    releaseRefresh();
+    const installation = page.locator("#admin-section-installation");
+    await expect(installation.locator("[data-admin-section-status]")).toHaveText("Stale");
+    await expect(panel.getByRole("row", {name: /healthy-host/})).toContainText("Last submitted check · Validated");
 
     await panel.getByRole("checkbox", {name: "Select outside-selection for APT check"}).check();
     hosts[2].name = "renamed-host";
     rejectHealthRefresh = false;
-    await page.locator("#admin-section-installation").getByRole("button", {name: "Refresh", exact: true}).click();
+    await installation.getByRole("button", {name: "Refresh", exact: true}).click();
     await expect(panel.getByRole("checkbox", {name: "Select renamed-host for APT check"})).not.toBeChecked();
     await expect(submit).toHaveText("Check selected (1)");
     await submit.click();

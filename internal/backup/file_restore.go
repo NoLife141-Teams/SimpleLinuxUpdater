@@ -822,6 +822,9 @@ func (s *Service) verifyArchiveFile(ctx context.Context, encrypted TemporaryFile
 	}
 	configData, err := readPathBounded(inspection.Files["config.json"], MaxExtractedBytes)
 	if err != nil {
+		if mode == verifyWorkspaceStorage && IsStorageFull(err) {
+			return result.withStorageFailure(err), nil
+		}
 		if mode == verifyWorkspaceStorage && IsVerificationIOError(err) {
 			return result, &RestoreError{Stage: RestoreStageArchive, Err: err}
 		}

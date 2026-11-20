@@ -1068,7 +1068,16 @@ func inspectTarGzFileWithLimits(ctx context.Context, path, tempRoot string, maxF
 		return ArchiveFileInspection{}, err
 	}
 	actual := make(map[string]ManifestFile, 4)
+	var manifestData bytes.Buffer
 	err = walkTarGzFile(ctx, path, maxFileBytes, maxTotalBytes, func(name string, size int64, data io.Reader) error {
+		if name == "manifest.json" {
+			if size > maxManifestBytes {
+				return ErrMalformed
+			}
+			// Parse the bytes already copied by extraction. Reopening the
+			// temporary file would add a second dependency on the workspace.
+			data = io.TeeReader(data, &manifestData)
+		}
 		targetPath := filepath.Join(extractDir, name)
 		target, err := os.OpenFile(targetPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
 		if err != nil {
@@ -1089,16 +1098,8 @@ func inspectTarGzFileWithLimits(ctx context.Context, path, tempRoot string, maxF
 	if err != nil {
 		return fail(err)
 	}
-	manifestPath, ok := inspection.Files["manifest.json"]
-	if !ok {
-		return fail(ErrMalformed)
-	}
-	manifestData, err := readPathBounded(manifestPath, maxManifestBytes)
-	if err != nil {
-		return fail(ErrMalformed)
-	}
 	var manifest Manifest
-	if json.Unmarshal(manifestData, &manifest) != nil || manifest.Files == nil {
+	if json.Unmarshal(manifestData.Bytes(), &manifest) != nil || manifest.Files == nil {
 		return fail(ErrMalformed)
 	}
 	missing := make([]string, 0, 2)

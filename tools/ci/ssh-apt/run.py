@@ -1294,6 +1294,11 @@ write_failed = subprocess.run([*args, '/ample'], capture_output=True, text=True,
 assert write_failed.returncode == 1, write_failed.stdout
 assert json.loads(write_failed.stdout)['status'] == 'verification_io_error'
 assert not list(Path('/ample').iterdir())
+unreadable_extraction = subprocess.run([*args, '/ample'], capture_output=True, text=True,
+                                       timeout=30, umask=0o777)
+assert unreadable_extraction.returncode == 1, unreadable_extraction.stdout
+assert json.loads(unreadable_extraction.stdout)['status'] == 'verification_io_error'
+assert not list(Path('/ample').iterdir())
 target.write_bytes(b'unreadable fixture database')
 trust = target.with_name('known_hosts')
 trust.write_bytes(b'fixture trust')

@@ -279,9 +279,9 @@ The integrity worker reads at most one registered encrypted archive every five
 minutes, up to the existing archive size limit. It prioritizes the newest
 available recovery point once an hour and checks other candidates after
 24 hours, oldest attempt first. Unavailable reads become eligible for retry
-after 30 minutes. An attempt has a 45-second budget and a stalled filesystem
-read occupies its slot until it returns. The worker compares the streamed
-SHA-256 with the registered digest and checks the file and mount identity.
+after 30 minutes. Only one read runs at a time. A slow read can complete over
+multiple intervals within the archive size limit. The worker compares the
+streamed SHA-256 with the registered digest and checks the file and mount identity.
 The backup catalog shows this digest check separately from the capture time
 and the full verification. A mismatch opens a deduplicated archive loss
 episode and coverage falls back to the best remaining point. An unavailable

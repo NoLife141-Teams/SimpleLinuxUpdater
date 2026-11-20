@@ -20,7 +20,6 @@ const (
 	backupIntegrityNewestAfter = time.Hour
 	backupIntegrityOtherAfter  = 24 * time.Hour
 	backupIntegrityRetryAfter  = 30 * time.Minute
-	backupIntegrityReadBudget  = 45 * time.Second
 
 	backupIntegrityMatched     = "matched"
 	backupIntegrityMismatch    = "mismatch"
@@ -38,16 +37,16 @@ func confirmedBackupIntegrity(at string) backupArchiveIntegrity {
 }
 
 func (a *backupAutomation) monitorArchiveIntegrity(ctx context.Context) {
-	ticker := time.NewTicker(backupIntegrityInterval)
-	defer ticker.Stop()
 	for {
 		if err := a.checkArchiveIntegrity(ctx); err != nil && !errors.Is(err, errBackupArchiveObservationDeferred) && ctx.Err() == nil {
 			log.Printf("automated backup integrity observation failed: %v", err)
 		}
+		timer := time.NewTimer(backupIntegrityInterval)
 		select {
 		case <-ctx.Done():
+			timer.Stop()
 			return
-		case <-ticker.C:
+		case <-timer.C:
 		}
 	}
 }
@@ -112,6 +111,28 @@ func (a *backupAutomation) checkArchiveIntegrity(ctx context.Context) error {
 }
 
 func (a *backupAutomation) checkArchiveIntegrityWithScan(ctx context.Context, scan func(context.Context, ownedBackupArchive) string) error {
+	if !a.integrityMu.TryLock() {
+		return nil
+	}
+	// Cap the bytes and the number of readers. Slow but readable mounts can
+	// finish a scan, and cancellation never opens a second reader behind an
+	// outstanding filesystem call.
+	done := make(chan struct{})
+	var result error
+	go func() {
+		defer close(done)
+		defer a.integrityMu.Unlock()
+		result = a.runArchiveIntegrityCheck(ctx, scan)
+	}()
+	select {
+	case <-done:
+		return result
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (a *backupAutomation) runArchiveIntegrityCheck(ctx context.Context, scan func(context.Context, ownedBackupArchive) string) error {
 	coord := a.deps.MaintenanceCoordinator
 	lease, decision := coord.TryShared(maintenancepkg.WorkScheduled)
 	if !decision.Allowed {
@@ -130,24 +151,10 @@ func (a *backupAutomation) checkArchiveIntegrityWithScan(ctx context.Context, sc
 		return err
 	}
 	archive, due := backupIntegrityCandidate(before, a.now())
-	if !due || !a.integrityMu.TryLock() {
+	if !due {
 		return nil
 	}
-	scanCtx, cancelScan := context.WithTimeout(ctx, backupIntegrityReadBudget)
-	defer cancelScan()
-	results := make(chan string, 1)
-	go func() {
-		defer a.integrityMu.Unlock()
-		results <- scan(scanCtx, archive)
-	}()
-	state := backupIntegrityUnavailable
-	select {
-	case observed := <-results:
-		if scanCtx.Err() == nil {
-			state = observed
-		}
-	case <-scanCtx.Done():
-	}
+	state := scan(ctx, archive)
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
@@ -177,23 +184,28 @@ func (a *backupAutomation) checkArchiveIntegrityWithScan(ctx context.Context, sc
 			continue
 		}
 		if !sameBackupIntegrityRegistration(*target, archive) || current.Observation.Owner != archive.Owner ||
+			current.Observation.Process != archive.ObservationProcess ||
 			current.Observation.DirectoryIdentity != archive.DirectoryIdentity || current.Observation.Storage != "available" {
 			return errBackupArchiveObservationDeferred
 		}
-		target.Integrity.State = state
-		target.Integrity.AttemptedAt = at
-		if state != backupIntegrityUnavailable {
-			target.Integrity.CheckedAt = at
+		if event := a.observeArchiveIntegrity(target, state, at, "backup-scheduler", ""); event != nil {
+			return a.save(writeCtx, current, *event)
 		}
-		var events []AuditEvent
-		if state == backupIntegrityMismatch {
-			if event := a.observeArchive(target, "corrupt", at, "backup-scheduler", ""); event != nil {
-				events = append(events, *event)
-			}
-		}
-		return a.save(writeCtx, current, events...)
+		return a.save(writeCtx, current)
 	}
 	return errBackupArchiveObservationDeferred
+}
+
+func (a *backupAutomation) observeArchiveIntegrity(archive *ownedBackupArchive, state, at, actor, ip string) *AuditEvent {
+	archive.Integrity.State = state
+	archive.Integrity.AttemptedAt = at
+	if state != backupIntegrityUnavailable {
+		archive.Integrity.CheckedAt = at
+	}
+	if state == backupIntegrityMismatch {
+		return a.observeArchive(archive, "corrupt", at, actor, ip)
+	}
+	return nil
 }
 
 func sameBackupIntegrityRegistration(current, previous ownedBackupArchive) bool {
@@ -202,6 +214,7 @@ func sameBackupIntegrityRegistration(current, previous ownedBackupArchive) bool 
 		current.FileIdentity == previous.FileIdentity && current.FileModifiedAt == previous.FileModifiedAt &&
 		reflect.DeepEqual(current.SizeBytes, previous.SizeBytes) &&
 		current.LastVerifiedAt == previous.LastVerifiedAt && current.Integrity == previous.Integrity &&
+		current.ObservationProcess == previous.ObservationProcess &&
 		current.Verification == "verified" && current.Availability == "present" && !current.LossActive
 }
 

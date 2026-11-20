@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	maintenancepkg "debian-updater/internal/maintenance"
 )
 
 func TestBackupArchiveIntegrityDetectsSameSizeAndMTimeCorruption(t *testing.T) {
@@ -138,6 +140,12 @@ func TestBackupArchiveIntegrityUnavailableAndSupersededChecksDoNotConfirmBytes(t
 		t.Fatal(err)
 	}
 	err := a.checkArchiveIntegrityWithScan(t.Context(), func(ctx context.Context, archive ownedBackupArchive) string {
+		lease, decision := a.deps.MaintenanceCoordinator.TryExclusive(maintenancepkg.OperationBackupRestore)
+		if !decision.Allowed {
+			t.Error("an integrity read must let exclusive maintenance start")
+		} else {
+			lease.Close()
+		}
 		// A foreground verification can complete while a background read is
 		// outstanding. Preserve its result against a stale mismatch.
 		a.mu.Lock()

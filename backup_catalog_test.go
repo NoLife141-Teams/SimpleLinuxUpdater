@@ -196,6 +196,10 @@ func TestBackupCatalogRejectsReplacedCorruptSymlinkMissingAndForeign(t *testing.
 			case "same-size corruption":
 				original[len(original)/2] ^= 1
 				err = os.WriteFile(path, original, 0600)
+				if err == nil {
+					mtime := parseBackupStamp(archive.FileModifiedAt)
+					err = os.Chtimes(path, mtime, mtime)
+				}
 			case "replacement after listing":
 				err = os.Rename(path, path+".old")
 				if err == nil {
@@ -247,6 +251,16 @@ func TestBackupCatalogRejectsReplacedCorruptSymlinkMissingAndForeign(t *testing.
 					}
 				}
 			}
+			if kind == "same-size corruption" {
+				item := catalogFacts(t, app, cookie).Archives[0]
+				if item.Availability != "corrupt" || item.Integrity.State != backupIntegrityMismatch || item.LastVerifiedAt != archive.LastVerifiedAt {
+					t.Fatalf("foreground digest mismatch did not replace the prior integrity evidence: %+v", item)
+				}
+				var failures int
+				if err := app.Deps.DB().QueryRow("SELECT count(*) FROM audit_events WHERE action='backup.verify' AND status='failure'").Scan(&failures); err != nil || failures != 1 {
+					t.Fatalf("download and reverify should share one loss episode: %d, %v", failures, err)
+				}
+			}
 			if catalogProtectedState(t, app) != before {
 				t.Fatal("failed catalog command mutated active data")
 			}
@@ -268,6 +282,41 @@ func TestBackupCatalogRejectsReplacedCorruptSymlinkMissingAndForeign(t *testing.
 				}
 			}
 		})
+	}
+}
+
+func TestBackupCatalogReverifyDiscardsProofAfterInPlaceMutation(t *testing.T) {
+	app, a, cookie, archive := publishedCatalogFixture(t)
+	path := filepath.Join(a.deployment.Directory, archive.Name)
+	verify := a.verify
+	a.verify = func(ctx context.Context, snapshot internalbackup.TemporaryFile, passphrase string) (internalbackup.VerifyResult, error) {
+		result, err := verify(ctx, snapshot, passphrase)
+		if err != nil || !result.RestoreReady {
+			t.Fatalf("valid snapshot did not pass verification: %v", err)
+		}
+		file, err := os.OpenFile(path, os.O_WRONLY, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := file.WriteAt([]byte("changed"), 0); err != nil {
+			_ = file.Close()
+			t.Fatal(err)
+		}
+		if err := file.Close(); err != nil {
+			t.Fatal(err)
+		}
+		mtime := parseBackupStamp(archive.FileModifiedAt)
+		if err := os.Chtimes(path, mtime, mtime); err != nil {
+			t.Fatal(err)
+		}
+		return result, nil
+	}
+	if rec := catalogRequest(app, cookie, archive.ID, "verify"); rec.Code != http.StatusConflict {
+		t.Fatalf("reverify renewed proof against a concurrently changed source: %d %s", rec.Code, rec.Body.String())
+	}
+	current := backupAutomationStateForTest(t, a).Archives[0]
+	if current.Integrity != archive.Integrity || current.LastVerifiedAt != archive.LastVerifiedAt || current.LossActive {
+		t.Fatalf("concurrent source change recorded new proof or a loss: %+v", current)
 	}
 }
 

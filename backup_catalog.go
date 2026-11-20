@@ -233,6 +233,7 @@ func (r backupCatalogReader) Read(p []byte) (int, error) {
 }
 
 var errBackupCatalogUnavailable = errors.New("registered backup is unavailable or failed validation")
+var errBackupCatalogDigestMismatch = errors.New("registered backup SHA-256 mismatch")
 
 type backupCatalogSnapshot struct {
 	file internalbackup.TemporaryFile
@@ -259,13 +260,13 @@ func snapshotBackupArchive(ctx context.Context, root *os.Root, archive ownedBack
 	}
 	defer src.Close()
 	opened, err := src.Stat()
-	if err != nil || !opened.Mode().IsRegular() || !os.SameFile(before, opened) ||
+	if err != nil || !sameBackupIntegrityFile(before, opened) ||
 		(archive.FileIdentity != "" && archive.FileIdentity != backupCatalogFileIdentity(opened)) ||
 		(archive.SizeBytes != nil && *archive.SizeBytes != opened.Size()) {
 		return empty, noop, errBackupCatalogUnavailable
 	}
 	after, err := root.Lstat(archive.Name)
-	if err != nil || !after.Mode().IsRegular() || !os.SameFile(opened, after) {
+	if err != nil || !sameBackupIntegrityFile(opened, after) {
 		return empty, noop, errBackupCatalogUnavailable
 	}
 	directory, err := os.MkdirTemp("", "slu-backup-catalog-*")
@@ -284,12 +285,21 @@ func snapshotBackupArchive(ctx context.Context, root *os.Root, archive ownedBack
 	current, statErr := src.Stat()
 	named, nameErr := root.Lstat(archive.Name)
 	if copyErr != nil || closeErr != nil || statErr != nil || nameErr != nil || size <= 0 || size > internalbackup.MaxUploadBytes ||
-		size != opened.Size() || current.Size() != opened.Size() || !current.ModTime().Equal(opened.ModTime()) ||
-		!named.Mode().IsRegular() || !os.SameFile(current, named) || hex.EncodeToString(digest.Sum(nil)) != archive.SHA256 || ctx.Err() != nil {
+		size != opened.Size() || !sameBackupIntegrityFile(opened, current) || !sameBackupIntegrityFile(current, named) ||
+		!backupCatalogMountAvailable(root, directoryIdentity) || ctx.Err() != nil {
 		cleanup()
 		return empty, noop, errBackupCatalogUnavailable
 	}
+	if hex.EncodeToString(digest.Sum(nil)) != archive.SHA256 {
+		cleanup()
+		return backupCatalogSnapshot{info: current}, noop, errBackupCatalogDigestMismatch
+	}
 	return backupCatalogSnapshot{file: internalbackup.TemporaryFile{Path: dst.Name(), Size: size}, info: current}, cleanup, nil
+}
+
+func backupCatalogMountAvailable(root *os.Root, identity string) bool {
+	info, err := os.Lstat(root.Name())
+	return err == nil && backupArchiveDirectoryAccessible(info) && backupCatalogFileIdentity(info) == identity
 }
 
 func handleBackupCatalog(c *gin.Context, a *backupAutomation) {
@@ -358,25 +368,31 @@ func handleBackupCatalogOperation(c *gin.Context, a *backupAutomation, verify bo
 	snapshot, cleanup, err := snapshotBackupArchive(ctx, root, *archive, owner, directory)
 	defer cleanup()
 	if err != nil {
-		if ctx.Err() == nil && errors.Is(err, errBackupCatalogUnavailable) {
+		digestMismatch := errors.Is(err, errBackupCatalogDigestMismatch)
+		if ctx.Err() == nil && (digestMismatch || errors.Is(err, errBackupCatalogUnavailable)) && backupCatalogMountAvailable(root, directory) {
 			availability, _ := backupArchiveAvailabilityAt(root, *archive, owner, directory)
-			var evidenceErr error
-			var events []AuditEvent
-			if archiveAvailabilityLost(availability) {
-				s.Observation = newBackupArchiveObservation(a.now(), "available", owner, directory)
-				if event := a.observeArchive(archive, availability, s.Observation.CheckedAt, actorFromContext(c), clientIPFromContext(c)); event != nil {
+			if digestMismatch {
+				named, err := root.Lstat(archive.Name)
+				digestMismatch = err == nil && sameBackupIntegrityFile(snapshot.info, named)
+			}
+			if digestMismatch || archiveAvailabilityLost(availability) {
+				observation := newBackupArchiveObservation(a.now(), "available", owner, directory)
+				actor, ip := actorFromContext(c), clientIPFromContext(c)
+				var event *AuditEvent
+				if digestMismatch {
+					event = a.observeArchiveIntegrity(archive, backupIntegrityMismatch, observation.CheckedAt, actor, ip)
+				} else {
+					event = a.observeArchive(archive, availability, observation.CheckedAt, actor, ip)
+				}
+				s.Observation = observation
+				var events []AuditEvent
+				if event != nil {
 					events = append(events, *event)
 				}
-			} else if availability == "present" && archive.Integrity.State != backupIntegrityMismatch {
-				archive.Verification = "failed"
-				evidenceErr = a.catalogAudit(actorFromContext(c), clientIPFromContext(c), "backup.verify", *archive, false)
-			}
-			if evidenceErr == nil {
-				evidenceErr = a.save(ctx, s, events...)
-			}
-			if evidenceErr != nil {
-				c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Backup verification evidence could not be saved."})
-				return
+				if err := a.save(ctx, s, events...); err != nil {
+					c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Backup verification evidence could not be saved."})
+					return
+				}
 			}
 		}
 		c.JSON(http.StatusConflict, gin.H{"error": errBackupCatalogUnavailable.Error()})
@@ -399,9 +415,15 @@ func handleBackupCatalogOperation(c *gin.Context, a *backupAutomation, verify bo
 			// The readiness pipeline verified pinned bytes. Confirm that their
 			// registered file is still present before restoring local coverage.
 			storage, availability := "unavailable", "unavailable"
-			if info, err := os.Lstat(root.Name()); err == nil && backupArchiveDirectoryAccessible(info) && backupCatalogFileIdentity(info) == directory {
+			if backupCatalogMountAvailable(root, directory) {
 				storage = "available"
 				availability, _ = backupArchiveAvailabilityAt(root, verified, owner, directory)
+				if availability == "present" {
+					named, err := root.Lstat(archive.Name)
+					if err != nil || !sameBackupIntegrityFile(snapshot.info, named) {
+						availability = "unavailable"
+					}
+				}
 			}
 			if availability != "present" {
 				s.Observation = newBackupArchiveObservation(a.now(), storage, owner, directory)

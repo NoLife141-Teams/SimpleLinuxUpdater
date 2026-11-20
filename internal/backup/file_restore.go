@@ -81,6 +81,9 @@ func (s *Service) ValidateDatabaseFile(ctx context.Context, path string, encrypt
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
+		if IsStorageFull(err) {
+			return err
+		}
 		return errArchivedNotifications
 	}
 	return nil
@@ -438,10 +441,7 @@ func (s *Service) applyArchiveFiles(ctx context.Context, files map[string]string
 	if err != nil {
 		return fmt.Errorf("resolve rollback snapshot directory: %w", err)
 	}
-	knownHostsTarget := filepath.Join(filepath.Dir(dbTarget), "known_hosts")
-	if path, err := s.deps.KnownHostsWritePath(); err == nil && strings.TrimSpace(path) != "" {
-		knownHostsTarget = path
-	}
+	knownHostsTarget := s.restoreKnownHostsTarget(dbTarget)
 	targets := append([]string{dbTarget}, SQLiteSidecarPaths(dbTarget)...)
 	knownHosts, replacesKnownHosts := files["known_hosts"]
 	var reservedPaths []string
@@ -476,15 +476,19 @@ func (s *Service) applyArchiveFiles(ctx context.Context, files map[string]string
 		// been replaced. Preserve typed recovery errors if a preparer cannot unwind.
 		return fmt.Errorf("prepare restored persistence replacement: %w", err)
 	}
-	if opts.BeforeReplacement != nil {
-		if err := opts.BeforeReplacement(); err != nil {
-			return s.reloadOriginalPersistence(ctx, err, restoreHandoff)
-		}
-	}
 	if stager, ok := s.deps.RestoredRuntime.(ReplacementStager); ok {
 		if err := stageRuntimePersistence(ctx, preparedDB.Path, stager); err != nil {
 			return s.reloadOriginalPersistence(ctx, fmt.Errorf("stage restored runtime persistence: %w", err), restoreHandoff)
 		}
+	}
+	storageTargets := restoreStorageTargets{database: dbTarget, rollback: snapshotRoot}
+	if replacesKnownHosts {
+		storageTargets.hosts = knownHostsTarget
+	}
+	databaseBytes, _ := sizeOnDisk(preparedDB.Path)
+	hostsBytes, _ := sizeOnDisk(knownHosts)
+	if err := storageBlocker(s.estimateRestoreStorage(storageTargets.replacementNeeds(databaseBytes, hostsBytes, true)...)); err != nil {
+		return s.reloadOriginalPersistence(ctx, errors.Join(err, preparedDB.Remove()), restoreHandoff)
 	}
 	snapshotDir, snapshots, err := fs.snapshotFilesToDirectory(snapshotRoot, targets, restoreRollbackPrefix)
 	if err != nil {
@@ -510,6 +514,18 @@ func (s *Service) applyArchiveFiles(ctx context.Context, files map[string]string
 	}
 	if err != nil {
 		return s.reloadOriginalPersistence(ctx, fmt.Errorf("persist rollback manifest: %w", err), restoreHandoff)
+	}
+	// Snapshot files are already charged to their volume. Recheck only the
+	// remaining writes before creating the durable marker and replacing files.
+	if err := storageBlocker(s.estimateRestoreStorage(storageTargets.replacementNeeds(databaseBytes, hostsBytes, false)...)); err != nil {
+		// Release unpublished reservations before reopening the live runtime.
+		cause := errors.Join(err, os.RemoveAll(snapshotDir), preparedDB.Remove())
+		return s.reloadOriginalPersistence(ctx, cause, restoreHandoff)
+	}
+	if opts.BeforeReplacement != nil {
+		if err := opts.BeforeReplacement(); err != nil {
+			return s.reloadOriginalPersistence(ctx, err, restoreHandoff)
+		}
 	}
 	// Publishing the marker and syncing the database directory also makes
 	// the snapshot directory entry durable before any live file is changed.
@@ -639,12 +655,18 @@ func restoreResourceReviewsFromPaths(manifest Manifest, files map[string]string)
 }
 
 func (s *Service) VerifyArchiveFile(ctx context.Context, encrypted TemporaryFile, passphrase string) (VerifyResult, error) {
-	return s.VerifyArchiveFileWithReview(ctx, encrypted, passphrase, nil)
+	// Scheduled archival verification checks portability. The interactive
+	// verification endpoint separately evaluates this installation's capacity.
+	return s.verifyArchiveFile(ctx, encrypted, passphrase, nil, false)
 }
 
 // VerifyArchiveFileWithReview allows an installation-specific compatibility
 // check on the isolated, schema-validated archive database.
 func (s *Service) VerifyArchiveFileWithReview(ctx context.Context, encrypted TemporaryFile, passphrase string, review func(context.Context, *sql.DB)) (VerifyResult, error) {
+	return s.verifyArchiveFile(ctx, encrypted, passphrase, review, true)
+}
+
+func (s *Service) verifyArchiveFile(ctx context.Context, encrypted TemporaryFile, passphrase string, review func(context.Context, *sql.DB), assessStorage bool) (VerifyResult, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -669,17 +691,39 @@ func (s *Service) VerifyArchiveFileWithReview(ctx context.Context, encrypted Tem
 		result.Blockers = append(result.Blockers, ReadinessIssue{Code: "unsupported_version", Message: fmt.Sprintf("Backup version %d is not supported; this application accepts version %d.", envelope.Version, FormatVersion)})
 		return result, nil
 	}
+	if assessStorage {
+		if err := s.decryptStorageBlocker(encrypted.Path); err != nil {
+			return result.withStorageFailure(err), nil
+		}
+	}
 	plain, err := s.decryptFile(encrypted.Path, passphrase)
 	if err != nil {
 		if errors.Is(err, ErrUnsupportedFormat) {
 			result.Blockers = append(result.Blockers, ReadinessIssue{Code: "unsupported_encryption", Message: "The backup uses encryption settings that this application does not support."})
 			return result, nil
 		}
+		if assessStorage && IsStorageFull(err) {
+			return result.withStorageFailure(err), nil
+		}
 		return VerifyResult{}, &RestoreError{Stage: RestoreStageDecrypt, Err: err}
 	}
 	defer plain.Remove()
+	if assessStorage {
+		sizes, err := measureTarGzFile(ctx, plain.Path)
+		if err != nil {
+			return VerifyResult{}, &RestoreError{Stage: RestoreStageArchive, Err: err}
+		}
+		volumes, canExtract := s.archiveRestoreStorage(sizes)
+		result.Storage = volumes
+		if !canExtract {
+			return result.withStorageFailure(storageBlocker(volumes)), nil
+		}
+	}
 	inspection, err := InspectTarGzFileWithLimits(plain.Path, s.deps.TempDir(), MaxExtractedBytes, MaxExtractedBytes)
 	if err != nil {
+		if assessStorage && IsStorageFull(err) {
+			return result.withStorageFailure(err), nil
+		}
 		return VerifyResult{}, &RestoreError{Stage: RestoreStageArchive, Err: err}
 	}
 	defer inspection.Remove()
@@ -713,6 +757,9 @@ func (s *Service) VerifyArchiveFileWithReview(ctx context.Context, encrypted Tem
 	}
 	result.ConfigValid = true
 	if err := s.ValidateDatabaseFile(ctx, inspection.Files["servers.db"], backupKey); err != nil {
+		if assessStorage && IsStorageFull(err) {
+			return result.withStorageFailure(err), nil
+		}
 		if errors.Is(err, errArchivedNotifications) {
 			result.Blockers = append(result.Blockers, ReadinessIssue{
 				Code:    "invalid_notification_state",
@@ -731,6 +778,16 @@ func (s *Service) VerifyArchiveFileWithReview(ctx context.Context, encrypted Tem
 	result.SafeCounts = counts
 	if !result.KnownHostsIncluded {
 		result.Warnings = append(result.Warnings, ReadinessIssue{Code: "known_hosts_not_included", Message: "known_hosts is not included; the current host-key trust file will remain unchanged."})
+	}
+	for _, volume := range result.Storage {
+		if volume.State == restoreStorageUnknown {
+			result.Warnings = append(result.Warnings, ReadinessIssue{
+				Code: "storage_capacity_unknown", Message: "Available restore capacity could not be established for " + restoreStorageRoleNames(volume.Roles) + ".",
+			})
+		}
+	}
+	if err := storageBlocker(result.Storage); err != nil {
+		return result.withStorageFailure(err), nil
 	}
 	result.RestoreReady = true
 	if review != nil {
@@ -752,11 +809,22 @@ func (s *Service) RestoreArchiveFileWithOptions(ctx context.Context, encrypted T
 	if err := ValidatePassphrase(passphrase); err != nil {
 		return RestoreResult{}, err
 	}
+	if err := s.decryptStorageBlocker(encrypted.Path); err != nil {
+		return RestoreResult{}, &RestoreError{Stage: RestoreStageApply, Err: err}
+	}
 	plain, err := s.decryptFile(encrypted.Path, passphrase)
 	if err != nil {
 		return RestoreResult{}, &RestoreError{Stage: RestoreStageDecrypt, Err: err}
 	}
 	defer plain.Remove()
+	sizes, err := measureTarGzFile(ctx, plain.Path)
+	if err != nil {
+		return RestoreResult{}, &RestoreError{Stage: RestoreStageArchive, Err: err}
+	}
+	volumes, _ := s.archiveRestoreStorage(sizes)
+	if err := storageBlocker(volumes); err != nil {
+		return RestoreResult{}, &RestoreError{Stage: RestoreStageApply, Err: err}
+	}
 	inspection, err := InspectTarGzFileWithLimits(plain.Path, s.deps.TempDir(), MaxExtractedBytes, MaxExtractedBytes)
 	if err != nil {
 		return RestoreResult{}, &RestoreError{Stage: RestoreStageArchive, Err: err}

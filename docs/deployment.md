@@ -195,6 +195,33 @@ scheduler, host facts, vulnerability, backup, notification, audit-pruning and jo
 completion and error timestamps; running/enabled state; backup verification age;
 persisted pending/claimed, retrying and failed notification rows; and observed
 main DB/WAL and available filesystem bytes (capacity currently on Linux).
+
+The interactive restore review estimates additional space for the current
+installation. It checks temporary envelope decoding separately. Once the
+compressed archive is authenticated, it uses bounded tar entry sizes to budget
+extraction, a prepared copy of SQLite and a SQLite journal of comparable
+size. The encrypted upload and the decrypted compressed file already occupy
+space when that estimate is measured. The replacement budget includes an
+atomic write of the staged database and any archived host-key file, the
+rollback snapshots of the current SQLite database and sidecars and optional
+host-key file, and space to write the rollback copies back to their targets.
+The estimate groups requirements by filesystem device and adds a margin of
+8 MiB or 10 percent per device, whichever is greater. Available bytes exclude
+blocks reserved for privileged callers. The output identifies storage roles
+without exposing filesystem paths.
+
+Restore checks space before extracting and again before writing rollback
+snapshots. After sealing the snapshots it checks the remaining space with the
+actual prepared database size, before publishing the recovery marker or
+replacing live files. An insufficient volume stops replacement. When space
+cannot be measured, the review shows unknown capacity. Available space may
+change between a check and a write. A storage error still uses the normal
+rollback and recovery procedure. Free space on the preparation volume
+(`TMPDIR`), the volume holding SQLite and its rollback snapshots, or the
+volume containing the host-key file, as indicated. Reverify before retrying.
+Scheduled verification checks archive integrity and format for later use on
+any compatible installation.
+
 A successful notification condition evaluation reads and validates its inputs
 and commits any state changes, including when no delivery is due. A later
 evaluation failure marks this observation as degraded and retains its last

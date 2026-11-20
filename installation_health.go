@@ -233,7 +233,7 @@ func installationSnapshot(ctx context.Context, deps AppDeps) installationDiagnos
 	}
 	if deps.DBPath != nil {
 		path := deps.DBPath()
-		out.Storage = installationStorage{DBBytes: installationFileSize(path), WALBytes: installationFileSize(path + "-wal"), AvailableBytes: installationAvailableBytes(filepath.Dir(path))}
+		out.Storage = installationStorage{DBBytes: installationFileSize(path), WALBytes: installationFileSize(path + "-wal"), AvailableBytes: installationhealthpkg.FilesystemCapacity(filepath.Dir(path)).AvailableBytes}
 	}
 	return out
 }

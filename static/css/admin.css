@@ -1520,6 +1520,10 @@
     gap: 6px;
 }
 
+.backup-review-section[hidden] {
+    display: none;
+}
+
 .backup-review-section ul {
     display: grid;
     gap: 5px;

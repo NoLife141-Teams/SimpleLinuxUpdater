@@ -299,6 +299,26 @@
                 .map((message) => `<li>${escapeHtml(message)}</li>`)
                 .join("");
 
+            const storagePanel = document.getElementById("backup-review-storage");
+            const storageVolumes = document.getElementById("backup-review-storage-volumes");
+            if (storagePanel && storageVolumes) {
+                const roles = {
+                    preparation: "Archive and SQLite preparation",
+                    sqlite_replacement: "SQLite replacement",
+                    ssh_trust_replacement: "SSH host-key replacement",
+                    rollback_snapshots: "Rollback snapshots",
+                };
+                storagePanel.hidden = !review.storage.length;
+                storageVolumes.innerHTML = review.storage.map(volume => {
+                    const labels = volume.roles.map(role => roles[role]).filter(Boolean);
+                    const available = volume.availableBytes === null ? "Available capacity unknown"
+                        : formatBackupBytes(volume.availableBytes) + " available";
+                    const state = volume.state === "insufficient" ? " · Insufficient space"
+                        : volume.state === "unknown" && volume.availableBytes !== null ? " · Estimate incomplete" : "";
+                    return `<li><strong>${escapeHtml(labels.join(", "))}</strong> · About ${escapeHtml(formatBackupBytes(volume.requiredBytes))} required · ${escapeHtml(available + state)}</li>`;
+                }).join("");
+            }
+
             renderBackupIssueList("backup-review-blockers", review.blockers);
             renderBackupIssueList("backup-review-warnings", review.warnings);
             renderAdminDestructiveControls();

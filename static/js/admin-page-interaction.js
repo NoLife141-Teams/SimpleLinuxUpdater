@@ -267,6 +267,12 @@
                 sizeBytes: Number(archive.size_bytes ?? data.archive_size_bytes) || 0
             },
             resources: clone(Array.isArray(data.resources) ? data.resources : []),
+            storage: Array.isArray(data.storage) ? data.storage.map(volume => ({
+                roles: uniqueStrings(volume.roles),
+                requiredBytes: Number(volume.required_bytes) || 0,
+                availableBytes: volume.available_bytes == null ? null : Number(volume.available_bytes),
+                state: String(volume.state || "unknown"),
+            })) : [],
             missingResources: uniqueStrings(data.missing_resources),
             safeCounts: {
                 servers: Number(counts.servers) || 0,

@@ -338,6 +338,13 @@ func readUploadedBackupFileToTemp(file *multipart.FileHeader) (internalbackup.Te
 }
 
 func writeBackupUploadError(c *gin.Context, err error, publicError string) {
+	if internalbackup.IsStorageFull(err) {
+		c.JSON(http.StatusInsufficientStorage, gin.H{
+			"error": "The backup upload ran out of temporary storage. Free space on the preparation volume and retry.",
+			"code":  "insufficient_storage",
+		})
+		return
+	}
 	var tooLarge *http.MaxBytesError
 	if errors.As(err, &tooLarge) {
 		c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "request payload too large"})
@@ -491,6 +498,7 @@ func handleBackupVerifyWithReview(c *gin.Context, service *BackupService, instal
 		"blockers":             result.Blockers,
 		"warnings":             result.Warnings,
 		"installation_review":  installation,
+		"storage":              result.Storage,
 	})
 }
 
@@ -586,6 +594,11 @@ func handleBackupRestoreWithLifecycle(c *gin.Context, lifecycle *backupOperation
 	case backupOperationRestoreArchiveFailed:
 		c.Header("X-Job-ID", outcome.JobID)
 		c.JSON(http.StatusBadRequest, gin.H{"error": outcome.PublicError})
+	case backupOperationRestoreStorageFull:
+		c.Header("X-Job-ID", outcome.JobID)
+		c.JSON(http.StatusInsufficientStorage, gin.H{
+			"error": outcome.PublicError, "code": "insufficient_storage", "storage": outcome.Storage,
+		})
 	case backupOperationRestoreAPTConflict:
 		c.Header("X-Job-ID", outcome.JobID)
 		c.JSON(http.StatusConflict, gin.H{"error": outcome.PublicError})

@@ -23,6 +23,7 @@ import (
 	"strings"
 	"time"
 
+	"debian-updater/internal/installationhealth"
 	serverpkg "debian-updater/internal/servers"
 
 	"golang.org/x/crypto/scrypt"
@@ -127,25 +128,26 @@ type RestoreResult struct {
 }
 
 type VerifyResult struct {
-	Manifest           Manifest         `json:"manifest"`
-	ArchiveFormat      string           `json:"archive_format"`
-	ArchiveVersion     int              `json:"archive_version"`
-	ArchiveCreatedAt   string           `json:"archive_created_at"`
-	ArchiveSizeBytes   int64            `json:"archive_size_bytes"`
-	FileNames          []string         `json:"file_names"`
-	ManifestFileCount  int              `json:"manifest_file_count"`
-	TotalBytes         int64            `json:"total_bytes"`
-	KnownHostsIncluded bool             `json:"known_hosts_included"`
-	DatabaseValid      bool             `json:"database_valid"`
-	ConfigValid        bool             `json:"config_valid"`
-	Compatible         bool             `json:"compatible"`
-	RestoreReady       bool             `json:"restore_ready"`
-	Resources          []ResourceReview `json:"resources"`
-	MissingResources   []string         `json:"missing_resources"`
-	SafeCounts         SafeCounts       `json:"safe_counts"`
-	Impact             RestoreImpact    `json:"impact"`
-	Blockers           []ReadinessIssue `json:"blockers"`
-	Warnings           []ReadinessIssue `json:"warnings"`
+	Manifest           Manifest               `json:"manifest"`
+	ArchiveFormat      string                 `json:"archive_format"`
+	ArchiveVersion     int                    `json:"archive_version"`
+	ArchiveCreatedAt   string                 `json:"archive_created_at"`
+	ArchiveSizeBytes   int64                  `json:"archive_size_bytes"`
+	FileNames          []string               `json:"file_names"`
+	ManifestFileCount  int                    `json:"manifest_file_count"`
+	TotalBytes         int64                  `json:"total_bytes"`
+	KnownHostsIncluded bool                   `json:"known_hosts_included"`
+	DatabaseValid      bool                   `json:"database_valid"`
+	ConfigValid        bool                   `json:"config_valid"`
+	Compatible         bool                   `json:"compatible"`
+	RestoreReady       bool                   `json:"restore_ready"`
+	Resources          []ResourceReview       `json:"resources"`
+	MissingResources   []string               `json:"missing_resources"`
+	SafeCounts         SafeCounts             `json:"safe_counts"`
+	Impact             RestoreImpact          `json:"impact"`
+	Blockers           []ReadinessIssue       `json:"blockers"`
+	Storage            []RestoreStorageVolume `json:"storage,omitempty"`
+	Warnings           []ReadinessIssue       `json:"warnings"`
 }
 
 type ResourceReview struct {
@@ -281,6 +283,7 @@ type ServiceDeps struct {
 	RestoredRuntime               RestoredRuntime
 	Now                           func() time.Time
 	TempDir                       func() string
+	ProbeRestoreStorage           func(string) installationhealth.VolumeCapacity
 	RecoveryStaleAfter            time.Duration
 	RecoveryEvidenceRetentionDays int
 	Logf                          func(string, ...any)
@@ -328,6 +331,9 @@ func (deps ServiceDeps) withDefaults() ServiceDeps {
 	}
 	if deps.TempDir == nil {
 		deps.TempDir = os.TempDir
+	}
+	if deps.ProbeRestoreStorage == nil {
+		deps.ProbeRestoreStorage = installationhealth.FilesystemCapacity
 	}
 	if deps.RecoveryStaleAfter <= 0 {
 		deps.RecoveryStaleAfter = DefaultRecoveryStaleAfter

@@ -28,6 +28,7 @@ const (
 	backupOperationRestoreDecryptFailed      backupOperationKind = "restore_decrypt_failed"
 	backupOperationRestoreArchiveFailed      backupOperationKind = "restore_archive_failed"
 	backupOperationRestoreApplyFailed        backupOperationKind = "restore_apply_failed"
+	backupOperationRestoreStorageFull        backupOperationKind = "restore_storage_full"
 	backupOperationRestoreAPTConflict        backupOperationKind = "restore_apt_conflict"
 )
 
@@ -99,6 +100,7 @@ type backupOperationOutcome struct {
 	JobID               string
 	PublicError         string
 	ActiveServers       []string
+	Storage             []internalbackup.RestoreStorageVolume
 	ExportBytes         []byte
 	ExportFile          internalbackup.TemporaryFile
 	KnownHostsIncluded  bool
@@ -630,6 +632,13 @@ func (l *backupOperationLifecycle) failRestoreArchive(job JobRecord, cmd backupR
 	if errors.As(err, &restoreErr) {
 		stage = restoreErr.Stage
 	}
+	var storage *internalbackup.RestoreStorageError
+	if errors.As(err, &storage) || internalbackup.IsStorageFull(err) {
+		stage = internalbackup.RestoreStageApply
+		if storage == nil {
+			storage = &internalbackup.RestoreStorageError{}
+		}
+	}
 	switch stage {
 	case internalbackup.RestoreStageDecrypt:
 		status := jobStatusFailed
@@ -683,7 +692,17 @@ func (l *backupOperationLifecycle) failRestoreArchive(job JobRecord, cmd backupR
 		errorClass := "apply"
 		kind := backupOperationRestoreApplyFailed
 		publicError := "failed to apply backup"
-		if errors.Is(err, jobs.ErrAPTRecoveryEvidenceConflict) {
+		errorDetail := err.Error()
+		var volumes []internalbackup.RestoreStorageVolume
+		if storage != nil {
+			kind = backupOperationRestoreStorageFull
+			publicError = storage.Error()
+			summary = publicError
+			auditMessage = publicError
+			errorDetail = publicError
+			errorClass = "insufficient_storage"
+			volumes = storage.Volumes
+		} else if errors.Is(err, jobs.ErrAPTRecoveryEvidenceConflict) {
 			kind = backupOperationRestoreAPTConflict
 			publicError = "The backup conflicts with APT reconciliation evidence. Resolve APT reconciliation on this installation before retrying the restore."
 			summary = publicError
@@ -707,9 +726,9 @@ func (l *backupOperationLifecycle) failRestoreArchive(job JobRecord, cmd backupR
 			TargetName: "state",
 			Status:     "failure",
 			Message:    auditMessage,
-			Meta:       map[string]any{"error": err.Error()},
+			Meta:       map[string]any{"error": errorDetail},
 		})
-		return backupOperationOutcome{Kind: kind, JobID: job.ID, PublicError: publicError, Err: err}
+		return backupOperationOutcome{Kind: kind, JobID: job.ID, PublicError: publicError, Storage: volumes, Err: err}
 	}
 }
 

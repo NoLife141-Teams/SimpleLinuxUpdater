@@ -335,7 +335,7 @@ func (c *runtimeComposition) Compose() AppDeps {
 		}
 		deps.NotificationService = NewNotificationService(NotificationServiceDeps{
 			Now:            deps.Now,
-			ReadConditions: newNotificationConditionSource(deps.DB, deps.Now, deps.PublicOrigin, backupDeployment.Directory),
+			ReadConditions: newNotificationConditionSource(deps.DB, deps.Now, deps.PublicOrigin, backupDeployment),
 			DB:             deps.DB,
 			RestoreDeliveryBlocked: func() bool {
 				if deps.RestoreIsolation.BlocksExternalWork() {

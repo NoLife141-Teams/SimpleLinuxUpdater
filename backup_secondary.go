@@ -68,13 +68,14 @@ func (copy backupSecondaryCopy) retryable() bool {
 }
 
 type backupSecondaryState struct {
-	Binding          backupSecondaryBinding `json:"binding,omitzero"`
-	Approved         bool                   `json:"approved"`
-	Copies           []backupSecondaryCopy  `json:"copies,omitempty"`
-	LastFailure      string                 `json:"last_failure,omitempty"`
-	MountUnavailable bool                   `json:"mount_unavailable,omitempty"`
-	CatchUp          bool                   `json:"catch_up,omitempty"`
-	Retired          []string               `json:"retired,omitempty"`
+	Binding          backupSecondaryBinding     `json:"binding,omitzero"`
+	Approved         bool                       `json:"approved"`
+	Copies           []backupSecondaryCopy      `json:"copies,omitempty"`
+	LastFailure      string                     `json:"last_failure,omitempty"`
+	MountUnavailable bool                       `json:"mount_unavailable,omitempty"`
+	Observation      backupSecondaryObservation `json:"observation,omitzero"`
+	CatchUp          bool                       `json:"catch_up,omitempty"`
+	Retired          []string                   `json:"retired,omitempty"`
 }
 
 type backupSecondaryStatus struct {
@@ -123,6 +124,7 @@ func (state *backupAutomationState) selectSecondaryDestination(binding backupSec
 	}
 	next.Binding = binding
 	next.Approved = false
+	next.Observation = backupSecondaryObservation{}
 	state.Secondary = next
 }
 
@@ -391,6 +393,9 @@ func (a *backupAutomation) validateSecondaryDestination(ctx context.Context, adm
 	state.selectSecondaryDestination(binding)
 	if !state.Secondary.Approved {
 		state.Secondary.CatchUp = true
+		for i := range state.Secondary.Copies {
+			state.Secondary.Copies[i].Integrity = backupArchiveIntegrity{}
+		}
 	}
 	state.Secondary.Approved = true
 	if err := a.save(ctx, state); err != nil {

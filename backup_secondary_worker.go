@@ -244,9 +244,7 @@ func (a *backupAutomation) updateCurrentSecondary(ctx context.Context, binding b
 func (a *backupAutomation) recordSecondaryFailure(ctx context.Context, binding backupSecondaryBinding, id, reason string) error {
 	return a.updateCurrentSecondary(ctx, binding, id, func(state *backupSecondaryState, copy *backupSecondaryCopy) (bool, error) {
 		if reason == "storage_unavailable" {
-			if copy == nil && state.MountUnavailable && state.CatchUp {
-				return false, nil
-			}
+			state.Observation.record(a.now(), false)
 			state.MountUnavailable = true
 			state.CatchUp = true
 		} else {
@@ -560,9 +558,6 @@ func secondaryCopyMatches(info os.FileInfo, copy backupSecondaryCopy) bool {
 }
 
 func (a *backupAutomation) observeSecondaryCopies(ctx context.Context, root *os.Root, binding backupSecondaryBinding, copies []backupSecondaryCopy) error {
-	if len(copies) == 0 {
-		return nil
-	}
 	changes := make(map[string]bool)
 	for i := range copies {
 		if err := ctx.Err(); err != nil {
@@ -586,10 +581,8 @@ func (a *backupAutomation) observeSecondaryCopies(ctx context.Context, root *os.
 		}
 		return errBackupSecondaryDeferred
 	}
-	if len(changes) == 0 {
-		return nil
-	}
 	return a.updateCurrentSecondary(ctx, binding, "", func(state *backupSecondaryState, _ *backupSecondaryCopy) (bool, error) {
+		state.Observation.record(a.now(), true)
 		for i := range state.Copies {
 			copy := &state.Copies[i]
 			if unavailable, ok := changes[copy.Archive.ID]; ok && copy.VerifiedAt != "" {

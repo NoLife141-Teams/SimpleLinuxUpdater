@@ -128,7 +128,7 @@ func (a *backupAutomation) copyNextSecondaryBackup(parent context.Context) error
 				cleanup = item
 			}
 		}
-		return false, nil
+		return state.Secondary.Observation.start(now), nil
 	})
 	if err != nil || binding.Path == "" {
 		return err
@@ -141,7 +141,7 @@ func (a *backupAutomation) copyNextSecondaryBackup(parent context.Context) error
 		}
 		failureCtx, cancelFailure := context.WithTimeout(workCtx, backupArchiveObservationBudget)
 		defer cancelFailure()
-		return a.recordSecondaryFailure(failureCtx, binding, pending.Archive.ID, "storage_unavailable")
+		return a.recordSecondaryFailure(failureCtx, binding, pending.Archive.ID, "storage_unavailable", true)
 	}
 	defer root.Close()
 	if err := a.observeSecondaryCopies(ctx, root, binding, verifiedCopies); err != nil {
@@ -179,13 +179,14 @@ func (a *backupAutomation) copyNextSecondaryBackup(parent context.Context) error
 			return copyErr
 		}
 		reason := "copy_failed"
-		if errors.Is(copyErr, errBackupSecondaryStorageUnavailable) || !backupArchiveMountAvailable(root.Name(), binding.Directory) {
+		mountUnavailable := !backupArchiveMountAvailable(root.Name(), binding.Directory)
+		if errors.Is(copyErr, errBackupSecondaryStorageUnavailable) || mountUnavailable {
 			reason = "storage_unavailable"
 		} else if errors.Is(copyErr, errBackupSecondaryPublicationPending) {
 			reason = "publication_pending"
 		}
 		recordCtx, cancelRecord := context.WithTimeout(workCtx, backupArchiveObservationBudget)
-		recordErr := a.recordSecondaryFailure(recordCtx, binding, pending.Archive.ID, reason)
+		recordErr := a.recordSecondaryFailure(recordCtx, binding, pending.Archive.ID, reason, mountUnavailable)
 		cancelRecord()
 		if recordErr != nil {
 			return errors.Join(copyErr, recordErr)
@@ -209,7 +210,7 @@ func (a *backupAutomation) copyNextSecondaryBackup(parent context.Context) error
 func (a *backupAutomation) keepSecondaryRetention(ctx context.Context, root *os.Root, binding backupSecondaryBinding) error {
 	err := a.retainSecondaryBackups(ctx, root, binding)
 	if err != nil && !errors.Is(err, errBackupSecondaryDeferred) {
-		_ = a.recordSecondaryFailure(ctx, binding, "", "retention_failed")
+		_ = a.recordSecondaryFailure(ctx, binding, "", "retention_failed", false)
 	}
 	if err == nil {
 		return a.updateCurrentSecondary(ctx, binding, "", func(state *backupSecondaryState, _ *backupSecondaryCopy) (bool, error) {
@@ -241,12 +242,14 @@ func (a *backupAutomation) updateCurrentSecondary(ctx context.Context, binding b
 	})
 }
 
-func (a *backupAutomation) recordSecondaryFailure(ctx context.Context, binding backupSecondaryBinding, id, reason string) error {
+func (a *backupAutomation) recordSecondaryFailure(ctx context.Context, binding backupSecondaryBinding, id, reason string, mountUnavailable bool) error {
 	return a.updateCurrentSecondary(ctx, binding, id, func(state *backupSecondaryState, copy *backupSecondaryCopy) (bool, error) {
+		// A failed write can defer a transfer while the mount remains readable.
+		// Keep the read observation so its recovery coverage can be evaluated.
+		if mountUnavailable {
+			state.Observation.record(a.now(), false)
+		}
 		if reason == "storage_unavailable" {
-			if copy == nil && state.MountUnavailable && state.CatchUp {
-				return false, nil
-			}
 			state.MountUnavailable = true
 			state.CatchUp = true
 		} else {
@@ -560,9 +563,6 @@ func secondaryCopyMatches(info os.FileInfo, copy backupSecondaryCopy) bool {
 }
 
 func (a *backupAutomation) observeSecondaryCopies(ctx context.Context, root *os.Root, binding backupSecondaryBinding, copies []backupSecondaryCopy) error {
-	if len(copies) == 0 {
-		return nil
-	}
 	changes := make(map[string]bool)
 	for i := range copies {
 		if err := ctx.Err(); err != nil {
@@ -581,15 +581,13 @@ func (a *backupAutomation) observeSecondaryCopies(ctx context.Context, root *os.
 		}
 	}
 	if !backupArchiveMountAvailable(root.Name(), binding.Directory) {
-		if err := a.recordSecondaryFailure(ctx, binding, "", "storage_unavailable"); err != nil {
+		if err := a.recordSecondaryFailure(ctx, binding, "", "storage_unavailable", true); err != nil {
 			return err
 		}
 		return errBackupSecondaryDeferred
 	}
-	if len(changes) == 0 {
-		return nil
-	}
 	return a.updateCurrentSecondary(ctx, binding, "", func(state *backupSecondaryState, _ *backupSecondaryCopy) (bool, error) {
+		state.Observation.record(a.now(), true)
 		for i := range state.Copies {
 			copy := &state.Copies[i]
 			if unavailable, ok := changes[copy.Archive.ID]; ok && copy.VerifiedAt != "" {

@@ -582,6 +582,7 @@ func (a *backupAutomation) SuspendAfterRestore(ctx context.Context) error {
 	s.Temporary = ""
 	s.Observation = backupArchiveObservation{}
 	s.Secondary.Approved = false
+	s.Secondary.Observation = backupSecondaryObservation{}
 	for i := range s.Archives {
 		s.Archives[i].ObservedAt = ""
 		s.Archives[i].ObservationProcess = ""

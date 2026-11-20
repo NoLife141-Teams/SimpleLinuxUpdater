@@ -25,11 +25,12 @@ type notificationFactQuerier interface {
 
 // The adapter reads accepted server facts, never browser projections. Audit and
 // health cursors belong to Notification Delivery Lifecycle and commit with admission.
-func newNotificationConditionSource(dbProvider func() *sql.DB, now func() time.Time, origin *url.URL, backupDirectory string) notificationpkg.ConditionSource {
+func newNotificationConditionSource(dbProvider func() *sql.DB, now func() time.Time, origin *url.URL, deployment backupAutomationDeployment) notificationpkg.ConditionSource {
 	if now == nil {
 		now = time.Now
 	}
-	storageBinding := backupStorageBinding(backupDirectory)
+	storageBinding := backupStorageBinding(deployment.Directory)
+	secondaryBinding := backupStorageBinding(deployment.SecondaryDirectory)
 	return func(ctx context.Context, cursorText string, previous []notificationpkg.Condition) (notificationpkg.ConditionBatch, error) {
 		batch := notificationpkg.ConditionBatch{}
 		db := dbProvider()
@@ -226,6 +227,7 @@ func newNotificationConditionSource(dbProvider func() *sql.DB, now func() time.T
 		}
 		batch.Facts = append(batch.Facts, localBackupCoverageFacts(state, previous)...)
 		batch.Facts = append(batch.Facts, backupStorageCondition(storageBinding, automation.Observation, at, previous, err)...)
+		batch.Facts = append(batch.Facts, secondaryBackupConditions(secondaryBinding, automation.Secondary, at, previous, err)...)
 		raw, _ := json.Marshal(cursor)
 		batch.Cursor = string(raw)
 		return batch, nil

@@ -116,7 +116,7 @@ func TestNotificationSourceKeepsApprovalGenerationAndAuditCursorConsistent(t *te
 	if _, err := writer.Exec(`INSERT INTO servers(name,host,user,pass_enc) VALUES('test','unused.invalid','root',''); INSERT INTO jobs(id,kind,server_name,actor,status,meta_json,created_at,updated_at) VALUES('job','update','test','tester','waiting_approval','{"approval_generation":1}','2026-10-25T12:00:00Z','2026-10-25T12:00:00Z')`); err != nil {
 		t.Fatal(err)
 	}
-	source := newNotificationConditionSource(func() *sql.DB { return db }, time.Now, nil, "")
+	source := newNotificationConditionSource(func() *sql.DB { return db }, time.Now, nil, backupAutomationDeployment{})
 	batch, err := source(context.Background(), "", nil)
 	if err != nil {
 		// A concurrent write can invalidate SQLite's read-to-write upgrade. The
@@ -169,7 +169,7 @@ func TestNotificationApprovalLinkFollowsExactPlanAndStableInventory(t *testing.T
 	}
 	read := func(base *url.URL, cursor string, previous []notificationpkg.Condition) (notificationpkg.ConditionBatch, notificationpkg.ConditionFact) {
 		t.Helper()
-		source := newNotificationConditionSource(func() *sql.DB { return db }, time.Now, base, "")
+		source := newNotificationConditionSource(func() *sql.DB { return db }, time.Now, base, backupAutomationDeployment{})
 		batch, err := source(t.Context(), cursor, previous)
 		if err != nil {
 			t.Fatal(err)
@@ -230,7 +230,7 @@ func TestNotificationSourceKeepsServerIdentityConsistentDuringRename(t *testing.
 	if _, err := writer.Exec(`INSERT INTO servers(name,host,user,pass_enc) VALUES('test','unused.invalid','root',''); INSERT INTO server_health_snapshots(server_name,captured_at,reboot_required) VALUES('test','2026-10-25T12:00:00Z',1)`); err != nil {
 		t.Fatal(err)
 	}
-	source := newNotificationConditionSource(func() *sql.DB { return db }, time.Now, nil, "")
+	source := newNotificationConditionSource(func() *sql.DB { return db }, time.Now, nil, backupAutomationDeployment{})
 	batch, err := source(context.Background(), "", nil)
 	if err != nil {
 		t.Fatal(err)
@@ -287,7 +287,7 @@ func conditionPrevious(facts []notificationpkg.ConditionFact) []notificationpkg.
 func TestNotificationBackupFactsManualAutomaticCoverageAndUnavailable(t *testing.T) {
 	db := conditionSourceDB(t)
 	now := time.Date(2026, 10, 25, 12, 0, 0, 0, time.UTC)
-	source := newNotificationConditionSource(func() *sql.DB { return db }, func() time.Time { return now }, nil, "")
+	source := newNotificationConditionSource(func() *sql.DB { return db }, func() time.Time { return now }, nil, backupAutomationDeployment{})
 	batch, err := source(context.Background(), "", nil)
 	if err != nil {
 		t.Fatal(err)
@@ -393,7 +393,7 @@ func TestNotificationApprovalGenerationExpirationCancelAndRestart(t *testing.T) 
 	if _, err := db.Exec(`INSERT INTO servers(name,host,user,pass_enc) VALUES('test','unused.invalid','root',''); INSERT INTO jobs(id,kind,server_name,actor,status,meta_json,created_at,updated_at) VALUES('job','update','test','tester','waiting_approval','{"approval_generation":2}','2026-10-25T12:00:00Z','2026-10-25T12:00:00Z')`); err != nil {
 		t.Fatal(err)
 	}
-	source := newNotificationConditionSource(func() *sql.DB { return db }, func() time.Time { return now }, nil, "")
+	source := newNotificationConditionSource(func() *sql.DB { return db }, func() time.Time { return now }, nil, backupAutomationDeployment{})
 	// Persisted job recovers publication even when its best-effort audit failed.
 	batch, err := source(context.Background(), "", nil)
 	if err != nil {
@@ -414,7 +414,7 @@ func TestNotificationApprovalGenerationExpirationCancelAndRestart(t *testing.T) 
 	if lastConditionFact(batch.Facts, "approval/job").Active || !lastConditionFact(batch.Facts, "approval/job/expired/2").Active {
 		t.Fatal("expiration lost identity or retained approval")
 	}
-	restart := newNotificationConditionSource(func() *sql.DB { return db }, func() time.Time { return now }, nil, "")
+	restart := newNotificationConditionSource(func() *sql.DB { return db }, func() time.Time { return now }, nil, backupAutomationDeployment{})
 	batch, err = restart(context.Background(), batch.Cursor, conditionPrevious(batch.Facts))
 	if err != nil {
 		t.Fatal(err)
@@ -432,7 +432,7 @@ func TestNotificationRebootUnknownRenameDeleteAndRestoreIDCollision(t *testing.T
 	if _, err := db.Exec(`INSERT INTO servers(name,host,user,pass_enc) VALUES('first','unused.invalid','root',''); INSERT INTO server_health_snapshots(server_name,captured_at,reboot_required) VALUES('first','2026-10-25T12:00:00Z',1)`); err != nil {
 		t.Fatal(err)
 	}
-	source := newNotificationConditionSource(func() *sql.DB { return db }, func() time.Time { return now }, nil, "")
+	source := newNotificationConditionSource(func() *sql.DB { return db }, func() time.Time { return now }, nil, backupAutomationDeployment{})
 	batch, err := source(context.Background(), "", nil)
 	if err != nil {
 		t.Fatal(err)
@@ -503,7 +503,7 @@ func TestNotificationRestoreReconcilesBackupFailuresWithoutHistoricalExpiry(t *t
 	appendConditionAudit(t, db, at, "backup.verify", "success", `{"restore_ready":true}`)
 	appendConditionAudit(t, db, at, "approval.expired", "success", `{"job_id":"old-job","approval_generation":1}`)
 	previous := []notificationpkg.Condition{{Fact: notificationpkg.ConditionFact{ID: "backup/export", EventType: notificationpkg.EventBackupExportFailed, Active: true}, Episode: 1}, {Fact: notificationpkg.ConditionFact{ID: "backup/verify", EventType: notificationpkg.EventBackupVerifyFailed, Active: true}, Episode: 1}}
-	source := newNotificationConditionSource(func() *sql.DB { return db }, func() time.Time { return now }, nil, "")
+	source := newNotificationConditionSource(func() *sql.DB { return db }, func() time.Time { return now }, nil, backupAutomationDeployment{})
 	batch, err := source(context.Background(), "restore", previous)
 	if err != nil {
 		t.Fatal(err)
@@ -526,7 +526,7 @@ func TestNotificationRebootRetiresEvidenceFromPreviousEndpoint(t *testing.T) {
 			if _, err := db.Exec(`INSERT INTO servers(name,host,user,pass_enc) VALUES('host','192.0.2.1','root',''); INSERT INTO server_health_snapshots(server_name,captured_at,reboot_required) VALUES('host','2026-10-25T12:00:00Z',1)`); err != nil {
 				t.Fatal(err)
 			}
-			source := newNotificationConditionSource(func() *sql.DB { return db }, func() time.Time { return now }, nil, "")
+			source := newNotificationConditionSource(func() *sql.DB { return db }, func() time.Time { return now }, nil, backupAutomationDeployment{})
 			cursor := ""
 			var previous []notificationpkg.Condition
 			if mode != "unobserved" {
@@ -614,7 +614,7 @@ func TestAPTNotificationKeepsTheOriginalJobForTheExactTarget(t *testing.T) {
 	insert("original-job", "update", "failed", "reconciliation_required", "2026-10-25T12:00:00Z", target)
 	insert("failed-repair", "apt_repair", "failed", "reconciliation_required", "2026-10-25T12:01:00Z", target)
 	insert("unverified-legacy", "update", "failed", "reconciliation_required", "2026-10-25T11:00:00Z", "")
-	source := newNotificationConditionSource(func() *sql.DB { return db }, time.Now, nil, "")
+	source := newNotificationConditionSource(func() *sql.DB { return db }, time.Now, nil, backupAutomationDeployment{})
 	ctx := t.Context()
 	read := func(cursor string, previous []notificationpkg.Condition) notificationpkg.ConditionBatch {
 		t.Helper()

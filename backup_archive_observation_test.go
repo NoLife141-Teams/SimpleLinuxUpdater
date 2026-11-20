@@ -275,7 +275,7 @@ func TestBackupArchiveLossNotifiesOnceAcrossWorkerRestartAndReverification(t *te
 	client := &archiveObservationDeliveryClient{archiveID: archive.ID, archiveDirectory: a.deployment.Directory}
 	deps := NotificationServiceDeps{
 		DB: app.Deps.DB, Now: a.deps.Now, HTTPClient: client, ConditionPollInterval: 10 * time.Millisecond,
-		ReadConditions: newNotificationConditionSource(app.Deps.DB, a.deps.Now, nil, ""),
+		ReadConditions: newNotificationConditionSource(app.Deps.DB, a.deps.Now, nil, backupAutomationDeployment{}),
 	}
 	var runs []*NotificationService
 	startWorker := func() *NotificationService {
@@ -588,7 +588,7 @@ func TestBackupStorageOutageAlertsOnceAcrossRestartAndRecovers(t *testing.T) {
 	if first.Storage != "available" || outage.Storage != "unavailable" {
 		t.Fatalf("fixture mount status = %s then %s", first.Storage, outage.Storage)
 	}
-	source := newNotificationConditionSource(app.Deps.DB, now, nil, directory)
+	source := newNotificationConditionSource(app.Deps.DB, now, nil, backupAutomationDeployment{Directory: directory})
 	checkFact := func(source notificationpkg.ConditionSource, active bool) notificationpkg.ConditionFact {
 		t.Helper()
 		batch, err := source(t.Context(), "", nil)
@@ -608,8 +608,8 @@ func TestBackupStorageOutageAlertsOnceAcrossRestartAndRecovers(t *testing.T) {
 		health.UnavailableAt != backupStamp(outageAt) || !health.AlertDue || health.State != "unavailable" {
 		t.Fatalf("unexpected storage history: %+v", health)
 	}
-	checkFact(newNotificationConditionSource(app.Deps.DB, now, nil, ""), false)
-	checkFact(newNotificationConditionSource(app.Deps.DB, now, nil, t.TempDir()), false)
+	checkFact(newNotificationConditionSource(app.Deps.DB, now, nil, backupAutomationDeployment{}), false)
+	checkFact(newNotificationConditionSource(app.Deps.DB, now, nil, backupAutomationDeployment{Directory: t.TempDir()}), false)
 	if state := backupAutomationStateForTest(t, a); state.Archives[0].LossActive ||
 		state.Archives[0].Verification != "verified" || state.archiveCoverage(now()).RecoveryPoint.State != "unknown" {
 		t.Fatalf("mount outage altered archive verification: %+v", state.Archives)
@@ -658,7 +658,7 @@ func TestBackupStorageOutageAlertsOnceAcrossRestartAndRecovers(t *testing.T) {
 	waitFor(1, true)
 	closeWorker(firstWorker)
 	// Reopen condition evaluation and re-observe the mount after restart.
-	deps.ReadConditions = newNotificationConditionSource(app.Deps.DB, now, nil, directory)
+	deps.ReadConditions = newNotificationConditionSource(app.Deps.DB, now, nil, backupAutomationDeployment{Directory: directory})
 	observeAt(now().Add(5 * time.Minute))
 	if got := checkFact(deps.ReadConditions, true); got.Generation != want.Generation {
 		t.Fatalf("restart changed ongoing outage generation: %q != %q", got.Generation, want.Generation)
@@ -809,7 +809,7 @@ func TestVerifiedBackupPublicationClosesStorageOutage(t *testing.T) {
 		t.Fatal(err)
 	}
 	*now = now.Add(backupStorageAlertAfter)
-	source := newNotificationConditionSource(app.Deps.DB, a.deps.Now, nil, directory)
+	source := newNotificationConditionSource(app.Deps.DB, a.deps.Now, nil, backupAutomationDeployment{Directory: directory})
 	checkCondition := func(active bool) {
 		t.Helper()
 		batch, err := source(t.Context(), "", nil)

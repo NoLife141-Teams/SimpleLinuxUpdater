@@ -28,21 +28,23 @@ const (
 	DestinationDiscord  = "discord"
 	DestinationTelegram = "telegram"
 
-	EventUpdateComplete            = "update.complete"
-	EventScheduleRunFailed         = "schedule.run.failed"
-	EventScheduleRunSkipped        = "schedule.run.skipped"
-	EventBackupRestore             = "backup.restore"
-	EventTest                      = "notification.test"
-	EventApprovalPublished         = "approval.published"
-	EventApprovalExpired           = "approval.expired"
-	EventRebootRequired            = "reboot.required"
-	EventAPTReconciliationRequired = "apt.reconciliation.required"
-	EventBackupExportFailed        = "backup.export.failed"
-	EventBackupVerifyFailed        = "backup.verify.failed"
-	EventBackupCoverageMissing     = "backup.coverage.missing"
-	EventBackupCoverageStale       = "backup.coverage.stale"
-	EventBackupStorageUnavailable  = "backup.storage.unavailable"
-	EventReminder                  = "notification.reminder"
+	EventUpdateComplete             = "update.complete"
+	EventScheduleRunFailed          = "schedule.run.failed"
+	EventScheduleRunSkipped         = "schedule.run.skipped"
+	EventBackupRestore              = "backup.restore"
+	EventTest                       = "notification.test"
+	EventApprovalPublished          = "approval.published"
+	EventApprovalExpired            = "approval.expired"
+	EventRebootRequired             = "reboot.required"
+	EventAPTReconciliationRequired  = "apt.reconciliation.required"
+	EventBackupExportFailed         = "backup.export.failed"
+	EventBackupVerifyFailed         = "backup.verify.failed"
+	EventBackupCoverageMissing      = "backup.coverage.missing"
+	EventBackupCoverageStale        = "backup.coverage.stale"
+	EventBackupStorageUnavailable   = "backup.storage.unavailable"
+	EventBackupSecondaryUnavailable = "backup.secondary.storage.unavailable"
+	EventBackupSecondaryCoverage    = "backup.secondary.coverage.degraded"
+	EventReminder                   = "notification.reminder"
 
 	defaultAttempts                     = 3
 	defaultSQLiteContentionAttempts     = 20
@@ -60,7 +62,7 @@ var legacyEvents = []string{
 	EventBackupRestore,
 }
 
-var supportedEvents = append(append([]string(nil), legacyEvents...), EventApprovalPublished, EventApprovalExpired, EventRebootRequired, EventAPTReconciliationRequired, EventBackupExportFailed, EventBackupVerifyFailed, EventBackupCoverageMissing, EventBackupCoverageStale, EventBackupStorageUnavailable)
+var supportedEvents = append(append([]string(nil), legacyEvents...), EventApprovalPublished, EventApprovalExpired, EventRebootRequired, EventAPTReconciliationRequired, EventBackupExportFailed, EventBackupVerifyFailed, EventBackupCoverageMissing, EventBackupCoverageStale, EventBackupStorageUnavailable, EventBackupSecondaryUnavailable, EventBackupSecondaryCoverage)
 
 var errUnsupportedEvent = errors.New("unsupported notification event type")
 

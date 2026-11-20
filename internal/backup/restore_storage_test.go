@@ -60,6 +60,25 @@ func TestOfflineArchiveVerificationReportsWorkspaceQuota(t *testing.T) {
 	}
 }
 
+func TestOfflineArchiveVerificationPreservesSQLiteWorkspaceFailure(t *testing.T) {
+	f := newDurabilityFixture(t, t.TempDir(), testRestoredRuntime{})
+	archive := restoreStorageFixtureArchive(t, f)
+	f.service.deps.EnsureSchema = func(db *sql.DB) error {
+		if _, err := db.Exec("PRAGMA query_only=ON"); err != nil {
+			t.Fatal(err)
+		}
+		_, err := db.Exec("CREATE TABLE verification_workspace (id INTEGER)")
+		if err == nil {
+			t.Fatal("expected a SQLite read-only error")
+		}
+		return err
+	}
+	result, err := f.service.VerifyArchiveFileOffline(t.Context(), archive, testPassphrase)
+	if !IsVerificationIOError(err) || result.RestoreReady || len(result.Blockers) != 0 {
+		t.Fatalf("workspace failure was treated as archive incompatibility: %+v, %v", result.Blockers, err)
+	}
+}
+
 func restoreStorageFixtureArchive(t *testing.T, f durabilityFixture) TemporaryFile {
 	t.Helper()
 	files := make(map[string][]byte, len(f.files))

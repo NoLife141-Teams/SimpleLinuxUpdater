@@ -55,6 +55,25 @@ func IsStorageFull(err error) bool {
 		(errors.As(err, &sqliteErr) && sqliteErr.Code() == sqlitelib.SQLITE_FULL)
 }
 
+// IsVerificationIOError distinguishes inaccessible archive or workspace
+// files from malformed archive data and incompatible SQLite contents.
+func IsVerificationIOError(err error) bool {
+	var pathErr *os.PathError
+	if errors.As(err, &pathErr) {
+		return true
+	}
+	var sqliteErr *sqlite.Error
+	if !errors.As(err, &sqliteErr) {
+		return false
+	}
+	switch sqliteErr.Code() & 0xff {
+	case sqlitelib.SQLITE_IOERR, sqlitelib.SQLITE_CANTOPEN, sqlitelib.SQLITE_READONLY, sqlitelib.SQLITE_PERM:
+		return true
+	default:
+		return false
+	}
+}
+
 func restoreStorageRoleNames(roles []string) string {
 	names := make([]string, 0, len(roles))
 	for _, role := range roles {

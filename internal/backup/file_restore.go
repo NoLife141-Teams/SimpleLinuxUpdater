@@ -86,7 +86,7 @@ func (s *Service) validateDatabaseFile(ctx context.Context, path string, encrypt
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		if IsStorageFull(err) {
+		if IsStorageFull(err) || (offline && IsVerificationIOError(err)) {
 			return err
 		}
 		return errArchivedNotifications
@@ -822,6 +822,9 @@ func (s *Service) verifyArchiveFile(ctx context.Context, encrypted TemporaryFile
 	}
 	configData, err := readPathBounded(inspection.Files["config.json"], MaxExtractedBytes)
 	if err != nil {
+		if mode == verifyWorkspaceStorage && IsVerificationIOError(err) {
+			return result, &RestoreError{Stage: RestoreStageArchive, Err: err}
+		}
 		result.Blockers = append(result.Blockers, ReadinessIssue{Code: "invalid_configuration", Message: "The archived configuration cannot be restored safely."})
 		return result, nil
 	}
@@ -834,6 +837,9 @@ func (s *Service) verifyArchiveFile(ctx context.Context, encrypted TemporaryFile
 	if err := s.validateDatabaseFile(ctx, inspection.Files["servers.db"], backupKey, mode == verifyWorkspaceStorage); err != nil {
 		if assessStorage && IsStorageFull(err) {
 			return result.withStorageFailure(err), nil
+		}
+		if mode == verifyWorkspaceStorage && IsVerificationIOError(err) {
+			return result, &RestoreError{Stage: RestoreStageArchive, Err: err}
 		}
 		if errors.Is(err, errArchivedNotifications) {
 			result.Blockers = append(result.Blockers, ReadinessIssue{

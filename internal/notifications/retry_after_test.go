@@ -420,6 +420,60 @@ func TestGracefulRestartPersistsRateLimitAfterTemporaryWriteFailure(t *testing.T
 	}
 }
 
+func TestExpiredRateLimitRetainsFailedTerminalAttempt(t *testing.T) {
+	for _, header := range []string{"300", ""} {
+		name := "write failure outlasts retry delay"
+		if header == "" {
+			name = "retry deadline already reached"
+		}
+		t.Run(name, func(t *testing.T) {
+			h := newConditionHarness(t)
+			h.service.deps.DeliveryTimeout = time.Second
+			h.service.deps.HTTPClient = notificationHTTPFunc(func(*http.Request) (*http.Response, error) {
+				h.client.calls++
+				return &http.Response{StatusCode: http.StatusTooManyRequests, Header: http.Header{"Retry-After": {header}},
+					Body: io.NopCloser(strings.NewReader(""))}, nil
+			})
+			id := insertPendingOutboxIntent(t, h.db, DeliveryIntent{ID: "failed-final-attempt", Action: EventUpdateComplete}, h.now)
+			if _, err := h.db.Exec("UPDATE notification_outbox SET attempts=? WHERE id=?", defaultAttempts-1, id); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := h.db.Exec(`CREATE TRIGGER reject_terminal_rate_limit BEFORE UPDATE OF status_code ON notification_outbox
+				WHEN new.status_code=429 BEGIN SELECT RAISE(ABORT, 'temporary persistence failure'); END`); err != nil {
+				t.Fatal(err)
+			}
+			h.drain(t)
+			if h.client.calls != 1 {
+				t.Fatalf("expected one initial HTTP attempt, got %d", h.client.calls)
+			}
+
+			h.now = h.now.Add(5 * time.Minute)
+			if err := recoverExpiredOutboxClaims(t.Context(), h.db, h.now, defaultOutboxClaimTTL, outboxDeliveries{}); err != nil {
+				t.Fatal(err)
+			}
+			h.drain(t)
+			if h.client.calls != 1 {
+				t.Errorf("sent %d HTTP requests despite exhausting the attempt budget before persistence recovered", h.client.calls)
+			}
+
+			if _, err := h.db.Exec("DROP TRIGGER reject_terminal_rate_limit"); err != nil {
+				t.Fatal(err)
+			}
+			h.now = h.now.Add(time.Hour)
+			if err := recoverExpiredOutboxClaims(t.Context(), h.db, h.now, defaultOutboxClaimTTL, outboxDeliveries{}); err != nil {
+				t.Fatal(err)
+			}
+			h.drain(t)
+			var state string
+			var attempts int
+			if err := h.db.QueryRow("SELECT state, attempts FROM notification_outbox WHERE id=?", id).Scan(&state, &attempts); err != nil ||
+				state != outboxStateFailed || attempts != defaultAttempts || h.client.calls != 1 {
+				t.Fatalf("terminal state=%q attempts=%d HTTP requests=%d after recovery, err=%v", state, attempts, h.client.calls, err)
+			}
+		})
+	}
+}
+
 func waitForRateLimitRow(t *testing.T, db *sql.DB, intent, destination, want string) {
 	t.Helper()
 	deadline := time.Now().Add(3 * time.Second)

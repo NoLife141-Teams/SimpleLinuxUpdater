@@ -729,7 +729,9 @@ func (s *Service) processOutboxRow(ctx context.Context, row outboxRow) bool {
 	}
 	fingerprint := destinationConfigFingerprint(settings, row.Destination)
 	key := rateLimitKey{row.Destination, fingerprint}
-	if handled, ok := s.recoverRateLimitCompletion(row, key); handled {
+	// Finish an already observed attempt before revalidating the row that
+	// made it. Another row can still be skipped while this write is blocked.
+	if handled, ok := s.recoverRateLimitCompletion(row, rateLimitKey{}); handled {
 		return ok
 	}
 
@@ -772,6 +774,9 @@ func (s *Service) processOutboxRow(ctx context.Context, row outboxRow) bool {
 		return err == nil
 	}
 
+	if handled, ok := s.recoverRateLimitCompletion(row, key); handled {
+		return ok
+	}
 	// Settings can change between the scheduling query and revalidation.
 	// Check the fingerprint of the actual request, including legacy unbound rows.
 	until, err := destinationRateLimit(ctx, s.database(), row.Destination, fingerprint)
@@ -827,8 +832,8 @@ func (s *Service) processOutboxRow(ctx context.Context, row outboxRow) bool {
 	}
 	if err := s.persistOutboxCompletion(context.Background(), row.ID, outcome, false); err != nil {
 		now := s.deps.Now()
-		if outcome.RateLimitedUntil != "" && nextRetry.After(now) {
-			s.rateLimitCompletions.remember(key, failedRateLimitCompletion{rowID: row.ID, outcome: outcome, deadline: nextRetry}, now)
+		if outcome.RateLimitedUntil != "" {
+			s.rateLimitCompletions.remember(key, failedRateLimitCompletion{rowID: row.ID, outcome: outcome, deadline: nextRetry})
 		}
 		s.health.Error(now)
 		s.deps.Logf("notification outbox outcome persistence failed for %q: %v", row.ID, err)

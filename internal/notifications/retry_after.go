@@ -73,16 +73,11 @@ type failedRateLimitCompletions struct {
 	items map[rateLimitKey]failedRateLimitCompletion
 }
 
-func (c *failedRateLimitCompletions) remember(key rateLimitKey, failed failedRateLimitCompletion, now time.Time) {
+func (c *failedRateLimitCompletions) remember(key rateLimitKey, failed failedRateLimitCompletion) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.items == nil {
 		c.items = make(map[rateLimitKey]failedRateLimitCompletion)
-	}
-	for key, item := range c.items {
-		if !item.deadline.After(now) {
-			delete(c.items, key)
-		}
 	}
 	c.items[key] = failed
 }
@@ -139,16 +134,22 @@ func (s *Service) recoverRateLimitCompletion(row outboxRow, key rateLimitKey) (h
 		return false, false
 	}
 
-	if err := s.persistOutboxCompletion(context.Background(), pending.rowID, pending.outcome, true); err == nil {
+	err := s.persistOutboxCompletion(context.Background(), pending.rowID, pending.outcome, true)
+	if err == nil {
 		s.rateLimitCompletions.forget(key)
 		return row.ID == pending.rowID, true
 	}
-	delay := pending.deadline.Sub(s.deps.Now())
-	if delay <= 0 {
+	remaining := pending.deadline.Sub(s.deps.Now())
+	if remaining <= 0 && errors.Is(err, errOutboxCompletionLostClaim) {
 		s.rateLimitCompletions.forget(key)
 		return false, false
 	}
-	retryDelay := min(delay, max(s.deps.PollInterval, defaultOutboxPollInterval))
+	// Expiry lifts the provider's pause, but cannot undo the HTTP attempt.
+	// Keep its outcome until SQLite accepts it or the row has advanced.
+	retryDelay := max(s.deps.PollInterval, defaultOutboxPollInterval)
+	if remaining > 0 {
+		retryDelay = min(remaining, retryDelay)
+	}
 	s.releaseClaim(row, retryDelay, "destination retry deadline could not be persisted")
 	return true, false
 }

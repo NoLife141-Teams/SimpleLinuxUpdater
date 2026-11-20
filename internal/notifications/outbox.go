@@ -30,6 +30,8 @@ const (
 	defaultOutboxRetention = 30 * 24 * time.Hour
 )
 
+var errOutboxCompletionLostClaim = errors.New("notification outbox completion lost its claim")
+
 type outboxRow struct {
 	ID                     string
 	Destination            string
@@ -627,7 +629,7 @@ func completeOutboxRow(ctx context.Context, db *sql.DB, id string, outcome outbo
 		outcome.RateLimitedUntil, outcome.DestinationFingerprint, id, outboxStateClaimed,
 		recoverReleased, outboxStateRetrying, recoverReleased, outcome.Attempts-1).Scan(&destination)
 	if errors.Is(err, sql.ErrNoRows) {
-		return errors.New("notification outbox completion lost its claim")
+		return errOutboxCompletionLostClaim
 	}
 	if err != nil {
 		return err

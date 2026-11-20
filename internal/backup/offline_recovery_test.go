@@ -140,14 +140,21 @@ func TestOfflineRecoveryRejectsInvalidManifestAndKeepsLatch(t *testing.T) {
 func TestOfflineRecoveryUsesSealedRollbackWithUnreadableSQLite(t *testing.T) {
 	f, root, id := interruptedRecoveryFixture(t, true)
 	corrupt := []byte("fixture with an invalid SQLite header")
+	corruptWAL := make([]byte, 4<<20)
 	// This restore stopped before replacing trust. A read-only deployment
 	// mount containing the original bytes must not require free space.
-	free, full := uint64(128<<20), uint64(0)
+	// The database volume can preserve the corrupt WAL for diagnosis once,
+	// with enough space remaining to replace SQLite without checkpointing it.
+	workspaceFree, databaseFree, full := uint64(128<<20), uint64(14<<20), uint64(0)
 	f.service.deps.ProbeRestoreStorage = func(dir string) installationhealth.VolumeCapacity {
-		if dir == filepath.Dir(f.hosts) {
+		switch dir {
+		case root:
+			return installationhealth.VolumeCapacity{Device: 1, Identified: true, AvailableBytes: &databaseFree}
+		case filepath.Dir(f.hosts):
 			return installationhealth.VolumeCapacity{Device: 2, Identified: true, AvailableBytes: &full}
+		default:
+			return installationhealth.VolumeCapacity{Device: 3, Identified: true, AvailableBytes: &workspaceFree}
 		}
-		return installationhealth.VolumeCapacity{Device: 1, Identified: true, AvailableBytes: &free}
 	}
 	f.service.syncRestoreFile = func(file *os.File) error {
 		if filepath.Dir(file.Name()) == filepath.Dir(f.hosts) && strings.HasPrefix(filepath.Base(file.Name()), ".restore-") {
@@ -155,8 +162,8 @@ func TestOfflineRecoveryUsesSealedRollbackWithUnreadableSQLite(t *testing.T) {
 		}
 		return file.Sync()
 	}
-	for _, path := range []string{f.db, f.db + "-wal"} {
-		if err := os.WriteFile(path, corrupt, 0600); err != nil {
+	for path, contents := range map[string][]byte{f.db: corrupt, f.db + "-wal": corruptWAL} {
+		if err := os.WriteFile(path, contents, 0600); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -173,9 +180,9 @@ func TestOfflineRecoveryUsesSealedRollbackWithUnreadableSQLite(t *testing.T) {
 	if err != nil || applied.Applied != id || applied.RecoveryRequired || applied.Diagnosis == "" {
 		t.Fatalf("apply = %+v, %v", applied, err)
 	}
-	for _, name := range []string{"snapshot-0", "snapshot-1"} {
+	for name, contents := range map[string][]byte{"snapshot-0": corrupt, "snapshot-1": corruptWAL} {
 		body, err := os.ReadFile(filepath.Join(root, applied.Diagnosis, name))
-		if err != nil || !bytes.Equal(body, corrupt) {
+		if err != nil || !bytes.Equal(body, contents) {
 			t.Fatalf("diagnosis lost %s: %v", name, err)
 		}
 	}

@@ -204,7 +204,7 @@ func (s *Service) OfflineRestoreRecovery(ctx context.Context, selection string, 
 				// size after the staging connections have closed.
 				stagedBytes, _ := sizeOnDisk(staged)
 				hostsPath := recoveryHostReplacementPath(hosts, stagedHosts, true)
-				remaining := s.estimateRestoreStorage(s.recoveryReplacementNeeds(database, hosts, hostsPath, stagedBytes, diagnosisTargets)...)
+				remaining := s.estimateRestoreStorage(s.recoveryReplacementNeeds(database, hosts, hostsPath, stagedBytes, live != nil, diagnosisTargets)...)
 				if err := storageBlocker(remaining); err != nil {
 					set.storageFailure(err, "")
 				}
@@ -232,7 +232,7 @@ func (s *Service) OfflineRestoreRecovery(ctx context.Context, selection string, 
 			err := selected.storageFailure(cause, role)
 			return report, err
 		}
-		selected.Storage = s.estimateRestoreStorage(s.recoveryReplacementNeeds(database, hosts, hostsPath, databaseBytes, diagnosisTargets)...)
+		selected.Storage = s.estimateRestoreStorage(s.recoveryReplacementNeeds(database, hosts, hostsPath, databaseBytes, live != nil, diagnosisTargets)...)
 		if err := storageBlocker(selected.Storage); err != nil {
 			return failStorage(err, "")
 		}
@@ -284,7 +284,7 @@ func (s *Service) OfflineRestoreRecovery(ctx context.Context, selection string, 
 		if stagedHosts != nil && stagedHosts.Exists {
 			hostsPath = stagedHosts.BackupPath
 		}
-		selected.Storage = s.estimateRestoreStorage(s.recoveryReplacementNeeds(database, hosts, hostsPath, databaseBytes, nil)...)
+		selected.Storage = s.estimateRestoreStorage(s.recoveryReplacementNeeds(database, hosts, hostsPath, databaseBytes, live != nil, nil)...)
 		if err := storageBlocker(selected.Storage); err != nil {
 			discardProvisionalDiagnosis()
 			return failStorage(err, "")
@@ -355,7 +355,7 @@ func (s *Service) prepareOfflineRecoverySet(ctx context.Context, rootPath, work 
 	databaseBytes := database.bytes
 	preparation.bytes = storageSum(preparation.bytes, storageSum(databaseBytes, databaseBytes))
 	preparation.incomplete = preparation.incomplete || database.incomplete
-	needs := s.recoveryReplacementNeeds(targets[0], hosts, hostsPath, databaseBytes, diagnosis)
+	needs := s.recoveryReplacementNeeds(targets[0], hosts, hostsPath, databaseBytes, live != nil, diagnosis)
 	result.Storage = s.estimateRestoreStorage(append([]restoreStorageNeed{preparation}, needs...)...)
 	if err := storageBlocker(result.Storage); err != nil {
 		return "", nil, result.storageFailure(err, "")

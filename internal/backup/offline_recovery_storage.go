@@ -21,10 +21,15 @@ func recoveryFileNeed(directory, role string, paths ...string) restoreStorageNee
 	return need
 }
 
-func (s *Service) recoveryReplacementNeeds(database, hosts, stagedHosts string, databaseBytes uint64, diagnosis []string) []restoreStorageNeed {
-	// A checkpoint can grow the live SQLite file before the atomic rename.
-	sqlite := recoveryFileNeed(restoreEntryDirectory(database), restoreStorageDatabase, database+"-wal")
-	sqlite.bytes = storageSum(sqlite.bytes, databaseBytes)
+func (s *Service) recoveryReplacementNeeds(database, hosts, stagedHosts string, databaseBytes uint64, checkpointLive bool, diagnosis []string) []restoreStorageNeed {
+	sqlite := restoreStorageNeed{directory: restoreEntryDirectory(database), role: restoreStorageDatabase, bytes: databaseBytes}
+	if checkpointLive {
+		// A checkpoint can grow the live SQLite file before the atomic rename.
+		// Recovery from sealed evidence only copies the corrupt WAL for diagnosis.
+		wal := recoveryFileNeed(sqlite.directory, sqlite.role, database+"-wal")
+		sqlite.bytes = storageSum(sqlite.bytes, wal.bytes)
+		sqlite.incomplete = wal.incomplete
+	}
 	needs := []restoreStorageNeed{sqlite}
 	if stagedHosts != "" {
 		needs = append(needs, recoveryFileNeed(restoreEntryDirectory(hosts), restoreStorageHostKeys, stagedHosts))

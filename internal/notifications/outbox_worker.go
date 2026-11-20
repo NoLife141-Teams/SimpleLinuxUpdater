@@ -132,7 +132,18 @@ func (s *Service) pollOutbox(ctx context.Context, active *outboxDeliveries, comp
 			// delivery blocked after persistence resumes, so poll the gate.
 			return s.deps.Now().Add(s.deps.PollInterval), true, false
 		}
-		row, err := claimNextOutboxRow(ctx, s.database(), s.deps.Now(), *active)
+		now := s.deps.Now()
+		key, pending := s.rateLimitCompletions.nextTerminalRepair(*active)
+		if pending.rowID != "" && !pending.repairAt.After(now) {
+			active[slot] = &key.destination
+			go func() {
+				ok := s.repairTerminalRateLimit(ctx, key, pending)
+				s.endPersistence()
+				completed <- outboxDeliveryResult{slot: slot, ok: ok}
+			}()
+			continue
+		}
+		row, err := claimNextOutboxRow(ctx, s.database(), now, *active)
 		if err != nil {
 			s.endPersistence()
 			s.health.Error(s.deps.Now())
@@ -159,6 +170,10 @@ func (s *Service) pollOutbox(ctx context.Context, active *outboxDeliveries, comp
 		s.health.Error(s.deps.Now())
 		s.deps.Logf("notification outbox wake scheduling failed: %v", err)
 		return s.deps.Now().Add(s.deps.PollInterval), true, false
+	}
+	if _, pending := s.rateLimitCompletions.nextTerminalRepair(*active); pending.rowID != "" &&
+		(!scheduled || pending.repairAt.Before(nextAt)) {
+		return pending.repairAt, true, true
 	}
 	return nextAt, scheduled, true
 }

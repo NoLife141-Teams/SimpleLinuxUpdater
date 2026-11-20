@@ -476,6 +476,55 @@ func TestExpiredRateLimitRetainsFailedTerminalAttempt(t *testing.T) {
 	}
 }
 
+func TestWorkerPersistsKnownTerminalRateLimitAfterStorageRecovers(t *testing.T) {
+	db := openNativeIntegrationTestDB(t, "rate-limit-terminal-recovery.db")
+	endpoint := "https://hooks.example.test/recovery"
+	prepareOutboxSettings(t, db, endpoint, true)
+	now := time.Now().UTC()
+	intent := DeliveryIntent{ID: "known-terminal-rate-limit", Action: EventUpdateComplete}
+	id := insertPendingOutboxIntent(t, db, intent, now)
+	if _, err := db.Exec("UPDATE notification_outbox SET attempts=? WHERE id=?", defaultAttempts-1, id); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`CREATE TRIGGER reject_terminal_rate_limit BEFORE UPDATE OF status_code ON notification_outbox
+		WHEN new.status_code=429 BEGIN SELECT RAISE(ABORT, 'temporary persistence failure'); END`); err != nil {
+		t.Fatal(err)
+	}
+	deps := outboxTestDeps(db, 15*time.Millisecond)
+	deps.ClaimTTL = 50 * time.Millisecond
+	var requests atomic.Int32
+	deps.HTTPClient = notificationHTTPFunc(func(*http.Request) (*http.Response, error) {
+		requests.Add(1)
+		return &http.Response{StatusCode: http.StatusTooManyRequests, Header: http.Header{"Retry-After": {"90"}},
+			Body: http.NoBody}, nil
+	})
+	svc := NewService(deps)
+	defer closeOutboxService(t, svc)
+	waitForRateLimitRow(t, db, intent.ID, DestinationWebhook, outboxStateFailed)
+	if _, err := db.Exec("DROP TRIGGER reject_terminal_rate_limit"); err != nil {
+		t.Fatal(err)
+	}
+	fingerprint := destinationConfigFingerprint(Settings{WebhookURL: endpoint}, DestinationWebhook)
+	var statusCode, attempts int
+	var pause time.Time
+	for deadline := time.Now().Add(3 * time.Second); time.Now().Before(deadline); time.Sleep(5 * time.Millisecond) {
+		if err := db.QueryRow("SELECT status_code, attempts FROM notification_outbox WHERE id=?", id).Scan(&statusCode, &attempts); err != nil {
+			t.Fatal(err)
+		}
+		var err error
+		pause, err = destinationRateLimit(t.Context(), db, DestinationWebhook, fingerprint)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if statusCode == http.StatusTooManyRequests && pause.After(now) {
+			break
+		}
+	}
+	if statusCode != http.StatusTooManyRequests || attempts != defaultAttempts || requests.Load() != 1 || !pause.After(now) {
+		t.Fatalf("terminal repair = HTTP %d, %d attempts, %d requests, pause %v", statusCode, attempts, requests.Load(), pause)
+	}
+}
+
 func waitForRateLimitRow(t *testing.T, db *sql.DB, intent, destination, want string) {
 	t.Helper()
 	deadline := time.Now().Add(3 * time.Second)

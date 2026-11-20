@@ -848,7 +848,9 @@ func (s *Service) processOutboxRow(ctx context.Context, row outboxRow) bool {
 	if err := s.persistOutboxCompletion(context.Background(), row.ID, outcome, false); err != nil {
 		now := s.deps.Now()
 		if outcome.RateLimitedUntil != "" {
-			s.rateLimitCompletions.remember(key, failedRateLimitCompletion{rowID: row.ID, outcome: outcome, deadline: nextRetry})
+			s.rateLimitCompletions.remember(key, failedRateLimitCompletion{
+				rowID: row.ID, outcome: outcome, deadline: nextRetry, repairAt: now.Add(s.deps.PollInterval),
+			})
 		}
 		s.health.Error(now)
 		s.deps.Logf("notification outbox outcome persistence failed for %q: %v", row.ID, err)

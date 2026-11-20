@@ -283,12 +283,13 @@ type ExclusiveLease struct {
 	coordinator *Coordinator
 	operation   OperationClass
 
-	mu             sync.Mutex
-	activated      bool
-	activeState    State
-	releasePending bool
-	gateReleased   bool
-	closed         bool
+	mu               sync.Mutex
+	activated        bool
+	activeState      State
+	restoreFinalized bool
+	releasePending   bool
+	gateReleased     bool
+	closed           bool
 }
 
 func (l *ExclusiveLease) Activate(ctx context.Context, facts OperationFacts) error {
@@ -391,12 +392,17 @@ func (l *ExclusiveLease) FinalizeRestore(ctx context.Context, markerDigest strin
 	state.RestorePhase = RestoreFinalized
 	state.RestoreMarkerDigest = markerDigest
 	state.RecoveryRequired = false
+	save := store.Save
 	if durable, ok := store.(interface {
 		SaveDurable(context.Context, State) error
 	}); ok {
-		return durable.SaveDurable(ctx, state)
+		save = durable.SaveDurable
 	}
-	return store.Save(ctx, state)
+	if err := save(ctx, state); err != nil {
+		return err
+	}
+	l.restoreFinalized = true
+	return nil
 }
 
 const recoveryRequiredMessage = "Backup recovery is incomplete. Stop the application and restore verified state before resuming. See the recovery steps in docs/troubleshooting.md."
@@ -419,6 +425,12 @@ func (l *ExclusiveLease) RetainForRecovery(ctx context.Context) error {
 	l.coordinator.publish(state)
 	l.closed = true
 	l.releaseGate()
+	if l.restoreFinalized {
+		// Marker cleanup can fail after the installed state has been verified.
+		// Keep admission closed here and preserve the durable proof so startup
+		// can retry cleanup without replacing files or running a rollback.
+		return nil
+	}
 	return l.coordinator.deps.Store.Save(ctx, state)
 }
 

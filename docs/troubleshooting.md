@@ -287,7 +287,7 @@ still requires administrator review. A missing marker with no verified phase
 does not clear the lock. Inspection reports `no_verified_recovery_set` when
 there are no rollback sets to select.
 
-If the recovery latch cannot be persisted, the current process still blocks work and logs that persistence error. Diagnose the storage failure before restarting. Retained rollback files contain sensitive application data; protect them like backups and remove them after recovery has been verified. They are retained only on incomplete recovery, not after a successful restore or successful rollback.
+If the recovery latch cannot be persisted, the current process still blocks work and logs that persistence error. Diagnose the storage failure before restarting. Retained rollback files contain sensitive application data. Protect them like backups and remove them after recovery has been verified. A process interruption can leave rollback files behind even when startup is able to resume without them.
 
 ## Verify an archive offline
 

@@ -20,12 +20,20 @@ import (
 
 func interruptedRecoveryFixture(t *testing.T, includeKnownHosts bool) (durabilityFixture, string, string) {
 	t.Helper()
+	return interruptedRecoveryFixtureWithSetup(t, includeKnownHosts, nil)
+}
+
+func interruptedRecoveryFixtureWithSetup(t *testing.T, includeKnownHosts bool, setup func(durabilityFixture)) (durabilityFixture, string, string) {
+	t.Helper()
 	root := t.TempDir()
 	calls := 0
 	f := newDurabilityFixture(t, root, testRestoredRuntime{reload: func(context.Context) error {
 		calls++
 		return errors.New("fixture reload failure")
 	}})
+	if setup != nil {
+		setup(f)
+	}
 	f.service.deps.ConfigPath = func() string { return f.files["config.json"] }
 	if !includeKnownHosts {
 		delete(f.files, "known_hosts")
@@ -634,4 +642,41 @@ func TestOfflineRecoveryBudgetsOnlyStagedEvidenceAfterCopyingLiveDatabase(t *tes
 	if err != nil || report.Applied != id || report.RecoveryRequired {
 		t.Fatalf("apply with sufficient staging space: %+v, %v", report, err)
 	}
+}
+
+func TestOfflineRecoveryBudgetsActualCompactedDatabaseOnReplacementVolume(t *testing.T) {
+	f, root, id := interruptedRecoveryFixtureWithSetup(t, false, func(f durabilityFixture) {
+		db, err := openRecoveryCopy(t.Context(), f.db)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// The normal VACUUM INTO step discards these free pages from the
+		// prepared database. They still occupy space in the rollback set.
+		_, writeErr := db.Exec("CREATE TABLE deleted_history (data BLOB); INSERT INTO deleted_history VALUES (zeroblob(12*1024*1024)); DROP TABLE deleted_history")
+		if err := errors.Join(writeErr, db.Close()); err != nil {
+			t.Fatal(err)
+		}
+	})
+	tempFree, databaseFree := uint64(128<<20), uint64(14<<20)
+	f.service.deps.ProbeRestoreStorage = func(dir string) installationhealth.VolumeCapacity {
+		if dir == root {
+			return installationhealth.VolumeCapacity{Device: 1, Identified: true, AvailableBytes: &databaseFree}
+		}
+		return installationhealth.VolumeCapacity{Device: 2, Identified: true, AvailableBytes: &tempFree}
+	}
+	preview, err := f.service.OfflineRestoreRecovery(t.Context(), "", offlineRecoveryMergeFixtureJobs)
+	if err != nil || len(preview.Sets) != 1 || !preview.Sets[0].Ready {
+		t.Fatalf("inspect with room for compacted SQLite: %+v, %v", preview, err)
+	}
+	if !slices.ContainsFunc(preview.Sets[0].Storage, func(volume RestoreStorageVolume) bool {
+		return slices.Contains(volume.Roles, restoreStorageDatabase) &&
+			volume.State == restoreStorageReady && volume.RequiredBytes < databaseFree
+	}) {
+		t.Fatalf("inspect did not budget the compacted replacement: %+v", preview.Sets[0].Storage)
+	}
+	report, err := f.service.OfflineRestoreRecovery(t.Context(), id, offlineRecoveryMergeFixtureJobs)
+	if err != nil || report.Applied != id || report.RecoveryRequired {
+		t.Fatalf("apply with room for compacted SQLite: %+v, %v", report, err)
+	}
+	requireDurableRestoreState(t, f.db, f.hosts, originalRestoreServer, originalRestoreTrust, false)
 }

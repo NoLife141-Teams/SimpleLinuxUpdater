@@ -204,8 +204,17 @@ func (s *Service) OfflineRestoreRecovery(ctx context.Context, selection string, 
 				// size after the staging connections have closed.
 				stagedBytes, _ := sizeOnDisk(staged)
 				hostsPath := recoveryHostReplacementPath(hosts, stagedHosts, true)
-				remaining := s.estimateRestoreStorage(s.recoveryReplacementNeeds(database, hosts, hostsPath, stagedBytes, live != nil, diagnosisTargets)...)
-				if err := storageBlocker(remaining); err != nil {
+				preparation := restoreStorageNeed{directory: setWork, role: restoreStoragePreparation}
+				writes := s.recoveryReplacementNeeds(database, hosts, hostsPath, stagedBytes, live != nil, diagnosisTargets)
+				remaining := s.estimateRestoreStorage(append([]restoreStorageNeed{preparation}, writes...)...)
+				// Preparation files already consume space at this point. On
+				// shared volumes only the remaining writes need free space.
+				// Keep the earlier estimate if preparation has its own volume.
+				if len(remaining[0].Roles) == 1 {
+					remaining[0] = set.Storage[0]
+				}
+				set.Storage = remaining
+				if err := storageBlocker(set.Storage); err != nil {
 					set.storageFailure(err, "")
 				}
 			}
@@ -355,9 +364,15 @@ func (s *Service) prepareOfflineRecoverySet(ctx context.Context, rootPath, work 
 	databaseBytes := database.bytes
 	preparation.bytes = storageSum(preparation.bytes, storageSum(databaseBytes, databaseBytes))
 	preparation.incomplete = preparation.incomplete || database.incomplete
-	needs := s.recoveryReplacementNeeds(targets[0], hosts, hostsPath, databaseBytes, live != nil, diagnosis)
-	result.Storage = s.estimateRestoreStorage(append([]restoreStorageNeed{preparation}, needs...)...)
+	result.Storage = s.estimateRestoreStorage(preparation)
 	if err := storageBlocker(result.Storage); err != nil {
+		return "", nil, result.storageFailure(err, "")
+	}
+	// Diagnosis and trust copies have sizes we can check now. SQLite's
+	// replacement size is only known after evidence is merged and VACUUM INTO
+	// has removed free pages, so check it after staging.
+	knownWrites := s.recoveryReplacementNeeds(targets[0], hosts, hostsPath, 0, false, diagnosis)
+	if err := storageBlocker(s.estimateRestoreStorage(knownWrites...)); err != nil {
 		return "", nil, result.storageFailure(err, "")
 	}
 	reconstructed := filepath.Join(work, id+".sqlite")

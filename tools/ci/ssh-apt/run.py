@@ -148,6 +148,26 @@ def qualification_overlay(work):
     instrument("backup_storage_health.go", [
         ("backupStorageAlertAfter  = 30 * time.Minute", "backupStorageAlertAfter  = 10 * time.Second"),
     ])
+    instrument("backup_secondary.go", [
+        ("backupSecondaryRetryBase     = time.Minute", "backupSecondaryRetryBase     = 2 * time.Second"),
+    ])
+    anchor = "\treader := secondaryArchiveReader{ctx: ctx, src: source}"
+    instrument("backup_secondary_worker.go", [
+        ("backupSecondaryPollInterval = 30 * time.Second", "backupSecondaryPollInterval = 500 * time.Millisecond"),
+        (anchor, """\
+\tif os.Remove("/work/arm-secondary-copy-crash") == nil {
+\t\tif _, err := io.CopyN(destination, source, 32); err != nil {
+\t\t\treturn err
+\t\t}
+\t\tif err := os.WriteFile("/work/secondary-copy-interrupted", nil, 0600); err != nil {
+\t\t\treturn err
+\t\t}
+\t\tfor {
+\t\t\ttime.Sleep(time.Second)
+\t\t}
+\t}
+""" + anchor),
+    ])
     overlay = work / "qualification-overlay.json"
     overlay.write_text(json.dumps({"Replace": replacements}))
     return overlay
@@ -319,6 +339,7 @@ class Harness:
         self.image = self.name + ":target"
         self.container = None
         self.work = Path(tempfile.mkdtemp(prefix=self.name + "-"))
+        self.secondary_work = None
         self.password = secrets.token_urlsafe(24) + "!Aa7"
         # The primary credential is always masked; this list holds extra secrets.
         self.redactions = []
@@ -401,6 +422,13 @@ class Harness:
         passphrase_file.write_text("slu-public-backup-qualification-fixture", encoding="utf-8")
         container_env["DEBIAN_UPDATER_BACKUP_DIR"] = "/fixture-backups/archives"
         container_env["DEBIAN_UPDATER_BACKUP_PASSPHRASE_FILE"] = "/fixture-backups/passphrase"
+        primary_device = self.work.stat().st_dev
+        secondary_parent = next((path for path in (Path("/dev/shm"), Path("/tmp"), Path("/var/tmp"))
+                                 if path.is_dir() and path.stat().st_dev != primary_device and os.access(path, os.W_OK)), None)
+        require(secondary_parent is not None, "secondary archive fixture requires a separate writable filesystem")
+        self.secondary_work = Path(tempfile.mkdtemp(prefix=self.name + "-secondary-", dir=secondary_parent))
+        (self.secondary_work / "archives").mkdir(mode=0o700)
+        container_env["DEBIAN_UPDATER_BACKUP_SECONDARY_DIR"] = "/fixture-secondary/archives"
         for key, value in container_env.items():
             env_args.extend(["--env", key + "=" + value])
         self.docker("run", "-d", "--name", self.app_name, "--network", self.network,
@@ -408,6 +436,7 @@ class Harness:
             "--pids-limit", "256", "--memory", "512m", "-p", "127.0.0.1::8080",
             "--tmpfs", "/restore-temp:rw,nosuid,nodev,size=32m,mode=1777",
             "--mount", f"type=bind,src={archive_mount},dst=/fixture-backups",
+            "--mount", f"type=bind,src={self.secondary_work},dst=/fixture-secondary",
             "--mount", f"type=bind,src={self.work},dst=/work", "--workdir", "/work",
             "--entrypoint", "/work/webserver", *env_args, self.image)
         self.connect_app()
@@ -1119,12 +1148,9 @@ finally:
             self.api.request("POST", "/api/servers", {"name": name, "host": address, "port": port,
                              "user": "root", "pass": self.password}, allowed=(201,))
 
-        passphrase = secrets.token_urlsafe(24)
-        self.redactions.append(passphrase)
         until(lambda: all(s["status"] != "facts_refresh" for s in self.api.request("GET", "/api/servers")),
               "pre-archive facts did not settle")
-        archive = self.api.request("POST", "/api/backup/export",
-                                   {"passphrase": passphrase, "include_known_hosts": True}, binary=True)
+        archive, passphrase = self.verified_secondary_archive(record, credentials)
         self.stop_app()
         self.docker("exec", targets[incomplete], "dpkg", "--unpack", "/srv/slu-packages/2.0.deb")
         require(self.docker("exec", targets[incomplete], "dpkg", "--audit").strip(),
@@ -1213,6 +1239,59 @@ finally:
         record.update(read_only_probes=True, batched_restore_apt_checks=True, healthy_host_resumed=True, incomplete_host_blocked=True,
                       unreachable_host_blocked=True, gated_after_restart=True, partial_batch_admission=True)
         del record["checkpoint"]
+
+    def verified_secondary_archive(self, record, credentials):
+        record["checkpoint"] = "secondary-validation"
+        self.api.request("POST", "/api/auth/reauthenticate", {"password": self.password})
+        self.api.request("POST", "/api/backup/automation/secondary/validate")
+        primary = self.work / "archive-mount-probe"
+        secondary = self.secondary_work
+        directory = secondary / "archives"
+        saved = secondary / "removed-mount"
+        directory.rename(saved)
+        directory.mkdir(mode=0o700)
+        try:
+            record["checkpoint"] = "secondary-mount-unavailable"
+            control = self.api.request("POST", "/api/backup/automation/run")
+            require(control["state"] == "succeeded", "unavailable secondary storage affected primary publication")
+
+            def mount_failure():
+                status = self.api.request("GET", "/api/backup/automation")
+                return status["secondary"].get("failure") == "storage_unavailable" and status["secondary"]["pending"] == 1
+
+            until(mount_failure, "secondary outage did not become visible")
+            require(not any(directory.iterdir()), "an unexpected mount was written")
+            (self.work / "arm-secondary-copy-crash").touch()
+        finally:
+            directory.rmdir()
+            saved.rename(directory)
+
+        record["checkpoint"] = "secondary-copy-interrupted"
+        until((self.work / "secondary-copy-interrupted").is_file, "partial copy checkpoint was not reached")
+        self.kill_app()
+        require(not list(directory.glob("*.slubkp")), "interrupted copy was published")
+        require(len(list(directory.glob(".slu-secondary-*.tmp"))) == 1, "expected one incomplete copy")
+        self.docker("start", self.app_name)
+        self.connect_app()
+        self.api.request("POST", "/api/auth/login", credentials)
+
+        record["checkpoint"] = "secondary-copy-verified"
+        def secondary_verified():
+            status = self.api.request("GET", "/api/backup/automation")["secondary"]
+            return status["state"] == "verified" and status.get("captured_at") and status["pending"] == 0
+
+        until(secondary_verified, "secondary copy did not recover after restart")
+        copies = list(directory.glob("*.slubkp"))
+        require(len(copies) == 1, "restarted copy published duplicates")
+        primary_archive = primary / "archives" / copies[0].name
+        archive = copies[0].read_bytes()
+        require(archive == primary_archive.read_bytes(), "secondary archive changed the original encrypted bytes")
+        (primary / "archives").rename(primary / "primary-unavailable-for-cold-restore")
+        require(not primary_archive.exists(), "cold restoration still has access to the primary archive")
+        passphrase = (primary / "passphrase").read_text().strip()
+        record.update(verified_secondary_mount_guard=True, verified_secondary_interrupted_copy=True,
+                      secondary_archive_used_with_primary_unavailable=True)
+        return archive, passphrase
 
     def qualify_backup_storage_outage(self, record):
         from target import WEBHOOK_PORT
@@ -1629,6 +1708,9 @@ print(json.dumps([inspect_code, inspection, apply_code, blocked, unchanged, retr
             except Exception as error: self.cleanup_errors.append(str(error))
         try: shutil.rmtree(self.work)
         except OSError as error: self.cleanup_errors.append(str(error))
+        if self.secondary_work is not None:
+            try: shutil.rmtree(self.secondary_work)
+            except OSError as error: self.cleanup_errors.append(str(error))
 
     def report(self):
         recorded = {record["scenario"] for record in self.records}

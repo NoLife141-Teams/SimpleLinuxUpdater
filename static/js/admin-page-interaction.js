@@ -193,6 +193,14 @@
             retryAt: String(data.retry_at || ""),
             lastAttemptAt: String(data.last_attempt_at || ""),
             lastSuccessAt: String(data.last_success_at || ""),
+            secondary: data.secondary ? {
+                state: String(data.secondary.state || ""),
+                pending: Math.max(0, Number(data.secondary.pending) || 0),
+                failed: Math.max(0, Number(data.secondary.failed) || 0),
+                failure: String(data.secondary.failure || ""),
+                capturedAt: String(data.secondary.captured_at || ""),
+                verifiedAt: String(data.secondary.verified_at || ""),
+            } : null,
             catalog: {
                 archives: (Array.isArray(data.catalog?.archives) ? data.catalog.archives : []).slice(0, 200).map(item => ({
                     id: String(item.id || ""), publishedAt: String(item.published_at || ""), capturedAt: String(item.captured_at || ""),

@@ -357,6 +357,10 @@
                 if (feedback) feedback.textContent = "";
             });
             renderBackupAutomationControls();
+            const secondary = document.getElementById("backup-secondary-validate");
+            if (secondary) lifecycle.listen(secondary, "click", () => void validateSecondaryDestination(secondary));
+            const secondaryRefresh = document.getElementById("backup-secondary-refresh");
+            if (secondaryRefresh) lifecycle.listen(secondaryRefresh, "click", () => void fetchBackupStatus());
             lifecycle.listen(document.getElementById("backup-archive-catalog"), "click", event => {
                 const button = event.target.closest("button[data-backup-archive]");
                 if (button) void operateBackupArchive(button.dataset.backupArchive, button.dataset.backupOperation);
@@ -536,6 +540,55 @@
             }
         }
 
+        async function validateSecondaryDestination(button) {
+            if (button.disabled) return;
+            const ticket = lifecycle.capture();
+            const feedback = document.getElementById("backup-secondary-feedback");
+            button.disabled = true;
+            feedback.textContent = "";
+            const reset = lifecycle.own(() => {
+                button.disabled = false;
+                feedback.textContent = "";
+            });
+            try {
+                await reauthentication.sensitive("/api/backup/automation/secondary/validate", { method: "POST" },
+                    "Validate secondary backup destination");
+                if (!lifecycle.isCurrent(ticket)) return;
+                feedback.textContent = "Secondary backup destination validated.";
+                await fetchBackupStatus();
+            } catch (error) {
+                if (lifecycle.isCurrent(ticket) && error.name !== "AbortError") feedback.textContent = error.message;
+            } finally {
+                if (lifecycle.isCurrent(ticket)) {
+                    reset();
+                    button.disabled = false;
+                }
+            }
+        }
+
+        function renderSecondaryBackups(secondary) {
+            const panel = document.getElementById("backup-secondary");
+            if (!panel) return;
+            panel.hidden = !secondary;
+            if (!secondary) return;
+            const state = {
+                validation_required: "Validation required", waiting: "Waiting for a verified primary backup",
+                pending: "Copy pending", degraded: "Needs attention", verified: "Copy verified",
+            };
+            const failure = {
+                storage_unavailable: "Mount unavailable or replaced", copy_failed: "Copy could not be verified",
+                copy_unavailable: "A verified copy is missing or changed", retention_failed: "Retention could not finish",
+                publication_pending: "Linked copy still needs verification", queue_full: "A copy was skipped because the queue was full",
+            };
+            document.getElementById("backup-secondary-status").textContent =
+                [state[secondary.state] || "Unavailable", failure[secondary.failure]].filter(Boolean).join(" · ");
+            document.getElementById("backup-secondary-queue").textContent = `${secondary.pending} pending · ${secondary.failed} failed`;
+            document.getElementById("backup-secondary-captured").textContent =
+                secondary.capturedAt ? formatSessionTime(secondary.capturedAt) : "Unknown";
+            document.getElementById("backup-secondary-verified").textContent =
+                secondary.verifiedAt ? formatSessionTime(secondary.verifiedAt) : "Never";
+        }
+
         function renderBackupAutomation(updateForm = false) {
             const view = adminPageView().backup.automation;
             const status = document.getElementById("backup-automation-status");
@@ -552,6 +605,7 @@
                     ? formatSessionTime(view.lastSuccessAt)
                     : "Never";
             renderBackupAutomationControls();
+            renderSecondaryBackups(view.secondary);
             renderBackupCatalog();
             if (updateForm) {
                 const config = view.config;

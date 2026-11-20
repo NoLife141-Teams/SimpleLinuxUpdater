@@ -39,6 +39,9 @@ func (c *runtimeComposition) PreparePersistenceReplacement(ctx context.Context) 
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("prepare persistence replacement: %w", err)
 	}
+	if c.deps.BackupAutomation != nil {
+		c.deps.BackupAutomation.cancelSecondaryTransfer()
+	}
 	previousPhase := "initializing"
 	if c.deps.InstallationHealth != nil {
 		previousPhase = c.deps.InstallationHealth.Phase()

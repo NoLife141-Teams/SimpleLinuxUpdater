@@ -989,6 +989,20 @@
                 </form>
                 <p class="muted">Active work defers a backup by five minutes, for at most one hour. Missing DST times are skipped; repeated times run once. Retention runs only after a new verified archive is published.</p>
             </section>
+            <section class="backup-block section-spaced" id="backup-secondary" aria-labelledby="backup-secondary-title" hidden>
+                <h3 id="backup-secondary-title">Secondary backup copies</h3>
+                <dl class="backup-recovery-health-facts">
+                    <div><dt>Destination</dt><dd id="backup-secondary-status">Unavailable</dd></div>
+                    <div><dt>Queue</dt><dd id="backup-secondary-queue">Unavailable</dd></div>
+                    <div><dt>Latest verified copy captured</dt><dd id="backup-secondary-captured">Never</dd></div>
+                    <div><dt>Copy verified</dt><dd id="backup-secondary-verified">Never</dd></div>
+                </dl>
+                <div class="policy-actions">
+                    <button type="button" class="btn-ghost" id="backup-secondary-validate">Validate secondary destination</button>
+                    <button type="button" class="btn-ghost" id="backup-secondary-refresh">Refresh secondary status</button>
+                </div>
+                <p id="backup-secondary-feedback" class="muted" role="status" aria-live="polite"></p>
+            </section>
             <div class="backup-block section-spaced" aria-labelledby="backup-catalog-title">
                 <h3 id="backup-catalog-title">Registered automated archives</h3>
                 <p class="muted">Latest 100 manifest entries. Presence does not verify encrypted contents. Unknown legacy metadata remains unknown. Keep your passphrase file separately.</p>

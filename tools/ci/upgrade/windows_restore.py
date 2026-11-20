@@ -47,10 +47,11 @@ def powershell(code, label):
     return checked(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", code], label)
 
 
-def configure_acl(path, user):
+def configure_acl(path, user, *, directory=True):
+    inheritance = "(OI)(CI)" if directory else ""
     checked(["icacls.exe", str(path), "/inheritance:r",
-             "/grant:r", user + ":(OI)(CI)F", SYSTEM_SID + ":(OI)(CI)F",
-             ADMINISTRATORS_SID + ":(OI)(CI)F"], "protect fixture directory")
+             "/grant:r", user + ":" + inheritance + "F", SYSTEM_SID + ":" + inheritance + "F",
+             ADMINISTRATORS_SID + ":" + inheritance + "F"], "protect fixture entry")
 
 
 def open_port():
@@ -152,11 +153,14 @@ class Installation:
 
     def cli(self, binary, *args, success=True):
         result = command([str(binary), "backup", *args], cwd=self.source, env=self.env)
-        require((result.returncode == 0) == success, f"backup {args[0]} returned {result.returncode}")
         try:
-            return json.loads(result.stdout)
+            report = json.loads(result.stdout)
         except json.JSONDecodeError:
-            raise AssertionError(f"backup {args[0]} did not produce a structured report") from None
+            raise AssertionError(f"backup {args[0]} did not produce a structured report (exit {result.returncode})") from None
+        status = report.get("status") or report.get("blocker")
+        suffix = f" ({status})" if isinstance(status, str) and status.replace("_", "").isalnum() else ""
+        require((result.returncode == 0) == success, f"backup {args[0]} returned {result.returncode}{suffix}")
+        return report
 
 
 def build(source, work):
@@ -234,6 +238,7 @@ def qualify(source, work, report):
     archive_path.write_bytes(archive)
     secret_path = work / "passphrase.txt"
     secret_path.write_text(phrase, encoding="utf-8")
+    configure_acl(secret_path, user, directory=False)
     verify = ("verify", "--archive", str(archive_path), "--work-dir", str(work), "--passphrase-file", str(secret_path), "--json")
     require(origin.cli(binary, *verify).get("archive_verified"), "native offline verification failed")
     report["steps"]["verify"] = "passed"

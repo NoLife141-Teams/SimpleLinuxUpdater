@@ -790,3 +790,48 @@ func TestExpiredArchiveObservationContinuesIntoFailedProbe(t *testing.T) {
 		t.Fatalf("failed probe restarted a previously stale episode: %+v", got)
 	}
 }
+
+func TestVerifiedBackupPublicationClosesStorageOutage(t *testing.T) {
+	app, a, now := newBackupAutomationTest(t)
+	if err := a.Tick(t.Context(), true); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.observeArchiveAvailability(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	directory := a.deployment.Directory
+	withdrawn := directory + ".withdrawn"
+	if err := os.Rename(directory, withdrawn); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(withdrawn) })
+	if err := a.observeArchiveAvailability(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	*now = now.Add(backupStorageAlertAfter)
+	source := newNotificationConditionSource(app.Deps.DB, a.deps.Now, nil, directory)
+	checkCondition := func(active bool) {
+		t.Helper()
+		batch, err := source(t.Context(), "", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if fact := lastConditionFact(batch.Facts, backupStorageConditionID); fact.Active != active {
+			t.Fatalf("storage notification eligible = %v, want %v", fact.Active, active)
+		}
+	}
+	checkCondition(true)
+	if err := os.Rename(withdrawn, directory); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Tick(t.Context(), true); err != nil {
+		t.Fatal(err)
+	}
+	// Notification evaluation can run before the periodic observer.
+	checkCondition(false)
+	facts := installationSnapshot(t.Context(), app.Deps).BackupArchives
+	if facts.StorageHealth.State != "available" || facts.StorageHealth.LastAvailableAt != backupStamp(*now) ||
+		facts.RecoveryPoint.State != "recent" {
+		t.Fatalf("verified publication did not refresh storage or coverage: %+v, %+v", facts, facts.StorageHealth)
+	}
+}

@@ -60,6 +60,26 @@ func TestOfflineArchiveVerificationReportsWorkspaceQuota(t *testing.T) {
 	}
 }
 
+func TestOfflineArchiveVerificationReportsUnsupportedEncryptionOnFullWorkspace(t *testing.T) {
+	work := t.TempDir()
+	path := filepath.Join(work, "incompatible.slubkp")
+	const envelope = `{"format":"simplelinuxupdater-backup","version":1,"kdf":{"name":"future-kdf"},"cipher":{"name":"aes-256-gcm"},"payload_b64":"YWJj"}`
+	if err := os.WriteFile(path, []byte(envelope), 0600); err != nil {
+		t.Fatal(err)
+	}
+	available := uint64(0)
+	service := NewService(ServiceDeps{
+		TempDir: func() string { return work },
+		ProbeRestoreStorage: func(string) installationhealth.VolumeCapacity {
+			return installationhealth.VolumeCapacity{Device: 1, Identified: true, AvailableBytes: &available}
+		},
+	})
+	result, err := service.VerifyArchiveFileOffline(t.Context(), TemporaryFile{Path: path, Size: int64(len(envelope))}, testPassphrase)
+	if err != nil || result.RestoreReady || len(result.Blockers) != 1 || result.Blockers[0].Code != "unsupported_encryption" {
+		t.Fatalf("incompatible archive on full workspace = %+v, %v", result.Blockers, err)
+	}
+}
+
 func TestOfflineArchiveVerificationPreservesSQLiteWorkspaceFailure(t *testing.T) {
 	f := newDurabilityFixture(t, t.TempDir(), testRestoredRuntime{})
 	archive := restoreStorageFixtureArchive(t, f)

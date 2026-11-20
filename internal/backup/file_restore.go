@@ -760,6 +760,14 @@ func (s *Service) verifyArchiveFile(ctx context.Context, encrypted TemporaryFile
 		result.Blockers = append(result.Blockers, ReadinessIssue{Code: "unsupported_version", Message: fmt.Sprintf("Backup version %d is not supported; this application accepts version %d.", envelope.Version, FormatVersion)})
 		return result, nil
 	}
+	unsupportedEncryption := ReadinessIssue{
+		Code:    "unsupported_encryption",
+		Message: "The backup uses encryption settings that this application does not support.",
+	}
+	if mode == verifyWorkspaceStorage && validateEnvelopeEncryption(envelope) != nil {
+		result.Blockers = append(result.Blockers, unsupportedEncryption)
+		return result, nil
+	}
 	var preparation []RestoreStorageVolume
 	if assessStorage {
 		preparation = s.decryptStorage(encrypted.Path)
@@ -770,7 +778,7 @@ func (s *Service) verifyArchiveFile(ctx context.Context, encrypted TemporaryFile
 	plain, err := s.decryptFile(ctx, encrypted.Path, passphrase)
 	if err != nil {
 		if errors.Is(err, ErrUnsupportedFormat) {
-			result.Blockers = append(result.Blockers, ReadinessIssue{Code: "unsupported_encryption", Message: "The backup uses encryption settings that this application does not support."})
+			result.Blockers = append(result.Blockers, unsupportedEncryption)
 			return result, nil
 		}
 		if assessStorage && IsStorageFull(err) {

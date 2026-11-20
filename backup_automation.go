@@ -483,7 +483,7 @@ func (a *backupAutomation) statusLocked(ctx context.Context) (backupAutomationSt
 		return backupAutomationStatus{}, err
 	}
 	status := backupAutomationStatus{Config: s.Config, State: s.Outcome, Message: s.Message, LastAttemptAt: s.LastAttemptAt, LastSuccessAt: s.LastSuccessAt, RetryAt: s.RetryAt,
-		Secondary: a.secondaryStatus(s.Secondary)}
+		Secondary: a.secondaryStatus(s)}
 	root, _, owner, binding, validationErr := a.destination(false)
 	if root != nil {
 		defer root.Close()

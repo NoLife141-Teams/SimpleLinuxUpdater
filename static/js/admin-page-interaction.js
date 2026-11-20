@@ -202,6 +202,11 @@
                 verifiedAt: String(data.secondary.verified_at || ""),
                 integrityState: String(data.secondary.integrity?.state || ""),
                 integrityAt: String(data.secondary.integrity?.attempted_at || ""),
+                transferring: Math.max(0, Number(data.secondary.transferring) || 0),
+                waitingForMount: Boolean(data.secondary.waiting_for_mount),
+                retryCandidates: (Array.isArray(data.secondary.retry_candidates) ? data.secondary.retry_candidates : [])
+                    .slice(0, 16).map(copy => ({id: String(copy.archive_id || ""), capturedAt: String(copy.captured_at || "")}))
+                    .filter(copy => /^[a-f0-9]{64}$/.test(copy.id)),
             } : null,
             catalog: {
                 archives: (Array.isArray(data.catalog?.archives) ? data.catalog.archives : []).slice(0, 200).map(item => ({

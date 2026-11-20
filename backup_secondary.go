@@ -16,6 +16,8 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+const backupSecondaryRetryRoute = "/api/backup/automation/secondary/retry"
+
 const (
 	backupSecondaryMaxAttempts   = 5
 	backupSecondaryQueueLimit    = 16
@@ -42,10 +44,23 @@ type backupSecondaryCopy struct {
 	VerifiedAt   string                 `json:"verified_at,omitempty"`
 	Unavailable  bool                   `json:"unavailable,omitempty"`
 	Integrity    backupArchiveIntegrity `json:"integrity,omitzero"`
+	Retried      bool                   `json:"retried,omitempty"`
 }
 
 func (copy backupSecondaryCopy) pending() bool {
-	return copy.VerifiedAt == "" && (copy.Transferring || copy.Attempts < backupSecondaryMaxAttempts)
+	return copy.VerifiedAt == "" && copy.Failure != "queue_full" &&
+		(copy.Transferring || copy.Attempts < copy.attemptLimit())
+}
+
+func (copy backupSecondaryCopy) attemptLimit() int {
+	if copy.Retried {
+		return 2 * backupSecondaryMaxAttempts
+	}
+	return backupSecondaryMaxAttempts
+}
+
+func (copy backupSecondaryCopy) retryable() bool {
+	return copy.VerifiedAt == "" && !copy.Retried && !copy.pending()
 }
 
 type backupSecondaryState struct {
@@ -53,16 +68,20 @@ type backupSecondaryState struct {
 	Approved    bool                   `json:"approved"`
 	Copies      []backupSecondaryCopy  `json:"copies,omitempty"`
 	LastFailure string                 `json:"last_failure,omitempty"`
+	CatchUp     bool                   `json:"catch_up,omitempty"`
 }
 
 type backupSecondaryStatus struct {
-	State      string                 `json:"state"`
-	Pending    int                    `json:"pending"`
-	Failed     int                    `json:"failed"`
-	Failure    string                 `json:"failure,omitempty"`
-	CapturedAt string                 `json:"captured_at,omitempty"`
-	VerifiedAt string                 `json:"verified_at,omitempty"`
-	Integrity  backupArchiveIntegrity `json:"integrity,omitzero"`
+	State           string                          `json:"state"`
+	Pending         int                             `json:"pending"`
+	Failed          int                             `json:"failed"`
+	Failure         string                          `json:"failure,omitempty"`
+	CapturedAt      string                          `json:"captured_at,omitempty"`
+	VerifiedAt      string                          `json:"verified_at,omitempty"`
+	Integrity       backupArchiveIntegrity          `json:"integrity,omitzero"`
+	Transferring    int                             `json:"transferring"`
+	WaitingForMount bool                            `json:"waiting_for_mount"`
+	RetryCandidates []backupSecondaryRetryCandidate `json:"retry_candidates,omitempty"`
 }
 
 func (a *backupAutomation) secondaryConfigured(state backupSecondaryState) bool {
@@ -70,7 +89,8 @@ func (a *backupAutomation) secondaryConfigured(state backupSecondaryState) bool 
 		state.Binding.Path == backupStorageBinding(a.deployment.SecondaryDirectory)
 }
 
-func (a *backupAutomation) secondaryStatus(state backupSecondaryState) *backupSecondaryStatus {
+func (a *backupAutomation) secondaryStatus(current backupAutomationState) *backupSecondaryStatus {
+	state := current.Secondary
 	if a.deployment.SecondaryDirectory == "" {
 		return nil
 	}
@@ -101,12 +121,17 @@ func (a *backupAutomation) secondaryStatus(state backupSecondaryState) *backupSe
 			}
 		} else if copy.pending() {
 			status.Pending++
+			if copy.Transferring && copy.Failure != "storage_unavailable" && copy.Failure != "publication_pending" {
+				status.Transferring++
+			}
 		} else if copy.VerifiedAt == "" {
 			status.Failed++
 			hasSkippedCopies = hasSkippedCopies || copy.Failure == "queue_full"
 		}
 	}
 	if a.secondaryConfigured(state) {
+		status.WaitingForMount = state.LastFailure == "storage_unavailable"
+		status.RetryCandidates = secondaryRetryCandidates(current)
 		status.Integrity = latestPublished.Integrity
 		switch {
 		case state.LastFailure == "storage_unavailable":
@@ -160,7 +185,6 @@ func (a *backupAutomation) queueSecondaryCopy(state *backupAutomationState, arch
 	if pending >= backupSecondaryQueueLimit {
 		// Record the uncovered archive without increasing the queue or pinning
 		// its primary source. A successful transfer can clear LastFailure.
-		copy.Attempts = backupSecondaryMaxAttempts
 		copy.Failure = "queue_full"
 		state.Secondary.LastFailure = copy.Failure
 	}
@@ -307,11 +331,14 @@ func (a *backupAutomation) validateSecondaryDestination(ctx context.Context, adm
 		// A different mount grants no authority over files from the old one.
 		state.Secondary = backupSecondaryState{Binding: binding}
 	}
+	if !state.Secondary.Approved {
+		state.Secondary.CatchUp = true
+	}
 	state.Secondary.Approved = true
 	if err := a.save(ctx, state); err != nil {
 		return nil, errors.New("secondary backup validation could not be saved")
 	}
-	return a.secondaryStatus(state.Secondary), nil
+	return a.secondaryStatus(state), nil
 }
 
 func (a *backupAutomation) probeSecondaryPublication(ctx context.Context, root *os.Root) error {

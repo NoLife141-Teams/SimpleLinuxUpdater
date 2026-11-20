@@ -38,6 +38,10 @@ func (o *backupSecondaryObservation) record(now time.Time, available bool) {
 	if !available {
 		since := o.unobservableSince(now)
 		if since.IsZero() {
+			// A new process can confirm a known outage before its first probe is overdue.
+			since = parseBackupStamp(o.UnavailableSince)
+		}
+		if since.IsZero() || since.After(now) {
 			since = now
 		}
 		o.UnavailableSince = backupStamp(since)

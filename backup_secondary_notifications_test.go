@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"os"
 	"sync/atomic"
 	"testing"
@@ -96,6 +97,63 @@ func TestSecondaryBackupAlertsWhenWorkerStopsObserving(t *testing.T) {
 				t.Fatalf("successful observation should resolve the outage: %+v", got)
 			}
 		})
+	}
+}
+
+func TestSecondaryBackupRestartsDuringMountOutage(t *testing.T) {
+	start := time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
+	binding := backupSecondaryBinding{Path: backupStorageBinding("/mounted"), Directory: "secondary", Owner: "installation"}
+	state := backupSecondaryState{Approved: true, Binding: binding}
+	state.Observation.record(start, true)
+	firstFailure := start.Add(time.Minute)
+	state.Observation.record(firstFailure, false)
+
+	// A process restart happens just before the outage becomes alertable.
+	state.Observation.Process = "previous process"
+	due := firstFailure.Add(30 * time.Minute)
+	state.Observation.start(due)
+	if got := secondaryBackupConditions(binding.Path, state, due, nil, nil)[0]; got.Active {
+		t.Fatalf("outage alert should await the new process's observation: %+v", got)
+	}
+	state.Observation.record(due, false)
+	if got := secondaryBackupConditions(binding.Path, state, due, nil, nil)[0]; !got.Active {
+		t.Fatalf("renewed failure should alert without restarting the grace period: %+v", got)
+	}
+}
+
+func TestSecondaryBackupWriteFailureDoesNotHideMissingCoverage(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("requires filesystem write permissions to be enforced")
+	}
+	app, automation, now := newBackupAutomationTest(t)
+	secondary := secondaryBackupTestDirectory(t, automation)
+	automation.deployment.SecondaryDirectory = secondary
+	if _, err := automation.validateSecondaryDestination(t.Context(), nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := automation.Tick(t.Context(), true); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(secondary, 0500); err != nil {
+		t.Fatal(err)
+	}
+
+	firstCheck := *now
+	for _, elapsed := range []time.Duration{0, time.Hour} {
+		*now = firstCheck.Add(elapsed)
+		if err := automation.copyNextSecondaryBackup(t.Context()); !errors.Is(err, os.ErrPermission) {
+			t.Fatalf("expected write failure on readable secondary mount: %v", err)
+		}
+	}
+	read := newNotificationConditionSource(app.Deps.DB, automation.deps.Now, nil, automation.deployment)
+	batch, err := read(t.Context(), "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	coverage := lastConditionFact(batch.Facts, "backup/secondary/coverage")
+	outage := lastConditionFact(batch.Facts, "backup/secondary/storage")
+	if !coverage.Active || coverage.Suspended || outage.Active {
+		t.Fatalf("expected an actionable coverage alert on the readable mount, coverage=%+v, storage=%+v", coverage, outage)
 	}
 }
 

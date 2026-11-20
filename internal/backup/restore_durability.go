@@ -33,6 +33,26 @@ func recoveryDigest(data []byte) string {
 	return hex.EncodeToString(digest[:])
 }
 
+func (marker restoreRecoveryMarker) digest() string {
+	return recoveryDigest([]byte(marker.ID + "/" + marker.ManifestSHA256 + "/" + marker.InstallationMAC))
+}
+
+// ClearFinalizedRestoreMarker removes only the marker bound to the durable
+// finalization proof in active SQLite. The caller owns the installation lock.
+func ClearFinalizedRestoreMarker(dbPath, digest string) (bool, error) {
+	path := RestoreRecoveryMarkerPath(dbPath)
+	marker, err := readRestoreRecoveryMarker(path)
+	if err != nil || marker.digest() != digest {
+		return false, nil
+	}
+	files := restoreFiles{}
+	if err := files.removeFile(path); err != nil {
+		_, _ = files.publishRecoveryMarker(path, marker)
+		return false, err
+	}
+	return true, nil
+}
+
 func (marker restoreRecoveryMarker) installationMAC(key []byte) []byte {
 	mac := hmac.New(sha256.New, key)
 	_, _ = io.WriteString(mac, "simplelinuxupdater/restore-recovery/v1/"+marker.ID+"/"+marker.ManifestSHA256)

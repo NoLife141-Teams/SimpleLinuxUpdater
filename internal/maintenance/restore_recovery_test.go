@@ -2,8 +2,13 @@ package maintenance
 
 import (
 	"context"
+	"database/sql"
 	"errors"
+	"path/filepath"
+	"strings"
 	"testing"
+
+	_ "modernc.org/sqlite"
 )
 
 func TestIncompleteRestoreRetainsMaintenanceAcrossCloseAndRestart(t *testing.T) {
@@ -70,5 +75,59 @@ func TestRecoveryLatchPersistenceFailureStillBlocksCurrentProcess(t *testing.T) 
 	}
 	if d.Allowed || !c.Snapshot().RecoveryRequired {
 		t.Fatal("persistence error reopened admission")
+	}
+}
+
+func TestRestoreCleanupFailureCanResumeFinalizedState(t *testing.T) {
+	ctx := t.Context()
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "servers.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.ExecContext(ctx, `CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT)`); err != nil {
+		t.Fatal(err)
+	}
+	marker := strings.Repeat("a", 64)
+	deps := Deps{
+		Store:           SQLiteStore{DB: func() *sql.DB { return db }},
+		RecoveryPending: func() (bool, error) { return marker != "", nil },
+		ClearFinalizedRestoreMarker: func(digest string) (bool, error) {
+			if digest != marker {
+				return false, nil
+			}
+			marker = ""
+			return true, nil
+		},
+	}
+	coordinator := NewCoordinator(deps)
+	lease, decision := coordinator.TryExclusive(OperationBackupRestore)
+	if !decision.Allowed {
+		t.Fatal("restore was not admitted")
+	}
+	if err := lease.Activate(ctx, OperationFacts{JobID: "restore", RestorePreparation: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := lease.FinalizeRestore(ctx, marker); err != nil {
+		t.Fatal(err)
+	}
+	// The archive service confirmed the installed files but could not remove
+	// the marker. The lifecycle keeps the request blocked until restart.
+	if err := lease.RetainForRecovery(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if shared, decision := coordinator.TryShared(WorkScheduled); shared != nil || decision.Allowed {
+		t.Fatal("cleanup failure released admission in the running process")
+	}
+	restarted := NewCoordinator(deps)
+	if err := restarted.Initialize(ctx); err != nil {
+		t.Fatal(err)
+	}
+	shared, decision := restarted.TryShared(WorkScheduled)
+	if shared != nil {
+		defer shared.Close()
+	}
+	if !decision.Allowed || marker != "" || restarted.Snapshot().RecoveryRequired {
+		t.Fatalf("restart did not complete finalization: %+v, marker present=%t", decision, marker != "")
 	}
 }

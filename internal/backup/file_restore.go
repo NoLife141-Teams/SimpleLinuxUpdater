@@ -578,6 +578,16 @@ func (s *Service) applyArchiveFiles(ctx context.Context, files map[string]string
 		}
 		return abortBeforeReplacement(cause)
 	}
+	finalizeVerifiedFiles := func() error {
+		if opts.FinalizeReplacement == nil {
+			return nil
+		}
+		// Once reload has verified the installed files, a canceled request
+		// must not prevent the durable finalization or force a rollback.
+		finalizeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), rollbackTimeout)
+		defer cancel()
+		return opts.FinalizeReplacement(finalizeCtx, marker.digest())
+	}
 	rollback := func(cause error) error {
 		rollbackCtx, cancelRollback := context.WithTimeout(context.WithoutCancel(ctx), rollbackTimeout)
 		defer cancelRollback()
@@ -600,6 +610,9 @@ func (s *Service) applyArchiveFiles(ctx context.Context, files map[string]string
 		}
 		if err := s.deps.RestoredRuntime.ReloadRestoredState(rollbackCtx); err != nil {
 			return incomplete(fmt.Errorf("rollback reload runtime state: %w", err))
+		}
+		if err := finalizeVerifiedFiles(); err != nil {
+			return incomplete(fmt.Errorf("record finalized rollback: %w", err))
 		}
 		if err := fs.removeFile(markerPath); err != nil {
 			_, _ = fs.publishRecoveryMarker(markerPath, marker)
@@ -628,6 +641,10 @@ func (s *Service) applyArchiveFiles(ctx context.Context, files map[string]string
 	}
 	if err := s.deps.RestoredRuntime.ReloadRestoredState(ctx); err != nil {
 		return rollback(err)
+	}
+	if err := finalizeVerifiedFiles(); err != nil {
+		keepSnapshots = true
+		return &IncompleteRecoveryError{Cause: errors.New("restore files were installed"), Recovery: err, SnapshotDir: snapshotDir}
 	}
 	if err := fs.removeFile(markerPath); err != nil {
 		_, _ = fs.publishRecoveryMarker(markerPath, marker)

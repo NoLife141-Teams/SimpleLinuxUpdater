@@ -277,7 +277,17 @@ The JSON report includes estimated and available bytes for preparation, the diag
 
 An older rollback set requires a readable installed database. If the report cannot validate a set, preserve the volume and rollback directories for diagnosis. A verified independent backup and retained recovery evidence may be needed. The process and container logs may also contain the original restore failure.
 
-If the recovery latch cannot be persisted, the current process still blocks work and logs that persistence error. Diagnose the storage failure before restarting. Retained rollback files contain sensitive application data; protect them like backups and remove them after recovery has been verified. They are retained only on incomplete recovery, not after a successful restore or successful rollback.
+If inspection reports `resume_on_startup` as `preparing_v1` or `finalized_v1`,
+start the application normally. It checks SQLite and clears the maintenance
+lock without replacing files. The first state means the restore stopped
+before modifying active files. The second means the installed files were
+verified before the lock could be released. Startup removes a remaining
+marker only if it matches the recorded finalization. Restore isolation, if enabled,
+still requires administrator review. A missing marker with no verified phase
+does not clear the lock. Inspection reports `no_verified_recovery_set` when
+there are no rollback sets to select.
+
+If the recovery latch cannot be persisted, the current process still blocks work and logs that persistence error. Diagnose the storage failure before restarting. Retained rollback files contain sensitive application data. Protect them like backups and remove them after recovery has been verified. A process interruption can leave rollback files behind even when startup is able to resume without them.
 
 ## Verify an archive offline
 

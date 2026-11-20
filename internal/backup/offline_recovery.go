@@ -48,6 +48,7 @@ type OfflineRecoveryReport struct {
 	Blocker          string                 `json:"blocker,omitempty"`
 	Storage          []RestoreStorageVolume `json:"storage,omitempty"`
 	Diagnosis        string                 `json:"diagnosis,omitempty"`
+	ResumeOnStartup  string                 `json:"resume_on_startup,omitempty"`
 }
 
 // OfflineRestoreRecovery inspects recovery sets or applies the explicitly
@@ -116,13 +117,18 @@ func (s *Service) OfflineRestoreRecovery(ctx context.Context, selection string, 
 	if live != nil {
 		defer live.Close()
 	}
-	if !marked && liveErr == nil {
+	if liveErr == nil {
 		store := maintenance.SQLiteStore{DB: func() *sql.DB { return live }}
 		state, loadErr := store.Load(ctx)
-		if loadErr != nil {
+		if !marked && loadErr != nil {
 			return report, errors.New("could not read the installation maintenance state")
 		}
-		report.RecoveryRequired = state.Active && (state.RecoveryRequired || state.Kind == string(maintenance.OperationBackupRestore))
+		report.RecoveryRequired = marked || (state.Active && (state.RecoveryRequired || state.Kind == string(maintenance.OperationBackupRestore)))
+		if phase := state.ResumableRestorePhase(); phase != "" &&
+			(!marked || (phase == maintenance.RestoreFinalized && recorded.digest() == state.RestoreMarkerDigest)) {
+			report.ResumeOnStartup = phase
+			report.RecoveryRequired = false
+		}
 	}
 	if !report.RecoveryRequired {
 		if liveErr != nil {
@@ -142,6 +148,9 @@ func (s *Service) OfflineRestoreRecovery(ctx context.Context, selection string, 
 			if entry.IsDir() && validRecoverySetID(entry.Name()) {
 				ids = append(ids, entry.Name())
 			}
+		}
+		if len(ids) == 0 {
+			report.Blocker = "no_verified_recovery_set"
 		}
 	}
 	if selection != "" {
@@ -569,11 +578,17 @@ func (s *Service) applyOfflineRecovery(ctx context.Context, fs restoreFiles, sta
 	if _, err := db.ExecContext(ctx, "PRAGMA synchronous=FULL"); err != nil {
 		return writeFailure(err, restoreStorageDatabase)
 	}
+	store := maintenance.SQLiteStore{DB: func() *sql.DB { return db }}
+	if err := store.Save(ctx, maintenance.State{
+		Active: true, Kind: string(maintenance.OperationBackupRestore),
+		JobID: recorded.ID, RestorePhase: maintenance.RestoreFinalized, RestoreMarkerDigest: recorded.digest(),
+	}); err != nil {
+		return writeFailure(err, restoreStorageDatabase)
+	}
 	if err := fs.removeFile(marker); err != nil {
 		_, _ = fs.publishRecoveryMarker(marker, recorded)
 		return writeFailure(err, restoreStorageDatabase)
 	}
-	store := maintenance.SQLiteStore{DB: func() *sql.DB { return db }}
 	if err := errors.Join(store.Save(ctx, maintenance.State{}), db.Close()); err != nil {
 		_, _ = fs.publishRecoveryMarker(marker, recorded)
 		return writeFailure(err, restoreStorageDatabase)

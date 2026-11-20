@@ -319,11 +319,15 @@ func TestOfflineRecoveryReleasesOnlyThePhysicalInstallation(t *testing.T) {
 	}
 }
 
-func TestOfflineRecoveryMarkerRemovalSyncFailureKeepsSQLiteLatch(t *testing.T) {
+func TestOfflineRecoveryRecordsFinalizationBeforeRemovingMarker(t *testing.T) {
 	f, root, id := interruptedRecoveryFixture(t, true)
 	f.service.syncRestoreFile = func(file *os.File) error {
 		if file.Name() == root {
 			if _, err := os.Stat(RestoreRecoveryMarkerPath(f.db)); errors.Is(err, os.ErrNotExist) {
+				report, err := f.service.OfflineRestoreRecovery(t.Context(), "", offlineRecoveryMergeFixtureJobs)
+				if err != nil || report.RecoveryRequired || report.ResumeOnStartup != "finalized_v1" {
+					t.Fatalf("inspect at marker removal = %+v, %v", report, err)
+				}
 				return syscall.EIO
 			}
 		}

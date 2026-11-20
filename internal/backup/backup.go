@@ -192,6 +192,9 @@ type RestoreOptions struct {
 	// hand it back to the live runtime after replacement.
 	PrepareReplacement func(context.Context, *sql.DB) error
 	RestoreHandoff     func(context.Context) error
+	// FinalizeReplacement records verified installed state before the marker
+	// and rollback files are removed. It also runs after a successful rollback.
+	FinalizeReplacement func(context.Context, string) error
 	// PrepareHostValidation stages the restored inventory's APT admission
 	// requirements. The boolean identifies an archive from another key.
 	PrepareHostValidation func(context.Context, *sql.DB, bool) error

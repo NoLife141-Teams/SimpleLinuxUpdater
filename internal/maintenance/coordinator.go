@@ -2,6 +2,7 @@ package maintenance
 
 import (
 	"context"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"strings"
@@ -30,13 +31,40 @@ const (
 )
 
 type State struct {
-	RecoveryRequired bool   `json:"recovery_required,omitempty"`
-	Active           bool   `json:"active"`
-	Kind             string `json:"kind"`
-	JobID            string `json:"job_id"`
-	StartedAt        string `json:"started_at"`
-	Actor            string `json:"actor"`
-	Message          string `json:"message"`
+	RecoveryRequired    bool   `json:"recovery_required,omitempty"`
+	RestorePhase        string `json:"restore_phase,omitempty"`
+	RestoreMarkerDigest string `json:"restore_marker_digest,omitempty"`
+	Active              bool   `json:"active"`
+	Kind                string `json:"kind"`
+	JobID               string `json:"job_id"`
+	StartedAt           string `json:"started_at"`
+	Actor               string `json:"actor"`
+	Message             string `json:"message"`
+}
+
+const (
+	RestorePreparing = "preparing_v1"
+	RestoreReplacing = "replacing_v1"
+	RestoreFinalized = "finalized_v1"
+)
+
+// ResumableRestorePhase identifies states that need no file replacement
+// once live SQLite and the presence or identity of the marker are checked.
+func (s State) ResumableRestorePhase() string {
+	if !s.Active || s.RecoveryRequired || s.Kind != string(OperationBackupRestore) || s.JobID == "" {
+		return ""
+	}
+	switch s.RestorePhase {
+	case RestorePreparing:
+		if s.RestoreMarkerDigest == "" {
+			return s.RestorePhase
+		}
+	case RestoreFinalized:
+		if digest, err := hex.DecodeString(s.RestoreMarkerDigest); err == nil && len(digest) == 32 {
+			return s.RestorePhase
+		}
+	}
+	return ""
 }
 
 type Snapshot struct {
@@ -67,9 +95,10 @@ const (
 )
 
 type OperationFacts struct {
-	JobID   string
-	Actor   string
-	Message string
+	JobID              string
+	Actor              string
+	Message            string
+	RestorePreparation bool
 }
 
 type Store interface {
@@ -78,9 +107,10 @@ type Store interface {
 }
 
 type Deps struct {
-	Store           Store
-	Now             func() time.Time
-	RecoveryPending func() (bool, error)
+	Store                       Store
+	Now                         func() time.Time
+	RecoveryPending             func() (bool, error)
+	ClearFinalizedRestoreMarker func(string) (bool, error)
 }
 
 type Coordinator struct {
@@ -124,6 +154,26 @@ func (c *Coordinator) initialize(ctx context.Context, startup bool) error {
 		pending, err := c.deps.RecoveryPending()
 		if err != nil {
 			return fmt.Errorf("inspect durable restore recovery marker: %w", err)
+		}
+		phase := state.ResumableRestorePhase()
+		if phase != "" && (!pending || (phase == RestoreFinalized && c.deps.ClearFinalizedRestoreMarker != nil)) {
+			if checker, ok := c.deps.Store.(interface{ CheckRestoreDatabase(context.Context) error }); ok {
+				if err := checker.CheckRestoreDatabase(ctx); err == nil {
+					if pending {
+						cleared, err := c.deps.ClearFinalizedRestoreMarker(state.RestoreMarkerDigest)
+						if err != nil {
+							return fmt.Errorf("complete finalized restore: %w", err)
+						}
+						pending = !cleared
+					}
+					if !pending {
+						if err := c.deps.Store.Save(ctx, State{}); err != nil {
+							return err
+						}
+						state = State{}
+					}
+				}
+			}
 		}
 		if pending {
 			if state.Kind != string(OperationBackupRestore) {
@@ -233,12 +283,13 @@ type ExclusiveLease struct {
 	coordinator *Coordinator
 	operation   OperationClass
 
-	mu             sync.Mutex
-	activated      bool
-	activeState    State
-	releasePending bool
-	gateReleased   bool
-	closed         bool
+	mu               sync.Mutex
+	activated        bool
+	activeState      State
+	restoreFinalized bool
+	releasePending   bool
+	gateReleased     bool
+	closed           bool
 }
 
 func (l *ExclusiveLease) Activate(ctx context.Context, facts OperationFacts) error {
@@ -263,6 +314,9 @@ func (l *ExclusiveLease) Activate(ctx context.Context, facts OperationFacts) err
 		StartedAt: l.coordinator.deps.Now().UTC().Format(time.RFC3339Nano),
 		Actor:     strings.TrimSpace(facts.Actor),
 		Message:   strings.TrimSpace(facts.Message),
+	}
+	if l.operation == OperationBackupRestore && facts.RestorePreparation && state.JobID != "" {
+		state.RestorePhase = RestorePreparing
 	}
 	if err := l.coordinator.deps.Store.Save(ctx, state); err != nil {
 		return err
@@ -296,7 +350,59 @@ func (l *ExclusiveLease) Handoff(ctx context.Context) error {
 	if !state.Active {
 		return nil
 	}
+	if l.activeState.RestorePhase == RestorePreparing {
+		// The original database already holds Preparation and the staged
+		// database holds Replacement. Overwriting either would erase evidence
+		// needed if the process stops again before finalization.
+		persisted, err := l.coordinator.deps.Store.Load(ctx)
+		if err != nil {
+			return err
+		}
+		if !l.ownsPersistedRestore(persisted) {
+			return errors.New("restore handoff could not verify its persisted maintenance state")
+		}
+		return nil
+	}
 	return l.coordinator.deps.Store.Save(ctx, state)
+}
+
+func (l *ExclusiveLease) ownsPersistedRestore(state State) bool {
+	return state.Active && state.Kind == l.activeState.Kind && state.JobID == l.activeState.JobID &&
+		state.StartedAt == l.activeState.StartedAt &&
+		(state.RestorePhase == RestorePreparing || state.RestorePhase == RestoreReplacing || state.RestorePhase == RestoreFinalized)
+}
+
+// FinalizeRestore durably records that the installed files and runtime were
+// verified. The marker can be removed afterwards without leaving an
+// unrecoverable maintenance lock if the process stops before Close.
+func (l *ExclusiveLease) FinalizeRestore(ctx context.Context, markerDigest string) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.closed || l.releasePending || !l.activated || l.activeState.RestorePhase != RestorePreparing {
+		return errors.New("active phased restore lease is required for finalization")
+	}
+	store := l.coordinator.deps.Store
+	state, err := store.Load(ctx)
+	if err != nil {
+		return err
+	}
+	if !l.ownsPersistedRestore(state) {
+		return errors.New("restore finalization could not verify its persisted maintenance state")
+	}
+	state.RestorePhase = RestoreFinalized
+	state.RestoreMarkerDigest = markerDigest
+	state.RecoveryRequired = false
+	save := store.Save
+	if durable, ok := store.(interface {
+		SaveDurable(context.Context, State) error
+	}); ok {
+		save = durable.SaveDurable
+	}
+	if err := save(ctx, state); err != nil {
+		return err
+	}
+	l.restoreFinalized = true
+	return nil
 }
 
 const recoveryRequiredMessage = "Backup recovery is incomplete. Stop the application and restore verified state before resuming. See the recovery steps in docs/troubleshooting.md."
@@ -319,6 +425,12 @@ func (l *ExclusiveLease) RetainForRecovery(ctx context.Context) error {
 	l.coordinator.publish(state)
 	l.closed = true
 	l.releaseGate()
+	if l.restoreFinalized {
+		// Marker cleanup can fail after the installed state has been verified.
+		// Keep admission closed here and preserve the durable proof so startup
+		// can retry cleanup without replacing files or running a rollback.
+		return nil
+	}
 	return l.coordinator.deps.Store.Save(ctx, state)
 }
 

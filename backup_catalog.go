@@ -427,11 +427,17 @@ func handleBackupCatalogOperation(c *gin.Context, a *backupAutomation, verify bo
 			}
 			if availability != "present" {
 				s.Observation = newBackupArchiveObservation(a.now(), storage, owner, directory)
+				actor, ip := actorFromContext(c), clientIPFromContext(c)
 				if archiveAvailabilityLost(availability) {
 					archive.DirectoryIdentity = directory
 				}
+				// Metadata observation can see this path as present again. Keep
+				// coverage uncertain until its current bytes pass a digest check.
+				if availability == "unavailable" && archive.Integrity.State != backupIntegrityMismatch {
+					a.observeArchiveIntegrity(archive, backupIntegrityUnavailable, s.Observation.CheckedAt, actor, ip)
+				}
 				var events []AuditEvent
-				if event := a.observeArchive(archive, availability, s.Observation.CheckedAt, actorFromContext(c), clientIPFromContext(c)); event != nil {
+				if event := a.observeArchive(archive, availability, s.Observation.CheckedAt, actor, ip); event != nil {
 					events = append(events, *event)
 				}
 				if err := a.save(ctx, s, events...); err != nil {

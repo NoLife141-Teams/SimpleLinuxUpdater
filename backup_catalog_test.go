@@ -286,7 +286,13 @@ func TestBackupCatalogRejectsReplacedCorruptSymlinkMissingAndForeign(t *testing.
 }
 
 func TestBackupCatalogReverifyDiscardsProofAfterInPlaceMutation(t *testing.T) {
-	app, a, cookie, archive := publishedCatalogFixture(t)
+	app, a, now := newBackupAutomationTest(t)
+	cookie := app.authenticate(t)
+	if err := a.Tick(t.Context(), true); err != nil {
+		t.Fatal(err)
+	}
+	archive := backupAutomationStateForTest(t, a).Archives[0]
+	*now = now.Add(time.Minute)
 	path := filepath.Join(a.deployment.Directory, archive.Name)
 	verify := a.verify
 	a.verify = func(ctx context.Context, snapshot internalbackup.TemporaryFile, passphrase string) (internalbackup.VerifyResult, error) {
@@ -315,8 +321,26 @@ func TestBackupCatalogReverifyDiscardsProofAfterInPlaceMutation(t *testing.T) {
 		t.Fatalf("reverify renewed proof against a concurrently changed source: %d %s", rec.Code, rec.Body.String())
 	}
 	current := backupAutomationStateForTest(t, a).Archives[0]
-	if current.Integrity != archive.Integrity || current.LastVerifiedAt != archive.LastVerifiedAt || current.LossActive {
+	if current.Integrity.State != backupIntegrityUnavailable || current.Integrity.CheckedAt != archive.Integrity.CheckedAt ||
+		current.Integrity.AttemptedAt != backupStamp(*now) || current.LastVerifiedAt != archive.LastVerifiedAt || current.LossActive {
 		t.Fatalf("concurrent source change recorded new proof or a loss: %+v", current)
+	}
+	if err := a.observeArchiveAvailability(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if facts := installationSnapshot(t.Context(), app.Deps).BackupArchives; facts.State != "unknown" || facts.Unknown != 1 || facts.Verified != 0 {
+		t.Fatalf("metadata observation recovered unverified coverage: %+v", facts)
+	}
+	*now = now.Add(backupIntegrityRetryAfter)
+	if err := a.observeArchiveAvailability(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.checkArchiveIntegrity(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if item := catalogFacts(t, app, cookie).Archives[0]; item.Availability != "corrupt" || item.Integrity.State != backupIntegrityMismatch ||
+		item.LastVerifiedAt != archive.LastVerifiedAt {
+		t.Fatalf("scheduled retry did not detect the changed archive: %+v", item)
 	}
 }
 

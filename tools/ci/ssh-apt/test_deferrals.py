@@ -228,7 +228,7 @@ class DeferralHarnessTests(unittest.TestCase):
                 self.assertIn('deferrals-evidence/' + name + '.json', workflow)
             self.assertIn('timeout-minutes: 8', workflow)
         release = (run.REPO / '.github/workflows/release.yml').read_text()
-        self.assertIn('needs: [release-gate, deferrals-gate]', release)
+        self.assertIn('needs: [release-gate, deferrals-gate, windows-restore-gate]', release)
         self.assertIn('needs: [release-gate, deferrals-gate, publish-release]', release)
         self.assertIn('SLU_DEFERRALS_SOURCE: ${{ github.workspace }}', release)
 

@@ -11,6 +11,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"debian-updater/internal/privatefile"
 )
 
 const restoreSealVersion = 1
@@ -114,7 +116,7 @@ func (fs restoreFiles) syncFile(file *os.File) error {
 }
 
 func (fs restoreFiles) syncPath(path string) error {
-	file, err := os.Open(path)
+	file, err := openRestoreSyncPath(path)
 	if err != nil {
 		return err
 	}
@@ -189,7 +191,7 @@ func restoreEntryDirectory(path string) string {
 
 func (fs restoreFiles) publishRecoveryMarker(path string, marker restoreRecoveryMarker) (created bool, err error) {
 	dir := restoreEntryDirectory(path)
-	file, err := os.CreateTemp(dir, ".slu-restore-recovery-*")
+	file, err := privatefile.CreateTemp(dir, ".slu-restore-recovery-*")
 	if err != nil {
 		return false, err
 	}
@@ -207,10 +209,14 @@ func (fs restoreFiles) publishRecoveryMarker(path string, marker restoreRecovery
 	}
 	// Make the complete marker visible atomically while preserving any marker
 	// from an earlier interruption.
-	if err := os.Link(file.Name(), path); err != nil {
+	if err := publishRestoreMarker(file.Name(), path); err != nil {
 		return false, err
 	}
-	return true, errors.Join(os.Remove(file.Name()), fs.syncPath(dir))
+	removeErr := os.Remove(file.Name())
+	if errors.Is(removeErr, os.ErrNotExist) {
+		removeErr = nil // On Windows publication moves the prepared marker.
+	}
+	return true, errors.Join(removeErr, fs.syncPath(dir))
 }
 
 func (fs restoreFiles) removeFile(path string) error {

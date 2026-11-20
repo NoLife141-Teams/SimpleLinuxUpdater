@@ -221,8 +221,46 @@ jobs:
             deferrals-evidence/positive.json
           retention-days: 1
 
+  windows-restore-gate:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      startsWith(github.event.workflow_run.head_branch, 'v')
+    runs-on: windows-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout trusted validation tools
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Verify trusted release signal and main ancestry
+        shell: bash
+        run: tools/release/verify-tag-on-main.sh
+      - name: Preserve trusted harness and check out release source
+        shell: pwsh
+        run: |
+          Copy-Item -Recurse tools "$env:RUNNER_TEMP/trusted-tools"
+          git checkout --detach "$env:RELEASE_SHA"
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+      - name: Qualify tagged Windows amd64 restore and offline recovery on NTFS
+        run: python "$env:RUNNER_TEMP/trusted-tools/ci/upgrade/windows_restore.py" --output windows-restore-evidence
+      - name: Retain redacted Windows restore evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-windows-restore-${{ github.run_attempt }}
+          path: windows-restore-evidence/report.json
+          retention-days: 1
+
   publish-release:
-    needs: [release-gate, deferrals-gate]
+    needs: [release-gate, deferrals-gate, windows-restore-gate]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:

@@ -49,7 +49,7 @@ func TestReleaseGateRejectsTagsOutsideMainHistory(t *testing.T) {
 			t.Errorf("trusted release workflow does not enforce main-history provenance %q", required)
 		}
 	}
-	if got := strings.Count(release, "run: tools/release/verify-tag-on-main.sh"); got != 4 {
+	if got := strings.Count(release, "run: tools/release/verify-tag-on-main.sh"); got != 5 {
 		t.Errorf("each release job must independently verify provenance, got %d gates", got)
 	}
 	if strings.Contains(release, "ref: ${{ env.RELEASE_SHA }}") {
@@ -70,8 +70,8 @@ func TestReleaseGateRejectsTagsOutsideMainHistory(t *testing.T) {
 	if strings.Contains(trigger, "uses:") || strings.Contains(trigger, "contents: write") {
 		t.Error("untrusted tag signal workflow must not check out code or receive write permissions")
 	}
-	if !strings.Contains(release, "needs: [release-gate, deferrals-gate]") {
-		t.Error("GitHub release publication is not gated by release-gate")
+	if !strings.Contains(release, "needs: [release-gate, deferrals-gate, windows-restore-gate]") {
+		t.Error("GitHub release publication must wait for all validation gates")
 	}
 	if !strings.Contains(release, "needs: [release-gate, deferrals-gate, publish-release]") {
 		t.Error("container publication is not gated by release-gate and GitHub release publication")
@@ -104,11 +104,17 @@ func TestReleaseGateMatchesCriticalCIValidation(t *testing.T) {
 	if !strings.Contains(releaseGate, "go build -o webserver .") {
 		t.Error("release-gate lost the production build")
 	}
-	ciUpgrade := workflowJobForTest(t, ci, "upgrade-qualification", "ci-required")
+	ciUpgrade := workflowJobForTest(t, ci, "upgrade-qualification", "windows-restore-qualification")
 	if !strings.Contains(ciUpgrade, `go build -o "$RUNNER_TEMP/upgrade-candidate" .`) {
 		t.Error("normal CI lost the production build for upgrade qualification")
 	}
-
+	ciWindows := workflowJobForTest(t, ci, "windows-restore-qualification", "ci-required")
+	releaseWindows := workflowJobForTest(t, release, "windows-restore-gate", "publish-release")
+	for _, job := range []string{ciWindows, releaseWindows} {
+		if !strings.Contains(job, "runs-on: windows-latest") || !strings.Contains(job, "ci/upgrade/windows_restore.py") {
+			t.Error("Windows restoration must run natively for both CI and release")
+		}
+	}
 	criticalCommands := []string{
 		"go vet ./...",
 		"staticcheck ./...",
@@ -160,7 +166,7 @@ func TestReleasePublicationIsCoordinated(t *testing.T) {
 	if strings.Contains(release, "type=raw,value=latest") {
 		t.Error("build must not overwrite latest before runtime verification and version policy")
 	}
-	for _, job := range []struct{ name, next string }{{"release-gate", "deferrals-gate"}, {"deferrals-gate", "publish-release"}, {"publish-release", "publish-docker"}, {"publish-docker", ""}} {
+	for _, job := range []struct{ name, next string }{{"release-gate", "deferrals-gate"}, {"deferrals-gate", "windows-restore-gate"}, {"publish-release", "publish-docker"}, {"publish-docker", ""}} {
 		source := workflowJobForTest(t, release, job.name, job.next)
 		verify := strings.Index(source, "run: tools/release/verify-tag-on-main.sh")
 		preserve := strings.Index(source, `cp -R tools "$RUNNER_TEMP/trusted-tools"`)
@@ -168,6 +174,12 @@ func TestReleasePublicationIsCoordinated(t *testing.T) {
 		if verify < 0 || preserve < verify || checkout < preserve {
 			t.Errorf("%s must verify provenance and preserve trusted helpers before executing tagged code", job.name)
 		}
+	}
+	windowsRestore := workflowJobForTest(t, release, "windows-restore-gate", "publish-release")
+	if !workflowStepsOrdered(windowsRestore, "run: tools/release/verify-tag-on-main.sh",
+		`Copy-Item -Recurse tools "$env:RUNNER_TEMP/trusted-tools"`, `git checkout --detach "$env:RELEASE_SHA"`,
+		`python "$env:RUNNER_TEMP/trusted-tools/ci/upgrade/windows_restore.py"`) {
+		t.Error("Windows restore qualification must verify provenance and use trusted tools on the tagged source")
 	}
 	docker := workflowJobForTest(t, release, "publish-docker", "")
 	if !workflowStepsOrdered(docker, "Plan publication before registry writes", "Build and push candidate image", "Qualify digest and promote image") {

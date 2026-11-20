@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 
@@ -17,6 +18,7 @@ import (
 	"debian-updater/internal/jobs"
 	"debian-updater/internal/maintenance"
 	"debian-updater/internal/notifications"
+	"debian-updater/internal/privatefile"
 
 	"golang.org/x/crypto/ssh/knownhosts"
 	"modernc.org/sqlite"
@@ -97,7 +99,7 @@ func (s *Service) OfflineRestoreRecovery(ctx context.Context, selection string, 
 	if err := storageBlocker(volumes); err != nil {
 		return storageFailure(err)
 	}
-	work, err := os.MkdirTemp(tempDir, "slu-offline-recovery-*")
+	work, err := privatefile.MkdirTemp(tempDir, "slu-offline-recovery-*")
 	if err != nil {
 		if IsStorageFull(err) {
 			return storageFailure(err)
@@ -195,7 +197,7 @@ func (s *Service) OfflineRestoreRecovery(ctx context.Context, selection string, 
 	diagnosisTargets := append(append([]string{}, targets...), hosts, s.deps.ConfigPath(), marker)
 	for _, id := range ids {
 		set := OfflineRecoverySet{ID: id}
-		setWork, err := os.MkdirTemp(work, "set-*")
+		setWork, err := privatefile.MkdirTemp(work, "set-*")
 		if err != nil {
 			if IsStorageFull(err) {
 				return storageFailure(err)
@@ -342,7 +344,7 @@ func (s *Service) prepareOfflineRecoverySet(ctx context.Context, rootPath, work 
 		return fail("installation_mismatch", nil)
 	}
 	info, err := os.Lstat(rootPath)
-	if err != nil || !info.IsDir() || info.Mode().Perm()&0077 != 0 {
+	if err != nil || !info.IsDir() || !privatefile.IsPrivatePath(rootPath, info) {
 		return fail("invalid_manifest", nil)
 	}
 	snapshots, sealed, err := loadRecoverySnapshots(rootPath, marker)
@@ -470,7 +472,7 @@ func (s *Service) prepareOfflineRecoverySet(ctx context.Context, rootPath, work 
 }
 
 func loadRecoverySnapshots(root string, marker restoreRecoveryMarker) ([]fileRestoreSnapshot, bool, error) {
-	raw, err := readRecoveryFile(filepath.Join(root, "recovery.json"), 128*1024)
+	raw, err := readRecoveryFileWithAccess(filepath.Join(root, "recovery.json"), 128*1024, runtime.GOOS == "windows")
 	if err != nil {
 		return nil, false, err
 	}
@@ -523,7 +525,7 @@ func validateRecoverySnapshots(root string, paths []string, snapshots []fileRest
 		}
 		if entry.Exists {
 			same, err := sameRestoreEntry(path, entry.BackupPath)
-			if err != nil || !same || statErr != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0077 != 0 {
+			if err != nil || !same || statErr != nil || !info.Mode().IsRegular() || !privatefile.IsPrivatePath(path, info) {
 				return nil, errors.New("invalid rollback snapshot file")
 			}
 			entry.BackupPath = path
@@ -701,6 +703,10 @@ func canUseSealedRecoveryEvidence(err error) bool {
 }
 
 func readRecoveryFile(path string, limit int64) ([]byte, error) {
+	return readRecoveryFileWithAccess(path, limit, false)
+}
+
+func readRecoveryFileWithAccess(path string, limit int64, requirePrivate bool) ([]byte, error) {
 	info, err := os.Lstat(path)
 	if err != nil || !info.Mode().IsRegular() || info.Size() > limit {
 		return nil, errors.New("unreadable recovery file")
@@ -710,6 +716,12 @@ func readRecoveryFile(path string, limit int64) ([]byte, error) {
 		return nil, err
 	}
 	defer f.Close()
+	if requirePrivate {
+		opened, err := f.Stat()
+		if err != nil || !os.SameFile(opened, info) || !privatefile.IsPrivate(f) {
+			return nil, errors.New("recovery file must have private access")
+		}
+	}
 	data, err := io.ReadAll(io.LimitReader(f, limit+1))
 	if int64(len(data)) > limit {
 		return nil, errors.New("recovery file exceeded its size limit")

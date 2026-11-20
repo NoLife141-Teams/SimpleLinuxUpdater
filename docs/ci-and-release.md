@@ -6,6 +6,13 @@ tests. Go tests, Go quality, Playwright and Docker must succeed when selected,
 and must be skipped otherwise. The bounded upgrade qualification must also
 succeed on every PR/push. Pushes to `main` run all checks. CodeQL remains
 a separate GitHub protection.
+The native Windows amd64 qualification runs on NTFS for each PR and push to
+`main`. It verifies export, archive inspection, isolated restore, restart and
+offline recovery after terminating a fixture process between SQLite and
+host-trust replacement. It runs the packaged Windows executable for export,
+normal restore, startup and offline CLI checks. It also rejects overbroad
+ACLs on a passphrase file and a rollback set. The redacted report contains
+step outcomes and the candidate commit.
 The quality job also cross-compiles Darwin amd64 recovery support, so an
 unavailable platform constant fails PR CI before archive publication. The release
 preparation and release workflow still build all five distribution targets.
@@ -73,7 +80,8 @@ to the tag, so older tags cannot replace the current policy.
    Go quality/security, frontend unit tests, npm security, Playwright and version
    metadata, plus the trusted old-distribution upgrade qualification. The redundant
    uninstrumented Go test pass is removed.
-2. `publish-release` builds all five archives, checks checksums and archive
+2. The native Windows restore gate qualifies the exact tagged source separately.
+   After the gates pass, `publish-release` builds all five archives, checks checksums and archive
    integrity, starts the packaged Linux amd64 server, and creates or updates a
    **draft** GitHub Release. Already public releases cannot be replaced.
 3. `publish-docker` reads the release and GHCR state **before any registry write**.

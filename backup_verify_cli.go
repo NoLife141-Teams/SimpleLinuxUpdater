@@ -13,6 +13,7 @@ import (
 	"syscall"
 
 	internalbackup "debian-updater/internal/backup"
+	"debian-updater/internal/privatefile"
 
 	"golang.org/x/term"
 )
@@ -116,7 +117,7 @@ func readOfflineArchivePassphrase(input *os.File, diagnostics io.Writer, path st
 
 	const limit = 4096
 	private := func(info os.FileInfo) bool {
-		return info.Mode().IsRegular() && info.Size() <= limit && info.Mode().Perm()&0077 == 0
+		return info.Mode().IsRegular() && info.Size() <= limit
 	}
 	invalid := errors.New("the passphrase file must be a readable private regular file of at most 4096 bytes")
 	info, err := os.Stat(path)
@@ -128,7 +129,7 @@ func readOfflineArchivePassphrase(input *os.File, diagnostics io.Writer, path st
 		return "", invalid
 	}
 	defer file.Close()
-	if info, err := file.Stat(); err != nil || !private(info) {
+	if info, err := file.Stat(); err != nil || !private(info) || !privatefile.IsPrivate(file) {
 		return "", invalid
 	}
 	secret, err := io.ReadAll(io.LimitReader(file, limit+1))

@@ -304,6 +304,13 @@ verification, pass `--passphrase-file` with the path to a private regular
 file of at most 4096 bytes. Add `--json` for machine-readable output. If
 `--work-dir` is omitted, the command uses the system temporary directory.
 
+On Windows, use NTFS and restrict the passphrase file to the account running
+the command, SYSTEM and local Administrators. The same access policy applies
+to the rollback directory and its snapshots. The application creates backup
+work files and rollback directories with private ACLs. It verifies the ACLs
+before writing temporary data, reading the passphrase or applying a rollback
+set. Use a workspace on a volume that supports persistent ACLs.
+
 Verification opens the archive in read-only mode and validates its decrypted
 contents and SQLite compatibility in the workspace. The report marks the
 restoration target as uninspected. Check the target installation in Admin

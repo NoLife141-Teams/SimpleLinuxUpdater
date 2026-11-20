@@ -592,26 +592,6 @@ func (a *backupAutomation) retainSecondaryBackups(ctx context.Context, root *os.
 	if !backupArchiveOwned(oldest.Archive, binding.Owner) || oldest.FileIdentity == "" {
 		return errors.New("secondary archive has no installation ownership proof")
 	}
-	// A recent publication check may precede an invisible change to the
-	// keeper's bytes. Recheck against this removal's candidate, one keeper
-	// per worker cycle, before trusting any set of surviving copies.
-	keeperToCheck := 0
-	for i, keeper := range keepers {
-		if !secondaryRetentionConfirmed(keeper, oldest.Archive.ID, a.now()) {
-			keeperToCheck = i
-			break
-		}
-	}
-	verified, err := a.verifyAndRecordSecondaryIntegrity(ctx, root, binding, keepers[keeperToCheck], oldest.Archive.ID)
-	if err != nil {
-		return err
-	}
-	keepers[keeperToCheck] = verified
-	for _, keeper := range keepers {
-		if !secondaryRetentionConfirmed(keeper, oldest.Archive.ID, a.now()) {
-			return nil
-		}
-	}
 	var checked os.FileInfo
 	named, verifyErr := root.Lstat(oldest.Archive.Name)
 	if verifyErr == nil {
@@ -635,6 +615,19 @@ func (a *backupAutomation) retainSecondaryBackups(ctx context.Context, root *os.
 	if !backupArchiveMountAvailable(root.Name(), binding.Directory) {
 		return errBackupSecondaryDeferred
 	}
+	// Recheck every survivor for this removal. The configured retention count
+	// bounds the number of files, and each read shares the worker's deadline.
+	// A proof from another cycle may predate a change invisible in metadata.
+	for i, keeper := range keepers {
+		verified, err := a.verifyAndRecordSecondaryIntegrity(ctx, root, binding, keeper)
+		if err != nil {
+			return err
+		}
+		if !secondaryIntegrityFresh(verified, a.now()) {
+			return nil
+		}
+		keepers[i] = verified
+	}
 	for _, keeper := range keepers {
 		keeperInfo, keeperErr := root.Lstat(keeper.Archive.Name)
 		if keeperErr != nil || !secondaryCopyMatches(keeperInfo, keeper) {
@@ -648,7 +641,7 @@ func (a *backupAutomation) retainSecondaryBackups(ctx context.Context, root *os.
 				return false, errBackupSecondaryDeferred
 			}
 			for _, keeper := range keepers {
-				if !secondaryRetentionConfirmed(keeper, oldest.Archive.ID, a.now()) {
+				if !secondaryIntegrityFresh(keeper, a.now()) {
 					return false, errBackupSecondaryDeferred
 				}
 			}

@@ -739,6 +739,83 @@ func TestSecondaryRetentionLeavesArchiveWithChangedDigestOnDisk(t *testing.T) {
 	}
 }
 
+func TestSecondaryRetentionRechecksEveryKeeperOnRetry(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("this test requires filesystem permissions that restrict reads")
+	}
+	_, automation, now := newBackupAutomationTest(t)
+	secondary := secondaryBackupTestDirectory(t, automation)
+	automation.deployment.SecondaryDirectory = secondary
+	config := backupAutomationStateForTest(t, automation).Config
+	config.Retain = 3
+	if _, err := automation.Configure(t.Context(), config); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := automation.validateSecondaryDestination(t.Context(), nil); err != nil {
+		t.Fatal(err)
+	}
+	for range 3 {
+		*now = now.Add(time.Minute)
+		if err := automation.Tick(t.Context(), true); err != nil {
+			t.Fatal(err)
+		}
+		if err := automation.copyNextSecondaryBackup(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	state := backupAutomationStateForTest(t, automation)
+	older := filepath.Join(secondary, state.Secondary.Copies[0].Archive.Name)
+	latest := filepath.Join(secondary, state.Secondary.Copies[2].Archive.Name)
+	config.Retain = 2
+	if _, err := automation.Configure(t.Context(), config); err != nil {
+		t.Fatal(err)
+	}
+	// The first retention attempt cannot remove the old archive.
+	if err := os.Chmod(older, 0000); err != nil {
+		t.Fatal(err)
+	}
+	if err := automation.copyNextSecondaryBackup(t.Context()); err != nil && !errors.Is(err, os.ErrPermission) {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(older, 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	damaged, err := os.ReadFile(latest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	damaged[len(damaged)/2] ^= 1
+	if err := os.WriteFile(latest, damaged, 0600); err != nil {
+		t.Fatal(err)
+	}
+	state = backupAutomationStateForTest(t, automation)
+	modified := parseBackupStamp(state.Secondary.Copies[2].ModifiedAt)
+	if err := os.Chtimes(latest, modified, modified); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(latest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Simulate a filesystem that reports no change in the stored metadata.
+	state.Secondary.Copies[2].ChangedAt = backupStamp(backupIntegrityChangeTime(info))
+	if err := automation.save(t.Context(), state); err != nil {
+		t.Fatal(err)
+	}
+	*now = now.Add(backupSecondaryPollInterval)
+	if err := automation.copyNextSecondaryBackup(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(older); err != nil {
+		t.Fatalf("retention removed a healthy copy using a stale keeper proof: %v", err)
+	}
+	status, err := automation.Status(t.Context())
+	if err != nil || status.Secondary == nil || status.Secondary.Integrity.State != backupIntegrityMismatch {
+		t.Fatalf("changed surviving copy did not fail integrity verification: %+v (%v)", status.Secondary, err)
+	}
+}
+
 func TestSecondaryTransferStopsWritingDuringRestore(t *testing.T) {
 	_, automation, _ := newBackupAutomationTest(t)
 	secondary := secondaryBackupTestDirectory(t, automation)

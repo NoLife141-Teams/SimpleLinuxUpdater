@@ -16,18 +16,9 @@ func secondaryCapturedAfter(copy, other backupSecondaryCopy) bool {
 }
 
 func secondaryIntegrityFresh(copy backupSecondaryCopy, now time.Time) bool {
+	checked := parseBackupStamp(copy.Integrity.CheckedAt)
 	return copy.VerifiedAt != "" && !copy.Unavailable && copy.Integrity.State == backupIntegrityMatched &&
-		secondaryDigestRecent(copy.Integrity.CheckedAt, now)
-}
-
-func secondaryDigestRecent(timestamp string, now time.Time) bool {
-	checked := parseBackupStamp(timestamp)
-	return !checked.IsZero() && !checked.After(now) && now.Sub(checked) < backupIntegrityOtherAfter
-}
-
-func secondaryRetentionConfirmed(copy backupSecondaryCopy, beforeID string, now time.Time) bool {
-	return secondaryIntegrityFresh(copy, now) && copy.Retention.BeforeID == beforeID &&
-		secondaryDigestRecent(copy.Retention.CheckedAt, now)
+		!checked.IsZero() && !checked.After(now) && now.Sub(checked) < backupIntegrityOtherAfter
 }
 
 func secondaryIntegrityCandidate(copies []backupSecondaryCopy, now time.Time) (backupSecondaryCopy, bool) {
@@ -65,11 +56,11 @@ func (a *backupAutomation) checkSecondaryIntegrity(ctx context.Context, root *os
 	if !due {
 		return nil
 	}
-	_, err := a.verifyAndRecordSecondaryIntegrity(ctx, root, binding, copy, "")
+	_, err := a.verifyAndRecordSecondaryIntegrity(ctx, root, binding, copy)
 	return err
 }
 
-func (a *backupAutomation) verifyAndRecordSecondaryIntegrity(ctx context.Context, root *os.Root, binding backupSecondaryBinding, copy backupSecondaryCopy, beforeID string) (backupSecondaryCopy, error) {
+func (a *backupAutomation) verifyAndRecordSecondaryIntegrity(ctx context.Context, root *os.Root, binding backupSecondaryBinding, copy backupSecondaryCopy) (backupSecondaryCopy, error) {
 	state, info := inspectSecondaryIntegrity(ctx, root, binding, copy)
 	if err := ctx.Err(); err != nil {
 		return backupSecondaryCopy{}, err
@@ -92,17 +83,8 @@ func (a *backupAutomation) verifyAndRecordSecondaryIntegrity(ctx context.Context
 		}
 		if state == backupIntegrityMatched {
 			current.Unavailable = false
-			modifiedAt := backupStamp(info.ModTime())
-			changedAt := backupStamp(backupIntegrityChangeTime(info))
-			if modifiedAt != current.ModifiedAt || changedAt != current.ChangedAt {
-				current.Retention = secondaryRetentionProof{}
-			}
-			current.ModifiedAt, current.ChangedAt = modifiedAt, changedAt
-			if beforeID != "" {
-				current.Retention = secondaryRetentionProof{BeforeID: beforeID, CheckedAt: at}
-			}
-		} else {
-			current.Retention = secondaryRetentionProof{}
+			current.ModifiedAt = backupStamp(info.ModTime())
+			current.ChangedAt = backupStamp(backupIntegrityChangeTime(info))
 		}
 		verified = *current
 		return true, nil

@@ -264,6 +264,13 @@ func restoreCurrentOutboxRows(ctx context.Context, db *sql.DB, replacement *outb
 					notification_outbox.state IN (?, ?) OR notification_outbox.attempts > excluded.attempts
 				))
 				OR (notification_outbox.state = ? AND notification_outbox.error <> ? AND excluded.error = ?)
+				OR (notification_outbox.state = ? AND excluded.state = ? AND excluded.error = ?
+				    AND notification_outbox.error <> ?
+				    AND notification_outbox.attempts = excluded.attempts
+				    AND notification_outbox.attempted_at <> ''
+				    AND notification_outbox.attempted_at = excluded.attempted_at
+				    AND notification_outbox.destination_fingerprint = excluded.destination_fingerprint
+				    AND (notification_outbox.status_code <> 0 OR notification_outbox.error <> ''))
 			)
 		`, row.ID, row.Destination, row.EventType, row.Intent.Action, row.Intent.TargetType,
 			row.Intent.TargetName, row.Intent.Status, row.Intent.Message, row.Intent.CreatedAt,
@@ -273,7 +280,8 @@ func restoreCurrentOutboxRows(ctx context.Context, db *sql.DB, replacement *outb
 			outcome.DurationMS, snapshot.CreatedAt, now,
 			outboxStateSucceeded, outboxStateSucceeded,
 			outboxStatePending, outboxStateClaimed, outboxStateRetrying, outboxStateFailed, outboxStateSkipped,
-			outboxStateFailed, outboxIndeterminateReason, outboxIndeterminateReason)
+			outboxStateFailed, outboxIndeterminateReason, outboxIndeterminateReason,
+			outboxStateRetrying, outboxStateRetrying, outboxIndeterminateReason, outboxIndeterminateReason)
 		if err != nil {
 			return err
 		}

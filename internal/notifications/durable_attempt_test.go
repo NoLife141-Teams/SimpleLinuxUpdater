@@ -263,6 +263,38 @@ func TestRestoreKeepsRecordedOutcomeForArchivedFinalAttempt(t *testing.T) {
 	}
 }
 
+func TestRestoreKeepsArchivedRateLimitForInterruptedRetry(t *testing.T) {
+	h := newConditionHarness(t)
+	insertPendingOutboxIntent(t, h.db, DeliveryIntent{ID: "rate-limited-archive", Action: EventUpdateComplete}, h.now)
+	path := filepath.Join(t.TempDir(), "interrupted.db")
+	h.service.deps.HTTPClient = notificationHTTPFunc(func(*http.Request) (*http.Response, error) {
+		if _, err := h.db.Exec("VACUUM INTO ?", path); err != nil {
+			t.Fatal(err)
+		}
+		header := make(http.Header)
+		header.Set("Retry-After", "90")
+		return &http.Response{StatusCode: http.StatusTooManyRequests, Header: header, Body: http.NoBody}, nil
+	})
+	h.drain(t)
+	interrupted, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer interrupted.Close()
+	if err := MergeOfflineDeliveryEvidence(t.Context(), interrupted, h.db, h.now); err != nil {
+		t.Fatal(err)
+	}
+	history, err := h.service.DeliveryHistory(t.Context(), DeliveryHistoryQuery{})
+	if err != nil || len(history.Items) != 1 {
+		t.Fatalf("restored history = %+v, %v", history, err)
+	}
+	item := history.Items[0]
+	if item.State != outboxStateRetrying || item.Attempts != 1 || item.Reason != "Destination returned HTTP 429." ||
+		item.NextAttemptAt != h.now.Add(90*time.Second).Format(time.RFC3339Nano) {
+		t.Fatalf("restored rate limit = %+v", item)
+	}
+}
+
 func TestQueuedConditionRotationBeforeAdmissionPreventsStaleRequest(t *testing.T) {
 	h := newConditionHarness(t)
 	h.facts = []ConditionFact{rebootFact(true)}

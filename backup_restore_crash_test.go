@@ -18,7 +18,7 @@ import (
 
 const restoreCrashTestExit = 86
 
-func TestRestoreCrashBeforeHandoffRetainsMaintenance(t *testing.T) {
+func TestRestoreCrashBoundariesPreserveMaintenanceEvidence(t *testing.T) {
 	if dir := os.Getenv("SLU_RESTORE_CRASH_TEST_DIR"); dir != "" {
 		runRestoreCrashChild(t, dir, os.Getenv("SLU_RESTORE_CRASH_TEST_POINT"))
 		return
@@ -42,7 +42,8 @@ func TestRestoreCrashBeforeHandoffRetainsMaintenance(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, point := range []string{"before_known_hosts", "after_handoff", "complete", "marker_write_failed"} {
+	for _, point := range []string{"before_marker", "before_known_hosts", "after_handoff", "after_durable_finalization", "after_marker_removal",
+		"after_rollback_marker_removal", "complete", "marker_write_failed"} {
 		t.Run(point, func(t *testing.T) {
 			dir := t.TempDir()
 			caseArchive := archive
@@ -78,7 +79,7 @@ func TestRestoreCrashBeforeHandoffRetainsMaintenance(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			cmd := exec.Command(executable, "-test.run=^TestRestoreCrashBeforeHandoffRetainsMaintenance$")
+			cmd := exec.Command(executable, "-test.run=^TestRestoreCrashBoundariesPreserveMaintenanceEvidence$")
 			cmd.Env = append(os.Environ(), "SLU_RESTORE_CRASH_TEST_DIR="+dir, "SLU_RESTORE_CRASH_TEST_POINT="+point)
 			output, err := cmd.CombinedOutput()
 			if point == "complete" || point == "marker_write_failed" {
@@ -91,14 +92,15 @@ func TestRestoreCrashBeforeHandoffRetainsMaintenance(t *testing.T) {
 					t.Fatalf("child did not stop at replacement boundary: %v\n%s", err, output)
 				}
 			}
-			db, err := sql.Open("sqlite", filepath.Join(dir, "servers.db"))
+			dbPath := filepath.Join(dir, "servers.db")
+			db, err := sql.Open("sqlite", dbPath)
 			if err != nil {
 				t.Fatal(err)
 			}
 			defer db.Close()
 			var server string
 			wantServer := "replacement"
-			if point == "marker_write_failed" {
+			if point == "marker_write_failed" || point == "before_marker" || point == "after_rollback_marker_removal" {
 				wantServer = "original"
 			}
 			if err := db.QueryRow("SELECT name FROM servers LIMIT 1").Scan(&server); err != nil || server != wantServer {
@@ -106,19 +108,51 @@ func TestRestoreCrashBeforeHandoffRetainsMaintenance(t *testing.T) {
 			}
 			hosts, err := os.ReadFile(filepath.Join(dir, "known_hosts"))
 			wantHosts := "replacement trust"
-			if point == "before_known_hosts" || point == "marker_write_failed" {
+			if point == "before_known_hosts" || wantServer == "original" {
 				wantHosts = "original trust"
 			}
 			if err != nil || string(hosts) != wantHosts {
 				t.Fatalf("unexpected trust file at crash boundary: %q %v", hosts, err)
 			}
-			coordinator := maintenancepkg.NewCoordinator(maintenancepkg.Deps{Store: maintenancepkg.SQLiteStore{DB: func() *sql.DB { return db }}})
+			markerPending := func() (bool, error) { return internalbackup.RestoreRecoveryPending(dbPath) }
+			wantBlocked := point == "before_known_hosts" || point == "after_handoff"
+			if marked, err := markerPending(); err != nil || marked != (wantBlocked || point == "after_durable_finalization") {
+				t.Fatalf("durable recovery marker after %s = %t, %v", point, marked, err)
+			}
+			wantResume := ""
+			switch point {
+			case "before_marker":
+				wantResume = maintenancepkg.RestorePreparing
+			case "after_durable_finalization", "after_marker_removal", "after_rollback_marker_removal":
+				wantResume = maintenancepkg.RestoreFinalized
+			}
+			if wantResume != "" {
+				service := NewBackupServiceWithDeps(internalbackup.ServiceDeps{
+					DBPath: func() string { return dbPath }, TempDir: func() string { return dir },
+				})
+				report, err := service.OfflineRestoreRecovery(t.Context(), "", nil)
+				if err != nil || report.RecoveryRequired || report.ResumeOnStartup != wantResume || len(report.Sets) != 0 {
+					t.Fatalf("offline inspection after %s = %+v, %v", point, report, err)
+				}
+				store := maintenancepkg.SQLiteStore{DB: func() *sql.DB { return db }}
+				if persisted, err := store.Load(t.Context()); err != nil || !persisted.Active {
+					t.Fatalf("inspection changed the active maintenance row: %+v, %v", persisted, err)
+				}
+			}
+			coordinator := maintenancepkg.NewCoordinator(maintenancepkg.Deps{
+				Store: maintenancepkg.SQLiteStore{DB: func() *sql.DB { return db }}, RecoveryPending: markerPending,
+				ClearFinalizedRestoreMarker: func(digest string) (bool, error) {
+					return internalbackup.ClearFinalizedRestoreMarker(dbPath, digest)
+				},
+			})
 			if err := coordinator.Initialize(context.Background()); err != nil {
 				t.Fatal(err)
 			}
-			wantBlocked := point == "before_known_hosts" || point == "after_handoff"
 			if snapshot := coordinator.Snapshot(); snapshot.Active != wantBlocked || snapshot.RecoveryRequired != wantBlocked {
 				t.Errorf("startup maintenance after %s: %+v, want blocked=%t", point, snapshot, wantBlocked)
+			}
+			if marked, err := markerPending(); err != nil || marked != wantBlocked {
+				t.Errorf("marker after startup at %s = %t, %v", point, marked, err)
 			}
 			for _, work := range []maintenancepkg.WorkClass{maintenancepkg.WorkInteractive, maintenancepkg.WorkScheduled} {
 				lease, decision := coordinator.TryShared(work)
@@ -133,6 +167,19 @@ func TestRestoreCrashBeforeHandoffRetainsMaintenance(t *testing.T) {
 	}
 }
 
+type restoreCrashStore struct {
+	maintenancepkg.SQLiteStore
+	point string
+}
+
+func (s restoreCrashStore) SaveDurable(ctx context.Context, state maintenancepkg.State) error {
+	err := s.SQLiteStore.SaveDurable(ctx, state)
+	if err == nil && state.RestorePhase == maintenancepkg.RestoreFinalized && s.point == "after_durable_finalization" {
+		os.Exit(restoreCrashTestExit)
+	}
+	return err
+}
+
 func runRestoreCrashChild(t *testing.T, dir, point string) {
 	t.Helper()
 	ctx := context.Background()
@@ -140,6 +187,7 @@ func runRestoreCrashChild(t *testing.T, dir, point string) {
 	target := filepath.Join(dir, "servers.db")
 	knownHosts := filepath.Join(dir, "known_hosts")
 	var db *sql.DB
+	reloaded := false
 	getDB := func() *sql.DB {
 		if db == nil {
 			var err error
@@ -156,7 +204,9 @@ func runRestoreCrashChild(t *testing.T, dir, point string) {
 		}
 	}()
 	jm := newJobManagerWithRuntime(getDB(), nil, newServerState(), func() bool { return false })
-	coordinator := maintenancepkg.NewCoordinator(maintenancepkg.Deps{Store: maintenancepkg.SQLiteStore{DB: getDB}})
+	coordinator := maintenancepkg.NewCoordinator(maintenancepkg.Deps{
+		Store: restoreCrashStore{SQLiteStore: maintenancepkg.SQLiteStore{DB: getDB}, point: point},
+	})
 	if err := coordinator.Initialize(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -175,6 +225,9 @@ func runRestoreCrashChild(t *testing.T, dir, point string) {
 		},
 		RestoredRuntime: restoredRuntimeAdapter{
 			prepare: func() {
+				if point == "before_marker" {
+					os.Exit(restoreCrashTestExit)
+				}
 				if db != nil {
 					if err := db.Close(); err != nil {
 						t.Fatal(err)
@@ -186,6 +239,10 @@ func runRestoreCrashChild(t *testing.T, dir, point string) {
 				if point == "after_handoff" {
 					os.Exit(restoreCrashTestExit)
 				}
+				if point == "after_rollback_marker_removal" && !reloaded {
+					reloaded = true
+					return errors.New("injected forward reload failure")
+				}
 				jm = newJobManagerWithRuntime(getDB(), nil, newServerState(), func() bool { return false })
 				return nil
 			},
@@ -193,7 +250,12 @@ func runRestoreCrashChild(t *testing.T, dir, point string) {
 	})
 	lifecycle := newBackupOperationLifecycleWithDeps(backupOperationLifecycleDeps{
 		Archive: service, CurrentJobManager: func() *JobManager { return jm }, ActiveServerActionNames: func() []string { return nil },
-		EnsureEncryptionKey: func() []byte { return key }, RecordAudit: func(backupOperationAuditRecord) {},
+		EnsureEncryptionKey: func() []byte { return key }, RecordAudit: func(record backupOperationAuditRecord) {
+			if (point == "after_marker_removal" && record.Status == "success") ||
+				(point == "after_rollback_marker_removal" && record.Status == "failure") {
+				os.Exit(restoreCrashTestExit)
+			}
+		},
 	})
 	outcome := lifecycle.Restore(ctx, backupRestoreCommand{Actor: "admin", Passphrase: "very-strong-passphrase", File: internalbackup.TemporaryFile{Path: filepath.Join(dir, "archive.slubkp")}, Lease: lease})
 	if point == "marker_write_failed" {

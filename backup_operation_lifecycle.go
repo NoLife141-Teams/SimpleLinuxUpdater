@@ -444,8 +444,12 @@ func (l *backupOperationLifecycle) Restore(ctx context.Context, cmd backupRestor
 		return backupOperationOutcome{Kind: backupOperationJobCreateFailed, PublicError: "failed to create backup restore job", Err: err}
 	}
 	activateErr := error(nil)
+	_, phasedRestore := deps.Archive.(*internalbackup.Service)
 	if cmd.Lease != nil {
-		activateErr = cmd.Lease.Activate(ctx, maintenancepkg.OperationFacts{JobID: job.ID, Actor: cmd.Actor, Message: "Backup restore in progress. Requests are paused until the restored state is ready."})
+		activateErr = cmd.Lease.Activate(ctx, maintenancepkg.OperationFacts{
+			JobID: job.ID, Actor: cmd.Actor, RestorePreparation: phasedRestore,
+			Message: "Backup restore in progress. Requests are paused until the restored state is ready.",
+		})
 	} else {
 		activateErr = deps.ActivateMaintenance(jobKindBackupRestore, job.ID, cmd.Actor, "Backup restore in progress. Requests are paused until the restored state is ready.")
 	}
@@ -518,6 +522,9 @@ func (l *backupOperationLifecycle) Restore(ctx context.Context, cmd backupRestor
 			}
 			return cmd.Lease.Handoff(ctx)
 		},
+	}
+	if phasedRestore && cmd.Lease != nil {
+		restoreOptions.FinalizeReplacement = cmd.Lease.FinalizeRestore
 	}
 	isolate := cmd.Isolate
 	if deps.RestoreAPTValidation != nil {

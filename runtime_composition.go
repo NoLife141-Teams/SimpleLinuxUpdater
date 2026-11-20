@@ -326,6 +326,9 @@ func (c *runtimeComposition) Compose() AppDeps {
 			RecoveryPending: func() (bool, error) {
 				return internalbackup.RestoreRecoveryPending(deps.DBPath())
 			},
+			ClearFinalizedRestoreMarker: func(digest string) (bool, error) {
+				return internalbackup.ClearFinalizedRestoreMarker(deps.DBPath(), digest)
+			},
 		})
 	}
 	if deps.NotificationService == nil {

@@ -601,6 +601,11 @@ func (s *Service) applyArchiveFiles(ctx context.Context, files map[string]string
 		if err := s.deps.RestoredRuntime.ReloadRestoredState(rollbackCtx); err != nil {
 			return incomplete(fmt.Errorf("rollback reload runtime state: %w", err))
 		}
+		if opts.FinalizeReplacement != nil {
+			if err := opts.FinalizeReplacement(rollbackCtx, marker.digest()); err != nil {
+				return incomplete(fmt.Errorf("record finalized rollback: %w", err))
+			}
+		}
 		if err := fs.removeFile(markerPath); err != nil {
 			_, _ = fs.publishRecoveryMarker(markerPath, marker)
 			return incomplete(fmt.Errorf("clear restore recovery marker after rollback: %w", err))
@@ -628,6 +633,12 @@ func (s *Service) applyArchiveFiles(ctx context.Context, files map[string]string
 	}
 	if err := s.deps.RestoredRuntime.ReloadRestoredState(ctx); err != nil {
 		return rollback(err)
+	}
+	if opts.FinalizeReplacement != nil {
+		if err := opts.FinalizeReplacement(ctx, marker.digest()); err != nil {
+			keepSnapshots = true
+			return &IncompleteRecoveryError{Cause: errors.New("restore files were installed"), Recovery: err, SnapshotDir: snapshotDir}
+		}
 	}
 	if err := fs.removeFile(markerPath); err != nil {
 		_, _ = fs.publishRecoveryMarker(markerPath, marker)

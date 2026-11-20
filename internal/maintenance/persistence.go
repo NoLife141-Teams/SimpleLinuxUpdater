@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 )
 
@@ -50,6 +51,12 @@ func (s SQLiteStore) Save(ctx context.Context, state State) error {
 	if err != nil {
 		return err
 	}
+	return saveState(ctx, db, state)
+}
+
+func saveState(ctx context.Context, db interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+}, state State) error {
 	blob, err := json.Marshal(state)
 	if err != nil {
 		return err
@@ -60,6 +67,47 @@ func (s SQLiteStore) Save(ctx context.Context, state State) error {
 		string(blob),
 	)
 	return err
+}
+
+// SaveDurable commits phase evidence using FULL synchronous on the same
+// connection before the restore removes its filesystem marker.
+func (s SQLiteStore) SaveDurable(ctx context.Context, state State) error {
+	db, err := s.database()
+	if err != nil {
+		return err
+	}
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	var synchronous int
+	if err := conn.QueryRowContext(ctx, "PRAGMA synchronous").Scan(&synchronous); err != nil {
+		return err
+	}
+	if _, err := conn.ExecContext(ctx, "PRAGMA synchronous=FULL"); err != nil {
+		return err
+	}
+	saveErr := saveState(ctx, conn, state)
+	_, resetErr := conn.ExecContext(context.WithoutCancel(ctx), fmt.Sprintf("PRAGMA synchronous=%d", synchronous))
+	return errors.Join(saveErr, resetErr)
+}
+
+func (s SQLiteStore) CheckRestoreDatabase(ctx context.Context) error {
+	db, err := s.database()
+	if err != nil {
+		return err
+	}
+	// quick_check returns exactly one "ok" row for healthy SQLite. The
+	// first row is an error description when integrity checks fail.
+	var result string
+	if err := db.QueryRowContext(ctx, "PRAGMA quick_check").Scan(&result); err != nil {
+		return err
+	}
+	if result != "ok" {
+		return errors.New("restore database integrity check failed")
+	}
+	return nil
 }
 
 // PrepareReplacement stamps the owning restore into an offline replacement
@@ -81,5 +129,8 @@ func (l *ExclusiveLease) PrepareReplacement(ctx context.Context, db *sql.DB) err
 	state := l.activeState
 	state.RecoveryRequired = true
 	state.Message = recoveryRequiredMessage
+	if state.RestorePhase == RestorePreparing {
+		state.RestorePhase = RestoreReplacing
+	}
 	return (SQLiteStore{DB: func() *sql.DB { return db }}).Save(ctx, state)
 }

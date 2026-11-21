@@ -19,7 +19,7 @@
 Use a named volume for persistence:
 
 ```bash
-docker run --env-file .env -p 127.0.0.1:8080:8080 -v debian-updater-data:/data ghcr.io/nolife141-teams/simplelinuxupdater:v0.5.8
+docker run --env-file .env -p 127.0.0.1:8080:8080 -v debian-updater-data:/data ghcr.io/nolife141-teams/simplelinuxupdater:v0.6.0
 ```
 
 The example publishes the UI on IPv4 loopback for first-run setup and use with
@@ -39,7 +39,7 @@ Release tags publish images to GitHub Container Registry:
 Example:
 
 ```bash
-docker pull ghcr.io/nolife141-teams/simplelinuxupdater:v0.5.8
+docker pull ghcr.io/nolife141-teams/simplelinuxupdater:v0.6.0
 ```
 
 ## Binary deployment
@@ -122,7 +122,7 @@ If an attacker obtains both the SQLite DB and the encryption key file, stored se
 
 ## Upgrade procedure
 
-Follow the [v0.5.8 upgrade, restore and rollback guide](upgrading.md)
+Follow the [upgrade, restore and rollback guide](upgrading.md#from-v058-to-v060)
 for concrete Docker and binary archive commands. Export and verify a backup
 before stopping the old process, retain its matching image/binary and assets,
 then deploy the candidate with the same data paths. Setup stays closed. When

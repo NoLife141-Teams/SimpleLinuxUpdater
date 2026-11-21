@@ -1,6 +1,6 @@
 # SimpleLinuxUpdater
 
-Version: v0.5.8
+Version: v0.6.0
 
 SimpleLinuxUpdater is a self-hosted web UI that helps you manage apt updates on Debian-based servers over SSH. It provides an approval workflow, health checks, audit history, and basic observability so you can update hosts confidently without logging into each machine.
 
@@ -16,7 +16,7 @@ The demo uses fictional hosts and data.
 
 - [Overview](#overview)
 - [Features](#features)
-- [Upgrading to v0.5.8](#upgrading-to-v058)
+- [Upgrading to v0.6.0](#upgrading-to-v060)
 - [Quick start](#quick-start)
 - [Documentation](#documentation)
 - [Security](#security)
@@ -54,18 +54,18 @@ SimpleLinuxUpdater is designed for trusted environments (LAN/VPN). It connects t
 - Local administrator password recovery with hidden terminal entry, exclusive installation locking and atomic session revocation/audit; see [lost access recovery](docs/troubleshooting.md#forgotten-admin-password)
 - In-app encrypted backup/restore (DB + config, optional `known_hosts`) for host/container migration
 
-## Upgrading to v0.5.8
+## Upgrading to v0.6.0
 
 Export and verify an encrypted backup, finish or cancel pending maintenance,
-then replace the executable and web assets together. v0.5.8 refreshes the SQLite
-driver, its supporting Go dependencies, and the pinned CI/release actions and
-Playwright tooling.
+then replace the executable and web assets together. v0.6.0 adds maintenance
+batch history, isolated restore and off-host backup copies. Retain existing
+data paths and reload open browser tabs after deployment. Interrupted approvals
+need a fresh update check and renewed approval.
 
-No new application database migration, required environment variable or SSH
-helper protocol change is introduced relative to v0.5.7. Retain existing data
-paths and reload open browser tabs after deployment. Interrupted approvals need
-a fresh update check and renewed approval. Follow the
-[upgrade and rollback guide](docs/upgrading.md) for earlier-version requirements.
+If you use automated backups, confirm the primary mount is present, select
+**Save and Validate**, and run a control backup. Verify the new archive before
+resuming scheduled backups. Follow the
+[upgrade and rollback guide](docs/upgrading.md#from-v058-to-v060).
 
 ## Quick start
 
@@ -73,8 +73,8 @@ a fresh update check and renewed approval. Follow the
 
 ```bash
 cp .env-template .env
-docker pull ghcr.io/nolife141-teams/simplelinuxupdater:v0.5.8
-docker run --env-file .env -p 127.0.0.1:8080:8080 -v debian-updater-data:/data ghcr.io/nolife141-teams/simplelinuxupdater:v0.5.8
+docker pull ghcr.io/nolife141-teams/simplelinuxupdater:v0.6.0
+docker run --env-file .env -p 127.0.0.1:8080:8080 -v debian-updater-data:/data ghcr.io/nolife141-teams/simplelinuxupdater:v0.6.0
 ```
 
 Open `http://127.0.0.1:8080` on the Docker host.
@@ -146,7 +146,7 @@ Download the archive for your platform from GitHub Releases and run the included
 Example (Linux amd64):
 
 ```bash
-VERSION="0.5.8"
+VERSION="0.6.0"
 APP="SimpleLinuxUpdater_${VERSION}"
 ARCHIVE="${APP}_linux_amd64.tar.gz"
 

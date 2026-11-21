@@ -5,11 +5,11 @@
 Use the image digest recorded in the published release's `publication.json`,
 or download the matching versioned binary archive and checksum list.
 
-## From v0.5.8 to a candidate with Maintenance batch history
+## From v0.5.8 to v0.6.0
 
 Before upgrading, finish or cancel maintenance and verify an encrypted backup
 with `known_hosts` included. Preserve the v0.5.8 image digest or binary and use
-the matching executable and web assets for each installation. The candidate
+the matching executable and web assets for each installation. v0.6.0
 adds batch tables and a notification-delivery history index to the local
 database. An upgraded v0.5.8 installation starts with an empty batch history.
 
@@ -21,6 +21,30 @@ job was interrupted retains its job link. Review the job result and any APT
 reconciliation requirement before deciding on another action. Review and
 approve a newly discovered package plan after an interrupted approval.
 
+### Revalidate the primary backup mount
+
+An existing approval from v0.5.8 identified the backup path. v0.6.0 also
+requires the identity of the directory on the approved filesystem. Scheduled
+backups stay suspended until you validate that destination. Existing archives
+remain registered.
+
+1. Confirm the intended primary filesystem is mounted at
+   `DEBIAN_UPDATER_BACKUP_DIR` and the configured passphrase file is available
+   to the application. If the mount is missing, restore it before proceeding.
+2. Open **Admin → Backup & Restore → Automated encrypted backups**. Keep
+   **Enable scheduled backups** unchecked while you verify the upgrade. Review
+   the retained settings and select **Save and Validate**.
+3. Select **Run Control Backup** and wait for a successful result. If the
+   request is deferred, wait for the pending attempt to finish. In the archive
+   catalog, confirm a new entry shows **Local availability: present** and
+   **Latest review: verified**. If the attempt fails, resolve the reported
+   problem and verify a successful control backup before enabling the schedule.
+4. If scheduled backups were enabled before the upgrade, re-enable
+   **Enable scheduled backups**, select **Save and Validate**, and confirm the
+   next scheduled attempt is displayed.
+
+### Review unresolved APT incidents
+
 Repair APT requires the current reconciliation job and its recorded SSH
 endpoint. The repair connection verifies the SSH host key captured during
 mutation. After confirming the original machine through a trusted console,
@@ -30,6 +54,8 @@ blocks package maintenance. In **Admin → Installation Health → APT validatio
 report and confirm the original machine using a trusted console before running the read-only APT check.
 A healthy check records the resolution and permits maintenance on the validated target. If the SSH endpoint
 has changed, restore access to the original endpoint and verify it before proceeding.
+
+### Roll back to v0.5.8
 
 For rollback, restore the verified pre-upgrade archive into a separate
 v0.5.8 installation as described in [Restore and rollback](#restore-and-rollback).
@@ -217,10 +243,12 @@ on the private qualification bridge.
 ## Binary archive
 
 Download the target platform archive and its checksum list from the same
-versioned GitHub Release. On Linux amd64, in a new staging directory:
+versioned GitHub Release. The example uses v0.6.0 once it is published. For
+another published version, set `VERSION` to match its release. On Linux amd64,
+run these commands in a new staging directory.
 
 ```bash
-VERSION='0.5.8'
+VERSION='0.6.0'
 ARCHIVE="SimpleLinuxUpdater_${VERSION}_linux_amd64.tar.gz"
 BASE="https://github.com/NoLife141-Teams/SimpleLinuxUpdater/releases/download/v${VERSION}"
 curl --fail --location --output "$ARCHIVE" "$BASE/$ARCHIVE"

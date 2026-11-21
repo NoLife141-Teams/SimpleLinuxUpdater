@@ -24,12 +24,14 @@
 
 ## Install with Docker
 
-Use the published image from GHCR (recommended):
+Use the published image from GHCR. Until the v0.6.0 image is published,
+substitute the tag shown in the latest published release and use its
+`.env-template`. [Latest published release](https://github.com/NoLife141-Teams/SimpleLinuxUpdater/releases/latest)
 
 ```bash
 cp .env-template .env
-docker pull ghcr.io/nolife141-teams/simplelinuxupdater:v0.5.8
-docker run --env-file .env -p 127.0.0.1:8080:8080 -v debian-updater-data:/data ghcr.io/nolife141-teams/simplelinuxupdater:v0.5.8
+docker pull ghcr.io/nolife141-teams/simplelinuxupdater:v0.6.0
+docker run --env-file .env -p 127.0.0.1:8080:8080 -v debian-updater-data:/data ghcr.io/nolife141-teams/simplelinuxupdater:v0.6.0
 ```
 
 Open the UI:

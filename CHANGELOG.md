@@ -6,6 +6,8 @@ The format is inspired by Keep a Changelog, and this project uses Semantic Versi
 
 ## [Unreleased]
 
+## [v0.6.0]
+
 ### Added
 
 - Record Maintenance batches with per-Server outcomes, retry links and account-scoped history in Status. After sign-in, direct links open the recorded batch or the exact approval plan.
@@ -16,6 +18,10 @@ The format is inspired by Keep a Changelog, and this project uses Semantic Versi
 - Show the observed backup export, restore, or recovery cause for skipped Scheduled Runs, with the blocking job when available.
 - Offer opt-in APT reconciliation alerts with the original job report in delivery history.
 - Preview APT reconciliation conflicts with the current installation before confirming an archive restore.
+- Restore in isolation and review scheduled maintenance, backup automation and queued notifications before resuming external work. Validate restored SSH targets and APT state in bounded batches before allowing package changes.
+- Verify encrypted archives offline on a selected workspace. Inspect and recover an interrupted restore with the offline CLI, including when the active SQLite file is unreadable.
+- Copy verified automatic backups to an approved off-host filesystem. Resume interrupted copies, catch up eligible archives after an outage and retry failed copies. Report recovery-point age from the archived data's capture time.
+- Monitor registered archives for loss and silent corruption. Add opt-in alerts for prolonged primary storage outages, unavailable off-host storage and stale or missing off-host recovery points.
 
 ### Fixed
 
@@ -28,11 +34,23 @@ The format is inspired by Keep a Changelog, and this project uses Semantic Versi
 - Keep APT reconciliation visible during host facts refresh and explain scheduled skips caused by it.
 - Keep the verified cause of a scheduler refusal across a restart before Scheduled Runs records the skip.
 - Deduplicate approval alerts by exact plan and destination. Preserve scheduled-run Server links across inventory renames.
+- Preserve unresolved historical APT incidents during upgrade and require validation before resuming package maintenance.
+- Check storage space before preparing a restore, retain the recovery lock on insufficient space, and resume interrupted preparation and finalization. Reject colliding restore destinations on Windows.
+- Bind automatic backup approval to the validated primary mount. Refuse a replacement at the same path, preserve outage evidence, and keep online restore available while a primary backup or an Admin storage request waits on that mount.
+- Validate the integrity of off-host copies before pruning protected archives. Preserve durable notification attempt admission across interruption, isolate delivery by destination and honor `Retry-After`.
 
 ### Changed
 
 - Send compact Status snapshots, fetch host details on demand and group event-driven refreshes. Use scoped rows for eligible changes, bound job log recovery and reduce browser work when rendering updates.
 - Reduce server work for targeted Status refreshes while keeping the fleet totals and row consistency check.
+- Serve backup status, the archive catalog and policy previews from recorded observations. Report notification evaluation separately from delivery and show queue health per destination.
+- Qualify native Windows restore and offline recovery, and exercise release ancestry with Git for Windows during CI. Update `golang.org/x/crypto`, `golang.org/x/term`, `golang.org/x/text` and Playwright.
+
+### Upgrading from v0.5.8
+
+- Export and verify a pre-upgrade backup with `known_hosts`, finish or cancel maintenance and retain the v0.5.8 artifacts needed for rollback.
+- Revalidate an existing primary backup destination with **Save and Validate** after confirming the intended mount is present. Legacy path-only approval leaves scheduled backups suspended until this step. Run **Run Control Backup** and confirm a new archive is present and verified before resuming the schedule.
+- Follow the [upgrade and rollback guide](docs/upgrading.md#from-v058-to-v060) for the backup checks and APT reconciliation steps.
 
 ## [v0.5.8] - 2026-11-11
 

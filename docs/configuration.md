@@ -496,10 +496,12 @@ Default behavior:
 
 ## Environment file (.env)
 
-For Docker, `.env` is not automatically loaded unless you pass it:
+Pass `--env-file` to load `.env` in Docker. Until the v0.6.0 image is published,
+substitute the latest published tag.
+[Latest published release](https://github.com/NoLife141-Teams/SimpleLinuxUpdater/releases/latest)
 
 ```bash
-docker run --env-file .env -p 127.0.0.1:8080:8080 -v debian-updater-data:/data ghcr.io/nolife141-teams/simplelinuxupdater:v0.5.8
+docker run --env-file .env -p 127.0.0.1:8080:8080 -v debian-updater-data:/data ghcr.io/nolife141-teams/simplelinuxupdater:v0.6.0
 ```
 
 ## CVEs for available updates

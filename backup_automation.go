@@ -900,14 +900,11 @@ func handleBackupAutomationConfigure(c *gin.Context, a *backupAutomation) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid backup schedule configuration."})
 		return
 	}
-	var event *AuditEvent
-	if a.deps.AuditService != nil {
-		meta := identityAuditMeta(c, map[string]any{"enabled": config.Enabled})
-		prepared := a.deps.AuditService.PrepareEvent("", actorFromContext(c), clientIPFromContext(c),
-			"backup.automatic.configured", "backup", "automatic", "success", "Automated backup settings saved", meta)
-		event = &prepared
+	audit := primaryConfigurationAudit{
+		actor: actorFromContext(c), ip: clientIPFromContext(c),
+		meta: identityAuditMeta(c, map[string]any{"enabled": config.Enabled}),
 	}
-	status, err := a.configurePrimary(c.Request.Context(), config, event, func() {
+	status, err := a.configurePrimary(c.Request.Context(), config, &audit, func() {
 		releaseBackupRequestAdmission(c)
 	})
 	if err != nil {

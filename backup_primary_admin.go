@@ -106,11 +106,17 @@ type primaryDestinationProof struct {
 	err                      error
 }
 
+type primaryConfigurationAudit struct {
+	actor string
+	ip    string
+	meta  map[string]any
+}
+
 func (a *backupAutomation) Configure(ctx context.Context, config backupScheduleConfig) (backupAutomationStatus, error) {
 	return a.configurePrimary(ctx, config, nil, nil)
 }
 
-func (a *backupAutomation) configurePrimary(ctx context.Context, config backupScheduleConfig, event *AuditEvent, releaseAdmission func()) (backupAutomationStatus, error) {
+func (a *backupAutomation) configurePrimary(ctx context.Context, config backupScheduleConfig, audit *primaryConfigurationAudit, releaseAdmission func()) (backupAutomationStatus, error) {
 	if err := config.validate(); err != nil {
 		return backupAutomationStatus{}, err
 	}
@@ -177,8 +183,9 @@ func (a *backupAutomation) configurePrimary(ctx context.Context, config backupSc
 			s.Outcome, s.Message = "disabled", "Automated backups are disabled. Local validation failed: "+proof.err.Error()
 		}
 		var events []AuditEvent
-		if event != nil {
-			events = append(events, *event)
+		if audit != nil && a.deps.AuditService != nil {
+			events = append(events, a.deps.AuditService.PrepareEvent("", audit.actor, audit.ip,
+				"backup.automatic.configured", "backup", "automatic", "success", "Automated backup settings saved", audit.meta))
 		}
 		if err := a.save(ctx, s, events...); err != nil {
 			return err

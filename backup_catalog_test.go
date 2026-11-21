@@ -451,7 +451,7 @@ func TestBackupCatalogSnapshotDoesNotPreserveCoverageAfterVersionChange(t *testi
 			}
 			probe := backupCatalogProbe{snapshot: snapshot, owner: owner, directory: directory, checkedAt: *now, mountAvailable: true}
 			probe.classifySnapshotFailure(root, original.Name, err)
-			if _, err := a.applyPrimaryArchiveProbe(ctx, ref, original, probe, false, "operator", ""); !errors.Is(err, errBackupCatalogUnavailable) {
+			if _, err := a.applyPrimaryArchiveProbe(ctx, ref, original, probe, false, nil, "operator", ""); !errors.Is(err, errBackupCatalogUnavailable) {
 				t.Fatalf("snapshot failure was not recorded: %v", err)
 			}
 			after := backupAutomationStateForTest(t, a).Archives[0]

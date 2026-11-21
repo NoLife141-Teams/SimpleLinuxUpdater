@@ -83,7 +83,7 @@ func catalogArchiveIndex(s backupAutomationState, id string) int {
 	return -1
 }
 
-func (a *backupAutomation) applyPrimaryArchiveProbe(ctx context.Context, ref primaryAdminReference, archive ownedBackupArchive, probe backupCatalogProbe, verify bool, actor, ip string) (string, error) {
+func (a *backupAutomation) applyPrimaryArchiveProbe(ctx context.Context, ref primaryAdminReference, archive ownedBackupArchive, probe backupCatalogProbe, verify bool, cancelDownload *context.CancelFunc, actor, ip string) (string, error) {
 	var lastVerifiedAt string
 	err := a.withPrimaryAdminState(ctx, func(s backupAutomationState) error {
 		index := catalogArchiveIndex(s, archive.ID)
@@ -111,6 +111,9 @@ func (a *backupAutomation) applyPrimaryArchiveProbe(ctx context.Context, ref pri
 			return errPrimaryBackupInvalidated
 		}
 		if available && !verify {
+			// The primary slot belongs to this request. Bind the HTTP transfer's
+			// cancellation while restore still cannot replace the authorization.
+			a.primaryCancel.Store(cancelDownload)
 			return nil
 		}
 		observedAt := backupStamp(probe.checkedAt)
@@ -192,6 +195,9 @@ func handleBackupCatalogOperation(c *gin.Context, a *backupAutomation, verify bo
 	archive := ref.state.Archives[index]
 	actor, ip := actorFromContext(c), clientIPFromContext(c)
 	releaseBackupRequestAdmission(c)
+	requestCtx, cancelDownload := context.WithCancel(c.Request.Context())
+	defer cancelDownload()
+	c.Request = c.Request.WithContext(requestCtx)
 	finish, ok := beginHTTPTransferBudget(c, false, false)
 	if !ok {
 		return
@@ -207,7 +213,9 @@ func handleBackupCatalogOperation(c *gin.Context, a *backupAutomation, verify bo
 		return
 	}
 	defer release()
-	lastVerified, err := a.applyPrimaryArchiveProbe(ctx, ref, archive, probe, verify, actor, ip)
+	// Clear the cancellation before releasing the primary slot to another caller.
+	defer a.primaryCancel.CompareAndSwap(&cancelDownload, nil)
+	lastVerified, err := a.applyPrimaryArchiveProbe(ctx, ref, archive, probe, verify, &cancelDownload, actor, ip)
 	if err != nil {
 		writePrimaryArchiveOperationError(c, err)
 		return
@@ -227,6 +235,10 @@ func handleBackupCatalogOperation(c *gin.Context, a *backupAutomation, verify bo
 		return
 	}
 	defer file.Close()
+	if err := ctx.Err(); err != nil {
+		writePrimaryArchiveOperationError(c, err)
+		return
+	}
 	c.Header("Content-Type", "application/octet-stream")
 	c.Header("Content-Disposition", `attachment; filename="simplelinuxupdater-automated-backup.slubkp"`)
 	c.Header("Content-Length", strconv.FormatInt(probe.snapshot.file.Size, 10))

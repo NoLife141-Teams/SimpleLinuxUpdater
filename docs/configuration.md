@@ -225,7 +225,8 @@ access the mount outside maintenance admission. Their wait is bounded and a
 blocked call holds the primary storage slot until it returns. A restore can
 proceed during that wait. A result from before a restore cannot change the
 restored configuration or catalog. Downloads stream a local encrypted copy
-whose SHA-256 matches the registered archive.
+whose SHA-256 matches the registered archive. Restoring the application
+cancels downloads authorized before the restore.
 
 Restoration preserves historical configuration and results but clears local approval, even when restoring into the same installation. Revalidate destination and secret in Admin before resuming. Existing manual exports and archives remain compatible. No S3/SFTP backend or remote-server filesystem snapshot is provided.
 

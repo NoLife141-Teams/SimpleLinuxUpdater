@@ -248,6 +248,9 @@ func (a *backupAutomation) observeArchiveAvailabilityWithScan(ctx context.Contex
 	var events []AuditEvent
 	for i, value := range scan.availability {
 		archive := &current.Archives[i]
+		if current.PrimaryRetiring != "" && archive.ID == current.PrimaryRetiring {
+			continue
+		}
 		if value == "present" && archive.DirectoryIdentity == "" {
 			archive.DirectoryIdentity = scan.observation.DirectoryIdentity
 		}

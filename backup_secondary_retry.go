@@ -32,6 +32,9 @@ func secondaryPrimaryEligible(archive ownedBackupArchive, owner string) bool {
 }
 
 func secondaryPrimaryArchive(state *backupAutomationState, id string) (ownedBackupArchive, bool) {
+	if id == state.PrimaryRetiring {
+		return ownedBackupArchive{}, false
+	}
 	for _, archive := range state.Archives {
 		if archive.ID == id && secondaryPrimaryEligible(archive, state.Secondary.Binding.Owner) {
 			return archive, true
@@ -68,6 +71,7 @@ func secondaryPendingCount(state backupSecondaryState) int {
 // its first budget, and a completed copy can be replaced if its name is absent.
 func (a *backupAutomation) catchUpSecondaryCopy(ctx context.Context, root *os.Root, binding backupSecondaryBinding) error {
 	var candidates []ownedBackupArchive
+	retirementPending := false
 	copies := make(map[string]backupSecondaryCopy)
 	err := a.withSecondaryState(ctx, func(state *backupAutomationState) (bool, error) {
 		if !a.secondaryConfigured(state.Secondary) || state.Secondary.Binding != binding ||
@@ -82,7 +86,11 @@ func (a *backupAutomation) catchUpSecondaryCopy(ctx context.Context, root *os.Ro
 			if !slices.Contains(state.Secondary.Retired, archive.ID) &&
 				(!exists || copy.Failure == "queue_full" || copy.VerifiedAt != "") &&
 				secondaryPrimaryEligible(archive, binding.Owner) {
-				candidates = append(candidates, archive)
+				if archive.ID == state.PrimaryRetiring {
+					retirementPending = true
+				} else {
+					candidates = append(candidates, archive)
+				}
 			}
 		}
 		return false, nil
@@ -148,7 +156,7 @@ func (a *backupAutomation) catchUpSecondaryCopy(ctx context.Context, root *os.Ro
 			return true, nil
 		})
 	}
-	if !unavailable && backupArchiveMountAvailable(root.Name(), binding.Directory) {
+	if !unavailable && !retirementPending && backupArchiveMountAvailable(root.Name(), binding.Directory) {
 		return a.updateCurrentSecondary(ctx, binding, "", func(state *backupSecondaryState, _ *backupSecondaryCopy) (bool, error) {
 			if secondaryPendingCount(*state) >= backupSecondaryQueueLimit || !state.CatchUp {
 				return false, nil

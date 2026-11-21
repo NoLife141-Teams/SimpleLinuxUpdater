@@ -22,8 +22,8 @@ func (a *backupAutomation) needsExclusiveTick(ctx context.Context) (bool, error)
 	if err != nil {
 		return false, err
 	}
-	// Interrupted work and temporary archive cleanup still need exclusive admission.
-	if s.Outcome == "running" || (s.Temporary != "" && s.hasPrimaryApproval()) {
+	// Recover interrupted work and reconcile file operations on the approved mount.
+	if s.Outcome == "running" || ((s.Temporary != "" || s.PrimaryRetiring != "") && s.hasPrimaryApproval()) {
 		return true, nil
 	}
 	now := a.now()

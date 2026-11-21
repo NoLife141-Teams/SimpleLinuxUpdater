@@ -482,7 +482,10 @@ func TestBackupAutomationRetentionIgnoresForeignAndSymlinkFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 	s.Archives = append([]ownedBackupArchive{{Name: linkName, Owner: owner}}, s.Archives...)
-	if err = a.retain(root, &s); err != nil {
+	if err = a.retain(t.Context(), root, &s, func(archive ownedBackupArchive) (bool, error) {
+		err := root.Remove(archive.Name)
+		return err == nil, err
+	}); err != nil {
 		t.Fatal(err)
 	}
 	if len(s.Archives) != 1 || !strings.Contains(s.Archives[0].Name, "-new.") {
@@ -754,6 +757,9 @@ func TestBackupAutomationMidWriteAndCancellationFailures(t *testing.T) {
 			if err = a.Tick(ctx, false); err == nil {
 				t.Fatal("injected failure accepted")
 			}
+			if failure == "cancelled" {
+				waitForPrimaryBackupWorker(t, a)
+			}
 			s = backupAutomationStateForTest(t, a)
 			if s.Outcome != "failed" || len(s.Archives) != 1 || s.LastSuccessAt == "" || s.LastSuccessAt != previousSuccess ||
 				s.Archives[0].LastVerifiedAt != previous.LastVerifiedAt {
@@ -772,7 +778,7 @@ func TestBackupAutomationMidWriteAndCancellationFailures(t *testing.T) {
 }
 
 func TestBackupAutomationDisabledControlDeferralEventuallyRuns(t *testing.T) {
-	_, a, now := newBackupAutomationTest(t)
+	app, a, now := newBackupAutomationTest(t)
 	config := defaultBackupSchedule()
 	config.Enabled = false
 	status, err := a.Configure(context.Background(), config)
@@ -783,15 +789,30 @@ func TestBackupAutomationDisabledControlDeferralEventuallyRuns(t *testing.T) {
 	if !decision.Allowed {
 		t.Fatal("shared denied")
 	}
+	defer shared.Close()
 	if err = a.Tick(context.Background(), true); err != nil {
 		t.Fatal(err)
 	}
-	shared.Close()
 	status, err = a.Status(context.Background())
 	if err != nil || status.State != "deferred" || status.NextAt == "" {
 		t.Fatalf("disabled control not deferred: %+v %v", status, err)
 	}
-	*now = now.Add(backupRetryDelay)
+	next := parseBackupStamp(status.NextAt)
+	*now = now.Add(time.Minute)
+	if err = a.Tick(context.Background(), true); err != nil {
+		t.Fatal(err)
+	}
+	repeated, err := a.Status(context.Background())
+	if err != nil || repeated.State != "deferred" || repeated.NextAt != status.NextAt || repeated.LastAttemptAt != status.LastAttemptAt {
+		t.Fatalf("another control extended the pending deferral: %+v %v", repeated, err)
+	}
+	var deferrals int
+	err = app.Deps.DB().QueryRow("SELECT count(*) FROM audit_events WHERE action = 'backup.automatic.deferred'").Scan(&deferrals)
+	if err != nil || deferrals != 1 {
+		t.Fatalf("one pending occurrence should have one deferral event, got %d: %v", deferrals, err)
+	}
+	shared.Close()
+	*now = next
 	if err = a.Tick(context.Background(), false); err != nil {
 		t.Fatal(err)
 	}
@@ -908,15 +929,26 @@ func TestBackupAutomationControlRunProtectsCompletionAndStatus(t *testing.T) {
 		return db()
 	}
 	recorded := false
+	directory := a.deployment.Directory
+	withdrawn := directory + ".withdrawn"
+	t.Cleanup(func() { _ = os.RemoveAll(withdrawn) })
 	a.deps.AuditService = auditpkg.NewService(auditpkg.ServiceOptions{DB: db, OnRecord: func(event auditpkg.Event) {
 		if event.Action == "backup.automatic.succeeded" {
 			recorded = true
 			assertAdmissionHeld()
+			if err := os.Rename(directory, withdrawn); err != nil {
+				t.Errorf("withdraw destination immediately after publication: %v", err)
+			}
 		}
 	}})
 	result := performContractRequest(app.Handler, http.MethodPost, "/api/backup/automation/run", nil, cookie, true)
-	if result.Code != http.StatusOK || !strings.Contains(result.Body.String(), `"state":"succeeded"`) || !recorded {
+	var status backupAutomationStatus
+	err := json.Unmarshal(result.Body.Bytes(), &status)
+	if result.Code != http.StatusOK || err != nil || status.State != "succeeded" || !recorded {
 		t.Fatalf("control run response=%d recorded=%v body=%s", result.Code, recorded, result.Body.String())
+	}
+	if status.LocalArchiveCount != 1 || len(status.Catalog.Archives) != 1 || status.Catalog.Archives[0].Availability != "present" {
+		t.Fatalf("control result did not include the verified publication: %+v", status.Catalog)
 	}
 }
 

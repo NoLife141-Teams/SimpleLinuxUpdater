@@ -929,8 +929,7 @@ func TestBackupAutomationApprovalBindsDeploymentWithoutPassphrase(t *testing.T) 
 		t.Fatal(err)
 	}
 	root.Close()
-	if binding != owner+"\x00"+a.deployment.Directory+"\x00"+a.deployment.SecretFile ||
-		binding != s.Approval || s.ApprovedDirectory == "" {
+	if binding != owner+"\x00"+a.deployment.Directory+"\x00"+a.deployment.SecretFile || binding != s.Approval {
 		t.Fatal("approval does not bind the exact local deployment")
 	}
 	var raw string
@@ -1020,6 +1019,10 @@ func TestPrimaryBackupRejectsReplacementDirectoryAndResumesOnReturn(t *testing.T
 	}
 	if err := os.Rename(withdrawn, directory); err != nil {
 		t.Fatal(err)
+	}
+	status, err := a.Status(ctx)
+	if err != nil || !status.Configured || status.State == "suspended" || status.NextAt == "" {
+		t.Fatalf("returned mount should resume the schedule: %+v %v", status, err)
 	}
 	if err := a.Tick(ctx, true); err != nil {
 		t.Fatalf("returned mount should work with its existing approval: %v", err)

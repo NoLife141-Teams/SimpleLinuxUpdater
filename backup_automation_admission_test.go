@@ -9,6 +9,24 @@ import (
 	policypkg "debian-updater/internal/policies"
 )
 
+func TestLegacyUnapprovedTemporaryDoesNotRequireExclusiveBackupAdmission(t *testing.T) {
+	_, a, _ := newBackupAutomationTest(t)
+	ctx := t.Context()
+	state := backupAutomationStateForTest(t, a)
+	state.ApprovedDirectory = ""
+	state.Temporary = "slu-auto-legacy.slubkp.tmp"
+	state.Outcome = "running"
+	if err := a.save(ctx, state); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Tick(ctx, false); err != nil {
+		t.Fatal(err)
+	}
+	if needed, err := a.needsExclusiveTick(ctx); err != nil || needed {
+		t.Fatalf("legacy temporary could block maintenance while awaiting approval: %v %v", needed, err)
+	}
+}
+
 func TestIdleBackupAutomationDoesNotSkipScheduledRuns(t *testing.T) {
 	for _, mode := range []string{"disabled", "future", "retry", "suspended"} {
 		t.Run(mode, func(t *testing.T) {

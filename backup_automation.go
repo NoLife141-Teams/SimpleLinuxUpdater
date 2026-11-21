@@ -295,7 +295,7 @@ func (a *backupAutomation) projectedRegularNextAt(s backupAutomationState, now t
 // the archive catalog, consuming an occurrence or acquiring maintenance.
 func (a *backupAutomation) nextScheduledOccurrence(ctx context.Context) (time.Time, error) {
 	s, err := a.readState(ctx)
-	if err != nil || !s.Config.Enabled || s.Approval == "" {
+	if err != nil || !s.Config.Enabled || !s.hasPrimaryApproval() {
 		return time.Time{}, err
 	}
 	now := a.now()
@@ -494,6 +494,10 @@ func (a *backupAutomation) destination(createIdentity bool) (*os.Root, string, s
 
 var errPrimaryBackupMountUnavailable = errors.New("The approved primary backup directory is unavailable or has been replaced.")
 
+func (s backupAutomationState) hasPrimaryApproval() bool {
+	return s.Approval != "" && s.ApprovedDirectory != ""
+}
+
 func (s backupAutomationState) approvesPrimary(root *os.Root, binding string) bool {
 	return root != nil && s.Approval == binding && s.ApprovedDirectory != "" && primaryBackupMountAvailable(root, s.ApprovedDirectory)
 }
@@ -526,7 +530,7 @@ func (a *backupAutomation) statusLocked(ctx context.Context) (backupAutomationSt
 			status.LocalArchiveCount++
 		}
 	}
-	status.Configured = validationErr == nil && s.Approval == binding && s.ApprovedDirectory != ""
+	status.Configured = validationErr == nil && s.Approval == binding && s.hasPrimaryApproval()
 	if !s.Config.Enabled {
 		if s.PendingAt != "" {
 			status.NextAt = s.RetryAt
@@ -658,7 +662,7 @@ func (a *backupAutomation) Tick(ctx context.Context, manual bool) (resultErr err
 		if err := a.recoverInterrupted(ctx, &s); err != nil {
 			return err
 		}
-		if !manual && ((!s.Config.Enabled && !s.PendingManual) || s.Approval == "") {
+		if !manual && ((!s.Config.Enabled && !s.PendingManual) || !s.hasPrimaryApproval()) {
 			return nil
 		}
 		if manual {
@@ -702,7 +706,7 @@ func (a *backupAutomation) Tick(ctx context.Context, manual bool) (resultErr err
 	if err := a.rebaseTimezone(ctx, &s, now); err != nil {
 		return err
 	}
-	if s.Temporary != "" {
+	if s.Temporary != "" && s.hasPrimaryApproval() {
 		root, _, owner, binding, err := a.destination(false)
 		if err == nil {
 			if s.approvesPrimary(root, binding) {
@@ -722,7 +726,7 @@ func (a *backupAutomation) Tick(ctx context.Context, manual bool) (resultErr err
 	if err := a.recoverInterrupted(ctx, &s); err != nil {
 		return err
 	}
-	if !manual && ((!s.Config.Enabled && !s.PendingManual) || s.Approval == "") {
+	if !manual && ((!s.Config.Enabled && !s.PendingManual) || !s.hasPrimaryApproval()) {
 		return nil
 	}
 	if !manual && s.PendingAt == "" && now.Before(parseBackupStamp(s.NextAt)) {
@@ -745,6 +749,11 @@ func (a *backupAutomation) Tick(ctx context.Context, manual bool) (resultErr err
 			_ = root.Close()
 		}
 		s.Outcome = "suspended"
+		if s.hasPrimaryApproval() {
+			// Live validation projects suspension while the mount is absent.
+			// Preserve the failed attempt as history when the mount returns.
+			s.Outcome = "failed"
+		}
 		s.Message = "Local backup destination and secret require revalidation."
 		if err != nil {
 			s.Message = err.Error()

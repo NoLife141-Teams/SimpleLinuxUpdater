@@ -365,6 +365,9 @@ func TestBackupArchiveLossNotifiesOnceAcrossWorkerRestartAndReverification(t *te
 	if err := os.Chtimes(path, modified, modified); err != nil {
 		t.Fatal(err)
 	}
+	if err := a.observeArchiveAvailability(t.Context()); err != nil {
+		t.Fatal(err)
+	}
 	if item := catalogFacts(t, app, cookie).Archives[0]; item.Availability != "changed" || !item.ReverifyPossible {
 		t.Fatalf("catalog did not allow reverification after an mtime change: %+v", item)
 	}
@@ -416,10 +419,8 @@ func TestBackupArchiveObservationPreservesLegacyLossWhenFileReappears(t *testing
 	legacy := &state.Archives[0]
 	legacy.Availability, legacy.Verification = "missing", "failed"
 	legacy.DirectoryIdentity, legacy.FileModifiedAt, legacy.ObservedAt = "", "", ""
-	if err := a.catalogAudit("backup-scheduler", "", "backup.verify", *legacy, false); err != nil {
-		t.Fatal(err)
-	}
-	if err := a.save(t.Context(), state); err != nil {
+	event := a.catalogAuditEvent("backup-scheduler", "", "backup.verify", *legacy, false)
+	if err := a.save(t.Context(), state, *event); err != nil {
 		t.Fatal(err)
 	}
 

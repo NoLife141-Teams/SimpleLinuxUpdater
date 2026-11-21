@@ -98,28 +98,31 @@ type backupAutomationStatus struct {
 	LastAttemptAt     string                 `json:"last_attempt_at,omitempty"`
 	LastSuccessAt     string                 `json:"last_success_at,omitempty"`
 	Secondary         *backupSecondaryStatus `json:"secondary,omitempty"`
+	StorageHealth     *backupStorageHealth   `json:"storage_health,omitempty"`
 }
 
 type backupAutomationDeployment struct{ Directory, SecretFile, SecondaryDirectory string }
 
 type backupAutomation struct {
-	health                 installationhealthpkg.Worker
-	copyArchive            func(io.Writer, io.Reader) (int64, error)
-	linkSecondaryArchive   func(*os.Root, string, string) error
-	syncSecondaryDirectory func(*os.Root) error
-	mu                     sync.Mutex
-	primaryBusy            atomic.Bool
-	primaryCancel          atomic.Pointer[context.CancelFunc]
-	scanMu                 sync.Mutex
-	integrityMu            sync.Mutex
-	secondaryMu            sync.Mutex
-	secondaryCancelMu      sync.Mutex
-	secondaryCancel        context.CancelFunc
-	wg                     sync.WaitGroup
-	deps                   AppDeps
-	deployment             backupAutomationDeployment
-	export                 func(context.Context, backupExportCommand) backupOperationOutcome
-	verify                 func(context.Context, internalbackup.TemporaryFile, string) (internalbackup.VerifyResult, error)
+	health                      installationhealthpkg.Worker
+	copyArchive                 func(io.Writer, io.Reader) (int64, error)
+	linkSecondaryArchive        func(*os.Root, string, string) error
+	syncSecondaryDirectory      func(*os.Root) error
+	mu                          sync.Mutex
+	primaryBusy                 atomic.Bool
+	primaryRestoreEpoch         atomic.Uint64
+	openPrimaryAdminDestination func(bool) (*os.Root, string, string, string, error)
+	primaryCancel               atomic.Pointer[context.CancelFunc]
+	scanMu                      sync.Mutex
+	integrityMu                 sync.Mutex
+	secondaryMu                 sync.Mutex
+	secondaryCancelMu           sync.Mutex
+	secondaryCancel             context.CancelFunc
+	wg                          sync.WaitGroup
+	deps                        AppDeps
+	deployment                  backupAutomationDeployment
+	export                      func(context.Context, backupExportCommand) backupOperationOutcome
+	verify                      func(context.Context, internalbackup.TemporaryFile, string) (internalbackup.VerifyResult, error)
 }
 
 func loadBackupAutomationDeployment() (backupAutomationDeployment, error) {
@@ -150,6 +153,7 @@ func newBackupAutomation(deps AppDeps) *backupAutomation {
 		return newBackupOperationLifecycle(deps).Export(ctx, cmd)
 	}
 	a.verify = deps.BackupService.VerifyArchiveFile
+	a.openPrimaryAdminDestination = a.destination
 	return a
 }
 
@@ -301,7 +305,7 @@ func (a *backupAutomation) projectedRegularNextAt(s backupAutomationState, now t
 // the archive catalog, consuming an occurrence or acquiring maintenance.
 func (a *backupAutomation) nextScheduledOccurrence(ctx context.Context) (time.Time, error) {
 	s, err := a.readState(ctx)
-	if err != nil || !s.Config.Enabled || !s.hasPrimaryApproval() {
+	if err != nil || !s.Config.Enabled || !a.primaryApprovalMatchesDeployment(s) {
 		return time.Time{}, err
 	}
 	now := a.now()
@@ -317,16 +321,6 @@ func (a *backupAutomation) nextScheduledOccurrence(ctx context.Context) (time.Ti
 		}
 	}
 	if next.Before(now.Truncate(time.Minute)) {
-		return time.Time{}, nil
-	}
-	if a.primaryBusy.Load() {
-		return time.Time{}, nil
-	}
-	root, _, _, binding, validationErr := a.destination(false)
-	if root != nil {
-		defer root.Close()
-	}
-	if validationErr != nil || !s.approvesPrimary(root, binding) {
 		return time.Time{}, nil
 	}
 	return next, nil
@@ -507,6 +501,13 @@ func (s backupAutomationState) hasPrimaryApproval() bool {
 	return s.Approval != "" && s.ApprovedDirectory != ""
 }
 
+func (a *backupAutomation) primaryApprovalMatchesDeployment(s backupAutomationState) bool {
+	_, paths, _ := strings.Cut(s.Approval, "\x00")
+	directory, secret, ok := strings.Cut(paths, "\x00")
+	return s.hasPrimaryApproval() && ok && directory == filepath.Clean(a.deployment.Directory) &&
+		secret == filepath.Clean(a.deployment.SecretFile)
+}
+
 func (s backupAutomationState) approvesPrimary(root *os.Root, binding string) bool {
 	return root != nil && s.Approval == binding && s.ApprovedDirectory != "" && primaryBackupMountAvailable(root, s.ApprovedDirectory)
 }
@@ -515,35 +516,11 @@ func primaryBackupMountAvailable(root *os.Root, identity string) bool {
 	return identity != "" && backupArchiveDirectoryIdentity(root) == identity && backupArchiveMountAvailable(root.Name(), identity)
 }
 
-func (a *backupAutomation) statusLocked(ctx context.Context) (backupAutomationStatus, error) {
-	s, err := a.load(ctx)
-	if err != nil {
-		return backupAutomationStatus{}, err
-	}
-	if a.primaryBusy.Load() {
-		// Status must remain readable while a device call is unresponsive.
-		return a.observedPrimaryBackupStatus(s), nil
-	}
-	root, _, owner, binding, validationErr := a.destination(false)
-	if root != nil {
-		defer root.Close()
-		if s.ApprovedDirectory != "" && !primaryBackupMountAvailable(root, s.ApprovedDirectory) {
-			validationErr = errPrimaryBackupMountUnavailable
-			root = nil
-		}
-	}
-	catalog, err := a.catalogLocked(ctx, &s, root, owner)
-	if err != nil {
-		return backupAutomationStatus{}, err
-	}
-	configured := validationErr == nil && s.Approval == binding && s.hasPrimaryApproval()
-	return a.primaryBackupStatus(s, catalog, configured, validationErr), nil
-}
-
 func (a *backupAutomation) primaryBackupStatus(s backupAutomationState, catalog backupArchiveCatalog, configured bool, validationErr error) backupAutomationStatus {
 	status := backupAutomationStatus{Catalog: catalog, Config: s.Config, State: s.Outcome, Message: s.Message,
 		LastAttemptAt: s.LastAttemptAt, LastSuccessAt: s.LastSuccessAt, RetryAt: s.RetryAt,
-		Secondary: a.secondaryStatus(s), Configured: configured}
+		Secondary: a.secondaryStatus(s), Configured: configured,
+		StorageHealth: s.Observation.storageHealth(backupStorageBinding(a.deployment.Directory), a.now())}
 	for _, archive := range status.Catalog.Archives {
 		if archive.Availability == "present" {
 			status.LocalArchiveCount++
@@ -573,61 +550,15 @@ func (a *backupAutomation) primaryBackupStatus(s backupAutomationState, catalog 
 func (a *backupAutomation) Status(ctx context.Context) (backupAutomationStatus, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	return a.statusLocked(ctx)
-}
-func (a *backupAutomation) Configure(ctx context.Context, c backupScheduleConfig) (backupAutomationStatus, error) {
-	if err := c.validate(); err != nil {
-		return backupAutomationStatus{}, err
-	}
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	if a.primaryBusy.Load() {
-		return backupAutomationStatus{}, errPrimaryBackupBusy
-	}
-	s, err := a.load(ctx)
+	state, err := a.load(ctx)
 	if err != nil {
 		return backupAutomationStatus{}, err
 	}
-	root, _, _, binding, validationErr := a.destination(true)
-	if root != nil {
-		defer root.Close()
-	}
-	if validationErr != nil && c.Enabled {
-		return backupAutomationStatus{}, validationErr
-	}
-	if validationErr == nil {
-		identity := backupArchiveDirectoryIdentity(root)
-		if s.Approval != binding || s.ApprovedDirectory != identity {
-			// A temporary archive belongs to the previous approval, never its replacement.
-			s.Temporary = ""
-			s.PrimaryRetiring = ""
-		}
-		s.Approval = binding
-		s.ApprovedDirectory = identity
-	} else {
-		s.Approval = ""
-		s.ApprovedDirectory = ""
-		s.PrimaryRetiring = ""
-	}
-	s.Config = c
-	s.PrimaryAttempt = ""
-	s.NextAt = a.next(c, a.now())
-	s.Timezone = a.deps.ApplicationTime.Current().DisplayName
-	s.PendingAt = ""
-	s.PendingManual = false
-	s.RetryAt = ""
-	s.Outcome = "configured"
-	s.Message = "Local backup destination and secret validated."
-	if validationErr != nil {
-		s.Outcome = "disabled"
-		s.Message = "Automated backups are disabled. Local validation failed: " + validationErr.Error()
-	}
-	if err = a.save(ctx, s); err != nil {
-		return backupAutomationStatus{}, err
-	}
-	return a.statusLocked(ctx)
+	return a.observedPrimaryBackupStatus(state), nil
 }
+
 func (a *backupAutomation) SuspendAfterRestore(ctx context.Context) error {
+	a.primaryRestoreEpoch.Add(1)
 	if cancel := a.primaryCancel.Load(); cancel != nil {
 		(*cancel)()
 	}
@@ -968,22 +899,30 @@ func handleBackupAutomationConfigure(c *gin.Context, a *backupAutomation) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid backup schedule configuration."})
 		return
 	}
-	status, err := a.Configure(c.Request.Context(), config)
+	var event *AuditEvent
+	if a.deps.AuditService != nil {
+		meta := identityAuditMeta(c, map[string]any{"enabled": config.Enabled})
+		prepared := a.deps.AuditService.PrepareEvent("", actorFromContext(c), clientIPFromContext(c),
+			"backup.automatic.configured", "backup", "automatic", "success", "Automated backup settings saved", meta)
+		event = &prepared
+	}
+	status, err := a.configurePrimary(c.Request.Context(), config, event, func() {
+		releaseBackupRequestAdmission(c)
+	})
 	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			c.JSON(http.StatusRequestTimeout, gin.H{"error": "Backup destination validation was cancelled or timed out."})
+			return
+		}
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	audit(c, "backup.automatic.configured", "backup", "automatic", "success", "Automated backup settings saved", map[string]any{"enabled": config.Enabled})
 	c.JSON(http.StatusOK, status)
 }
 func handleBackupAutomationRun(c *gin.Context, a *backupAutomation) {
 	// Authentication runs under shared admission. Release that lease before Tick
 	// tries exclusive admission, otherwise every control run defers itself.
-	if value, ok := c.Get(maintenanceSharedLeaseContextKey); ok {
-		if lease, ok := value.(*maintenancepkg.SharedLease); ok {
-			lease.Close()
-		}
-	}
+	releaseBackupRequestAdmission(c)
 	if err := a.Tick(c.Request.Context(), true); err != nil {
 		c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
 		return

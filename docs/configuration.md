@@ -184,6 +184,15 @@ Mount the secret separately from the archives and back it up in a separate secre
 
 In **Admin → Backup & Restore → Automated encrypted backups**, choose daily/weekly cadence, application-local time, weekday (Sunday=0), inclusion of known_hosts and retention count (1–100). **Save and Validate** checks the local secret and destination and enables the chosen schedule. It also supports validation while scheduling is disabled, allowing **Run Control Backup** before enabling automatic runs. Disabling remains possible when local deployment validation fails.
 
+Validation approves the identity of the mounted directory as well as its path.
+If that mount is withdrawn or replaced, automated and control backups refuse
+the replacement. The outage stays visible and the existing catalogue is
+preserved. After restoring the approved mount, run a control backup or wait for
+the next scheduled occurrence. An intentionally replaced or recreated directory
+must be approved with **Save and Validate**. After upgrading an installation whose
+approval named only the path, confirm the intended mount is present and use
+**Save and Validate** once. Existing archives remain registered.
+
 **Timing and active work:** the worker checks once per minute and uses Application Time Interpretation. A nonexistent DST time is skipped; an ambiguous time runs at its first occurrence only. A timezone change rebases the next future occurrence. Active server work or a shared maintenance lease causes a visible five-minute deferral, bounded to one hour. A deferred control run is retried even with recurring scheduling disabled. An exclusive backup/restore blocks admission without accessing persistence being replaced. Occurrences older than one hour expire instead of producing an unbounded catchup queue. A claimed occurrence is persisted before export; restart reports an interrupted attempt and never replays the same claimed occurrence. The next future attempt remains scheduled.
 
 **Publication and retention:** the existing Backup Operation Lifecycle retains exclusive Maintenance Coordination through export, destination copy, restore-readiness verification, publication and retention. Destination temporary and final files are private. Publication uses an atomic same-filesystem hard link that refuses to overwrite any existing filename, followed by temporary-link removal and directory fsync. Only registered temporary files owned by this installation are cleaned after failure or restart. A crash after publication may leave a safe extra archive; an unregistered file is never adopted or deleted. Retention runs only after new verified publication, matches the installation identity and recorded content digest, and preserves at least one verified archive. Changed files, symlinks, unrecognized archives and manual exports are not removed. Retention failure is visible and can leave more archives than configured.

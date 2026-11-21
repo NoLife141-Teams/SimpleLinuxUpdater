@@ -23,14 +23,14 @@ func (a *backupAutomation) needsExclusiveTick(ctx context.Context) (bool, error)
 		return false, err
 	}
 	// Interrupted work and temporary archive cleanup still need exclusive admission.
-	if s.Outcome == "running" || s.Temporary != "" {
+	if s.Outcome == "running" || (s.Temporary != "" && s.hasPrimaryApproval()) {
 		return true, nil
 	}
 	now := a.now()
 	if err := a.rebaseTimezone(ctx, &s, now); err != nil {
 		return false, err
 	}
-	if (!s.Config.Enabled && !s.PendingManual) || s.Approval == "" {
+	if (!s.Config.Enabled && !s.PendingManual) || !s.hasPrimaryApproval() {
 		return false, nil
 	}
 	if s.PendingAt != "" {

@@ -953,8 +953,8 @@ func TestBackupAutomationApprovalBindsDeploymentWithoutPassphrase(t *testing.T) 
 		t.Fatalf("changed path must require revalidation: %+v %v", status, err)
 	}
 	a.deployment.SecretFile = previousPath
-	// Previous versions persisted a 64-character hex fingerprint.
-	s.Approval = strings.Repeat("a", sha256.Size*2)
+	// A matching legacy path-only approval cannot prove which directory was approved.
+	s.ApprovedDirectory = ""
 	if err := a.save(ctx, s); err != nil {
 		t.Fatal(err)
 	}
@@ -962,8 +962,111 @@ func TestBackupAutomationApprovalBindsDeploymentWithoutPassphrase(t *testing.T) 
 	if err != nil || status.Configured || status.State != "suspended" {
 		t.Fatalf("legacy approval must require revalidation: %+v %v", status, err)
 	}
+	if err := a.Tick(ctx, true); err == nil {
+		t.Fatal("a legacy path-only approval admitted a control backup")
+	}
 	status, err = a.Configure(ctx, s.Config)
 	if err != nil || !status.Configured {
 		t.Fatalf("legacy approval revalidation failed: %+v %v", status, err)
+	}
+}
+
+func TestPrimaryBackupRejectsReplacementDirectoryAndResumesOnReturn(t *testing.T) {
+	app, a, now := newBackupAutomationTest(t)
+	ctx := t.Context()
+	if err := a.Tick(ctx, true); err != nil {
+		t.Fatal(err)
+	}
+	s := backupAutomationStateForTest(t, a)
+	directory := a.deployment.Directory
+	withdrawn := directory + ".withdrawn"
+	if err := os.Rename(directory, withdrawn); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(withdrawn) })
+	if err := os.Mkdir(directory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	*now = parseBackupStamp(s.NextAt)
+	if err := a.observeArchiveAvailability(ctx); err != nil {
+		t.Fatal(err)
+	}
+	outage := backupAutomationStateForTest(t, a).Observation.StorageHistory.UnavailableAt
+	if outage == "" {
+		t.Fatal("mount replacement did not start an outage")
+	}
+	for _, manual := range []bool{false, true} {
+		if err := a.Tick(ctx, manual); err == nil || err.Error() != errPrimaryBackupMountUnavailable.Error() {
+			t.Fatalf("replacement directory accepted for manual=%v: %v", manual, err)
+		}
+	}
+	*now = now.Add(backupStorageAlertAfter)
+	if err := a.observeArchiveAvailability(ctx); err != nil {
+		t.Fatal(err)
+	}
+	health := installationSnapshot(ctx, app.Deps).BackupArchives.StorageHealth
+	if health.State != "unavailable" || !health.AlertDue || health.UnavailableAt != outage {
+		t.Fatalf("rejected publication erased the outage: %+v", health)
+	}
+	after := backupAutomationStateForTest(t, a)
+	if after.ApprovedDirectory != s.ApprovedDirectory || len(after.Archives) != 1 || after.Archives[0].ID != s.Archives[0].ID ||
+		after.LastSuccessAt != s.LastSuccessAt {
+		t.Fatal("refused publications changed the approved destination or recovery point")
+	}
+	if err := os.Remove(directory); err != nil {
+		t.Fatalf("replacement directory was written: %v", err)
+	}
+	if err := os.Rename(withdrawn, directory); err != nil {
+		t.Fatal(err)
+	}
+	status, err := a.Status(ctx)
+	if err != nil || !status.Configured || status.State == "suspended" || status.NextAt == "" {
+		t.Fatalf("returned mount should resume the schedule: %+v %v", status, err)
+	}
+	if err := a.Tick(ctx, true); err != nil {
+		t.Fatalf("returned mount should work with its existing approval: %v", err)
+	}
+}
+
+func TestPrimaryBackupRejectsMountSwapDuringVerification(t *testing.T) {
+	_, a, _ := newBackupAutomationTest(t)
+	ctx := t.Context()
+	directory := a.deployment.Directory
+	withdrawn := directory + ".withdrawn"
+	t.Cleanup(func() { _ = os.RemoveAll(withdrawn) })
+	verify := a.verify
+	a.verify = func(ctx context.Context, source internalbackup.TemporaryFile, passphrase string) (internalbackup.VerifyResult, error) {
+		result, err := verify(ctx, source, passphrase)
+		if err != nil {
+			return result, err
+		}
+		if err := os.Rename(directory, withdrawn); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Mkdir(directory, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		return result, nil
+	}
+	if err := a.Tick(ctx, true); err == nil {
+		t.Fatal("backup succeeded after the approved mount vanished")
+	}
+	s := backupAutomationStateForTest(t, a)
+	if len(s.Archives) != 0 || s.LastSuccessAt != "" {
+		t.Fatal("displaced archive was registered as a recovery point")
+	}
+	if matches, err := filepath.Glob(filepath.Join(withdrawn, "*.slubkp")); err != nil || len(matches) != 0 {
+		t.Fatalf("the pinned but withdrawn mount received a final archive: %v", err)
+	}
+	if err := os.Remove(directory); err != nil {
+		t.Fatalf("replacement directory was written: %v", err)
+	}
+	if err := os.Rename(withdrawn, directory); err != nil {
+		t.Fatal(err)
+	}
+	a.verify = verify
+	if err := a.Tick(ctx, true); err != nil {
+		t.Fatalf("returned mount did not recover after interrupted publication: %v", err)
 	}
 }

@@ -62,23 +62,24 @@ type ownedBackupArchive struct {
 }
 
 type backupAutomationState struct {
-	PendingManual    bool                     `json:"pending_manual"`
-	Timezone         string                   `json:"timezone"`
-	OccurrenceAt     string                   `json:"occurrence_at"`
-	Config           backupScheduleConfig     `json:"config"`
-	Approval         string                   `json:"approval"`
-	NextAt           string                   `json:"next_at"`
-	PendingAt        string                   `json:"pending_at"`
-	RetryAt          string                   `json:"retry_at"`
-	LastAttemptAt    string                   `json:"last_attempt_at"`
-	LastSuccessAt    string                   `json:"last_success_at"`
-	Outcome          string                   `json:"outcome"`
-	Message          string                   `json:"message"`
-	Temporary        string                   `json:"temporary"`
-	Archives         []ownedBackupArchive     `json:"archives"`
-	Observation      backupArchiveObservation `json:"archive_observation,omitzero"`
-	Secondary        backupSecondaryState     `json:"secondary,omitzero"`
-	SecondaryHistory []backupSecondaryState   `json:"secondary_history,omitempty"`
+	PendingManual     bool                     `json:"pending_manual"`
+	Timezone          string                   `json:"timezone"`
+	OccurrenceAt      string                   `json:"occurrence_at"`
+	Config            backupScheduleConfig     `json:"config"`
+	Approval          string                   `json:"approval"`
+	ApprovedDirectory string                   `json:"approved_directory_identity,omitempty"`
+	NextAt            string                   `json:"next_at"`
+	PendingAt         string                   `json:"pending_at"`
+	RetryAt           string                   `json:"retry_at"`
+	LastAttemptAt     string                   `json:"last_attempt_at"`
+	LastSuccessAt     string                   `json:"last_success_at"`
+	Outcome           string                   `json:"outcome"`
+	Message           string                   `json:"message"`
+	Temporary         string                   `json:"temporary"`
+	Archives          []ownedBackupArchive     `json:"archives"`
+	Observation       backupArchiveObservation `json:"archive_observation,omitzero"`
+	Secondary         backupSecondaryState     `json:"secondary,omitzero"`
+	SecondaryHistory  []backupSecondaryState   `json:"secondary_history,omitempty"`
 }
 
 type backupAutomationStatus struct {
@@ -294,7 +295,7 @@ func (a *backupAutomation) projectedRegularNextAt(s backupAutomationState, now t
 // the archive catalog, consuming an occurrence or acquiring maintenance.
 func (a *backupAutomation) nextScheduledOccurrence(ctx context.Context) (time.Time, error) {
 	s, err := a.readState(ctx)
-	if err != nil || !s.Config.Enabled || s.Approval == "" {
+	if err != nil || !s.Config.Enabled || !s.hasPrimaryApproval() {
 		return time.Time{}, err
 	}
 	now := a.now()
@@ -316,7 +317,7 @@ func (a *backupAutomation) nextScheduledOccurrence(ctx context.Context) (time.Ti
 	if root != nil {
 		defer root.Close()
 	}
-	if validationErr != nil || binding != s.Approval {
+	if validationErr != nil || !s.approvesPrimary(root, binding) {
 		return time.Time{}, nil
 	}
 	return next, nil
@@ -457,6 +458,11 @@ func (a *backupAutomation) destination(createIdentity bool) (*os.Root, string, s
 		return fail("Backup destination cannot be opened.")
 	}
 	if createIdentity {
+		identity := backupArchiveDirectoryIdentity(root)
+		if identity == "" || !backupArchiveMountAvailable(dir, identity) {
+			_ = root.Close()
+			return fail("Backup destination directory could not be identified safely.")
+		}
 		token := make([]byte, 16)
 		if _, err := rand.Read(token); err != nil {
 			_ = root.Close()
@@ -475,11 +481,29 @@ func (a *backupAutomation) destination(createIdentity bool) (*os.Root, string, s
 			_ = root.Close()
 			return fail("Backup destination write validation or cleanup failed.")
 		}
+		if !backupArchiveMountAvailable(dir, identity) {
+			_ = root.Close()
+			return fail("Backup destination changed during validation.")
+		}
 	}
 	// Approval binds public deployment coordinates, not passphrase contents. NUL
 	// cannot occur in a filesystem path, so the tuple has unambiguous boundaries.
 	binding := owner + "\x00" + dir + "\x00" + secretPath
 	return root, pass, owner, binding, nil
+}
+
+var errPrimaryBackupMountUnavailable = errors.New("approved primary backup directory is unavailable or has been replaced")
+
+func (s backupAutomationState) hasPrimaryApproval() bool {
+	return s.Approval != "" && s.ApprovedDirectory != ""
+}
+
+func (s backupAutomationState) approvesPrimary(root *os.Root, binding string) bool {
+	return root != nil && s.Approval == binding && s.ApprovedDirectory != "" && primaryBackupMountAvailable(root, s.ApprovedDirectory)
+}
+
+func primaryBackupMountAvailable(root *os.Root, identity string) bool {
+	return identity != "" && backupArchiveDirectoryIdentity(root) == identity && backupArchiveMountAvailable(root.Name(), identity)
 }
 
 func (a *backupAutomation) statusLocked(ctx context.Context) (backupAutomationStatus, error) {
@@ -492,6 +516,10 @@ func (a *backupAutomation) statusLocked(ctx context.Context) (backupAutomationSt
 	root, _, owner, binding, validationErr := a.destination(false)
 	if root != nil {
 		defer root.Close()
+		if s.ApprovedDirectory != "" && !primaryBackupMountAvailable(root, s.ApprovedDirectory) {
+			validationErr = errPrimaryBackupMountUnavailable
+			root = nil
+		}
 	}
 	status.Catalog, err = a.catalogLocked(ctx, &s, root, owner)
 	if err != nil {
@@ -502,7 +530,7 @@ func (a *backupAutomation) statusLocked(ctx context.Context) (backupAutomationSt
 			status.LocalArchiveCount++
 		}
 	}
-	status.Configured = validationErr == nil && s.Approval == binding
+	status.Configured = validationErr == nil && s.Approval == binding && s.hasPrimaryApproval()
 	if !s.Config.Enabled {
 		if s.PendingAt != "" {
 			status.NextAt = s.RetryAt
@@ -546,9 +574,16 @@ func (a *backupAutomation) Configure(ctx context.Context, c backupScheduleConfig
 		return backupAutomationStatus{}, validationErr
 	}
 	if validationErr == nil {
+		identity := backupArchiveDirectoryIdentity(root)
+		if s.Approval != binding || s.ApprovedDirectory != identity {
+			// A temporary archive belongs to the previous approval, never its replacement.
+			s.Temporary = ""
+		}
 		s.Approval = binding
+		s.ApprovedDirectory = identity
 	} else {
 		s.Approval = ""
+		s.ApprovedDirectory = ""
 	}
 	s.Config = c
 	s.NextAt = a.next(c, a.now())
@@ -576,6 +611,7 @@ func (a *backupAutomation) SuspendAfterRestore(ctx context.Context) error {
 		return err
 	}
 	s.Approval = ""
+	s.ApprovedDirectory = ""
 	s.PendingAt = ""
 	s.PendingManual = false
 	s.RetryAt = ""
@@ -626,16 +662,21 @@ func (a *backupAutomation) Tick(ctx context.Context, manual bool) (resultErr err
 		if err := a.recoverInterrupted(ctx, &s); err != nil {
 			return err
 		}
-		if !manual && ((!s.Config.Enabled && !s.PendingManual) || s.Approval == "") {
+		if !manual && ((!s.Config.Enabled && !s.PendingManual) || !s.hasPrimaryApproval()) {
 			return nil
 		}
 		if manual {
 			root, _, _, binding, err := a.destination(false)
-			if root != nil {
-				_ = root.Close()
-			}
-			if err != nil || binding != s.Approval {
+			if err != nil || binding != s.Approval || s.ApprovedDirectory == "" {
+				if root != nil {
+					_ = root.Close()
+				}
 				return errors.New("validate the local backup destination and secret before running a control backup")
+			}
+			mounted := primaryBackupMountAvailable(root, s.ApprovedDirectory)
+			_ = root.Close()
+			if !mounted {
+				return errPrimaryBackupMountUnavailable
 			}
 		}
 		now := a.now()
@@ -665,25 +706,27 @@ func (a *backupAutomation) Tick(ctx context.Context, manual bool) (resultErr err
 	if err := a.rebaseTimezone(ctx, &s, now); err != nil {
 		return err
 	}
-	if s.Temporary != "" {
+	if s.Temporary != "" && s.hasPrimaryApproval() {
 		root, _, owner, binding, err := a.destination(false)
 		if err == nil {
-			if s.Approval == binding {
+			if s.approvesPrimary(root, binding) {
 				err = a.cleanupTemporary(root, &s, owner)
 			}
 			_ = root.Close()
 			if err != nil {
 				return err
 			}
-			if err = a.save(ctx, s); err != nil {
-				return err
+			if s.Temporary == "" {
+				if err = a.save(ctx, s); err != nil {
+					return err
+				}
 			}
 		}
 	}
 	if err := a.recoverInterrupted(ctx, &s); err != nil {
 		return err
 	}
-	if !manual && ((!s.Config.Enabled && !s.PendingManual) || s.Approval == "") {
+	if !manual && ((!s.Config.Enabled && !s.PendingManual) || !s.hasPrimaryApproval()) {
 		return nil
 	}
 	if !manual && s.PendingAt == "" && now.Before(parseBackupStamp(s.NextAt)) {
@@ -693,7 +736,7 @@ func (a *backupAutomation) Tick(ctx context.Context, manual bool) (resultErr err
 		return nil
 	}
 	root, pass, owner, binding, err := a.destination(false)
-	if err != nil || binding != s.Approval {
+	if err != nil || !s.approvesPrimary(root, binding) {
 		s.OccurrenceAt = s.PendingAt
 		if s.OccurrenceAt == "" {
 			s.OccurrenceAt = s.NextAt
@@ -706,12 +749,27 @@ func (a *backupAutomation) Tick(ctx context.Context, manual bool) (resultErr err
 			_ = root.Close()
 		}
 		s.Outcome = "suspended"
+		if s.hasPrimaryApproval() {
+			// Live validation projects suspension while the mount is absent.
+			// Preserve the failed attempt as history when the mount returns.
+			s.Outcome = "failed"
+		}
 		s.Message = "Local backup destination and secret require revalidation."
 		if err != nil {
 			s.Message = err.Error()
 		}
-		s.Approval = ""
-		_ = a.save(ctx, s)
+		if err == nil && s.Approval == binding && s.ApprovedDirectory != "" {
+			s.Message = errPrimaryBackupMountUnavailable.Error()
+		}
+		// Keep the approval across a storage outage and consume the refused
+		// occurrence so an absent mount does not produce a failure every tick.
+		if !manual || s.PendingAt != "" || !now.Before(parseBackupStamp(s.NextAt)) {
+			s.NextAt = a.next(s.Config, now)
+		}
+		s.PendingAt, s.RetryAt, s.PendingManual = "", "", false
+		if err = a.save(ctx, s); err != nil {
+			return err
+		}
 		a.record(s, "backup.automatic.failed", "failure")
 		return errors.New(s.Message)
 	}
@@ -773,17 +831,18 @@ func (a *backupAutomation) Tick(ctx context.Context, manual bool) (resultErr err
 	}
 	published := false
 	outcome := a.export(ctx, backupExportCommand{Actor: "backup-scheduler", Request: backupExportRequest{Passphrase: pass, IncludeKnownHosts: &s.Config.IncludeKnownHosts}, Lease: lease, HoldLease: true, Finalize: func(ctx context.Context, file internalbackup.TemporaryFile) error {
-		archive, err := a.publish(ctx, root, file, pass, owner, name, s.Temporary)
+		archive, err := a.publish(ctx, root, file, pass, owner, name, s.Temporary, s.ApprovedDirectory)
 		if err != nil {
 			return err
+		}
+		if !primaryBackupMountAvailable(root, s.ApprovedDirectory) {
+			return errPrimaryBackupMountUnavailable
 		}
 		published = true
 		s.Temporary = ""
 		s.Archives = append(s.Archives, archive)
 		a.queueSecondaryCopy(&s, archive)
-		if archive.DirectoryIdentity != "" && backupArchiveMountAvailable(root.Name(), archive.DirectoryIdentity) {
-			a.recordArchiveObservation(&s, newBackupArchiveObservation(a.now(), "available", owner, archive.DirectoryIdentity))
-		}
+		a.recordArchiveObservation(&s, newBackupArchiveObservation(a.now(), "available", owner, archive.DirectoryIdentity))
 		// Persist ownership before retention, so interrupted publication never grants
 		// authority to delete an unregistered file discovered in the directory.
 		if err = a.save(ctx, s); err != nil {
@@ -819,9 +878,11 @@ func (a *backupAutomation) Tick(ctx context.Context, manual bool) (resultErr err
 			s.Message = "Automated backup failed."
 		}
 	}
-	if err = a.cleanupTemporary(root, &s, owner); err != nil {
-		s.Outcome = "failed"
-		s.Message = "Backup temporary file cleanup failed; retry after checking destination permissions."
+	if s.Temporary != "" && primaryBackupMountAvailable(root, s.ApprovedDirectory) {
+		if err := a.cleanupTemporary(root, &s, owner); err != nil {
+			s.Outcome = "failed"
+			s.Message = "Backup temporary file cleanup failed; retry after checking destination permissions."
+		}
 	}
 	s.PendingAt = ""
 	s.PendingManual = false
@@ -909,6 +970,9 @@ func (a *backupAutomation) cleanupTemporary(root *os.Root, s *backupAutomationSt
 	if name == "" {
 		return nil
 	}
+	if !primaryBackupMountAvailable(root, s.ApprovedDirectory) {
+		return errPrimaryBackupMountUnavailable
+	}
 	if filepath.Base(name) != name || !strings.HasPrefix(name, "slu-auto-"+owner+"-") || !strings.HasSuffix(name, ".slubkp.tmp") {
 		s.Temporary = ""
 		return nil
@@ -931,7 +995,7 @@ func (a *backupAutomation) cleanupTemporary(root *os.Root, s *backupAutomationSt
 	return nil
 }
 
-func (a *backupAutomation) publish(ctx context.Context, root *os.Root, source internalbackup.TemporaryFile, pass, owner, name, temp string) (ownedBackupArchive, error) {
+func (a *backupAutomation) publish(ctx context.Context, root *os.Root, source internalbackup.TemporaryFile, pass, owner, name, temp, directory string) (ownedBackupArchive, error) {
 	id, err := newBackupArchiveID()
 	archive := ownedBackupArchive{ID: id, Name: name, Owner: owner}
 	if err != nil {
@@ -942,6 +1006,9 @@ func (a *backupAutomation) publish(ctx context.Context, root *os.Root, source in
 		return archive, errors.New("backup export file cannot be read")
 	}
 	defer src.Close()
+	if !primaryBackupMountAvailable(root, directory) {
+		return archive, errPrimaryBackupMountUnavailable
+	}
 	dst, err := root.OpenFile(temp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
 	if err != nil {
 		return archive, errors.New("private backup temporary file cannot be created")
@@ -974,6 +1041,9 @@ func (a *backupAutomation) publish(ctx context.Context, root *os.Root, source in
 	if err != nil || !sameBackupIntegrityFile(staged, current) {
 		return archive, errors.New("automated archive changed during restore readiness verification")
 	}
+	if !primaryBackupMountAvailable(root, directory) {
+		return archive, errPrimaryBackupMountUnavailable
+	}
 	// Link provides atomic no-replace publication on the same filesystem. Unlike
 	// Rename it cannot overwrite a foreign file that already has the target name.
 	if err = root.Link(temp, name); err != nil {
@@ -1004,9 +1074,7 @@ func (a *backupAutomation) publish(ctx context.Context, root *os.Root, source in
 	archive.Availability = "present"
 	archive.FileIdentity = backupCatalogFileIdentity(staged)
 	archive.FileModifiedAt = backupStamp(staged.ModTime())
-	if info, err := root.Lstat("."); err == nil {
-		archive.DirectoryIdentity = backupCatalogFileIdentity(info)
-	}
+	archive.DirectoryIdentity = directory
 	return archive, nil
 }
 
@@ -1056,6 +1124,9 @@ func (a *backupAutomation) retain(root *os.Root, s *backupAutomationState) error
 		}
 		valid++
 		if valid > keep && !a.secondaryProtectsSource(s.Secondary, archive.ID) {
+			if !primaryBackupMountAvailable(root, s.ApprovedDirectory) {
+				return errPrimaryBackupMountUnavailable
+			}
 			if err = root.Remove(archive.Name); err != nil {
 				return errors.New("verified backup published, but an owned archive could not be removed by retention")
 			}

@@ -401,7 +401,8 @@ func handleBackupCatalogOperation(c *gin.Context, a *backupAutomation, verify bo
 		defer root.Close()
 	}
 	archive := &s.Archives[index]
-	if err != nil || !backupArchiveOwned(*archive, owner) {
+	if err != nil || !backupArchiveOwned(*archive, owner) ||
+		(s.ApprovedDirectory != "" && !primaryBackupMountAvailable(root, s.ApprovedDirectory)) {
 		c.JSON(http.StatusConflict, gin.H{"error": errBackupCatalogUnavailable.Error()})
 		return
 	}

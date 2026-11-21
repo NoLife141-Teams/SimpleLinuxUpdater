@@ -29,6 +29,7 @@ import (
 const backupAutomationSettingsKey = "backup_automation_v1"
 const backupDeferralWindow = time.Hour
 const backupRetryDelay = 5 * time.Minute
+const backupDeferredMessage = "Backup deferred for active work; retrying in five minutes for at most one hour."
 
 type backupScheduleConfig struct {
 	Enabled           bool   `json:"enabled"`
@@ -703,7 +704,7 @@ func (a *backupAutomation) deferLocked(ctx context.Context, s *backupAutomationS
 		s.NextAt = a.next(s.Config, now)
 	} else {
 		s.Outcome = "deferred"
-		s.Message = "Backup deferred for active work; retrying in five minutes for at most one hour."
+		s.Message = backupDeferredMessage
 		s.RetryAt = backupStamp(now.Add(backupRetryDelay))
 	}
 	s.LastAttemptAt = backupStamp(now)

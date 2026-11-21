@@ -778,7 +778,7 @@ func TestBackupAutomationMidWriteAndCancellationFailures(t *testing.T) {
 }
 
 func TestBackupAutomationDisabledControlDeferralEventuallyRuns(t *testing.T) {
-	_, a, now := newBackupAutomationTest(t)
+	app, a, now := newBackupAutomationTest(t)
 	config := defaultBackupSchedule()
 	config.Enabled = false
 	status, err := a.Configure(context.Background(), config)
@@ -789,15 +789,30 @@ func TestBackupAutomationDisabledControlDeferralEventuallyRuns(t *testing.T) {
 	if !decision.Allowed {
 		t.Fatal("shared denied")
 	}
+	defer shared.Close()
 	if err = a.Tick(context.Background(), true); err != nil {
 		t.Fatal(err)
 	}
-	shared.Close()
 	status, err = a.Status(context.Background())
 	if err != nil || status.State != "deferred" || status.NextAt == "" {
 		t.Fatalf("disabled control not deferred: %+v %v", status, err)
 	}
-	*now = now.Add(backupRetryDelay)
+	next := parseBackupStamp(status.NextAt)
+	*now = now.Add(time.Minute)
+	if err = a.Tick(context.Background(), true); err != nil {
+		t.Fatal(err)
+	}
+	repeated, err := a.Status(context.Background())
+	if err != nil || repeated.State != "deferred" || repeated.NextAt != status.NextAt || repeated.LastAttemptAt != status.LastAttemptAt {
+		t.Fatalf("another control extended the pending deferral: %+v %v", repeated, err)
+	}
+	var deferrals int
+	err = app.Deps.DB().QueryRow("SELECT count(*) FROM audit_events WHERE action = 'backup.automatic.deferred'").Scan(&deferrals)
+	if err != nil || deferrals != 1 {
+		t.Fatalf("one pending occurrence should have one deferral event, got %d: %v", deferrals, err)
+	}
+	shared.Close()
+	*now = next
 	if err = a.Tick(context.Background(), false); err != nil {
 		t.Fatal(err)
 	}

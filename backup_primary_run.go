@@ -136,8 +136,8 @@ func (a *backupAutomation) reservePrimaryBackup(ctx context.Context, manual bool
 	}
 	occurrence := parseBackupStamp(s.PendingAt)
 	s.OccurrenceAt = s.PendingAt
-	s.LastAttemptAt = backupStamp(now)
 	if now.Sub(occurrence) >= backupDeferralWindow {
+		s.LastAttemptAt = backupStamp(now)
 		s.NextAt = a.next(s.Config, now)
 		s.PendingAt, s.RetryAt, s.PendingManual = "", "", false
 		s.Outcome, s.Message = "failed", "Backup occurrence expired; no backlog will be replayed."
@@ -147,9 +147,11 @@ func (a *backupAutomation) reservePrimaryBackup(ctx context.Context, manual bool
 		a.record(s, "backup.automatic.failed", "failure")
 		return primaryBackupAttempt{}, nil
 	}
+	if !now.Before(parseBackupStamp(s.RetryAt)) {
+		s.LastAttemptAt = backupStamp(now)
+	}
 	s.Outcome, s.Message = "running", "Preparing automated backup."
 	s.NextAt = a.next(s.Config, now)
-	s.RetryAt = ""
 	s.PrimaryAttempt = rand.Text()
 	if err := a.save(ctx, s); err != nil {
 		return primaryBackupAttempt{}, err
@@ -307,6 +309,10 @@ func (a *backupAutomation) capturePrimaryBackup(ctx context.Context, attempt pri
 	s, err := a.currentPrimaryAttempt(ctx, attempt)
 	if err == nil {
 		s.Temporary = temp
+		if s.RetryAt != "" {
+			s.LastAttemptAt = backupStamp(a.now())
+			s.RetryAt = ""
+		}
 		err = a.save(ctx, s)
 	}
 	a.mu.Unlock()
@@ -327,7 +333,12 @@ func (a *backupAutomation) capturePrimaryBackup(ctx context.Context, attempt pri
 func (a *backupAutomation) deferPrimaryAttempt(ctx context.Context, attempt primaryBackupAttempt) error {
 	if err := a.updatePrimaryBackup(ctx, attempt, func(s *backupAutomationState) error {
 		s.PrimaryAttempt = ""
-		return a.deferLocked(ctx, s, a.now(), s.PendingManual)
+		now := a.now()
+		if s.PendingAt != "" && now.Before(parseBackupStamp(s.RetryAt)) {
+			s.Outcome, s.Message = "deferred", backupDeferredMessage
+			return a.save(ctx, *s)
+		}
+		return a.deferLocked(ctx, s, now, s.PendingManual)
 	}); err != nil {
 		return err
 	}

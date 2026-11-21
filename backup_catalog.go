@@ -165,6 +165,10 @@ func (a *backupAutomation) catalogLocked(ctx context.Context, s *backupAutomatio
 	directory := backupArchiveDirectoryIdentity(root)
 	for i := len(s.Archives) - 1; i >= 0 && len(catalog.Archives) < backupCatalogLimit; i-- {
 		archive := &s.Archives[i]
+		if s.PrimaryRetiring != "" && archive.ID == s.PrimaryRetiring {
+			catalog.Archives = append(catalog.Archives, archiveView(*archive, "unavailable", false))
+			continue
+		}
 		availability, reverifyPossible := backupArchiveAvailabilityAt(root, *archive, owner, directory)
 		// Mere presence is not a new verification. Only observed damage changes
 		// existing recovery/notification evidence; repeated listing is deduplicated.
@@ -432,6 +436,10 @@ func handleBackupCatalogOperation(c *gin.Context, a *backupAutomation, verify bo
 	}
 	if index < 0 {
 		c.JSON(http.StatusNotFound, gin.H{"error": errBackupCatalogUnavailable.Error()})
+		return
+	}
+	if id == s.PrimaryRetiring {
+		c.JSON(http.StatusConflict, gin.H{"error": errBackupCatalogUnavailable.Error()})
 		return
 	}
 	root, pass, owner, _, err := a.destination(false)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"testing"
@@ -136,6 +137,15 @@ func TestPrimaryBackupRecoversInterruptedRetirementWithoutReportingLoss(t *testi
 
 	restarted := newBackupAutomation(automation.deps)
 	restarted.deployment = automation.deployment
+	cookie := app.authenticate(t)
+	if response := catalogRequest(app, cookie, retired.ID, "verify"); response.Code != http.StatusConflict {
+		t.Fatalf("retirement pending verification returned %d: %s", response.Code, response.Body.String())
+	}
+	listed, err := restarted.Status(t.Context())
+	if err != nil || len(listed.Catalog.Archives) != 2 || listed.Catalog.Archives[1].ID != retired.ID ||
+		listed.Catalog.Archives[1].Availability != "unavailable" || listed.Catalog.Archives[1].ReverifyPossible {
+		t.Fatalf("catalogue before retirement reconciliation = %+v, %v", listed.Catalog, err)
+	}
 	if err := restarted.Tick(t.Context(), false); err != nil {
 		t.Fatal(err)
 	}

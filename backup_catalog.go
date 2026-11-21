@@ -380,6 +380,10 @@ func handleBackupCatalogOperation(c *gin.Context, a *backupAutomation, verify bo
 		return
 	}
 	defer a.mu.Unlock()
+	if a.primaryBusy.Load() {
+		c.JSON(http.StatusConflict, gin.H{"error": errPrimaryBackupBusy.Error()})
+		return
+	}
 	s, err := a.load(c.Request.Context())
 	if err != nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Backup catalog is unavailable."})

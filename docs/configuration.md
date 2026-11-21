@@ -195,7 +195,26 @@ approval named only the path, confirm the intended mount is present and use
 
 **Timing and active work:** the worker checks once per minute and uses Application Time Interpretation. A nonexistent DST time is skipped; an ambiguous time runs at its first occurrence only. A timezone change rebases the next future occurrence. Active server work or a shared maintenance lease causes a visible five-minute deferral, bounded to one hour. A deferred control run is retried even with recurring scheduling disabled. An exclusive backup/restore blocks admission without accessing persistence being replaced. Occurrences older than one hour expire instead of producing an unbounded catchup queue. A claimed occurrence is persisted before export; restart reports an interrupted attempt and never replays the same claimed occurrence. The next future attempt remains scheduled.
 
-**Publication and retention:** the existing Backup Operation Lifecycle retains exclusive Maintenance Coordination through export, destination copy, restore-readiness verification, publication and retention. Destination temporary and final files are private. Publication uses an atomic same-filesystem hard link that refuses to overwrite any existing filename, followed by temporary-link removal and directory fsync. Only registered temporary files owned by this installation are cleaned after failure or restart. A crash after publication may leave a safe extra archive; an unregistered file is never adopted or deleted. Retention runs only after new verified publication, matches the installation identity and recorded content digest, and preserves at least one verified archive. Changed files, symlinks, unrecognized archives and manual exports are not removed. Retention failure is visible and can leave more archives than configured.
+**Publication and retention:** exclusive Maintenance Coordination protects the
+local snapshot and encrypted export. The automated backup outcome tracks
+destination verification and publication separately from the local export job.
+Destination access and retention run outside exclusive maintenance and the
+catalogue lock, allowing restore and storage observation to proceed during
+stalled I/O. Only one primary backup worker accesses the destination at a time.
+Cancellation or timeout fails the current attempt, and an unresolved device
+call keeps the worker slot until the call returns. Restoration invalidates
+the previous attempt's authority to register an archive or authorize retention.
+
+Destination temporary and final files are private. Publication uses an atomic
+same-filesystem hard link that refuses to overwrite an existing filename,
+followed by temporary-link removal and directory fsync. Only registered
+temporary files owned by this installation are cleaned after failure or
+restart. An interrupted publication may leave a safe extra archive. An
+unregistered file is never adopted or deleted. Retention runs after new
+verified publication, matches the installation identity and recorded digest,
+and preserves at least one verified archive. Changed files, symlinks,
+unrecognized archives and manual exports are preserved. Retention failure is
+visible and can leave more archives than configured.
 
 The UI reports configuration/suspension, next attempt, last attempt, last verified success, deferral and failure. Audit actions `backup.automatic.succeeded`, `backup.automatic.failed`, and `backup.automatic.deferred` carry occurrence metadata for later notification consumers; this feature does not add notification delivery subscriptions. Published verification also updates existing recovery-health evidence.
 

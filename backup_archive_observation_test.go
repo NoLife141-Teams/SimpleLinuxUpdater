@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"io"
 	"net/http"
 	"os"
@@ -548,12 +547,12 @@ func TestBackupArchiveObserverDoesNotWaitOnPublication(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
 	defer cancel()
-	if err := a.observeArchiveAvailability(ctx); !errors.Is(err, errBackupArchiveObservationDeferred) || ctx.Err() != nil {
+	if err := a.observeArchiveAvailability(ctx); err != nil {
 		t.Fatalf("observer waited on publication: %v %v", err, ctx.Err())
 	}
 	state, err := a.readState(t.Context())
-	if err != nil || state.Observation.CheckedAt != "" {
-		t.Fatalf("observer persisted stale results during publication: %+v, %v", state.Observation, err)
+	if err != nil || state.Observation.CheckedAt == "" || len(state.Archives) != 0 {
+		t.Fatalf("observer did not record a check without registering the staged archive: %+v, %v", state, err)
 	}
 }
 

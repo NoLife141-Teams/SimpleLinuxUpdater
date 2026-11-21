@@ -482,7 +482,10 @@ func TestBackupAutomationRetentionIgnoresForeignAndSymlinkFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 	s.Archives = append([]ownedBackupArchive{{Name: linkName, Owner: owner}}, s.Archives...)
-	if err = a.retain(root, &s); err != nil {
+	if err = a.retain(t.Context(), root, &s, func(archive ownedBackupArchive) (bool, error) {
+		err := root.Remove(archive.Name)
+		return err == nil, err
+	}); err != nil {
 		t.Fatal(err)
 	}
 	if len(s.Archives) != 1 || !strings.Contains(s.Archives[0].Name, "-new.") {

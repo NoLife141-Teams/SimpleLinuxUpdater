@@ -1567,7 +1567,7 @@ assert trust.read_bytes() == b'fixture trust' and marker.read_bytes() == b'fixtu
             until(lambda: archives()["storage_health"]["state"] == "unavailable",
                   "replacement mount directory was not detected")
             refusal = self.api.request("POST", "/api/backup/automation/run", allowed=(409,))
-            require(refusal.get("error") == "The approved primary backup directory is unavailable or has been replaced.",
+            require(refusal.get("error") == "approved primary backup directory is unavailable or has been replaced",
                     "control backup did not explicitly refuse the replacement primary mount")
             require(not any(directory.iterdir()), "the replacement primary mount received a backup file")
             require(archives()["storage_health"]["state"] == "unavailable",

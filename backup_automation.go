@@ -492,7 +492,7 @@ func (a *backupAutomation) destination(createIdentity bool) (*os.Root, string, s
 	return root, pass, owner, binding, nil
 }
 
-var errPrimaryBackupMountUnavailable = errors.New("The approved primary backup directory is unavailable or has been replaced.")
+var errPrimaryBackupMountUnavailable = errors.New("approved primary backup directory is unavailable or has been replaced")
 
 func (s backupAutomationState) hasPrimaryApproval() bool {
 	return s.Approval != "" && s.ApprovedDirectory != ""

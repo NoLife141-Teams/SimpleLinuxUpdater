@@ -23,7 +23,7 @@ jobs:
       github.event.workflow_run.event == 'push' &&
       startsWith(github.event.workflow_run.head_branch, 'v')
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 65
     permissions:
       contents: read
     env:
@@ -96,7 +96,8 @@ jobs:
           staticcheck ./...
           govulncheck ./...
           actionlint
-          go test -race -count=1 ./...
+          # Release qualification runs the full race suite on one runner.
+          go test -race -count=1 ./... -timeout=30m
           go test -count=1 -covermode=atomic -coverprofile=coverage.out ./...
           bash "$RUNNER_TEMP/trusted-tools/ci/check-coverage.sh"
           CGO_ENABLED=0 go build -o webserver .

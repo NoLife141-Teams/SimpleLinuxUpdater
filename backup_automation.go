@@ -258,8 +258,8 @@ func (a *backupAutomation) save(ctx context.Context, s backupAutomationState, ev
 		_, err = db.ExecContext(ctx, statement, backupAutomationSettingsKey, string(raw))
 		return err
 	}
-	// Commit both sides of a loss episode before the notification worker can
-	// consume its audit cursor. A failed save must leave the episode retryable.
+	// Commit catalogue changes and their evidence before the notification
+	// worker can consume its audit cursor.
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -599,16 +599,17 @@ func (a *backupAutomation) Configure(ctx context.Context, c backupScheduleConfig
 		if s.Approval != binding || s.ApprovedDirectory != identity {
 			// A temporary archive belongs to the previous approval, never its replacement.
 			s.Temporary = ""
+			s.PrimaryRetiring = ""
 		}
 		s.Approval = binding
 		s.ApprovedDirectory = identity
 	} else {
 		s.Approval = ""
 		s.ApprovedDirectory = ""
+		s.PrimaryRetiring = ""
 	}
 	s.Config = c
 	s.PrimaryAttempt = ""
-	s.PrimaryRetiring = ""
 	s.NextAt = a.next(c, a.now())
 	s.Timezone = a.deps.ApplicationTime.Current().DisplayName
 	s.PendingAt = ""
@@ -669,7 +670,6 @@ func (a *backupAutomation) recoverInterrupted(ctx context.Context, s *backupAuto
 	}
 	s.Outcome = "failed"
 	s.PrimaryAttempt = ""
-	s.PrimaryRetiring = ""
 	s.Message = "The previous automated backup was interrupted; its occurrence will not be replayed."
 	s.PendingAt = ""
 	s.PendingManual = false
@@ -1013,11 +1013,12 @@ func (a *backupAutomation) rebaseTimezone(ctx context.Context, s *backupAutomati
 	s.NextAt = a.next(s.Config, now)
 	return a.save(ctx, *s)
 }
-func (a *backupAutomation) recordVerifiedPublication(archive ownedBackupArchive, size int64) {
+func (a *backupAutomation) verifiedPrimaryPublicationEvents(archive ownedBackupArchive, size int64, knownHostsIncluded bool) []AuditEvent {
 	if a.deps.AuditService == nil {
-		return
+		return nil
 	}
-	if err := a.deps.AuditService.Record("backup-scheduler", "", "backup.verify", "backup", "automatic", "success", "Published automated backup passed restore readiness verification", map[string]any{"restore_ready": true, "archive_size_bytes": size, "archive_id": archive.ID}); err != nil {
-		log.Printf("automated backup verification audit unavailable: %v", err)
+	return []AuditEvent{
+		a.deps.AuditService.PrepareEvent("", "backup-scheduler", "", "backup.export", "backup", "state", "success", "Verified automated backup published", map[string]any{"bytes": size, "known_hosts_included": knownHostsIncluded}),
+		a.deps.AuditService.PrepareEvent("", "backup-scheduler", "", "backup.verify", "backup", "automatic", "success", "Published automated backup passed restore readiness verification", map[string]any{"restore_ready": true, "archive_size_bytes": size, "archive_id": archive.ID}),
 	}
 }

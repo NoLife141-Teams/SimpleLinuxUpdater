@@ -34,11 +34,16 @@ func (a *backupAutomation) Tick(ctx context.Context, manual bool) (resultErr err
 		}
 		return nil
 	}
-	waitingForStorage := false
+	var drainingStorage <-chan error
 	defer func() {
-		if !waitingForStorage {
+		if drainingStorage == nil {
 			a.primaryBusy.Store(false)
+			return
 		}
+		go func() {
+			<-drainingStorage
+			a.primaryBusy.Store(false)
+		}()
 	}()
 	a.health.Tick(a.now())
 	defer func() { a.health.Finish(a.now(), resultErr) }()
@@ -72,13 +77,7 @@ func (a *backupAutomation) Tick(ctx context.Context, manual bool) (resultErr err
 		select {
 		case <-done:
 		default:
-			waitingForStorage = true
-			defer func() {
-				go func() {
-					<-done
-					a.primaryBusy.Store(false)
-				}()
-			}()
+			drainingStorage = done
 		}
 	}
 	if errors.Is(err, errPrimaryBackupDeferred) {
@@ -123,7 +122,7 @@ func (a *backupAutomation) reservePrimaryBackup(ctx context.Context, manual bool
 		due = (s.Config.Enabled || s.PendingManual) && !now.Before(parseBackupStamp(s.RetryAt))
 	}
 	if !manual && !due {
-		if s.Temporary != "" {
+		if s.Temporary != "" || s.PrimaryRetiring != "" {
 			return attempt, nil
 		}
 		return primaryBackupAttempt{}, nil
@@ -162,6 +161,16 @@ func (a *backupAutomation) reservePrimaryBackup(ctx context.Context, manual bool
 // Database operations on the worker's behalf are short and occur under
 // admission, so a restore can replace persistence between storage operations.
 func (a *backupAutomation) updatePrimaryBackup(ctx context.Context, attempt primaryBackupAttempt, apply func(*backupAutomationState) error) error {
+	return a.withPrimaryBackupAdmission(ctx, func() error {
+		s, err := a.currentPrimaryAttempt(ctx, attempt)
+		if err != nil {
+			return err
+		}
+		return apply(&s)
+	})
+}
+
+func (a *backupAutomation) withPrimaryBackupAdmission(ctx context.Context, apply func() error) error {
 	ticker := time.NewTicker(10 * time.Millisecond)
 	defer ticker.Stop()
 	for ctx.Err() == nil {
@@ -170,11 +179,7 @@ func (a *backupAutomation) updatePrimaryBackup(ctx context.Context, attempt prim
 			if a.mu.TryLock() {
 				defer lease.Close()
 				defer a.mu.Unlock()
-				s, err := a.currentPrimaryAttempt(ctx, attempt)
-				if err != nil {
-					return err
-				}
-				return apply(&s)
+				return apply()
 			}
 			lease.Close()
 		}
@@ -219,6 +224,11 @@ func (a *backupAutomation) runPrimaryBackup(ctx context.Context, attempt primary
 	}
 	if !original.approvesPrimary(root, binding) {
 		return errPrimaryBackupMountUnavailable
+	}
+	if original.PrimaryRetiring != "" {
+		if err := a.recoverPrimaryRetirement(ctx, attempt, root); err != nil {
+			return err
+		}
 	}
 	if original.Temporary != "" {
 		if err := a.updatePrimaryBackup(ctx, attempt, func(*backupAutomationState) error { return nil }); err != nil {
@@ -270,10 +280,9 @@ func (a *backupAutomation) runPrimaryBackup(ctx context.Context, attempt primary
 		s.Archives = append(s.Archives, archive)
 		a.queueSecondaryCopy(s, archive)
 		a.recordArchiveObservation(s, newBackupArchiveObservation(a.now(), "available", owner, archive.DirectoryIdentity))
-		if err := a.save(ctx, *s); err != nil {
+		if err := a.save(ctx, *s, a.verifiedPrimaryPublicationEvents(archive, outcome.ExportFile.Size, outcome.KnownHostsIncluded)...); err != nil {
 			return errors.New("published archive retained, but ownership could not be recorded")
 		}
-		a.recordVerifiedPublication(archive, outcome.ExportFile.Size)
 		registered = *s
 		return nil
 	}); err != nil {
@@ -305,7 +314,7 @@ func (a *backupAutomation) capturePrimaryBackup(ctx context.Context, attempt pri
 		return backupOperationOutcome{}, err
 	}
 	outcome := a.export(ctx, backupExportCommand{
-		Actor: "backup-scheduler", Lease: lease, HoldLease: true,
+		Actor: "backup-scheduler", Lease: lease, HoldLease: true, LocalCapture: true,
 		Request: backupExportRequest{Passphrase: pass, IncludeKnownHosts: &s.Config.IncludeKnownHosts},
 	})
 	if err := lease.Close(); err != nil {
@@ -363,18 +372,64 @@ func (a *backupAutomation) removeRetiredPrimaryArchive(ctx context.Context, atte
 	if err != nil || protected {
 		return false, err
 	}
-	if err := ctx.Err(); err != nil {
+	removeErr := ctx.Err()
+	if removeErr == nil {
+		removeErr = root.Remove(archive.Name)
+		if removeErr != nil {
+			// An I/O error can leave the deletion outcome unknown. Recover it
+			// later against the original approved mount.
+			return false, errors.New("verified backup published, but an owned archive could not be removed by retention")
+		}
+	}
+	// Once the unlink has completed, acknowledge that fact even if the caller
+	// timed out. The intent is scoped to this catalogue and approved mount.
+	persistCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), primaryBackupCompletionTimeout)
+	defer cancel()
+	if err := a.resolvePrimaryRetirement(persistCtx, attempt, archive.ID, removeErr == nil); err != nil {
 		return false, err
 	}
-	if err := root.Remove(archive.Name); err != nil {
-		return false, errors.New("verified backup published, but an owned archive could not be removed by retention")
+	return removeErr == nil, removeErr
+}
+
+func (a *backupAutomation) recoverPrimaryRetirement(ctx context.Context, attempt primaryBackupAttempt, root *os.Root) error {
+	id := attempt.state.PrimaryRetiring
+	removed := false
+	for _, archive := range attempt.state.Archives {
+		if archive.ID != id {
+			continue
+		}
+		_, err := root.Lstat(archive.Name)
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return errors.New("could not determine the result of an interrupted archive retirement")
+		}
+		removed = errors.Is(err, os.ErrNotExist)
+		break
 	}
-	err = a.updatePrimaryBackup(ctx, attempt, func(s *backupAutomationState) error {
+	if !primaryBackupMountAvailable(root, attempt.state.ApprovedDirectory) {
+		return errPrimaryBackupMountUnavailable
+	}
+	return a.resolvePrimaryRetirement(ctx, attempt, id, removed)
+}
+
+func (a *backupAutomation) resolvePrimaryRetirement(ctx context.Context, attempt primaryBackupAttempt, id string, removed bool) error {
+	return a.withPrimaryBackupAdmission(ctx, func() error {
+		if a.deps.DB() != attempt.db {
+			return errPrimaryBackupInvalidated
+		}
+		s, err := a.load(ctx)
+		if err != nil {
+			return err
+		}
+		if s.PrimaryRetiring != id || s.Approval != attempt.state.Approval ||
+			s.ApprovedDirectory != attempt.state.ApprovedDirectory {
+			return errPrimaryBackupInvalidated
+		}
 		s.PrimaryRetiring = ""
-		s.Archives = slices.DeleteFunc(s.Archives, func(item ownedBackupArchive) bool { return item.ID == archive.ID })
-		return a.save(ctx, *s)
+		if removed {
+			s.Archives = slices.DeleteFunc(s.Archives, func(archive ownedBackupArchive) bool { return archive.ID == id })
+		}
+		return a.save(ctx, s)
 	})
-	return err == nil, err
 }
 
 func (a *backupAutomation) finishPrimaryBackup(ctx context.Context, attempt primaryBackupAttempt, runErr error) error {
@@ -385,7 +440,6 @@ func (a *backupAutomation) finishPrimaryBackup(ctx context.Context, attempt prim
 	defer cancel()
 	err := a.updatePrimaryBackup(persistCtx, attempt, func(s *backupAutomationState) error {
 		s.PrimaryAttempt = ""
-		s.PrimaryRetiring = ""
 		s.PendingAt, s.RetryAt, s.PendingManual = "", "", false
 		if !parseBackupStamp(s.NextAt).After(a.now()) {
 			s.NextAt = a.next(s.Config, a.now())
@@ -400,6 +454,9 @@ func (a *backupAutomation) finishPrimaryBackup(ctx context.Context, attempt prim
 		}
 		if err := a.save(persistCtx, *s); err != nil {
 			return err
+		}
+		if runErr != nil {
+			a.record(*s, "backup.export", "failure")
 		}
 		a.record(*s, action, status)
 		return nil

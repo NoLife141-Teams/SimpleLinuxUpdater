@@ -76,13 +76,20 @@ type backupOperationLifecycle struct {
 }
 
 type backupExportCommand struct {
-	// Automated publication must finish under the same exclusive lease as export.
-	Finalize  func(context.Context, internalbackup.TemporaryFile) error
-	HoldLease bool
-	Actor     string
-	ClientIP  string
-	Request   backupExportRequest
-	Lease     *maintenancepkg.ExclusiveLease
+	// LocalCapture prepares a private archive whose publication is still pending.
+	LocalCapture bool
+	HoldLease    bool
+	Actor        string
+	ClientIP     string
+	Request      backupExportRequest
+	Lease        *maintenancepkg.ExclusiveLease
+}
+
+func (cmd backupExportCommand) auditAction() string {
+	if cmd.LocalCapture {
+		return "backup.automatic.capture"
+	}
+	return "backup.export"
 }
 
 type backupRestoreCommand struct {
@@ -196,7 +203,7 @@ func (l *backupOperationLifecycle) Export(ctx context.Context, cmd backupExportC
 		deps.RecordAudit(backupOperationAuditRecord{
 			Actor:      cmd.Actor,
 			ClientIP:   cmd.ClientIP,
-			Action:     "backup.export",
+			Action:     cmd.auditAction(),
 			TargetType: "backup",
 			TargetName: "state",
 			Status:     "failure",
@@ -227,7 +234,7 @@ func (l *backupOperationLifecycle) Export(ctx context.Context, cmd backupExportC
 		deps.RecordAudit(backupOperationAuditRecord{
 			Actor:      cmd.Actor,
 			ClientIP:   cmd.ClientIP,
-			Action:     "backup.export",
+			Action:     cmd.auditAction(),
 			TargetType: "backup",
 			TargetName: "state",
 			Status:     "failure",
@@ -281,7 +288,7 @@ func (l *backupOperationLifecycle) Export(ctx context.Context, cmd backupExportC
 		if err != nil {
 			deps.Logf("backup export lifecycle: failed to clear maintenance mode: %v", err)
 			_ = outcome.ExportFile.Remove()
-			outcome = l.failMaintenanceRelease(job.ID, cmd.Actor, cmd.ClientIP, "backup.export", err)
+			outcome = l.failMaintenanceRelease(job.ID, cmd.Actor, cmd.ClientIP, cmd.auditAction(), err)
 			return
 		}
 		if completion != nil {
@@ -303,17 +310,6 @@ func (l *backupOperationLifecycle) Export(ctx context.Context, cmd backupExportC
 	if err != nil {
 		return l.failExportArchive(jm, job.ID, cmd, err)
 	}
-	if cmd.Finalize != nil {
-		if err := cmd.Finalize(ctx, fileResult.File); err != nil {
-			_ = fileResult.File.Remove()
-			failure := l.failExportArchive(jm, job.ID, cmd, err)
-			failure.PublicError = err.Error()
-			summary := "Automated backup verification or publication failed"
-			_ = jm.Transition(job.ID, JobTransitionIntent{Summary: &summary})
-			return failure
-		}
-	}
-
 	exportBytes := int64(len(result.Bytes))
 	knownHostsIncluded := result.KnownHostsIncluded
 	if fileBacked {
@@ -324,6 +320,11 @@ func (l *backupOperationLifecycle) Export(ctx context.Context, cmd backupExportC
 	status := jobStatusSucceeded
 	phase = jobPhaseComplete
 	summary = "Backup export completed"
+	auditMessage := "Backup exported"
+	if cmd.LocalCapture {
+		summary = "Local backup archive prepared"
+		auditMessage = summary
+	}
 	meta := deps.MarshalJobJSON(map[string]any{
 		"bytes":                exportBytes,
 		"known_hosts_included": knownHostsIncluded,
@@ -337,11 +338,11 @@ func (l *backupOperationLifecycle) Export(ctx context.Context, cmd backupExportC
 	deps.RecordAudit(backupOperationAuditRecord{
 		Actor:      cmd.Actor,
 		ClientIP:   cmd.ClientIP,
-		Action:     "backup.export",
+		Action:     cmd.auditAction(),
 		TargetType: "backup",
 		TargetName: "state",
 		Status:     "success",
-		Message:    "Backup exported",
+		Message:    auditMessage,
 		Meta: map[string]any{
 			"bytes":                exportBytes,
 			"known_hosts_included": knownHostsIncluded,
@@ -391,7 +392,7 @@ func (l *backupOperationLifecycle) failExportArchive(jm *JobManager, jobID strin
 	deps.RecordAudit(backupOperationAuditRecord{
 		Actor:      cmd.Actor,
 		ClientIP:   cmd.ClientIP,
-		Action:     "backup.export",
+		Action:     cmd.auditAction(),
 		TargetType: "backup",
 		TargetName: "state",
 		Status:     "failure",

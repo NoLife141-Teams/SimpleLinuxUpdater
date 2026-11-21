@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -59,6 +60,11 @@ func TestPrimaryBackupBlockedWriteCanBeAbandoned(t *testing.T) {
 			if err != nil || status.State != "running" {
 				t.Fatalf("status during the write = %q, %v", status.State, err)
 			}
+			var exports int
+			err = app.Deps.DB().QueryRowContext(ctx, "SELECT count(*) FROM audit_events WHERE action = 'backup.export' AND status = 'success'").Scan(&exports)
+			if err != nil || exports != 1 {
+				t.Fatalf("blocked publication changed successful recovery exports: %d, %v", exports, err)
+			}
 			restore, decision := app.Deps.MaintenanceCoordinator.TryExclusive(maintenancepkg.OperationBackupRestore)
 			if !decision.Allowed {
 				t.Fatal("blocked write retained exclusive admission")
@@ -108,6 +114,42 @@ func TestPrimaryBackupBlockedWriteCanBeAbandoned(t *testing.T) {
 				t.Fatalf("late write changed existing backup files: %v, %v", entries, err)
 			}
 		})
+	}
+}
+
+func TestPrimaryBackupRecoversInterruptedRetirementWithoutReportingLoss(t *testing.T) {
+	app, automation, _ := newBackupAutomationTest(t)
+	for range 2 {
+		if err := automation.Tick(t.Context(), true); err != nil {
+			t.Fatal(err)
+		}
+	}
+	state := backupAutomationStateForTest(t, automation)
+	retired := state.Archives[0]
+	state.Outcome, state.PrimaryRetiring = "running", retired.ID
+	if err := automation.save(t.Context(), state); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(automation.deployment.Directory, retired.Name)); err != nil {
+		t.Fatal(err)
+	}
+
+	restarted := newBackupAutomation(automation.deps)
+	restarted.deployment = automation.deployment
+	if err := restarted.Tick(t.Context(), false); err != nil {
+		t.Fatal(err)
+	}
+	if err := restarted.observeArchiveAvailability(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	status, err := restarted.Status(t.Context())
+	if err != nil || len(status.Catalog.Archives) != 1 || status.Catalog.Archives[0].ID != state.Archives[1].ID {
+		t.Fatalf("catalogue after interrupted retirement = %+v, %v", status.Catalog, err)
+	}
+	var losses int
+	err = app.Deps.DB().QueryRowContext(t.Context(), "SELECT count(*) FROM audit_events WHERE action = 'backup.verify' AND status = 'failure'").Scan(&losses)
+	if err != nil || losses != 0 {
+		t.Fatalf("interrupted retirement published a loss alert: %d, %v", losses, err)
 	}
 }
 

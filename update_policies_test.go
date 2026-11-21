@@ -17,7 +17,6 @@ import (
 	"testing"
 	"time"
 
-	internalbackup "debian-updater/internal/backup"
 	maintenancepkg "debian-updater/internal/maintenance"
 	policypkg "debian-updater/internal/policies"
 	updatespkg "debian-updater/internal/updates"
@@ -818,14 +817,18 @@ func TestScheduledRunHistoryKeepsObservedBackupAfterRestart(t *testing.T) {
 			t.Fatalf("backup lease denied: %+v", decision)
 		}
 		defer lease.Close()
-		outcome := newBackupOperationLifecycle(app.Deps).Export(context.Background(), backupExportCommand{
-			Actor: "admin", Lease: lease, Request: backupExportRequest{Passphrase: "backup-test-passphrase"},
-			Finalize: func(_ context.Context, archive internalbackup.TemporaryFile) error {
-				if archive.Size == 0 {
-					t.Error("expected a real encrypted archive during finalization")
+		lifecycle := newBackupOperationLifecycle(app.Deps)
+		recordAudit := lifecycle.deps.RecordAudit
+		lifecycle.deps.RecordAudit = func(record backupOperationAuditRecord) {
+			recordAudit(record)
+			if record.Action == "backup.export" && record.Status == "success" {
+				if err := app.Deps.PolicyService.ProcessDue(slot); err != nil {
+					t.Error(err)
 				}
-				return app.Deps.PolicyService.ProcessDue(slot)
-			},
+			}
+		}
+		outcome := lifecycle.Export(context.Background(), backupExportCommand{
+			Actor: "admin", Lease: lease, Request: backupExportRequest{Passphrase: "backup-test-passphrase"},
 		})
 		defer outcome.ExportFile.Remove()
 		if outcome.Kind != backupOperationSucceeded {

@@ -30,7 +30,7 @@ func (a *backupAutomation) needsExclusiveTick(ctx context.Context) (bool, error)
 	if err := a.rebaseTimezone(ctx, &s, now); err != nil {
 		return false, err
 	}
-	if (!s.Config.Enabled && !s.PendingManual) || s.Approval == "" {
+	if (!s.Config.Enabled && !s.PendingManual) || s.Approval == "" || s.ApprovedDirectory == "" {
 		return false, nil
 	}
 	if s.PendingAt != "" {

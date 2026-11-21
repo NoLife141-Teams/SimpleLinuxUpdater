@@ -203,7 +203,8 @@ func (a *backupAutomation) observeArchiveAvailabilityWithScan(ctx context.Contex
 			result = scanArchives(scanCtx, before.Archives)
 			observed := result.observation
 			if scanCtx.Err() == nil && observed.DirectoryIdentity != "" &&
-				!backupArchiveMountAvailable(a.deployment.Directory, observed.DirectoryIdentity) {
+				((before.ApprovedDirectory != "" && before.ApprovedDirectory != observed.DirectoryIdentity) ||
+					!backupArchiveMountAvailable(a.deployment.Directory, observed.DirectoryIdentity)) {
 				// A pinned directory remains readable after it is withdrawn.
 				// Discard file results when it no longer backs this destination.
 				result = backupArchiveScan{observation: newBackupArchiveObservation(a.now(), "unavailable", observed.Owner, "")}

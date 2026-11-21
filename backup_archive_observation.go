@@ -40,8 +40,9 @@ func newBackupArchiveObservation(at time.Time, storage, owner, directory string)
 }
 
 type backupArchiveScan struct {
-	observation  backupArchiveObservation
-	availability map[int]string
+	observation     backupArchiveObservation
+	availability    map[int]string
+	reverifyChanged map[int]bool
 }
 
 type backupArchiveCoverage struct {
@@ -257,6 +258,7 @@ func (a *backupAutomation) observeArchiveAvailabilityWithScan(ctx context.Contex
 		if event := a.observeArchive(archive, value, scan.observation.CheckedAt, "backup-scheduler", ""); event != nil {
 			events = append(events, *event)
 		}
+		archive.ReverifyChanged = scan.reverifyChanged[i]
 	}
 	a.recordArchiveObservation(&current, scan.observation)
 	return a.save(commitCtx, current, events...)
@@ -285,6 +287,7 @@ func (a *backupAutomation) scanBackupArchives(ctx context.Context, archives []ow
 	}
 	observation.DirectoryIdentity = backupCatalogFileIdentity(info)
 	probes := make(map[int]string)
+	reverifyChanged := make(map[int]bool)
 	tracked, comparable := 0, 0
 	for i := len(archives) - 1; i >= 0 && len(probes) < backupCatalogLimit && ctx.Err() == nil; i-- {
 		archive := archives[i]
@@ -292,7 +295,7 @@ func (a *backupAutomation) scanBackupArchives(ctx context.Context, archives []ow
 			continue
 		}
 		tracked++
-		value, _ := backupArchiveAvailabilityAt(root, archive, owner, observation.DirectoryIdentity)
+		value, reverify := backupArchiveAvailabilityAt(root, archive, owner, observation.DirectoryIdentity)
 		if archive.DirectoryIdentity == "" && archive.FileIdentity == "" {
 			// Full verification establishes identity for archives registered before
 			// the catalog recorded file metadata.
@@ -305,11 +308,15 @@ func (a *backupAutomation) scanBackupArchives(ctx context.Context, archives []ow
 			comparable++
 		}
 		probes[i] = value
+		if value == "changed" && reverify {
+			reverifyChanged[i] = true
+		}
 	}
 	if tracked == 0 || comparable > 0 {
 		observation.Storage = "available"
 	}
 	scan.availability = probes
+	scan.reverifyChanged = reverifyChanged
 	return scan
 }
 
@@ -351,6 +358,7 @@ func (a *backupAutomation) observeArchive(archive *ownedBackupArchive, availabil
 		archive.Verification = "failed"
 	}
 	archive.Availability = availability
+	archive.ReverifyChanged = false
 	archive.ObservedAt = observedAt
 	archive.ObservationProcess = backupArchiveObservationProcess
 	return event

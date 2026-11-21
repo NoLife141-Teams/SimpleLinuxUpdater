@@ -218,6 +218,16 @@ visible and can leave more archives than configured.
 
 The UI reports configuration/suspension, next attempt, last attempt, last verified success, deferral and failure. Audit actions `backup.automatic.succeeded`, `backup.automatic.failed`, and `backup.automatic.deferred` carry occurrence metadata for later notification consumers; this feature does not add notification delivery subscriptions. Published verification also updates existing recovery-health evidence.
 
+The status, catalog and policy preview read saved configuration and storage
+observations. A listing does not check the mounted files again or report stale
+availability as current. **Save and Validate**, archive verification and download
+access the mount outside maintenance admission. Their wait is bounded and a
+blocked call holds the primary storage slot until it returns. A restore can
+proceed during that wait. A result from before a restore cannot change the
+restored configuration or catalog. Downloads stream a local encrypted copy
+whose SHA-256 matches the registered archive. Restoring the application
+cancels downloads authorized before the restore.
+
 Restoration preserves historical configuration and results but clears local approval, even when restoring into the same installation. Revalidate destination and secret in Admin before resuming. Existing manual exports and archives remain compatible. No S3/SFTP backend or remote-server filesystem snapshot is provided.
 
 ### Secondary backup copies

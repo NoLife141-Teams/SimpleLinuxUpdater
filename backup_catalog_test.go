@@ -16,7 +16,6 @@ import (
 	"time"
 
 	internalbackup "debian-updater/internal/backup"
-	maintenancepkg "debian-updater/internal/maintenance"
 	notificationpkg "debian-updater/internal/notifications"
 )
 
@@ -237,6 +236,14 @@ func TestBackupCatalogRejectsReplacedCorruptSymlinkMissingAndForeign(t *testing.
 			if err != nil {
 				t.Fatal(err)
 			}
+			if kind == "identical replacement" {
+				if err := a.observeArchiveAvailability(t.Context()); err != nil {
+					t.Fatal(err)
+				}
+				if item := catalogFacts(t, app, cookie).Archives[0]; item.Availability != "changed" || item.ReverifyPossible {
+					t.Fatalf("catalogue offered reverification of a replaced inode: %+v", item)
+				}
+			}
 			operations := []string{"download", "verify"}
 			if kind == "wrong secret" {
 				operations = []string{"verify"}
@@ -299,7 +306,8 @@ func TestBackupCatalogFailedReverifyDoesNotConfirmWithdrawnMount(t *testing.T) {
 	t.Cleanup(func() { _ = os.RemoveAll(unmounted) })
 	a.verify = func(context.Context, internalbackup.TemporaryFile, string) (internalbackup.VerifyResult, error) {
 		if err := os.Rename(directory, unmounted); err != nil {
-			t.Fatal(err)
+			t.Error(err)
+			return internalbackup.VerifyResult{}, err
 		}
 		now = now.Add(time.Hour)
 		return internalbackup.VerifyResult{}, errors.New("fixture restore preparation failure")
@@ -317,6 +325,33 @@ func TestBackupCatalogFailedReverifyDoesNotConfirmWithdrawnMount(t *testing.T) {
 	}
 }
 
+func TestBackupCatalogReverifyRecordsLegacyArchiveLossOnConfirmedMount(t *testing.T) {
+	app, a, cookie, archive := publishedCatalogFixture(t)
+	state := backupAutomationStateForTest(t, a)
+	state.Archives[0] = ownedBackupArchive{ID: archive.ID, Name: archive.Name, Owner: archive.Owner, SHA256: archive.SHA256}
+	if err := a.save(t.Context(), state); err != nil {
+		t.Fatal(err)
+	}
+	verify := a.verify
+	path := filepath.Join(a.deployment.Directory, archive.Name)
+	a.verify = func(ctx context.Context, snapshot internalbackup.TemporaryFile, passphrase string) (internalbackup.VerifyResult, error) {
+		result, err := verify(ctx, snapshot, passphrase)
+		if err != nil || !result.RestoreReady {
+			return result, err
+		}
+		return result, os.Remove(path)
+	}
+	if rec := catalogRequest(app, cookie, archive.ID, "verify"); rec.Code != http.StatusConflict {
+		t.Fatalf("reverify after removing the legacy archive: %d %s", rec.Code, rec.Body.String())
+	}
+	if item := catalogFacts(t, app, cookie).Archives[0]; item.Availability != "missing" || item.Verification != "failed" {
+		t.Fatalf("catalogue discarded confirmed archive loss: %+v", item)
+	}
+	if facts := installationSnapshot(t.Context(), app.Deps).BackupArchives; facts.Lost != 1 || facts.Unknown != 0 {
+		t.Fatalf("coverage did not reflect confirmed archive loss: %+v", facts)
+	}
+}
+
 func TestBackupCatalogReverifyDiscardsProofAfterInPlaceMutation(t *testing.T) {
 	app, a, now := newBackupAutomationTest(t)
 	cookie := app.authenticate(t)
@@ -330,22 +365,27 @@ func TestBackupCatalogReverifyDiscardsProofAfterInPlaceMutation(t *testing.T) {
 	a.verify = func(ctx context.Context, snapshot internalbackup.TemporaryFile, passphrase string) (internalbackup.VerifyResult, error) {
 		result, err := verify(ctx, snapshot, passphrase)
 		if err != nil || !result.RestoreReady {
-			t.Fatalf("valid snapshot did not pass verification: %v", err)
+			t.Errorf("valid snapshot did not pass verification: %v", err)
+			return result, err
 		}
 		file, err := os.OpenFile(path, os.O_WRONLY, 0)
 		if err != nil {
-			t.Fatal(err)
+			t.Error(err)
+			return result, err
 		}
 		if _, err := file.WriteAt([]byte("changed"), 0); err != nil {
 			_ = file.Close()
-			t.Fatal(err)
+			t.Error(err)
+			return result, err
 		}
 		if err := file.Close(); err != nil {
-			t.Fatal(err)
+			t.Error(err)
+			return result, err
 		}
 		mtime := parseBackupStamp(archive.FileModifiedAt)
 		if err := os.Chtimes(path, mtime, mtime); err != nil {
-			t.Fatal(err)
+			t.Error(err)
+			return result, err
 		}
 		return result, nil
 	}
@@ -438,8 +478,14 @@ func TestBackupCatalogSnapshotDoesNotPreserveCoverageAfterVersionChange(t *testi
 				corrupt()
 			}
 			*now = now.Add(time.Minute)
-			if err := a.saveBackupCatalogSnapshotFailure(ctx, s, 0, root, directory, "operator", "", snapshot, err); err != nil {
-				t.Fatal(err)
+			ref, refErr := a.primaryAdminReference(ctx)
+			if refErr != nil {
+				t.Fatal(refErr)
+			}
+			probe := backupCatalogProbe{snapshot: snapshot, owner: owner, directory: directory, checkedAt: *now, mountAvailable: true}
+			probe.classifySnapshotFailure(root, original.Name, err)
+			if _, err := a.applyPrimaryArchiveProbe(ctx, ref, original, probe, false, nil, "operator", ""); !errors.Is(err, errBackupCatalogUnavailable) {
+				t.Fatalf("snapshot failure was not recorded: %v", err)
 			}
 			after := backupAutomationStateForTest(t, a).Archives[0]
 			if after.Integrity.State != backupIntegrityUnavailable || after.Integrity.AttemptedAt != backupStamp(*now) ||
@@ -483,7 +529,7 @@ func TestBackupCatalogLegacyMetadataAndForeignOwnershipRemainUnknown(t *testing.
 	}
 	catalog := catalogFacts(t, app, cookie)
 	legacy := catalog.Archives[1]
-	if legacy.PublishedAt != "" || legacy.LastVerifiedAt != "" || legacy.SizeBytes != nil || legacy.KnownHostsIncluded != nil || legacy.Verification != "unknown" || legacy.Availability != "present" {
+	if legacy.PublishedAt != "" || legacy.LastVerifiedAt != "" || legacy.SizeBytes != nil || legacy.KnownHostsIncluded != nil || legacy.Verification != "unknown" || legacy.Availability != "unavailable" {
 		t.Fatalf("invented metadata: %+v", legacy)
 	}
 	if foreign := catalog.Archives[0]; foreign.Availability != "foreign" {
@@ -623,14 +669,13 @@ func TestBackupCatalogUnknownIDsAndSensitiveCookieAdmission(t *testing.T) {
 	}
 }
 
-func TestBackupCatalogCancellationExcludesRestorePublicationAndCleansStaging(t *testing.T) {
+func TestBackupCatalogCancellationCleansStagingAndReleasesStorageSlot(t *testing.T) {
 	app, a, cookie, archive := publishedCatalogFixture(t)
 	before := catalogProtectedState(t, app)
 	temp := t.TempDir()
 	t.Setenv("TMPDIR", temp)
 	entered := make(chan struct{})
 	a.verify = func(ctx context.Context, file internalbackup.TemporaryFile, pass string) (internalbackup.VerifyResult, error) {
-		// A scheduled Tick may be admitted only after the catalogue lease closes.
 		// Gate the first catalogue call; later publications use the real pipeline.
 		select {
 		case <-entered:
@@ -655,22 +700,7 @@ func TestBackupCatalogCancellationExcludesRestorePublicationAndCleansStaging(t *
 	case <-time.After(5 * time.Second):
 		t.Fatal("verify not admitted")
 	}
-	for _, operation := range []maintenancepkg.OperationClass{maintenancepkg.OperationBackupExport, maintenancepkg.OperationBackupRestore} {
-		lease, decision := a.deps.MaintenanceCoordinator.TryExclusive(operation)
-		if decision.Allowed {
-			lease.Close()
-			t.Fatal("exclusive operation overlapped verification")
-		}
-	}
-	for _, path := range []string{"/api/backup/restore", "/api/backup/export"} {
-		rec := performContractRequest(app.Handler, "POST", path, nil, cookie, true)
-		if rec.Code != http.StatusServiceUnavailable {
-			t.Fatalf("concurrent %s status=%d", path, rec.Code)
-		}
-	}
-	tickDone := make(chan error, 1)
-	go func() { tickDone <- a.Tick(context.Background(), true) }() // deferred, never retain while reader holds lease
-	if rec := catalogRequest(app, cookie, archive.ID, "verify"); rec.Code != 409 {
+	if rec := catalogRequest(app, cookie, archive.ID, "verify"); rec.Code != http.StatusConflict {
 		t.Fatalf("parallel verification=%d", rec.Code)
 	}
 	cancel()
@@ -679,23 +709,11 @@ func TestBackupCatalogCancellationExcludesRestorePublicationAndCleansStaging(t *
 	case <-time.After(5 * time.Second):
 		t.Fatal("cancelled verification leaked")
 	}
-	select {
-	case err := <-tickDone:
-		if err != nil {
-			t.Fatal(err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("deferred publication leaked")
-	}
+	waitForPrimaryBackupWorker(t, a)
 	entries, err := os.ReadDir(temp)
 	if err != nil || len(entries) != 0 {
 		t.Fatalf("staging leaked: %v %v", entries, err)
 	}
-	lease, decision := a.deps.MaintenanceCoordinator.TryExclusive(maintenancepkg.OperationBackupRestore)
-	if !decision.Allowed {
-		t.Fatal("shared lease leaked")
-	}
-	lease.Close()
 	if catalogProtectedState(t, app) != before {
 		t.Fatal("cancelled verification mutated active data")
 	}
@@ -766,10 +784,16 @@ func TestBackupCatalogServesPinnedBytesWhenSourceChangesDuringStream(t *testing.
 	}
 }
 
-func TestBackupCatalogListingRecordsLossOnceWithoutChangingPublicationFacts(t *testing.T) {
+func TestBackupCatalogListingReflectsRecordedLossWithoutChangingPublicationFacts(t *testing.T) {
 	app, a, cookie, archive := publishedCatalogFixture(t)
 	initial := backupAutomationStateForTest(t, a)
 	if err := os.Remove(filepath.Join(a.deployment.Directory, archive.Name)); err != nil {
+		t.Fatal(err)
+	}
+	if item := catalogFacts(t, app, cookie).Archives[0]; item.Availability != "present" {
+		t.Fatalf("listing did not preserve the last recorded observation: %+v", item)
+	}
+	if err := a.observeArchiveAvailability(t.Context()); err != nil {
 		t.Fatal(err)
 	}
 	first := catalogFacts(t, app, cookie).Archives[0]
@@ -796,7 +820,7 @@ func TestBackupCatalogListingRecordsLossOnceWithoutChangingPublicationFacts(t *t
 }
 
 func TestBackupCatalogRetriesLossAfterAuditWriteFailure(t *testing.T) {
-	for _, operation := range []string{"listing", "download", "verify"} {
+	for _, operation := range []string{"download", "verify"} {
 		t.Run(operation, func(t *testing.T) {
 			app, a, cookie, archive := publishedCatalogFixture(t)
 			before := catalogProtectedState(t, app)
@@ -806,12 +830,7 @@ func TestBackupCatalogRetriesLossAfterAuditWriteFailure(t *testing.T) {
 			if err := os.Remove(filepath.Join(a.deployment.Directory, archive.Name)); err != nil {
 				t.Fatal(err)
 			}
-			var response *httptest.ResponseRecorder
-			if operation == "listing" {
-				response = performContractRequest(app.Handler, "GET", "/api/backup/archives", nil, cookie, false)
-			} else {
-				response = catalogRequest(app, cookie, archive.ID, operation)
-			}
+			response := catalogRequest(app, cookie, archive.ID, operation)
 			if response.Code != http.StatusServiceUnavailable || strings.Contains(response.Body.String(), "controlled catalog audit failure") {
 				t.Fatalf("failed loss audit response=%d %s", response.Code, response.Body.String())
 			}
@@ -821,6 +840,9 @@ func TestBackupCatalogRetriesLossAfterAuditWriteFailure(t *testing.T) {
 			}
 			if _, err := app.Deps.DB().Exec("DROP TRIGGER reject_catalog_loss_audit"); err != nil {
 				t.Fatal(err)
+			}
+			if response := catalogRequest(app, cookie, archive.ID, operation); response.Code != http.StatusConflict {
+				t.Fatalf("missing archive retry = %d %s", response.Code, response.Body)
 			}
 			for i := 0; i < 2; i++ {
 				item := catalogFacts(t, app, cookie).Archives[0]
@@ -910,7 +932,7 @@ func TestBackupCatalogExplicitVerificationRequiresAuditEvidence(t *testing.T) {
 	}
 }
 
-func TestBackupCatalogStatusFailsClosedWhenLossEvidenceCannotBeRecorded(t *testing.T) {
+func TestBackupCatalogStatusDoesNotReportStaleAvailabilityAfterObservationFailure(t *testing.T) {
 	app, a, cookie, archive := publishedCatalogFixture(t)
 	if _, err := app.Deps.DB().Exec(`CREATE TRIGGER reject_status_catalog_audit BEFORE INSERT ON audit_events WHEN NEW.action='backup.verify' AND NEW.status='failure' BEGIN SELECT RAISE(ABORT,'controlled status audit failure'); END`); err != nil {
 		t.Fatal(err)
@@ -918,11 +940,20 @@ func TestBackupCatalogStatusFailsClosedWhenLossEvidenceCannotBeRecorded(t *testi
 	if err := os.Remove(filepath.Join(a.deployment.Directory, archive.Name)); err != nil {
 		t.Fatal(err)
 	}
+	if err := a.observeArchiveAvailability(t.Context()); err == nil {
+		t.Fatal("observer accepted the failed loss audit transaction")
+	}
+	initialNow := a.now()
+	a.deps.Now = func() time.Time { return initialNow.Add(3 * backupArchiveObservationInterval) }
 	response := performContractRequest(app.Handler, "GET", "/api/backup/status", nil, cookie, false)
-	if response.Code != http.StatusServiceUnavailable || strings.Contains(response.Body.String(), `"state":"healthy"`) || strings.Contains(response.Body.String(), "controlled status") {
-		t.Fatalf("unrecorded loss status=%d %s", response.Code, response.Body.String())
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"availability":"unavailable"`) ||
+		!strings.Contains(response.Body.String(), `"state":"stale"`) {
+		t.Fatalf("stale observations were presented as current: %d %s", response.Code, response.Body)
 	}
 	if _, err := app.Deps.DB().Exec("DROP TRIGGER reject_status_catalog_audit"); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.observeArchiveAvailability(t.Context()); err != nil {
 		t.Fatal(err)
 	}
 	response = performContractRequest(app.Handler, "GET", "/api/backup/status", nil, cookie, false)

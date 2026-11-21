@@ -558,11 +558,15 @@ func (a *backupAutomation) Status(ctx context.Context) (backupAutomationStatus, 
 	return a.observedPrimaryBackupStatus(state), nil
 }
 
-func (a *backupAutomation) SuspendAfterRestore(ctx context.Context) error {
-	a.primaryRestoreEpoch.Add(1)
+func (a *backupAutomation) cancelPrimaryTransfer() {
 	if cancel := a.primaryCancel.Load(); cancel != nil {
 		(*cancel)()
 	}
+}
+
+func (a *backupAutomation) SuspendAfterRestore(ctx context.Context) error {
+	a.primaryRestoreEpoch.Add(1)
+	a.cancelPrimaryTransfer()
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.cancelSecondaryTransfer()

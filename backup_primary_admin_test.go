@@ -13,6 +13,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	maintenancepkg "debian-updater/internal/maintenance"
 )
 
 func TestRestoreCompletesWhileAdminWaitsForPrimaryMount(t *testing.T) {
@@ -119,70 +121,86 @@ func primaryAdminRestoreRequest(t *testing.T, cookie *http.Cookie, data []byte) 
 }
 
 func TestRestoreStopsAnAuthorizedArchiveDownload(t *testing.T) {
-	app, a, cookie, _ := publishedCatalogFixture(t)
-	if _, err := app.Deps.DB().Exec("CREATE TABLE download_fixture (payload BLOB)"); err != nil {
-		t.Fatal(err)
-	}
-	payload := make([]byte, 128<<10)
-	rand.Read(payload)
-	if _, err := app.Deps.DB().Exec("INSERT INTO download_fixture VALUES (?)", payload); err != nil {
-		t.Fatal(err)
-	}
-	if err := a.Tick(t.Context(), true); err != nil {
-		t.Fatal(err)
-	}
-	archives := backupAutomationStateForTest(t, a).Archives
-	archive := archives[len(archives)-1]
-	data, err := os.ReadFile(filepath.Join(a.deployment.Directory, archive.Name))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(data) <= 64<<10 {
-		t.Fatalf("expected a multi-chunk download, got %d bytes", len(data))
-	}
-	restore := primaryAdminRestoreRequest(t, cookie, data)
-	entered, unblock := make(chan struct{}), make(chan struct{})
-	release := sync.OnceFunc(func() { close(unblock) })
-	defer release()
-	writer := &catalogMutatingWriter{ResponseRecorder: httptest.NewRecorder(), mutate: func() {
-		close(entered)
-		<-unblock
-	}}
-	download := httptest.NewRequest(http.MethodPost, "/api/backup/archives/"+archive.ID+"/download", nil)
-	download.AddCookie(cookie)
-	markSameOriginAuthRequest(download)
-	downloadDone := make(chan struct{})
-	go func() {
-		defer close(downloadDone)
-		app.Handler.ServeHTTP(writer, download)
-	}()
-	select {
-	case <-entered:
-	case <-time.After(5 * time.Second):
-		t.Fatal("download did not begin streaming")
-	}
-	restored := make(chan *httptest.ResponseRecorder, 1)
-	go func() {
-		rec := httptest.NewRecorder()
-		app.Handler.ServeHTTP(rec, restore)
-		restored <- rec
-	}()
-	select {
-	case rec := <-restored:
-		if rec.Code != http.StatusOK {
-			t.Fatalf("restore while streaming = %d %s", rec.Code, rec.Body)
-		}
-	case <-time.After(8 * time.Second):
-		t.Fatal("restore waited for the HTTP writer")
-	}
-	release()
-	select {
-	case <-downloadDone:
-		if writer.Body.Len() == len(data) {
-			t.Fatal("superseded download continued after restore")
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("superseded download did not stop")
+	for _, phase := range []string{"persistence preparation", "completed restore"} {
+		t.Run(phase, func(t *testing.T) {
+			app, a, cookie, _ := publishedCatalogFixture(t)
+			if _, err := app.Deps.DB().Exec("CREATE TABLE download_fixture (payload BLOB)"); err != nil {
+				t.Fatal(err)
+			}
+			payload := make([]byte, 128<<10)
+			rand.Read(payload)
+			if _, err := app.Deps.DB().Exec("INSERT INTO download_fixture VALUES (?)", payload); err != nil {
+				t.Fatal(err)
+			}
+			if err := a.Tick(t.Context(), true); err != nil {
+				t.Fatal(err)
+			}
+			archives := backupAutomationStateForTest(t, a).Archives
+			archive := archives[len(archives)-1]
+			data, err := os.ReadFile(filepath.Join(a.deployment.Directory, archive.Name))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(data) <= 64<<10 {
+				t.Fatalf("expected a multi-chunk download, got %d bytes", len(data))
+			}
+			entered, unblock := make(chan struct{}), make(chan struct{})
+			release := sync.OnceFunc(func() { close(unblock) })
+			defer release()
+			writer := &catalogMutatingWriter{ResponseRecorder: httptest.NewRecorder(), mutate: func() {
+				close(entered)
+				<-unblock
+			}}
+			download := httptest.NewRequest(http.MethodPost, "/api/backup/archives/"+archive.ID+"/download", nil)
+			download.AddCookie(cookie)
+			markSameOriginAuthRequest(download)
+			downloadDone := make(chan struct{})
+			go func() {
+				defer close(downloadDone)
+				app.Handler.ServeHTTP(writer, download)
+			}()
+			select {
+			case <-entered:
+			case <-time.After(5 * time.Second):
+				t.Fatal("download did not begin streaming")
+			}
+			if phase == "persistence preparation" {
+				lease, decision := app.Deps.MaintenanceCoordinator.TryExclusive(maintenancepkg.OperationBackupRestore)
+				if !decision.Allowed {
+					t.Fatal("download blocked exclusive restore admission")
+				}
+				defer lease.Close()
+				composition := runtimeComposition{deps: AppDeps{BackupAutomation: a}}
+				if err := composition.PreparePersistenceReplacement(t.Context()); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				restore := primaryAdminRestoreRequest(t, cookie, data)
+				restored := make(chan *httptest.ResponseRecorder, 1)
+				go func() {
+					rec := httptest.NewRecorder()
+					app.Handler.ServeHTTP(rec, restore)
+					restored <- rec
+				}()
+				select {
+				case rec := <-restored:
+					if rec.Code != http.StatusOK {
+						t.Fatalf("restore while streaming = %d %s", rec.Code, rec.Body)
+					}
+				case <-time.After(8 * time.Second):
+					t.Fatal("restore waited for the HTTP writer")
+				}
+			}
+			release()
+			select {
+			case <-downloadDone:
+				if writer.Body.Len() == len(data) {
+					t.Fatal("superseded download continued after restore")
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("superseded download did not stop")
+			}
+		})
 	}
 }
 

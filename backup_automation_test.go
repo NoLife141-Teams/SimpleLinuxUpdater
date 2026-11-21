@@ -757,6 +757,9 @@ func TestBackupAutomationMidWriteAndCancellationFailures(t *testing.T) {
 			if err = a.Tick(ctx, false); err == nil {
 				t.Fatal("injected failure accepted")
 			}
+			if failure == "cancelled" {
+				waitForPrimaryBackupWorker(t, a)
+			}
 			s = backupAutomationStateForTest(t, a)
 			if s.Outcome != "failed" || len(s.Archives) != 1 || s.LastSuccessAt == "" || s.LastSuccessAt != previousSuccess ||
 				s.Archives[0].LastVerifiedAt != previous.LastVerifiedAt {
@@ -911,15 +914,26 @@ func TestBackupAutomationControlRunProtectsCompletionAndStatus(t *testing.T) {
 		return db()
 	}
 	recorded := false
+	directory := a.deployment.Directory
+	withdrawn := directory + ".withdrawn"
+	t.Cleanup(func() { _ = os.RemoveAll(withdrawn) })
 	a.deps.AuditService = auditpkg.NewService(auditpkg.ServiceOptions{DB: db, OnRecord: func(event auditpkg.Event) {
 		if event.Action == "backup.automatic.succeeded" {
 			recorded = true
 			assertAdmissionHeld()
+			if err := os.Rename(directory, withdrawn); err != nil {
+				t.Errorf("withdraw destination immediately after publication: %v", err)
+			}
 		}
 	}})
 	result := performContractRequest(app.Handler, http.MethodPost, "/api/backup/automation/run", nil, cookie, true)
-	if result.Code != http.StatusOK || !strings.Contains(result.Body.String(), `"state":"succeeded"`) || !recorded {
+	var status backupAutomationStatus
+	err := json.Unmarshal(result.Body.Bytes(), &status)
+	if result.Code != http.StatusOK || err != nil || status.State != "succeeded" || !recorded {
 		t.Fatalf("control run response=%d recorded=%v body=%s", result.Code, recorded, result.Body.String())
+	}
+	if status.LocalArchiveCount != 1 || len(status.Catalog.Archives) != 1 || status.Catalog.Archives[0].Availability != "present" {
+		t.Fatalf("control result did not include the verified publication: %+v", status.Catalog)
 	}
 }
 

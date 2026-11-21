@@ -177,15 +177,7 @@ func (a *backupAutomation) catalogLocked(ctx context.Context, s *backupAutomatio
 		if availability == "present" && archive.Integrity.State == backupIntegrityMismatch {
 			availability = "corrupt"
 		}
-		verification := archive.Verification
-		if verification == "" {
-			verification = "unknown"
-		}
-		catalog.Archives = append(catalog.Archives, backupArchiveView{
-			ID: archive.ID, PublishedAt: archive.PublishedAt, CapturedAt: archive.CapturedAt, SizeBytes: archive.SizeBytes,
-			KnownHostsIncluded: archive.KnownHostsIncluded, SHA256: archive.SHA256, LastVerifiedAt: archive.LastVerifiedAt,
-			Verification: verification, Integrity: archive.Integrity, Availability: availability, ReverifyPossible: reverifyPossible, JobID: archive.JobID,
-		})
+		catalog.Archives = append(catalog.Archives, archiveView(*archive, availability, reverifyPossible))
 	}
 	if changed {
 		if !backupArchiveMountAvailable(root.Name(), directory) {
@@ -195,6 +187,48 @@ func (a *backupAutomation) catalogLocked(ctx context.Context, s *backupAutomatio
 		return catalog, a.save(ctx, *s, events...)
 	}
 	return catalog, nil
+}
+
+func archiveView(archive ownedBackupArchive, availability string, reverifyPossible bool) backupArchiveView {
+	verification := archive.Verification
+	if verification == "" {
+		verification = "unknown"
+	}
+	return backupArchiveView{
+		ID: archive.ID, PublishedAt: archive.PublishedAt, CapturedAt: archive.CapturedAt, SizeBytes: archive.SizeBytes,
+		KnownHostsIncluded: archive.KnownHostsIncluded, SHA256: archive.SHA256, LastVerifiedAt: archive.LastVerifiedAt,
+		Verification: verification, Integrity: archive.Integrity, Availability: availability, ReverifyPossible: reverifyPossible, JobID: archive.JobID,
+	}
+}
+
+func (a *backupAutomation) observedPrimaryBackupStatus(s backupAutomationState) backupAutomationStatus {
+	catalog := backupArchiveCatalog{Archives: []backupArchiveView{}, Limit: backupCatalogLimit, Truncated: len(s.Archives) > backupCatalogLimit}
+	owner, _, _ := strings.Cut(s.Approval, "\x00")
+	observed := s.Observation
+	now := a.now()
+	checked := parseBackupStamp(observed.CheckedAt)
+	fresh := owner != "" && observed.Owner == owner && observed.DirectoryIdentity == s.ApprovedDirectory &&
+		observed.Process == backupArchiveObservationProcess && observed.Storage == "available" &&
+		!checked.IsZero() && !checked.After(now) && now.Sub(checked) <= 2*backupArchiveObservationInterval
+	for i := len(s.Archives) - 1; i >= 0 && len(catalog.Archives) < backupCatalogLimit; i-- {
+		archive := s.Archives[i]
+		availability := "unavailable"
+		reverifyPossible := false
+		at := parseBackupStamp(archive.ObservedAt)
+		if !backupArchiveOwned(archive, owner) {
+			availability = "foreign"
+		} else if fresh && archive.ID != s.PrimaryRetiring && archive.DirectoryIdentity == observed.DirectoryIdentity &&
+			archive.ObservationProcess == observed.Process && !at.IsZero() && !at.After(now) &&
+			now.Sub(at) <= 2*backupArchiveObservationInterval {
+			availability = archive.Availability
+			reverifyPossible = availability == "present"
+			if availability == "present" && archive.Integrity.State == backupIntegrityMismatch {
+				availability = "corrupt"
+			}
+		}
+		catalog.Archives = append(catalog.Archives, archiveView(archive, availability, reverifyPossible))
+	}
+	return a.primaryBackupStatus(s, catalog, s.hasPrimaryApproval(), nil)
 }
 
 func (a *backupAutomation) catalogAudit(actor, ip, action string, archive ownedBackupArchive, ready bool) error {

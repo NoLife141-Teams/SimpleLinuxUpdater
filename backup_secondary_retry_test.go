@@ -502,6 +502,14 @@ func TestSecondaryRetryChecksSourceAndAdmitsSingleBoundedRetry(t *testing.T) {
 		t.Fatalf("retry on a full queue = %v", err)
 	}
 	state.Secondary.Copies = state.Secondary.Copies[:1]
+	state.PrimaryRetiring = archive.ID
+	if err := automation.save(t.Context(), state); err != nil {
+		t.Fatal(err)
+	}
+	if err := automation.retrySecondaryCopy(t.Context(), nil, archive.ID); !errors.Is(err, errSecondaryRetryUnavailable) {
+		t.Fatalf("retry reserved for primary retention = %v", err)
+	}
+	state.PrimaryRetiring = ""
 	if err := automation.save(t.Context(), state); err != nil {
 		t.Fatal(err)
 	}

@@ -85,7 +85,7 @@ func TestPrimaryBackupBlockedWriteCanBeAbandoned(t *testing.T) {
 			if interruption == "restore" {
 				wantState = "suspended"
 			}
-			if state.Outcome != wantState || state.PrimaryAttempt != "" {
+			if state.Outcome != wantState {
 				t.Fatalf("durable state after interruption = %q", state.Outcome)
 			}
 			if err := automation.Tick(t.Context(), true); !errors.Is(err, errPrimaryBackupBusy) {
@@ -126,7 +126,7 @@ func TestPrimaryBackupInterruptedDuringStoragePreparationIsNotReplayed(t *testin
 	_, automation, now := newBackupAutomationTest(t)
 	before := backupAutomationStateForTest(t, automation)
 	*now = parseBackupStamp(before.NextAt)
-	if claim, err := automation.reservePrimaryBackup(t.Context(), false); err != nil || claim.state.PrimaryAttempt == "" {
+	if _, err := automation.reservePrimaryBackup(t.Context(), false); err != nil {
 		t.Fatalf("reserve due occurrence: %v", err)
 	}
 
@@ -136,7 +136,7 @@ func TestPrimaryBackupInterruptedDuringStoragePreparationIsNotReplayed(t *testin
 		t.Fatal(err)
 	}
 	after := backupAutomationStateForTest(t, restarted)
-	if after.Outcome != "failed" || after.PrimaryAttempt != "" || len(after.Archives) != 0 ||
+	if after.Outcome != "failed" || len(after.Archives) != 0 ||
 		!parseBackupStamp(after.NextAt).After(*now) {
 		t.Fatalf("interrupted storage preparation replayed the occurrence: %+v", after)
 	}

@@ -519,35 +519,35 @@ func (a *backupAutomation) statusLocked(ctx context.Context) (backupAutomationSt
 	if err != nil {
 		return backupAutomationStatus{}, err
 	}
-	status := backupAutomationStatus{Config: s.Config, State: s.Outcome, Message: s.Message, LastAttemptAt: s.LastAttemptAt, LastSuccessAt: s.LastSuccessAt, RetryAt: s.RetryAt,
-		Secondary: a.secondaryStatus(s)}
-	var root *os.Root
-	var owner, binding string
-	var validationErr error
 	if a.primaryBusy.Load() {
 		// Status must remain readable while a device call is unresponsive.
-		owner, _, _ = strings.Cut(s.Approval, "\x00")
-		binding = s.Approval
-	} else {
-		root, _, owner, binding, validationErr = a.destination(false)
-		if root != nil {
-			defer root.Close()
-			if s.ApprovedDirectory != "" && !primaryBackupMountAvailable(root, s.ApprovedDirectory) {
-				validationErr = errPrimaryBackupMountUnavailable
-				root = nil
-			}
+		return a.observedPrimaryBackupStatus(s), nil
+	}
+	root, _, owner, binding, validationErr := a.destination(false)
+	if root != nil {
+		defer root.Close()
+		if s.ApprovedDirectory != "" && !primaryBackupMountAvailable(root, s.ApprovedDirectory) {
+			validationErr = errPrimaryBackupMountUnavailable
+			root = nil
 		}
 	}
-	status.Catalog, err = a.catalogLocked(ctx, &s, root, owner)
+	catalog, err := a.catalogLocked(ctx, &s, root, owner)
 	if err != nil {
 		return backupAutomationStatus{}, err
 	}
+	configured := validationErr == nil && s.Approval == binding && s.hasPrimaryApproval()
+	return a.primaryBackupStatus(s, catalog, configured, validationErr), nil
+}
+
+func (a *backupAutomation) primaryBackupStatus(s backupAutomationState, catalog backupArchiveCatalog, configured bool, validationErr error) backupAutomationStatus {
+	status := backupAutomationStatus{Catalog: catalog, Config: s.Config, State: s.Outcome, Message: s.Message,
+		LastAttemptAt: s.LastAttemptAt, LastSuccessAt: s.LastSuccessAt, RetryAt: s.RetryAt,
+		Secondary: a.secondaryStatus(s), Configured: configured}
 	for _, archive := range status.Catalog.Archives {
 		if archive.Availability == "present" {
 			status.LocalArchiveCount++
 		}
 	}
-	status.Configured = validationErr == nil && s.Approval == binding && s.hasPrimaryApproval()
 	if !s.Config.Enabled {
 		if s.PendingAt != "" {
 			status.NextAt = s.RetryAt
@@ -566,8 +566,9 @@ func (a *backupAutomation) statusLocked(ctx context.Context) (backupAutomationSt
 	} else {
 		status.NextAt = a.projectedRegularNextAt(s, a.now())
 	}
-	return status, nil
+	return status
 }
+
 func (a *backupAutomation) Status(ctx context.Context) (backupAutomationStatus, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -992,7 +993,14 @@ func handleBackupAutomationRun(c *gin.Context, a *backupAutomation) {
 		return
 	}
 	defer lease.Close()
-	handleBackupAutomationStatus(c, a)
+	// Return the recorded result without opening the device again outside the
+	// worker's deadline. Even a successful write cannot guarantee later I/O.
+	state, err := a.readState(c.Request.Context())
+	if err != nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Automated backup state is unavailable."})
+		return
+	}
+	c.JSON(http.StatusOK, a.observedPrimaryBackupStatus(state))
 }
 
 func (a *backupAutomation) rebaseTimezone(ctx context.Context, s *backupAutomationState, now time.Time) error {

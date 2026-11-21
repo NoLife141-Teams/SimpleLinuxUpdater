@@ -306,7 +306,8 @@ func TestBackupCatalogFailedReverifyDoesNotConfirmWithdrawnMount(t *testing.T) {
 	t.Cleanup(func() { _ = os.RemoveAll(unmounted) })
 	a.verify = func(context.Context, internalbackup.TemporaryFile, string) (internalbackup.VerifyResult, error) {
 		if err := os.Rename(directory, unmounted); err != nil {
-			t.Fatal(err)
+			t.Error(err)
+			return internalbackup.VerifyResult{}, err
 		}
 		now = now.Add(time.Hour)
 		return internalbackup.VerifyResult{}, errors.New("fixture restore preparation failure")
@@ -324,6 +325,33 @@ func TestBackupCatalogFailedReverifyDoesNotConfirmWithdrawnMount(t *testing.T) {
 	}
 }
 
+func TestBackupCatalogReverifyRecordsLegacyArchiveLossOnConfirmedMount(t *testing.T) {
+	app, a, cookie, archive := publishedCatalogFixture(t)
+	state := backupAutomationStateForTest(t, a)
+	state.Archives[0] = ownedBackupArchive{ID: archive.ID, Name: archive.Name, Owner: archive.Owner, SHA256: archive.SHA256}
+	if err := a.save(t.Context(), state); err != nil {
+		t.Fatal(err)
+	}
+	verify := a.verify
+	path := filepath.Join(a.deployment.Directory, archive.Name)
+	a.verify = func(ctx context.Context, snapshot internalbackup.TemporaryFile, passphrase string) (internalbackup.VerifyResult, error) {
+		result, err := verify(ctx, snapshot, passphrase)
+		if err != nil || !result.RestoreReady {
+			return result, err
+		}
+		return result, os.Remove(path)
+	}
+	if rec := catalogRequest(app, cookie, archive.ID, "verify"); rec.Code != http.StatusConflict {
+		t.Fatalf("reverify after removing the legacy archive: %d %s", rec.Code, rec.Body.String())
+	}
+	if item := catalogFacts(t, app, cookie).Archives[0]; item.Availability != "missing" || item.Verification != "failed" {
+		t.Fatalf("catalogue discarded confirmed archive loss: %+v", item)
+	}
+	if facts := installationSnapshot(t.Context(), app.Deps).BackupArchives; facts.Lost != 1 || facts.Unknown != 0 {
+		t.Fatalf("coverage did not reflect confirmed archive loss: %+v", facts)
+	}
+}
+
 func TestBackupCatalogReverifyDiscardsProofAfterInPlaceMutation(t *testing.T) {
 	app, a, now := newBackupAutomationTest(t)
 	cookie := app.authenticate(t)
@@ -337,22 +365,27 @@ func TestBackupCatalogReverifyDiscardsProofAfterInPlaceMutation(t *testing.T) {
 	a.verify = func(ctx context.Context, snapshot internalbackup.TemporaryFile, passphrase string) (internalbackup.VerifyResult, error) {
 		result, err := verify(ctx, snapshot, passphrase)
 		if err != nil || !result.RestoreReady {
-			t.Fatalf("valid snapshot did not pass verification: %v", err)
+			t.Errorf("valid snapshot did not pass verification: %v", err)
+			return result, err
 		}
 		file, err := os.OpenFile(path, os.O_WRONLY, 0)
 		if err != nil {
-			t.Fatal(err)
+			t.Error(err)
+			return result, err
 		}
 		if _, err := file.WriteAt([]byte("changed"), 0); err != nil {
 			_ = file.Close()
-			t.Fatal(err)
+			t.Error(err)
+			return result, err
 		}
 		if err := file.Close(); err != nil {
-			t.Fatal(err)
+			t.Error(err)
+			return result, err
 		}
 		mtime := parseBackupStamp(archive.FileModifiedAt)
 		if err := os.Chtimes(path, mtime, mtime); err != nil {
-			t.Fatal(err)
+			t.Error(err)
+			return result, err
 		}
 		return result, nil
 	}

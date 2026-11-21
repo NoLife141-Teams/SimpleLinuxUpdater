@@ -127,6 +127,7 @@ func (a *backupAutomation) applyPrimaryArchiveProbe(ctx context.Context, ref pri
 			case probe.mountAvailable && probe.digestMismatch:
 				addEvent(a.observeArchiveIntegrity(current, backupIntegrityMismatch, observedAt, actor, ip))
 			case probe.mountAvailable && archiveAvailabilityLost(probe.availability):
+				current.DirectoryIdentity = probe.directory
 				addEvent(a.observeArchive(current, probe.availability, observedAt, actor, ip))
 				current.ReverifyChanged = probe.availability == "changed" && probe.reverifyPossible
 			case current.Integrity.State != backupIntegrityMismatch &&

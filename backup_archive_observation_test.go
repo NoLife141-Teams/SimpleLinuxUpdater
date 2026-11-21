@@ -501,10 +501,12 @@ func TestBackupArchiveReverificationCannotRestoreCoverageAfterConcurrentRemoval(
 	a.verify = func(ctx context.Context, file internalbackup.TemporaryFile, pass string) (internalbackup.VerifyResult, error) {
 		result, err := verify(ctx, file, pass)
 		if err != nil || !result.RestoreReady {
-			t.Fatalf("expected restore-ready snapshot: %+v, %v", result, err)
+			t.Errorf("expected restore-ready snapshot: %+v, %v", result, err)
+			return result, err
 		}
 		if err := os.Rename(path, saved); err != nil {
-			t.Fatal(err)
+			t.Error(err)
+			return result, err
 		}
 		return result, nil
 	}

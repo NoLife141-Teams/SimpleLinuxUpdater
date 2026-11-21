@@ -69,6 +69,10 @@ resuming scheduled backups. Follow the
 
 ## Quick start
 
+The examples use v0.6.0. Until its artifacts are published, substitute the
+latest published version and use its `.env-template`.
+[Latest published release](https://github.com/NoLife141-Teams/SimpleLinuxUpdater/releases/latest)
+
 ### Docker (official image)
 
 ```bash

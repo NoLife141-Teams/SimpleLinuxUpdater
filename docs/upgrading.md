@@ -243,7 +243,9 @@ on the private qualification bridge.
 ## Binary archive
 
 Download the target platform archive and its checksum list from the same
-versioned GitHub Release. On Linux amd64, in a new staging directory:
+versioned GitHub Release. The example uses v0.6.0 once it is published. For
+another published version, set `VERSION` to match its release. On Linux amd64,
+run these commands in a new staging directory.
 
 ```bash
 VERSION='0.6.0'

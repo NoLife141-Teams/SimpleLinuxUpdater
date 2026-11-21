@@ -24,7 +24,9 @@
 
 ## Install with Docker
 
-Use the published image from GHCR (recommended):
+Use the published image from GHCR. Until the v0.6.0 image is published,
+substitute the tag shown in the latest published release and use its
+`.env-template`. [Latest published release](https://github.com/NoLife141-Teams/SimpleLinuxUpdater/releases/latest)
 
 ```bash
 cp .env-template .env

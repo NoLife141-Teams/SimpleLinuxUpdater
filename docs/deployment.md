@@ -16,6 +16,10 @@
 
 ## Docker (recommended)
 
+The Docker examples use v0.6.0. Until its image is published, substitute the
+latest published tag.
+[Latest published release](https://github.com/NoLife141-Teams/SimpleLinuxUpdater/releases/latest)
+
 Use a named volume for persistence:
 
 ```bash

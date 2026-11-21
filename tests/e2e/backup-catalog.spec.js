@@ -49,6 +49,9 @@ test('Admin catalog publishes, downloads encrypted bytes and reverifies with exp
     const modified = new Date(Date.now() - 120000);
     await fs.utimes(path.join(installation.directory, archivePaths[0]), modified, modified);
     await page.reload();
+    await expect(catalog).toContainText('Local availability: present');
+    expect((await page.request.post('/__test/observe-backup-archives')).status()).toBe(204);
+    await page.reload();
     await expect(catalog).toContainText('Local availability: changed');
     await expect(catalog.getByRole('button', { name: 'Download encrypted' })).toBeDisabled();
     await expect(catalog.getByRole('button', { name: 'Reverify', exact: true })).toBeEnabled();

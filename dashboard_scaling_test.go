@@ -880,7 +880,8 @@ func TestDashboardScalingE2EServe(t *testing.T) {
 		seedBrowserBatchHistory(t, a.deps)
 		seedBrowserBatchRecovery(t, a.deps)
 	}
-	if os.Getenv("SLU_E2E_BACKUP_CATALOG") == "1" {
+	backupCatalogFixture := os.Getenv("SLU_E2E_BACKUP_CATALOG") == "1"
+	if backupCatalogFixture {
 		automation := a.deps.BackupAutomation
 		automation.deployment = backupAutomationDeployment{Directory: t.TempDir(), SecretFile: filepath.Join(t.TempDir(), "catalog-passphrase")}
 		if err := os.Chmod(automation.deployment.Directory, 0700); err != nil {
@@ -937,6 +938,18 @@ func TestDashboardScalingE2EServe(t *testing.T) {
 	// production router and its authentication/command handlers remain intact.
 	productionHandler := a.handler
 	a.handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if backupCatalogFixture && r.URL.Path == "/__test/observe-backup-archives" {
+			if r.Method != http.MethodPost {
+				w.WriteHeader(http.StatusMethodNotAllowed)
+				return
+			}
+			if err := a.deps.BackupAutomation.observeArchiveAvailability(r.Context()); err != nil {
+				w.WriteHeader(http.StatusServiceUnavailable)
+				return
+			}
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
 		if r.URL.Path != "/__test/expire-reauthentication" {
 			productionHandler.ServeHTTP(w, r)
 			return

@@ -52,6 +52,7 @@ type ownedBackupArchive struct {
 	LastVerifiedAt     string                 `json:"last_verified_at,omitempty"`
 	Verification       string                 `json:"verification,omitempty"`
 	Availability       string                 `json:"availability,omitempty"`
+	ReverifyChanged    bool                   `json:"reverify_changed,omitempty"`
 	FileIdentity       string                 `json:"file_identity,omitempty"`
 	FileModifiedAt     string                 `json:"file_modified_at,omitempty"`
 	DirectoryIdentity  string                 `json:"directory_identity,omitempty"`
@@ -309,6 +310,9 @@ func (a *backupAutomation) nextScheduledOccurrence(ctx context.Context) (time.Ti
 		return time.Time{}, err
 	}
 	now := a.now()
+	if health := s.Observation.storageHealth(backupStorageBinding(a.deployment.Directory), now); health != nil && health.State == "unavailable" {
+		return time.Time{}, nil
+	}
 	next := parseBackupStamp(a.projectedRegularNextAt(s, now))
 	if s.PendingAt != "" {
 		retry := parseBackupStamp(s.RetryAt)
@@ -516,7 +520,7 @@ func primaryBackupMountAvailable(root *os.Root, identity string) bool {
 	return identity != "" && backupArchiveDirectoryIdentity(root) == identity && backupArchiveMountAvailable(root.Name(), identity)
 }
 
-func (a *backupAutomation) primaryBackupStatus(s backupAutomationState, catalog backupArchiveCatalog, configured bool, validationErr error) backupAutomationStatus {
+func (a *backupAutomation) primaryBackupStatus(s backupAutomationState, catalog backupArchiveCatalog, configured bool) backupAutomationStatus {
 	status := backupAutomationStatus{Catalog: catalog, Config: s.Config, State: s.Outcome, Message: s.Message,
 		LastAttemptAt: s.LastAttemptAt, LastSuccessAt: s.LastSuccessAt, RetryAt: s.RetryAt,
 		Secondary: a.secondaryStatus(s), Configured: configured,
@@ -536,9 +540,6 @@ func (a *backupAutomation) primaryBackupStatus(s backupAutomationState, catalog 
 	} else if !status.Configured {
 		status.State = "suspended"
 		status.Message = "Validate the local destination and secret to resume automated backups."
-		if validationErr != nil {
-			status.Message = validationErr.Error()
-		}
 	} else if s.PendingAt != "" {
 		status.NextAt = s.RetryAt
 	} else {

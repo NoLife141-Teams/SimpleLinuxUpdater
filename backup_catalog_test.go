@@ -236,6 +236,14 @@ func TestBackupCatalogRejectsReplacedCorruptSymlinkMissingAndForeign(t *testing.
 			if err != nil {
 				t.Fatal(err)
 			}
+			if kind == "identical replacement" {
+				if err := a.observeArchiveAvailability(t.Context()); err != nil {
+					t.Fatal(err)
+				}
+				if item := catalogFacts(t, app, cookie).Archives[0]; item.Availability != "changed" || item.ReverifyPossible {
+					t.Fatalf("catalogue offered reverification of a replaced inode: %+v", item)
+				}
+			}
 			operations := []string{"download", "verify"}
 			if kind == "wrong secret" {
 				operations = []string{"verify"}

@@ -102,6 +102,7 @@ func runPrimaryAdminIO[T any](ctx context.Context, a *backupAutomation, run func
 
 type primaryDestinationProof struct {
 	binding, identity, owner string
+	checkedAt                time.Time
 	err                      error
 }
 
@@ -127,6 +128,7 @@ func (a *backupAutomation) configurePrimary(ctx context.Context, config backupSc
 		proof := primaryDestinationProof{binding: binding, owner: owner, err: err}
 		if root != nil {
 			defer root.Close()
+			proof.checkedAt = a.now()
 			proof.identity = backupArchiveDirectoryIdentity(root)
 			if !backupArchiveMountAvailable(root.Name(), proof.identity) {
 				proof.err = errPrimaryBackupMountUnavailable
@@ -147,12 +149,21 @@ func (a *backupAutomation) configurePrimary(ctx context.Context, config backupSc
 			return errPrimaryBackupInvalidated
 		}
 		if proof.err == nil {
+			observation := s.Observation
+			newer := observation.Process == backupArchiveObservationProcess &&
+				observation.StorageHistory.Binding == backupStorageBinding(a.deployment.Directory) &&
+				parseBackupStamp(observation.CheckedAt).After(proof.checkedAt)
+			if newer && (observation.Storage != "available" || observation.DirectoryIdentity != proof.identity || observation.Owner != proof.owner) {
+				return errPrimaryBackupMountUnavailable
+			}
 			if s.Approval != proof.binding || s.ApprovedDirectory != proof.identity {
 				s.Temporary = ""
 				s.PrimaryRetiring = ""
 			}
 			s.Approval, s.ApprovedDirectory = proof.binding, proof.identity
-			a.recordArchiveObservation(&s, newBackupArchiveObservation(a.now(), "available", proof.owner, proof.identity))
+			if !newer {
+				a.recordArchiveObservation(&s, newBackupArchiveObservation(proof.checkedAt, "available", proof.owner, proof.identity))
+			}
 		} else {
 			s.Approval, s.ApprovedDirectory, s.PrimaryRetiring = "", "", ""
 		}

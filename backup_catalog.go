@@ -193,7 +193,7 @@ func (a *backupAutomation) observedPrimaryBackupStatus(s backupAutomationState) 
 			archive.ObservationProcess == observed.Process && !at.IsZero() && !at.After(now) &&
 			now.Sub(at) <= 2*backupArchiveObservationInterval {
 			availability = archive.Availability
-			reverifyPossible = availability == "present" || availability == "corrupt" || (availability == "changed" && archive.FileIdentity != "")
+			reverifyPossible = availability == "present" || availability == "corrupt" || (availability == "changed" && archive.ReverifyChanged)
 			if availability == "present" && archive.Integrity.State == backupIntegrityMismatch {
 				availability = "corrupt"
 			}
@@ -205,7 +205,7 @@ func (a *backupAutomation) observedPrimaryBackupStatus(s backupAutomationState) 
 		}
 		catalog.Archives = append(catalog.Archives, archiveView(archive, availability, reverifyPossible))
 	}
-	return a.primaryBackupStatus(s, catalog, a.primaryApprovalMatchesDeployment(s), nil)
+	return a.primaryBackupStatus(s, catalog, a.primaryApprovalMatchesDeployment(s))
 }
 
 func (a *backupAutomation) catalogAuditEvent(actor, ip, action string, archive ownedBackupArchive, ready bool) *AuditEvent {

@@ -159,20 +159,54 @@ func TestAdminCatalogueCancellationKeepsStorageSlotUntilBlockedCallReturns(t *te
 	waitForPrimaryBackupWorker(t, a)
 }
 
-func TestPrimaryAdminReadOnlyViewsDoNotOpenDestination(t *testing.T) {
+func TestPrimaryAdminViewsUseLastStorageObservation(t *testing.T) {
 	app, a, cookie, _ := publishedCatalogFixture(t)
-	a.openPrimaryAdminDestination = func(bool) (*os.Root, string, string, string, error) {
-		t.Fatal("read-only view accessed primary storage")
-		return nil, "", "", "", nil
+	directory := a.deployment.Directory
+	withdrawn := directory + ".withdrawn"
+	if err := os.Rename(directory, withdrawn); err != nil {
+		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = os.RemoveAll(withdrawn) })
 	for _, route := range []string{"/api/backup/status", "/api/backup/automation", "/api/backup/archives"} {
 		response := performContractRequest(app.Handler, http.MethodGet, route, nil, cookie, false)
-		if response.Code != http.StatusOK {
+		if response.Code != http.StatusOK || !bytes.Contains(response.Body.Bytes(), []byte(`"availability":"present"`)) {
 			t.Fatalf("%s = %d %s", route, response.Code, response.Body)
 		}
 	}
 	if next, err := a.nextScheduledOccurrence(t.Context()); err != nil || next.IsZero() {
 		t.Fatalf("projected backup occurrence = %v, %v", next, err)
+	}
+	if err := a.observeArchiveAvailability(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if next, err := a.nextScheduledOccurrence(t.Context()); err != nil || !next.IsZero() {
+		t.Fatalf("confirmed primary outage still projects an occurrence: %v, %v", next, err)
+	}
+	if archive := catalogFacts(t, app, cookie).Archives[0]; archive.Availability != "unavailable" {
+		t.Fatalf("catalogue hid the observed outage: %+v", archive)
+	}
+}
+
+func TestPrimaryValidationDoesNotOverwriteNewerMountOutage(t *testing.T) {
+	app, a, cookie, _ := publishedCatalogFixture(t)
+	facts := backupAutomationStateForTest(t, a)
+	payload, err := json.Marshal(facts.Config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Model a result sampled before a newer observer transaction, both for
+	// the same deployment and process. The late proof must not reset the alert.
+	outageAt := a.now().Add(time.Minute)
+	a.recordArchiveObservation(&facts, newBackupArchiveObservation(outageAt, "unavailable", "", ""))
+	if err := a.save(t.Context(), facts); err != nil {
+		t.Fatal(err)
+	}
+	response := performContractRequest(app.Handler, http.MethodPut, "/api/backup/automation", bytes.NewBuffer(payload), cookie, true)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("validation replaced the newer outage: %d %s", response.Code, response.Body)
+	}
+	if current := backupAutomationStateForTest(t, a).Observation; current != facts.Observation {
+		t.Fatalf("validation changed the newer observation: %+v", current)
 	}
 }
 

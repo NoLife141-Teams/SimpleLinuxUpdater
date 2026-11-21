@@ -20,6 +20,7 @@ type backupCatalogProbe struct {
 	verifyErr                                      error
 	availability, directory, owner                 string
 	mountAvailable, digestMismatch, versionChanged bool
+	reverifyPossible                               bool
 	checkedAt                                      time.Time
 }
 
@@ -50,18 +51,18 @@ func (a *backupAutomation) probePrimaryArchive(ctx context.Context, ref primaryA
 		archive.FileModifiedAt = backupStamp(snapshot.info.ModTime())
 		archive.DirectoryIdentity = probe.directory
 	}
-	probe.availability, _ = backupArchiveAvailabilityAt(root, archive, owner, probe.directory)
+	probe.availability, probe.reverifyPossible = backupArchiveAvailabilityAt(root, archive, owner, probe.directory)
 	if snapshotErr == nil && probe.availability == "present" {
 		named, err := root.Lstat(archive.Name)
 		if err != nil || !sameBackupIntegrityFile(snapshot.info, named) {
 			probe.availability = "unavailable"
 		}
 	}
+	probe.checkedAt = a.now()
 	probe.mountAvailable = backupArchiveMountAvailable(root.Name(), probe.directory)
 	if !probe.mountAvailable {
 		probe.availability = "unavailable"
 	}
-	probe.checkedAt = a.now()
 	return primaryAdminIOResult[backupCatalogProbe]{value: probe, cleanup: cleanup}
 }
 
@@ -124,6 +125,7 @@ func (a *backupAutomation) applyPrimaryArchiveProbe(ctx context.Context, ref pri
 				addEvent(a.observeArchiveIntegrity(current, backupIntegrityMismatch, observedAt, actor, ip))
 			case probe.mountAvailable && archiveAvailabilityLost(probe.availability):
 				addEvent(a.observeArchive(current, probe.availability, observedAt, actor, ip))
+				current.ReverifyChanged = probe.availability == "changed" && probe.reverifyPossible
 			case current.Integrity.State != backupIntegrityMismatch &&
 				(probe.versionChanged || probe.snapshot.file.Path != "" || !probe.mountAvailable):
 				addEvent(a.observeArchiveIntegrity(current, backupIntegrityUnavailable, observedAt, actor, ip))
@@ -156,6 +158,7 @@ func (a *backupAutomation) applyPrimaryArchiveProbe(ctx context.Context, ref pri
 			current.Verification = "failed"
 		}
 		current.Availability = "present"
+		current.ReverifyChanged = false
 		current.ObservedAt = observedAt
 		current.ObservationProcess = backupArchiveObservationProcess
 		addEvent(a.catalogAuditEvent(actor, ip, "backup.verify", *current, ready))
